@@ -82,21 +82,37 @@ pub fn ensure_agents(store: &mut ResourceStore, definitions: &[ToolDefinition]) 
             };
             store.agents.push(ResourceAgent {
                 id: definition.id.clone(),
+                name: definition.name.clone(),
                 kind: kind.to_string(),
                 detected: false,
                 version: "未检测".to_string(),
                 models: Vec::new(),
             });
         }
+        if let Some(agent) = store
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == definition.id)
+        {
+            agent.name.clone_from(&definition.name);
+        }
     }
     if store.agents.iter().all(|agent| agent.id != "cc-switch") {
         store.agents.push(ResourceAgent {
             id: "cc-switch".to_string(),
+            name: "cc-switch".to_string(),
             kind: "provider 桥".to_string(),
             detected: false,
             version: "未检测".to_string(),
             models: Vec::new(),
         });
+    }
+    if let Some(agent) = store
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == "cc-switch")
+    {
+        agent.name = "cc-switch".to_string();
     }
     for agent in &mut store.agents {
         for model in &mut agent.models {
@@ -462,19 +478,27 @@ fn detect_pi(binary: &Path) -> Result<(Vec<ResourceModel>, Vec<String>), String>
             Duration::from_secs(20),
             None,
         );
-        let ready = auth.as_ref().is_ok_and(pi_auth_ready);
+        let status = auth.as_ref().ok().and_then(pi_auth_status);
+        let ready = status.as_deref() == Some("ready");
         if !ready {
             let detail = auth
                 .as_ref()
                 .map_or_else(|error| error.clone(), process_error_summary);
             let message = format!("pi provider {provider} 未就绪：{detail}");
             errors.push(message);
-            for model in models.iter_mut().filter(|model| model.provider == provider) {
-                model.meta = append_note_marker(&model.meta, "鉴权未就绪");
-            }
+            mark_pi_auth_not_ready(&mut models, &provider, status.as_deref());
         }
     }
     Ok((models, errors))
+}
+
+fn mark_pi_auth_not_ready(models: &mut [ResourceModel], provider: &str, status: Option<&str>) {
+    for model in models.iter_mut().filter(|model| model.provider == provider) {
+        model.meta = append_note_marker(&model.meta, "鉴权未就绪");
+        if let Some(status) = status {
+            model.meta = append_note_marker(&model.meta, &format!("鉴权状态：{status}"));
+        }
+    }
 }
 
 fn parse_pi_sources(
@@ -642,6 +666,7 @@ fn detected_model(
         source: source.to_string(),
         smoked_at: String::new(),
         smoke_model: String::new(),
+        smoke_failure: String::new(),
         meta: meta.to_string(),
         note: String::new(),
     }
@@ -680,17 +705,11 @@ fn merge_detected_models(
             model.status.clone_from(&existing.status);
             model.smoked_at.clone_from(&existing.smoked_at);
             model.smoke_model.clone_from(&existing.smoke_model);
+            model.smoke_failure.clone_from(&existing.smoke_failure);
             if !existing.vendor.trim().is_empty() {
                 model.vendor.clone_from(&existing.vendor);
             }
             model.note.clone_from(&existing.note);
-            if let Some(failure) = existing
-                .meta
-                .split('；')
-                .find(|part| part.trim().starts_with("冒烟失败："))
-            {
-                model.meta = append_note_marker(&model.meta, failure.trim());
-            }
             *existing = model;
         } else {
             agent.models.push(model);
@@ -767,6 +786,7 @@ pub fn add_model(
         source: format!("申报({})", Local::now().format("%Y-%m-%d")),
         smoked_at: String::new(),
         smoke_model: String::new(),
+        smoke_failure: String::new(),
         meta: String::new(),
         note: request.note.trim().to_string(),
     });
@@ -849,13 +869,13 @@ fn smoke_one_in_place(
             target.status = STATUS_CONNECTED.to_string();
             target.smoked_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
             target.smoke_model = smoke_model;
-            target.meta = remove_smoke_failure(&target.meta);
+            target.smoke_failure.clear();
         }
         Err(error) => {
             target.status = STATUS_FAILED.to_string();
             target.smoked_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
             target.smoke_model.clear();
-            target.meta = set_smoke_failure(&target.meta, &safe_summary(&error));
+            target.smoke_failure = safe_summary(&error);
         }
     }
     Ok(())
@@ -881,7 +901,7 @@ pub fn smoke_selected(
                     if model.status == STATUS_FAILED {
                         errors.push(format!(
                             "冒烟 {}/{} 失败：{}",
-                            key.agent_id, key.id, model.meta
+                            key.agent_id, key.id, model.smoke_failure
                         ));
                     }
                 }
@@ -1387,9 +1407,9 @@ fn json_lines(text: &str) -> impl Iterator<Item = Value> + '_ {
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
 }
 
-fn pi_auth_ready(result: &ProcessResult) -> bool {
+fn pi_auth_status(result: &ProcessResult) -> Option<String> {
     if result.timed_out {
-        return false;
+        return None;
     }
     let values = if let Ok(value) = serde_json::from_str::<Value>(result.stdout.trim()) {
         vec![value]
@@ -1397,8 +1417,12 @@ fn pi_auth_ready(result: &ProcessResult) -> bool {
         json_lines(&result.stdout).collect::<Vec<_>>()
     };
     values
-        .iter()
-        .any(|value| value.get("ready").and_then(Value::as_bool) == Some(true))
+        .into_iter()
+        .find_map(|value| match value.get("status") {
+            Some(Value::String(status)) => Some(status.clone()),
+            Some(status) => Some(status.to_string()),
+            None => None,
+        })
 }
 
 fn output_reports_is_error(result: &ProcessResult) -> bool {
@@ -1461,7 +1485,8 @@ fn safe_summary(text: &str) -> String {
         .into_owned();
     value = QUERY_SECRET
         .get_or_init(|| {
-            Regex::new(r"(?i)([?&](?:key|token)=)[^&#\s]+").expect("valid query secret regex")
+            Regex::new(r"(?i)([?&](?:key|token|api[-_]?key|access_token|secret)=)[^&#\s]+")
+                .expect("valid query secret regex")
         })
         .replace_all(&value, "${1}[已隐藏]")
         .into_owned();
@@ -1482,22 +1507,6 @@ fn safe_summary(text: &str) -> String {
         }
     }
     value.trim().chars().take(200).collect()
-}
-
-fn set_smoke_failure(note: &str, error: &str) -> String {
-    let clean = remove_smoke_failure(note);
-    if clean.is_empty() {
-        format!("冒烟失败：{error}")
-    } else {
-        format!("{clean}；冒烟失败：{error}")
-    }
-}
-
-fn remove_smoke_failure(note: &str) -> String {
-    note.split('；')
-        .filter(|part| !part.trim().starts_with("冒烟失败："))
-        .collect::<Vec<_>>()
-        .join("；")
 }
 
 #[cfg(test)]
@@ -1564,6 +1573,7 @@ mod tests {
             version: 1,
             agents: vec![ResourceAgent {
                 id: "codex".to_string(),
+                name: "Codex".to_string(),
                 kind: "内置".to_string(),
                 detected: true,
                 version: "test".to_string(),
@@ -1579,6 +1589,7 @@ mod tests {
                     source: "读:old".to_string(),
                     smoked_at: "2026-01-01".to_string(),
                     smoke_model: "old-model".to_string(),
+                    smoke_failure: "旧失败；摘要保留完整".to_string(),
                     meta: "旧元数据".to_string(),
                     note: "保留备注".to_string(),
                 }],
@@ -1596,6 +1607,7 @@ mod tests {
         assert_eq!(old.tier, "高");
         assert_eq!(old.note, "保留备注");
         assert_eq!(old.meta, "新元数据");
+        assert_eq!(old.smoke_failure, "旧失败；摘要保留完整");
         assert_eq!(old.status, STATUS_CONNECTED);
         assert_eq!(old.vendor, "用户厂商");
         assert_eq!(old.billing_source, "新源");
@@ -1626,6 +1638,7 @@ mod tests {
             version: 1,
             agents: vec![ResourceAgent {
                 id: "codex".to_string(),
+                name: "Codex".to_string(),
                 kind: "内置".to_string(),
                 detected: true,
                 version: "test".to_string(),
@@ -1641,6 +1654,7 @@ mod tests {
                     source: "读:old".to_string(),
                     smoked_at: String::new(),
                     smoke_model: String::new(),
+                    smoke_failure: String::new(),
                     meta: "priority：1".to_string(),
                     note: "用户备注".to_string(),
                 }],
@@ -1665,7 +1679,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_source_matching_uses_exact_tokens_and_auth_requires_top_level_ready() {
+    fn pi_source_matching_uses_exact_tokens_and_auth_uses_top_level_status() {
         let store = r#"{
           "p": {"models": [
             {"id":"glm-4","provider":"p"},
@@ -1683,13 +1697,25 @@ mod tests {
             timed_out: false,
             timeout: Duration::from_secs(20),
         };
-        assert!(!pi_auth_ready(&result(
-            r#"{"ready":false,"nested":{"ready":true}}"#
-        )));
-        assert!(!pi_auth_ready(&result(
-            r#"{"status":"ready","nested":{"ok":true}}"#
-        )));
-        assert!(pi_auth_ready(&result(r#"{"ready":true}"#)));
+        assert_eq!(
+            pi_auth_status(&result(include_str!(
+                "../fixtures/pi_auth_check_ready.json"
+            ))),
+            Some("ready".to_string())
+        );
+        assert_eq!(
+            pi_auth_status(&result(include_str!(
+                "../fixtures/pi_auth_check_not_ready.json"
+            ))),
+            Some("missing".to_string())
+        );
+        assert_eq!(pi_auth_status(&result(r#"{"ready":true}"#)), None);
+
+        let mut model = fixture_model("glm-4.7");
+        model.provider = "p".to_string();
+        mark_pi_auth_not_ready(std::slice::from_mut(&mut model), "p", Some("missing"));
+        assert!(model.meta.contains("鉴权未就绪"));
+        assert!(model.meta.contains("鉴权状态：missing"));
     }
 
     #[test]
@@ -1698,6 +1724,7 @@ mod tests {
             version: 1,
             agents: vec![ResourceAgent {
                 id: "cc-switch".to_string(),
+                name: "cc-switch".to_string(),
                 kind: "provider 桥".to_string(),
                 detected: true,
                 version: "test".to_string(),
@@ -1728,6 +1755,7 @@ mod tests {
             version: 1,
             agents: vec![ResourceAgent {
                 id: "pi".to_string(),
+                name: "pi".to_string(),
                 kind: "内置".to_string(),
                 detected: true,
                 version: "test".to_string(),
@@ -1824,12 +1852,13 @@ mod tests {
     #[test]
     fn safe_summary_redacts_common_cli_secret_shapes() {
         let summary = safe_summary(
-            "sk-abcdefghijk https://user:pass@example.com/a?key=secret&token=other Bearer abc.def-123",
+            "sk-abcdefghijk https://user:pass@example.com/a?key=one&token=two&api-key=three&api_key=four&access_token=five&secret=six Bearer abc.def-123",
         );
         assert!(!summary.contains("sk-abcdefghijk"));
         assert!(!summary.contains("user:pass"));
-        assert!(!summary.contains("key=secret"));
-        assert!(!summary.contains("token=other"));
+        for secret in ["one", "two", "three", "four", "five", "six"] {
+            assert!(!summary.contains(secret));
+        }
         assert!(!summary.contains("abc.def-123"));
         assert!(summary.contains("[已隐藏]"));
 

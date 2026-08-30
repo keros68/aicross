@@ -249,6 +249,150 @@ Credential store read failed for zai-coding-cn: EPERM: operation not permitted, 
 - pi 与 cc-switch 的 CLI/输出格式会漂移；当前解析器对已知 JSON/JSONL 结构做严格成功判定，未知 auth readiness 结构会报未就绪，不会按 exit 0 猜成功。
 - 资源页新增后，前端单 chunk 为 514.87 kB；构建成功，但后续功能继续增长时需要再评估拆包。
 
+## 修正轮 R2
+
+### 逐条处理结果
+
+1. **pi auth check 就绪判定已修**：只认输出 JSON 顶层 `status == "ready"`。其他值均按未就绪处理，并把 `status` 原值写入模型 `meta`。新增真机原文 fixture `pi_auth_check_ready.json` 和非就绪 fixture `pi_auth_check_not_ready.json`；测试覆盖两者，并确认旧的顶层 `ready: true` 不再算就绪。
+2. **所有状态均可移除**：待冒烟、冒烟失败、已接入模型均显示“移除”；已接入模型继续显示“重新冒烟”，其他状态显示“冒烟”。
+3. **safe_summary 查询参数脱敏已补**：新增 `api-key=`、`api_key=`、`apikey=`、`access_token=`、`secret=`，并与既有 `key=`、`token=` 一起测试。
+4. **run_process stdin 超时已修**：stdin 写入移到独立线程，与进程等待同时进行。新增 8 MiB stdin 写入不读 stdin 的挂起子进程测试，100 毫秒超时后能够终止并返回。
+5. **agent 显示名单一来源已修**：`ResourceAgent` 新增后端 `name` 字段，内置及手动 agent 使用 `tools.json` 的显示名，`cc-switch` 使用后端固定名；前端删除 `agentNames` 和 tools 显示名映射，只在 name 为空时显示 id。旧资源文件缺少 name 时可兼容读取，并在加载时由后端补齐。
+6. **错误文案已修**：`Resources.tsx` 统一提取 `Error.message`，不再向界面带入 `Error: ` 前缀。
+7. **冒烟失败摘要已拆分**：`ResourceModel` 新增 `smoke_failure` 字段，失败时单独写入、成功时清空、探测合并时完整保留；不再把摘要拼入 `meta`，也不再按中文分号切分。旧资源文件缺少该字段时按空字符串读取。
+8. **边界遵守**：本轮未发送任何模型请求，未 commit，未 push。
+
+### 自动验证
+
+#### Rust 检查
+
+命令：
+
+```text
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+结果原文：
+
+```text
+    Checking aicross v0.0.0 (D:\work\aicross\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.10s
+```
+
+#### Rust 测试
+
+命令：
+
+```text
+cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+```
+
+结果原文：
+
+```text
+   Compiling aicross v0.0.0 (D:\work\aicross\src-tauri)
+warning: linker stdout: 正在创建库 D:\work\aicross\src-tauri\target\debug\deps\aicross_lib.dll.lib 和对象 D:\work\aicross\src-tauri\target\debug\deps\aicross_lib.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `aicross` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.44s
+     Running unittests src\lib.rs (src-tauri\target\debug\deps\aicross_lib-303a603e9ddec3ac.exe)
+
+running 27 tests
+test resources::tests::live_codex_and_kimi_fact_sources_parse ... ignored, explicit local fact-source check
+test pty::tests::cancelled_terminal_ids_expire ... ok
+test resources::tests::provider_only_selection_includes_cc_switch_models ... ok
+test resources::tests::merge_preserves_user_fields_adds_pending_and_marks_missing ... ok
+test resources::tests::pi_smoke_rejects_identity_mismatch_and_thinking_only_answer ... ok
+test resources::tests::other_smoke_parsers_apply_channel_specific_success_rules ... ok
+test resources::tests::pi_source_matching_uses_exact_tokens_and_auth_uses_top_level_status ... ok
+test resources::tests::detection_refreshes_meta_preserves_note_and_parses_commented_kimi_toml ... ok
+test resources::tests::parses_four_local_fact_sources ... ok
+test config::tests::damaged_settings_do_not_prevent_loading ... ok
+test tests::executable_extensions_require_confirmation_case_insensitively ... ok
+test workspace::tests::compare_and_diff_cover_added_deleted_mtime_binary_and_hunk_counts ... ok
+test config::tests::json_config_can_be_replaced_repeatedly ... ok
+test sessions::tests::sessions_sort_by_instant_deduplicate_and_skip_garbage ... ok
+test sessions::tests::pi_parser_keeps_only_requested_metadata ... ok
+test resources::tests::safe_summary_redacts_common_cli_secret_shapes ... ok
+test workspace::tests::snapshot_reports_modified_text_and_diff ... ok
+test config::tests::tools_overrides_merge_existing_and_new_entries_and_report_invalid_json ... ok
+test workspace::tests::large_utf8_text_is_not_reported_as_binary ... ok
+test pty::tests::portable_pty_runs_a_child_and_reads_output ... ok
+test workspace::tests::safe_path_rejects_traversal_absolute_paths_and_external_symlinks ... ok
+test pty::tests::powershell_launch_uses_registered_default_args ... ok
+test process::tests::run_process_truncates_each_output_stream ... ok
+test process::tests::run_process_times_out_while_stdin_write_is_blocked ... ok
+test process::tests::run_process_keeps_stderr_after_broken_pipe ... ok
+test process::tests::run_process_times_out_and_terminates_the_child_tree ... ok
+claude: detected=true, version=2.1.251 (Claude Code)
+codex: detected=true, version=codex-cli 0.149.1
+kimi: detected=true, version=0.39.1
+pi: detected=true, version=0.84.2
+powershell: detected=true, version=PowerShell 7.6.5
+test tools::tests::embedded_registry_detects_all_five_tools ... ok
+
+test result: ok. 26 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.96s
+
+     Running unittests src\main.rs (src-tauri\target\debug\deps\aicross-7760f71de8d14d2b.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests aicross_lib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+#### Rust 格式检查
+
+命令：
+
+```text
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+```
+
+结果：退出码 0，无输出。
+
+#### 前端构建
+
+命令：
+
+```text
+cd src-ui
+npm run build
+```
+
+结果原文：
+
+```text
+> aicross-ui@0.0.0 build
+> tsc && vite build
+
+(node:30612) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 47 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.45 kB │ gzip:   0.28 kB
+dist/assets/index-BUZGShvl.css   17.58 kB │ gzip:   4.22 kB
+dist/assets/index-BGp2pVxi.js   515.37 kB │ gzip: 143.24 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.16s
+```
+
+构建成功；保留已有的单 chunk 体积警告。
+
 ## 修正轮 R1
 
 ### 逐条处理结果
@@ -443,3 +587,106 @@ dist/assets/index-enTvYRRB.js   515.61 kB │ gzip: 143.39 kB
 ```
 
 构建成功；单 chunk 体积警告仍在。本轮未 commit、未 push。
+
+## 修正轮 R2（最终复跑）
+
+`pi_auth_status` 补充保留非字符串 `status` 的 JSON 原值后，重新运行全部指定检查。以下为最终代码对应的输出原文。
+
+### Rust 检查
+
+```text
+    Checking aicross v0.0.0 (D:\work\aicross\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.50s
+```
+
+### Rust 测试
+
+```text
+    Blocking waiting for file lock on build directory
+   Compiling aicross v0.0.0 (D:\work\aicross\src-tauri)
+warning: linker stdout: 正在创建库 D:\work\aicross\src-tauri\target\debug\deps\aicross_lib.dll.lib 和对象 D:\work\aicross\src-tauri\target\debug\deps\aicross_lib.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `aicross` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.68s
+     Running unittests src\lib.rs (src-tauri\target\debug\deps\aicross_lib-303a603e9ddec3ac.exe)
+
+running 27 tests
+test resources::tests::live_codex_and_kimi_fact_sources_parse ... ignored, explicit local fact-source check
+test pty::tests::cancelled_terminal_ids_expire ... ok
+test resources::tests::provider_only_selection_includes_cc_switch_models ... ok
+test resources::tests::other_smoke_parsers_apply_channel_specific_success_rules ... ok
+test resources::tests::merge_preserves_user_fields_adds_pending_and_marks_missing ... ok
+test resources::tests::pi_smoke_rejects_identity_mismatch_and_thinking_only_answer ... ok
+test resources::tests::detection_refreshes_meta_preserves_note_and_parses_commented_kimi_toml ... ok
+test resources::tests::pi_source_matching_uses_exact_tokens_and_auth_uses_top_level_status ... ok
+test resources::tests::parses_four_local_fact_sources ... ok
+test config::tests::damaged_settings_do_not_prevent_loading ... ok
+test tests::executable_extensions_require_confirmation_case_insensitively ... ok
+test workspace::tests::compare_and_diff_cover_added_deleted_mtime_binary_and_hunk_counts ... ok
+test config::tests::tools_overrides_merge_existing_and_new_entries_and_report_invalid_json ... ok
+test sessions::tests::sessions_sort_by_instant_deduplicate_and_skip_garbage ... ok
+test sessions::tests::pi_parser_keeps_only_requested_metadata ... ok
+test config::tests::json_config_can_be_replaced_repeatedly ... ok
+test resources::tests::safe_summary_redacts_common_cli_secret_shapes ... ok
+test workspace::tests::snapshot_reports_modified_text_and_diff ... ok
+test pty::tests::portable_pty_runs_a_child_and_reads_output ... ok
+test workspace::tests::large_utf8_text_is_not_reported_as_binary ... ok
+test workspace::tests::safe_path_rejects_traversal_absolute_paths_and_external_symlinks ... ok
+test pty::tests::powershell_launch_uses_registered_default_args ... ok
+test process::tests::run_process_keeps_stderr_after_broken_pipe ... ok
+test process::tests::run_process_truncates_each_output_stream ... ok
+test process::tests::run_process_times_out_while_stdin_write_is_blocked ... ok
+test process::tests::run_process_times_out_and_terminates_the_child_tree ... ok
+claude: detected=true, version=2.1.251 (Claude Code)
+codex: detected=true, version=codex-cli 0.149.1
+kimi: detected=true, version=0.39.1
+pi: detected=true, version=0.84.2
+powershell: detected=true, version=PowerShell 7.6.5
+test tools::tests::embedded_registry_detects_all_five_tools ... ok
+
+test result: ok. 26 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.30s
+
+     Running unittests src\main.rs (src-tauri\target\debug\deps\aicross-7760f71de8d14d2b.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests aicross_lib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+### Rust 格式检查
+
+`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` 退出码 0，无输出。
+
+### 前端构建
+
+```text
+> aicross-ui@0.0.0 build
+> tsc && vite build
+
+(node:39636) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 47 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.45 kB │ gzip:   0.28 kB
+dist/assets/index-BUZGShvl.css   17.58 kB │ gzip:   4.22 kB
+dist/assets/index-BGp2pVxi.js   515.37 kB │ gzip: 143.24 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.17s
+```
+
+最终复跑成功；未发送模型请求，未 commit，未 push。

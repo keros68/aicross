@@ -1,0 +1,1 @@
+第二轮复审。材料：tasks/review-01-glm.md（第一轮发现）、tasks/REPORT-01.md「修正轮 R1」一节（处理声明）、现在的代码（src-tauri/src/resources.rs、config.rs、lib.rs、models.rs、tools.rs 及新增模块，src-ui/src/components/Resources.tsx、App.tsx）。逐条核实"已修"是否真修、修法有无新问题（文件:行号 + 一句依据）；判断每条"不采纳"理由是否成立；通读本轮改动找回归。最后一句话：代码层面是否可验收（人工窗口 smoke 与 pi 本机两项除外）+ 仍缺项。不客套。不读 node_modules、target、dist。

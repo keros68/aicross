@@ -8,19 +8,10 @@ import type {
   ResourceModel,
   ResourceOperation,
   ResourceStore,
-  Tool,
 } from "../types";
 
 const vendors = ["Anthropic", "OpenAI", "Moonshot", "Zhipu", "DeepSeek", "MiniMax", "Alibaba", "StepFun", "其他"];
 const tiers = ["", "低", "中", "高"];
-
-const agentNames: Record<string, string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-  kimi: "Kimi Code CLI",
-  pi: "pi",
-  "cc-switch": "cc-switch",
-};
 
 const emptyModel = (agentId: string): ResourceModelRequest => ({
   agent_id: agentId,
@@ -41,6 +32,10 @@ function notifyToolsChanged() {
 
 function operationErrors(operation: ResourceOperation) {
   return operation.errors.length > 0 ? operation.errors.join("\n") : "";
+}
+
+function errorText(value: unknown) {
+  return value instanceof Error ? value.message : String(value);
 }
 
 function parseCommandArgs(text: string) {
@@ -81,7 +76,6 @@ function parseCommandArgs(text: string) {
 
 export function Resources() {
   const [store, setStore] = useState<ResourceStore | null>(null);
-  const [toolNames, setToolNames] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [modelAgent, setModelAgent] = useState<string | null>(null);
   const [manualAgentOpen, setManualAgentOpen] = useState(false);
@@ -90,12 +84,11 @@ export function Resources() {
 
   const load = useCallback(async () => {
     try {
-      const [value, tools] = await Promise.all([api.resources(), api.tools()]);
+      const value = await api.resources();
       setStore(value);
-      setToolNames(Object.fromEntries(tools.map((tool) => [tool.id, tool.name])));
       setError("");
     } catch (value) {
-      setError(`读取资源失败：${String(value)}`);
+      setError(`读取资源失败：${errorText(value)}`);
     }
   }, []);
 
@@ -113,7 +106,7 @@ export function Resources() {
       setError(operationErrors(value));
       notifyResourcesChanged();
     } catch (value) {
-      setError(`探测失败：${String(value)}`);
+      setError(`探测失败：${errorText(value)}`);
     } finally {
       setBusy(null);
     }
@@ -135,7 +128,7 @@ export function Resources() {
       setError("");
       notifyResourcesChanged();
     } catch (value) {
-      setError(`更新资源失败：${String(value)}`);
+      setError(`更新资源失败：${errorText(value)}`);
     } finally {
       setBusy(null);
     }
@@ -150,7 +143,7 @@ export function Resources() {
       setError("");
       notifyResourcesChanged();
     } catch (value) {
-      setError(`冒烟失败：${String(value)}`);
+      setError(`冒烟失败：${errorText(value)}`);
     } finally {
       setBusy(null);
     }
@@ -165,7 +158,7 @@ export function Resources() {
       setError("");
       notifyResourcesChanged();
     } catch (value) {
-      setError(`移除资源失败：${String(value)}`);
+      setError(`移除资源失败：${errorText(value)}`);
     } finally {
       setBusy(null);
     }
@@ -186,7 +179,7 @@ export function Resources() {
               <div className="resource-agent-head">
                 <button className="resource-agent-summary" onClick={() => setExpanded(isExpanded ? null : agent.id)}>
                   <span className="resource-caret">{isExpanded ? "⌄" : "›"}</span>
-                  <span><strong>{agentNames[agent.id] ?? toolNames[agent.id] ?? agent.id}</strong><small>{agent.version || "版本未知"}</small></span>
+                  <span><strong>{agent.name || agent.id}</strong><small>{agent.version || "版本未知"}</small></span>
                 </button>
                 <span className={`detection ${agent.detected ? "detected" : "missing"}`}>{agent.detected ? "已检测" : "未检测"}</span>
               </div>
@@ -203,7 +196,7 @@ export function Resources() {
           );
         })}
       </div>
-      {modelAgent && <ResourceModelDialog agentId={modelAgent} onClose={() => setModelAgent(null)} onSaved={(value) => { setStore(value); setModelAgent(null); setError(""); notifyResourcesChanged(); }} onError={setError} />}
+      {modelAgent && <ResourceModelDialog agentId={modelAgent} agentName={store.agents.find((agent) => agent.id === modelAgent)?.name || modelAgent} onClose={() => setModelAgent(null)} onSaved={(value) => { setStore(value); setModelAgent(null); setError(""); notifyResourcesChanged(); }} onError={setError} />}
       {manualAgentOpen && <ManualAgentDialog onClose={() => setManualAgentOpen(false)} onSaved={(value) => { setStore(value); setManualAgentOpen(false); setError(""); notifyResourcesChanged(); notifyToolsChanged(); }} onError={setError} />}
     </div>
   );
@@ -231,12 +224,11 @@ function ModelRow({ model, busy, onUpdate, onSmoke, onRemove }: {
       <div className="resource-source" title={model.source}>{model.source || "来源未记录"}</div>
       {model.smoked_at && <div className="resource-smoked">最近冒烟：{model.smoked_at}{model.smoke_model ? `（${model.smoke_model}）` : ""}</div>}
       {model.meta && <div className="resource-meta">{model.meta}</div>}
+      {model.smoke_failure && <div className="resource-meta">冒烟失败：{model.smoke_failure}</div>}
       {model.note && <div className="resource-note">{model.note}</div>}
       <div className="resource-model-actions">
-        {model.status === "已接入" ? <>
-          <button className="button small" disabled={smoking || removing} onClick={() => void onRemove(model)}>{removing ? "移除中…" : "移除"}</button>
-          <button className="button small" disabled={smoking || removing} onClick={() => void onSmoke(model)}>{smoking ? "冒烟中…" : "重新冒烟"}</button>
-        </> : <button className="button small" disabled={smoking || removing} onClick={() => void onSmoke(model)}>{smoking ? "冒烟中…" : "冒烟"}</button>}
+        <button className="button small" disabled={smoking || removing} onClick={() => void onRemove(model)}>{removing ? "移除中…" : "移除"}</button>
+        <button className="button small" disabled={smoking || removing} onClick={() => void onSmoke(model)}>{smoking ? "冒烟中…" : model.status === "已接入" ? "重新冒烟" : "冒烟"}</button>
       </div>
     </div>
   );
@@ -247,7 +239,7 @@ function StatusTag({ status }: { status: string }) {
   return <span className={`resource-status ${className}`}>{status || "未接入"}</span>;
 }
 
-function ResourceModelDialog({ agentId, onClose, onSaved, onError }: { agentId: string; onClose: () => void; onSaved: (store: ResourceStore) => void; onError: (message: string) => void }) {
+function ResourceModelDialog({ agentId, agentName, onClose, onSaved, onError }: { agentId: string; agentName: string; onClose: () => void; onSaved: (store: ResourceStore) => void; onError: (message: string) => void }) {
   const [value, setValue] = useState(() => emptyModel(agentId));
   const [saving, setSaving] = useState(false);
   const save = async () => {
@@ -258,12 +250,12 @@ function ResourceModelDialog({ agentId, onClose, onSaved, onError }: { agentId: 
     try {
       onSaved(await api.addResourceModel({ ...value, id: value.id.trim(), provider: value.provider.trim(), note: value.note.trim() }));
     } catch (error) {
-      onError(`添加资源失败：${String(error)}`);
+      onError(`添加资源失败：${errorText(error)}`);
     } finally {
       setSaving(false);
     }
   };
-  return <Dialog title={`手动输入：${agentNames[agentId] ?? agentId}`} onClose={onClose}>
+  return <Dialog title={`手动输入：${agentName || agentId}`} onClose={onClose}>
     <label className="field-label">模型 ID<input autoFocus value={value.id} onChange={(event) => setValue({ ...value, id: event.target.value })} /></label>
     <label className="field-label">provider（可留空）<input value={value.provider} onChange={(event) => setValue({ ...value, provider: event.target.value })} /></label>
     <label className="field-label">权重厂商<select value={value.vendor} onChange={(event) => setValue({ ...value, vendor: event.target.value })}>{vendors.map((vendor) => <option key={vendor}>{vendor}</option>)}</select></label>
@@ -283,7 +275,7 @@ function ManualAgentDialog({ onClose, onSaved, onError }: { onClose: () => void;
     try {
       onSaved(await api.addManualAgent({ ...value, name: value.name.trim(), binary: value.binary.trim(), args: parseCommandArgs(argsText) }));
     } catch (error) {
-      onError(`添加 agent 失败：${String(error)}`);
+      onError(`添加 agent 失败：${errorText(error)}`);
     } finally {
       setSaving(false);
     }
@@ -298,7 +290,6 @@ function ManualAgentDialog({ onClose, onSaved, onError }: { onClose: () => void;
 
 export function ResourceConnectionDialog({ onClose }: { onClose: () => void }) {
   const [store, setStore] = useState<ResourceStore | null>(null);
-  const [tools, setTools] = useState<Tool[]>([]);
   const [providers, setProviders] = useState<CcSwitchProvider[]>([]);
   const [agentIds, setAgentIds] = useState<string[]>([]);
   const [providerNames, setProviderNames] = useState<string[]>([]);
@@ -306,13 +297,12 @@ export function ResourceConnectionDialog({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    Promise.all([api.resources(), api.tools()]).then(([resourceStore, detectedTools]) => {
+    api.resources().then((resourceStore) => {
       setStore(resourceStore);
-      setTools(detectedTools);
-    }).catch((value) => setError(`读取 agent 状态失败：${String(value)}`));
+    }).catch((value) => setError(`读取 agent 状态失败：${errorText(value)}`));
     api.connectionOverview().then((overview) => {
       setProviders(overview.cc_switch_providers);
-    }).catch((value) => setError(`读取 cc-switch 失败：${String(value)}`));
+    }).catch((value) => setError(`读取 cc-switch 失败：${errorText(value)}`));
   }, []);
 
   const toggle = (value: string, values: string[], setValues: (next: string[]) => void) => setValues(values.includes(value) ? values.filter((item) => item !== value) : [...values, value]);
@@ -324,7 +314,7 @@ export function ResourceConnectionDialog({ onClose }: { onClose: () => void }) {
       if (value.cc_switch_providers !== null) setProviders(value.cc_switch_providers);
       setError(operationErrors(value));
       notifyResourcesChanged();
-    } catch (value) { setError(`全部探测失败：${String(value)}`); } finally { setBusy(null); }
+    } catch (value) { setError(`全部探测失败：${errorText(value)}`); } finally { setBusy(null); }
   };
   const smokeSelected = async () => {
     setBusy("smoke");
@@ -334,12 +324,12 @@ export function ResourceConnectionDialog({ onClose }: { onClose: () => void }) {
       if (value.cc_switch_providers !== null) setProviders(value.cc_switch_providers);
       setError(operationErrors(value));
       notifyResourcesChanged();
-    } catch (value) { setError(`冒烟失败：${String(value)}`); } finally { setBusy(null); }
+    } catch (value) { setError(`冒烟失败：${errorText(value)}`); } finally { setBusy(null); }
   };
 
   return <Dialog title="接入资源" onClose={onClose} wide>
     {error && <div className="error-line modal-error">{error}</div>}
-    <section className="connection-section"><h3>检测到的 agent</h3>{store ? store.agents.filter((agent) => agent.detected && agent.id !== "cc-switch").map((agent) => <label className="check-row" key={agent.id}><input type="checkbox" checked={agentIds.includes(agent.id)} onChange={() => toggle(agent.id, agentIds, setAgentIds)} />{agentNames[agent.id] ?? tools.find((tool) => tool.id === agent.id)?.name ?? agent.id}<small>已检测</small></label>) : <div className="hint">正在读取…</div>}</section>
+    <section className="connection-section"><h3>检测到的 agent</h3>{store ? store.agents.filter((agent) => agent.detected && agent.id !== "cc-switch").map((agent) => <label className="check-row" key={agent.id}><input type="checkbox" checked={agentIds.includes(agent.id)} onChange={() => toggle(agent.id, agentIds, setAgentIds)} />{agent.name || agent.id}<small>已检测</small></label>) : <div className="hint">正在读取…</div>}</section>
     <section className="connection-section"><h3>cc-switch 里的 provider</h3>{providers.length === 0 ? <div className="hint">未检测到 provider</div> : providers.map((provider) => <label className="check-row" key={provider.name}><input type="checkbox" checked={providerNames.includes(provider.name)} onChange={() => toggle(provider.name, providerNames, setProviderNames)} />{provider.name}<small>{provider.has_token ? "已配置" : "未配置"}</small></label>)}</section>
     <div className="modal-actions"><button className="button" onClick={onClose}>关闭</button><button className="button" disabled={busy !== null} onClick={() => void detectAll()}>{busy === "detect" ? "探测中…" : "全部探测"}</button><button className="button primary" disabled={busy !== null || (agentIds.length === 0 && providerNames.length === 0)} onClick={() => void smokeSelected()}>{busy === "smoke" ? "冒烟中…" : "冒烟所选"}</button></div>
   </Dialog>;

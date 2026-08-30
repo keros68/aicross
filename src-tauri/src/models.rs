@@ -146,6 +146,8 @@ impl Default for ResourceStore {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ResourceAgent {
     pub id: String,
+    #[serde(default)]
+    pub name: String,
     pub kind: String,
     pub detected: bool,
     pub version: String,
@@ -165,6 +167,8 @@ pub struct ResourceModel {
     pub source: String,
     pub smoked_at: String,
     pub smoke_model: String,
+    #[serde(default)]
+    pub smoke_failure: String,
     #[serde(default)]
     pub meta: String,
     pub note: String,

@@ -1,0 +1,8 @@
+修正轮 R2。读 tasks/review-01-glm-r2.md 第三节与第四节。处理：
+1. **pi auth check 就绪判定（真机核对，必修）**：`pi auth check --provider zai-coding-cn --json` 在 pi 0.84.2 上的真实输出是一行 JSON：{"status":"ready","provider":"zai-coding-cn","authType":"api_key"}。没有顶层 `ready` 字段。就绪判定改为：顶层 `status == "ready"`（其他值一律未就绪，并把 status 原文写进 meta）。把这行原文做成 fixture `src-tauri/fixtures/pi_auth_check_ready.json`，再造一个 status 非 ready 的 fixture，测试两者；删掉基于顶层 `ready:true` 的旧假设与旧测试。
+2. 申报/冒烟失败条目补「移除」入口（所有状态都可移除；已接入条目保留「重新冒烟」）。
+3. safe_summary 正则补 `api[-_]?key=`、`access_token=`、`secret=` 查询参数。
+4. run_process：stdin 写入放到超时约束内（单独线程写或非阻塞），不得让挂起子进程绕过超时。
+5. agentNames 双份维护：显示名移到后端（tools.json 的显示名 + cc-switch 固定名），前端只兜底 id。
+6. 顺手：`Resources.tsx` 错误文案去掉 `Error: ` 前缀；冒烟失败摘要在 meta 里用独立字段而不是按分号切分。
+修完重跑 cargo check / cargo test / cargo fmt -- --check / npm run build，输出原文追加到 tasks/REPORT-01.md「修正轮 R2」，逐条列处理结果。不要 commit。不要发任何模型请求。

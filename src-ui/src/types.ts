@@ -80,6 +80,7 @@ export type ResourceStore = {
 
 export type ResourceAgent = {
   id: string;
+  name: string;
   kind: string;
   detected: boolean;
   version: string;
@@ -98,6 +99,7 @@ export type ResourceModel = {
   source: string;
   smoked_at: string;
   smoke_model: string;
+  smoke_failure: string;
   meta: string;
   note: string;
 };

@@ -41,6 +41,7 @@ pub fn run_process(
     let mut child = command
         .spawn()
         .map_err(|error| format!("启动 {} 失败：{error}", program.display()))?;
+    let deadline = Instant::now() + timeout;
     let stdout = child
         .stdout
         .take()
@@ -51,18 +52,15 @@ pub fn run_process(
         .ok_or_else(|| "读取子进程 stderr 失败".to_string())?;
     let stdout_reader = bounded_reader(stdout);
     let stderr_reader = bounded_reader(stderr);
-    let mut stdin_error = None;
-    if let Some(input) = input {
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(error) = stdin.write_all(input.as_bytes()) {
-                if error.kind() != ErrorKind::BrokenPipe {
-                    stdin_error = Some(error);
-                }
-            }
-        }
-    }
-
-    let deadline = Instant::now() + timeout;
+    let stdin_writer = input.and_then(|input| {
+        child.stdin.take().map(|mut stdin| {
+            let input = input.as_bytes().to_vec();
+            thread::spawn(move || match stdin.write_all(&input) {
+                Err(error) if error.kind() != ErrorKind::BrokenPipe => Some(error),
+                _ => None,
+            })
+        })
+    });
     let mut timed_out = false;
     let code = loop {
         match child.try_wait() {
@@ -81,6 +79,7 @@ pub fn run_process(
     };
     let stdout = finish_bounded_reader(stdout_reader);
     let stderr = finish_bounded_reader(stderr_reader);
+    let stdin_error = stdin_writer.and_then(|writer| writer.join().ok().flatten());
     if let Some(error) = stdin_error {
         return Err(format!("写入子进程 stdin 失败：{error}"));
     }
@@ -212,6 +211,27 @@ mod tests {
             .expect("broken pipe is not fatal");
         assert_eq!(result.code, Some(7));
         assert!(result.stderr.contains("real stderr"));
+    }
+
+    #[test]
+    fn run_process_times_out_while_stdin_write_is_blocked() {
+        let (program, mut args) = shell();
+        #[cfg(windows)]
+        args.push("Start-Sleep -Seconds 5".to_string());
+        #[cfg(not(windows))]
+        args.push("sleep 5".to_string());
+        let input = "x".repeat(8 * 1024 * 1024);
+        let started = Instant::now();
+        let result = run_process(
+            &program,
+            &args,
+            Some(&input),
+            Duration::from_millis(100),
+            None,
+        )
+        .expect("timeout result");
+        assert!(result.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 
     #[test]
