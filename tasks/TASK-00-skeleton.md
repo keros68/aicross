@@ -53,5 +53,5 @@
 3. 没做到的项如实写"未做"或"未验证"。
 
 ## 参考
-- 形态：`D:\work\agentteam\console-proto\index.html`（原型，三栏与 tab 的排法以本任务书为准，原型里的编排/结果屏本期不做）。
+- 形态：`docs/proto/index.html`（原型，三栏与 tab 的排法以本任务书为准，原型里的编排/结果屏本期不做）。
 - 结构参考：`D:\work\coffeecli`（可读，按 AGENTS.md 规则不得复制）。发现它的 bug 记到 `docs/coffeecli-notes.md`。

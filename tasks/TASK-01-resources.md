@@ -1,6 +1,6 @@
 # TASK-01 资源：agent → 模型两级、自动探测、手动输入、冒烟、resources.json
 
-先读 `AGENTS.md`、`tasks/TASK-00-skeleton.md`、`tasks/REPORT-00.md`（含三轮修正）。本期把左栏「资源」tab 从占位做成真的。产品说明见 `D:\work\agentteam\PRODUCT-console.md`「形态」节的资源区与探测事实源表。
+先读 `AGENTS.md`、`tasks/TASK-00-skeleton.md`、`tasks/REPORT-00.md`（含三轮修正）。本期把左栏「资源」tab 从占位做成真的。产品说明见 `docs/PRODUCT.md`「形态」节的资源区与探测事实源表。
 
 ## 概念
 
@@ -63,4 +63,4 @@
 
 ## 参考
 - `D:\work\agentteam\dist\ai-cross\references\channels.md`（各通道命令模板与坑：codex 选项顺序、kimi 无 stdin、pi exit 1 假阴性与 thinking 块）、`setup.md`（盘点流程、聚合型订阅一条）、`usage_probe.py`（各 CLI 本地目录）。
-- `D:\work\agentteam\console-proto/resources-research.md`（pi / coffeecli / 竞品的资源结构）。
+- `docs/proto/resources-research.md`（pi / coffeecli / 竞品的资源结构）。
