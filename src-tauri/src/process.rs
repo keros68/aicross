@@ -187,15 +187,15 @@ mod tests {
         let (program, mut args) = shell();
         #[cfg(windows)]
         args.push(format!(
-            "Start-Sleep -Milliseconds 800; Set-Content -LiteralPath '{}' -Value done",
+            "Start-Sleep -Milliseconds 2500; Set-Content -LiteralPath '{}' -Value done",
             marker.display()
         ));
         #[cfg(not(windows))]
-        args.push(format!("sleep 1; printf done > '{}'", marker.display()));
+        args.push(format!("sleep 3; printf done > '{}'", marker.display()));
         let result = run_process(&program, &args, None, Duration::from_millis(100), None)
             .expect("timeout result");
         assert!(result.timed_out);
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(3000));
         assert!(!marker.exists(), "timed-out process left a running child");
     }
 

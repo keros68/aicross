@@ -1707,15 +1707,15 @@ mod tests {
             pi_auth_status(&result(include_str!(
                 "../fixtures/pi_auth_check_not_ready.json"
             ))),
-            Some("missing".to_string())
+            Some("not_ready".to_string())
         );
         assert_eq!(pi_auth_status(&result(r#"{"ready":true}"#)), None);
 
         let mut model = fixture_model("glm-4.7");
         model.provider = "p".to_string();
-        mark_pi_auth_not_ready(std::slice::from_mut(&mut model), "p", Some("missing"));
+        mark_pi_auth_not_ready(std::slice::from_mut(&mut model), "p", Some("not_ready"));
         assert!(model.meta.contains("鉴权未就绪"));
-        assert!(model.meta.contains("鉴权状态：missing"));
+        assert!(model.meta.contains("鉴权状态：not_ready"));
     }
 
     #[test]

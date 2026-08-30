@@ -1,0 +1,1 @@
+定向复核。读 tasks/review-01-glm-r2.md 第三、四节列的缺项，再读 tasks/REPORT-01.md「修正轮 R2」一节和现在的代码（src-tauri/src/resources.rs、process.rs、lib.rs、models.rs、src-tauri/fixtures/pi_auth_check_*.json，src-ui/src/components/Resources.tsx）。逐条：已核实修复 / 未修 / 修出新问题，各一句依据带文件:行号。特别核对：就绪判定是否只认顶层 status=="ready"、fixture 与测试是否对应。再看本轮新引入的问题。最后一句话：代码层面是否可验收。不客套。
