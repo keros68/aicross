@@ -110,5 +110,5 @@ export function TerminalView({
 function terminalTheme(dark: boolean) {
   return dark
     ? { background: "#14161c", foreground: "#e8e9ed", cursor: "#86a6e6" }
-    : { background: "#171a21", foreground: "#eef0f3", cursor: "#9fb9ee" };
+    : { background: "#f5f6f8", foreground: "#171a21", cursor: "#2c4a8c" };
 }

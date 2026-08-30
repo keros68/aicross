@@ -1,0 +1,7 @@
+修正轮 R2。读 tasks/review-00-glm-r2.md 第 3 节「修正轮引入的回归 / 新 bug」，共 5 条，全部处理：
+1. 配置损坏导致启动 panic：settings.json / recent.json 解析失败回退默认值并在 UI 顶部显示一条警告（含文件路径）；tools.json 解析失败降级为内置注册表 + 同样的 UI 警告；`write_json` 改为写临时文件再 rename（原子写）。加测试：损坏的 settings.json 不阻止 load。
+2. `close_terminal` 改 async，进程树清理放 spawn_blocking。
+3. Changes.tsx：projectPath 变化时清空 changes/diff（与 Workspace 一致）。
+4. 关 tab：`api.closeTerminal` 失败时保留 tab 并显示错误；后端 open/close 用同一把锁做序检查，避免"close 落空后 open 才插入"的幽灵终端。
+5. 浅色终端配色补一套真正的浅色 theme（背景浅、前景深），`.terminal-host` 背景跟主题变量。
+修完重跑 cargo check / cargo test / cargo fmt -- --check / npm run build，输出原文追加到 tasks/REPORT-00.md 新一节「修正轮 R2」，逐条列处理结果。不要 commit。

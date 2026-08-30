@@ -3,7 +3,7 @@ use crate::tools::resolve_binary;
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,9 +19,24 @@ struct PtyRecord {
     closed: Arc<AtomicBool>,
 }
 
+struct PreparedPty {
+    master: Box<dyn MasterPty + Send>,
+    reader: Box<dyn Read + Send>,
+    writer: Box<dyn Write + Send>,
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    closed: Arc<AtomicBool>,
+}
+
 #[derive(Default)]
 pub struct PtyManager {
-    records: Arc<Mutex<HashMap<String, PtyRecord>>>,
+    state: Arc<Mutex<PtyState>>,
+}
+
+#[derive(Default)]
+struct PtyState {
+    records: HashMap<String, PtyRecord>,
+    opening: HashSet<String>,
+    cancelled: HashSet<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -47,63 +62,54 @@ impl PtyManager {
         project: &Path,
         settings: &Settings,
     ) -> Result<(), String> {
-        if self.lock_records().contains_key(&request.terminal_id) {
-            return Err("终端标识已存在".to_string());
-        }
-
-        let (binary, args) = launch_command(tool, settings)?;
-        let pty_system = native_pty_system();
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: request.rows.max(1),
-                cols: request.cols.max(1),
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|error| format!("创建终端失败：{error}"))?;
-
-        let mut command = CommandBuilder::new(binary);
-        command.args(args);
-        command.cwd(project);
-        for (key, value) in &request.env {
-            if !key.trim().is_empty() {
-                command.env(key, value);
+        {
+            let mut state = self.lock_state();
+            if state.cancelled.remove(&request.terminal_id) {
+                return Ok(());
+            }
+            if state.records.contains_key(&request.terminal_id)
+                || !state.opening.insert(request.terminal_id.clone())
+            {
+                return Err("终端标识已存在".to_string());
             }
         }
 
-        let mut child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|error| format!("启动失败：{error}"))?;
-        drop(pair.slave);
-
-        let mut reader = match pair.master.try_clone_reader() {
-            Ok(reader) => reader,
+        let prepared = match prepare_pty(&request, tool, project, settings) {
+            Ok(prepared) => prepared,
             Err(error) => {
-                terminate_child(&mut *child);
-                return Err(format!("读取终端输出失败：{error}"));
-            }
-        };
-        let writer = match pair.master.take_writer() {
-            Ok(writer) => writer,
-            Err(error) => {
-                terminate_child(&mut *child);
-                return Err(format!("连接终端输入失败：{error}"));
+                let mut state = self.lock_state();
+                state.opening.remove(&request.terminal_id);
+                state.cancelled.remove(&request.terminal_id);
+                return Err(error);
             }
         };
         let terminal_id = request.terminal_id.clone();
-        let child = Arc::new(Mutex::new(child));
-        let closed = Arc::new(AtomicBool::new(false));
-
-        self.lock_records().insert(
-            request.terminal_id.clone(),
-            PtyRecord {
-                master: pair.master,
-                writer,
-                child: Arc::clone(&child),
-                closed: Arc::clone(&closed),
-            },
-        );
+        let PreparedPty {
+            master,
+            mut reader,
+            writer,
+            child,
+            closed,
+        } = prepared;
+        {
+            let mut state = self.lock_state();
+            state.opening.remove(&terminal_id);
+            if state.cancelled.remove(&terminal_id) {
+                drop(state);
+                closed.store(true, Ordering::Release);
+                terminate_child(&mut **lock_unpoisoned(&child));
+                return Ok(());
+            }
+            state.records.insert(
+                terminal_id.clone(),
+                PtyRecord {
+                    master,
+                    writer,
+                    child: Arc::clone(&child),
+                    closed: Arc::clone(&closed),
+                },
+            );
+        }
 
         let reader_app = app.clone();
         let reader_id = terminal_id.clone();
@@ -127,7 +133,7 @@ impl PtyManager {
             }
         });
 
-        let monitor_records = Arc::clone(&self.records);
+        let monitor_state = Arc::clone(&self.state);
         thread::spawn(move || loop {
             thread::sleep(Duration::from_millis(150));
             if closed.load(Ordering::Acquire) {
@@ -143,7 +149,7 @@ impl PtyManager {
                 if closed.swap(true, Ordering::AcqRel) {
                     return;
                 }
-                lock_unpoisoned(&monitor_records).remove(&terminal_id);
+                lock_unpoisoned(&monitor_state).records.remove(&terminal_id);
                 let _ = app.emit(
                     "pty-exit",
                     ExitEvent {
@@ -159,8 +165,9 @@ impl PtyManager {
     }
 
     pub fn write(&self, terminal_id: &str, data: &str) -> Result<(), String> {
-        let mut records = self.lock_records();
-        let record = records
+        let mut state = self.lock_state();
+        let record = state
+            .records
             .get_mut(terminal_id)
             .ok_or_else(|| "终端已退出".to_string())?;
         record
@@ -171,8 +178,9 @@ impl PtyManager {
     }
 
     pub fn resize(&self, terminal_id: &str, rows: u16, cols: u16) -> Result<(), String> {
-        let records = self.lock_records();
-        let record = records
+        let state = self.lock_state();
+        let record = state
+            .records
             .get(terminal_id)
             .ok_or_else(|| "终端已退出".to_string())?;
         record
@@ -187,7 +195,14 @@ impl PtyManager {
     }
 
     pub fn close(&self, app: &AppHandle, terminal_id: &str) -> Result<(), String> {
-        let record = self.lock_records().remove(terminal_id);
+        let record = {
+            let mut state = self.lock_state();
+            let record = state.records.remove(terminal_id);
+            if record.is_none() {
+                state.cancelled.insert(terminal_id.to_string());
+            }
+            record
+        };
         if let Some(record) = record {
             record.closed.store(true, Ordering::Release);
             terminate_child(&mut **lock_unpoisoned(&record.child));
@@ -202,15 +217,71 @@ impl PtyManager {
         Ok(())
     }
 
-    fn lock_records(&self) -> std::sync::MutexGuard<'_, HashMap<String, PtyRecord>> {
-        lock_unpoisoned(&self.records)
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, PtyState> {
+        lock_unpoisoned(&self.state)
     }
+}
+
+fn prepare_pty(
+    request: &TerminalRequest,
+    tool: &ToolDefinition,
+    project: &Path,
+    settings: &Settings,
+) -> Result<PreparedPty, String> {
+    let (binary, args) = launch_command(tool, settings)?;
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: request.rows.max(1),
+            cols: request.cols.max(1),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| format!("创建终端失败：{error}"))?;
+
+    let mut command = CommandBuilder::new(binary);
+    command.args(args);
+    command.cwd(project);
+    for (key, value) in &request.env {
+        if !key.trim().is_empty() {
+            command.env(key, value);
+        }
+    }
+
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| format!("启动失败：{error}"))?;
+    drop(pair.slave);
+
+    let reader = match pair.master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(error) => {
+            terminate_child(&mut *child);
+            return Err(format!("读取终端输出失败：{error}"));
+        }
+    };
+    let writer = match pair.master.take_writer() {
+        Ok(writer) => writer,
+        Err(error) => {
+            terminate_child(&mut *child);
+            return Err(format!("连接终端输入失败：{error}"));
+        }
+    };
+
+    Ok(PreparedPty {
+        master: pair.master,
+        reader,
+        writer,
+        child: Arc::new(Mutex::new(child)),
+        closed: Arc::new(AtomicBool::new(false)),
+    })
 }
 
 impl Drop for PtyManager {
     fn drop(&mut self) {
-        let mut records = lock_unpoisoned(&self.records);
-        for (_, record) in records.drain() {
+        let mut state = lock_unpoisoned(&self.state);
+        for (_, record) in state.records.drain() {
             record.closed.store(true, Ordering::Release);
             terminate_child(&mut **lock_unpoisoned(&record.child));
         }

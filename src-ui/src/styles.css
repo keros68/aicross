@@ -20,6 +20,7 @@
   --warning-soft: #fbf0dd;
   --danger: #b63e36;
   --danger-soft: #fbeae8;
+  --terminal-bg: #f5f6f8;
   --shadow: 0 18px 48px -18px rgba(23, 26, 33, 0.35);
 }
 
@@ -43,6 +44,7 @@
     --warning-soft: #332811;
     --danger: #e2766d;
     --danger-soft: #35201e;
+    --terminal-bg: #14161c;
     --shadow: 0 18px 48px -18px rgba(0, 0, 0, 0.72);
   }
 }
@@ -108,6 +110,16 @@ select, input {
   font-size: 12px;
 }
 .global-error button { color: inherit; background: none; border: 0; cursor: pointer; }
+.global-warning {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 8px 14px;
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-bottom: 1px solid var(--warning);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 
 .shell {
   --left-width: 280px;
@@ -159,7 +171,7 @@ select, input {
 .status-dot.running { background: var(--success); }
 .status-dot.exited { background: var(--text-3); }
 .center-content { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
-.terminal-host { width: 100%; height: 100%; padding: 8px 6px; background: #171a21; }
+.terminal-host { width: 100%; height: 100%; padding: 8px 6px; background: var(--terminal-bg); }
 .terminal-host[hidden] { display: none; }
 .terminal-host .xterm { height: 100%; }
 .terminal-host .xterm-viewport { scrollbar-width: thin; }

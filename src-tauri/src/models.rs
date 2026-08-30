@@ -71,6 +71,7 @@ pub struct InitialState {
     pub project_path: String,
     pub recent_projects: Vec<String>,
     pub settings: Settings,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

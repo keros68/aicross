@@ -27,6 +27,7 @@ export type InitialState = {
   projectPath: string;
   recentProjects: string[];
   settings: Settings;
+  warnings: string[];
 };
 
 export type FileNode = {

@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn embedded_registry_detects_all_five_tools() {
-        let definitions = crate::config::load_tools().expect("load tools");
+        let definitions = crate::config::load_tools().expect("load tools").value;
         let expected = ["claude", "codex", "kimi", "pi", "powershell"];
         assert_eq!(
             definitions

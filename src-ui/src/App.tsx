@@ -147,7 +147,14 @@ export default function App() {
   const handleTerminalError = useCallback((message: string) => setError(message), []);
 
   const closeTerminal = async (tab: TerminalTab) => {
-    if (tab.running) await api.closeTerminal(tab.id).catch((value) => setError(String(value)));
+    if (tab.running) {
+      try {
+        await api.closeTerminal(tab.id);
+      } catch (value) {
+        setError(String(value));
+        return;
+      }
+    }
     setTerminalTabs((tabs) => tabs.filter((item) => item.id !== tab.id));
     if (centerTab === tab.id) setCenterTab("launchpad");
   };
@@ -180,6 +187,7 @@ export default function App() {
         <button className="button small" onClick={() => setSettingsOpen(true)}>设置</button>
       </header>
 
+      {initial.warnings.map((warning) => <div className="global-warning" key={warning}>{warning}</div>)}
       {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>关闭</button></div>}
 
       <main className={shellClasses}>

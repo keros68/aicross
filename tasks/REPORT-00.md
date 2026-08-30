@@ -349,3 +349,131 @@ dist/assets/index-B033gBCI.js   502.72 kB │ gzip: 139.80 kB
 ### 提交状态
 
 按本轮要求未 commit、未 push。
+
+## 修正轮 R2
+
+### 处理结果
+
+1. 配置损坏：`settings.json` 与 `recent.json` 读取或解析失败时分别回退默认设置和空的最近项目；`tools.json` 失败时回退内置工具注册表。警告通过初始状态传到 UI 顶部，内容包含对应文件路径。`write_json` 改为在同目录写唯一临时文件、同步内容后 `rename` 替换目标，失败时清理临时文件。新增 `damaged_settings_do_not_prevent_loading` 测试；无效 `tools.json` 测试改为验证内置注册表回退和警告。
+2. 终端关闭阻塞：`close_terminal` 改为 async 命令，进程树清理整体由 `spawn_blocking` 执行。
+3. 修改记录残留：`Changes` 在 `projectPath` 变化时清空 `changes`、`diff`、忙碌状态和错误；异步刷新、重置与 diff 使用项目版本检查，旧项目请求完成后不会回写新项目界面。
+4. 关闭 tab 与幽灵终端：前端仅在 `api.closeTerminal` 成功后移除 tab，失败时保留 tab 并显示错误。后端用同一把状态锁管理 `opening / records / cancelled`；实际 PTY 启动和进程清理在锁外执行。关闭先到、启动中关闭和启动完成后关闭均按序处理，取消后的新进程会立即清理，不插入终端记录。
+5. 浅色终端：浅色 xterm 使用 `#f5f6f8` 背景、`#171a21` 前景和 `#2c4a8c` 光标；深色配置保持不变。`.terminal-host` 背景改为跟随 `--terminal-bg` 主题变量。
+
+### Rust 检查
+
+命令：
+
+```text
+cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+结果原文：
+
+```text
+    Checking aicross v0.0.0 (D:\work\aicross\src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.93s
+```
+
+### Rust 测试
+
+命令：
+
+```text
+cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture
+```
+
+结果原文：
+
+```text
+   Compiling aicross v0.0.0 (D:\work\aicross\src-tauri)
+warning: linker stdout: 正在创建库 D:\work\aicross\src-tauri\target\debug\deps\aicross_lib.dll.lib 和对象 D:\work\aicross\src-tauri\target\debug\deps\aicross_lib.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `aicross` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.76s
+     Running unittests src\lib.rs (src-tauri\target\debug\deps\aicross_lib-e6e129a316898a1b.exe)
+
+running 12 tests
+test tests::executable_extensions_require_confirmation_case_insensitively ... ok
+test workspace::tests::compare_and_diff_cover_added_deleted_mtime_binary_and_hunk_counts ... ok
+test config::tests::damaged_settings_do_not_prevent_loading ... ok
+test sessions::tests::sessions_sort_by_instant_deduplicate_and_skip_garbage ... ok
+test config::tests::tools_overrides_merge_existing_and_new_entries_and_report_invalid_json ... ok
+test sessions::tests::pi_parser_keeps_only_requested_metadata ... ok
+test workspace::tests::snapshot_reports_modified_text_and_diff ... ok
+test workspace::tests::safe_path_rejects_traversal_absolute_paths_and_external_symlinks ... ok
+test pty::tests::portable_pty_runs_a_child_and_reads_output ... ok
+test workspace::tests::large_utf8_text_is_not_reported_as_binary ... ok
+test pty::tests::powershell_launch_uses_registered_default_args ... ok
+claude: detected=true, version=2.1.251 (Claude Code)
+codex: detected=true, version=codex-cli 0.149.1
+kimi: detected=true, version=0.39.1
+pi: detected=true, version=0.84.2
+powershell: detected=true, version=PowerShell 7.6.5
+test tools::tests::embedded_registry_detects_all_five_tools ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.45s
+
+     Running unittests src\main.rs (src-tauri\target\debug\deps\aicross-a58949d6294ae227.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests aicross_lib
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+### 格式检查
+
+命令：
+
+```text
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+```
+
+结果原文：退出码 0，无输出。
+
+### 前端构建
+
+命令：
+
+```text
+cd src-ui
+npm run build
+```
+
+结果原文：
+
+```text
+> aicross-ui@0.0.0 build
+> tsc && vite build
+
+(node:13968) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 46 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.45 kB │ gzip:   0.28 kB
+dist/assets/index-D3VFecDb.css   14.90 kB │ gzip:   3.78 kB
+dist/assets/index-DDekUYT_.js   503.15 kB │ gzip: 139.91 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.51s
+```
+
+构建成功；503.15 kB 的 chunk 体积警告仍在，不影响本轮功能。
+
+### 提交状态
+
+按本轮要求未 commit、未 push。

@@ -22,6 +22,7 @@ struct AppState {
     recent: RwLock<Vec<String>>,
     settings: RwLock<Settings>,
     tool_definitions: RwLock<Vec<ToolDefinition>>,
+    warnings: Vec<String>,
     snapshots: Arc<Mutex<SnapshotStore>>,
     pty: Arc<PtyManager>,
 }
@@ -207,12 +208,13 @@ fn resize_terminal(
 }
 
 #[tauri::command]
-fn close_terminal(
+async fn close_terminal(
     terminal_id: String,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.pty.close(&app, &terminal_id)
+    let pty = Arc::clone(&state.pty);
+    run_blocking("关闭终端", move || pty.close(&app, &terminal_id)).await
 }
 
 fn initial_state(state: &State<'_, AppState>) -> Result<InitialState, String> {
@@ -222,6 +224,7 @@ fn initial_state(state: &State<'_, AppState>) -> Result<InitialState, String> {
             .to_string(),
         recent_projects: read_lock(&state.recent, "读取最近项目")?.clone(),
         settings: read_lock(&state.settings, "读取设置")?.clone(),
+        warnings: state.warnings.clone(),
     })
 }
 
@@ -281,13 +284,20 @@ pub fn run() {
             snapshots
                 .initialize(&project)
                 .map_err(|error| std::io::Error::other(format!("创建目录快照失败：{error}")))?;
+            let recent = config::load_recent().map_err(std::io::Error::other)?;
+            let settings = config::load_settings().map_err(std::io::Error::other)?;
+            let tools = config::load_tools()
+                .map_err(|error| std::io::Error::other(format!("读取工具注册表失败：{error}")))?;
+            let warnings = [recent.warning, settings.warning, tools.warning]
+                .into_iter()
+                .flatten()
+                .collect();
             app.manage(AppState {
                 project: RwLock::new(project),
-                recent: RwLock::new(config::load_recent().map_err(std::io::Error::other)?),
-                settings: RwLock::new(config::load_settings().map_err(std::io::Error::other)?),
-                tool_definitions: RwLock::new(config::load_tools().map_err(|error| {
-                    std::io::Error::other(format!("读取工具注册表失败：{error}"))
-                })?),
+                recent: RwLock::new(recent.value),
+                settings: RwLock::new(settings.value),
+                tool_definitions: RwLock::new(tools.value),
+                warnings,
                 snapshots: Arc::new(Mutex::new(snapshots)),
                 pty: Arc::new(PtyManager::default()),
             });
