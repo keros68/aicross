@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "aicross",
+  "version": "0.0.0",
+  "identifier": "com.aicross.desktop",
+  "build": {
+    "beforeDevCommand": "npm --prefix src-ui run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm --prefix src-ui run build",
+    "frontendDist": "../src-ui/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": []
+  }
+}

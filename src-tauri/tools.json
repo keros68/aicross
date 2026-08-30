@@ -1,0 +1,38 @@
+[
+  {
+    "id": "claude",
+    "name": "Claude Code",
+    "binary": "claude",
+    "defaultArgs": [],
+    "description": "启动 Claude Code 交互终端"
+  },
+  {
+    "id": "codex",
+    "name": "Codex",
+    "binary": "codex",
+    "defaultArgs": [],
+    "description": "启动 Codex 交互终端"
+  },
+  {
+    "id": "kimi",
+    "name": "Kimi Code CLI",
+    "binary": "kimi",
+    "defaultArgs": [],
+    "description": "启动 Kimi Code CLI 交互终端"
+  },
+  {
+    "id": "pi",
+    "name": "pi",
+    "binary": "pi",
+    "defaultArgs": [],
+    "description": "启动 pi 交互终端"
+  },
+  {
+    "id": "powershell",
+    "name": "PowerShell",
+    "binary": "pwsh.exe",
+    "defaultArgs": ["-NoLogo"],
+    "description": "启动普通终端"
+  }
+]
+

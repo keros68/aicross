@@ -1,0 +1,12 @@
+node_modules/
+target/
+dist/
+.npm-cache/
+.vite/
+.aicross-webview/
+src-tauri/icons/icon.png
+src-tauri/gen/
+*.log
+!tasks/*.md
+tasks/log-*
+tasks/review-*.raw

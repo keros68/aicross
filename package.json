@@ -1,0 +1,8 @@
+{
+  "name": "aicross",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "tauri": "node src-ui/node_modules/@tauri-apps/cli/tauri.js"
+  }
+}
