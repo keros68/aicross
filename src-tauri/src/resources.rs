@@ -1,20 +1,19 @@
 use crate::models::{
-    AddManualAgentRequest, AddResourceModelRequest, CcSwitchProvider, ConnectionOverview,
-    ResourceAgent, ResourceModel, ResourceModelKey, ResourceOperation, ResourceStore, Settings,
-    SmokeSelectionRequest, ToolDefinition, UpdateResourceModelRequest,
+    AddManualAgentRequest, CcSwitchProvider, ConnectionOverview, ResourceAgent, ResourceModel,
+    ResourceModelKey, ResourceModelRequest, ResourceOperation, ResourceStore, Settings,
+    SmokeSelectionRequest, ToolDefinition,
 };
+use crate::process::{run_process, ProcessResult};
 use crate::tools;
 use chrono::{Local, SecondsFormat};
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::time::Duration;
 use uuid::Uuid;
 
 const STATUS_PENDING: &str = "待冒烟";
@@ -22,18 +21,10 @@ const STATUS_CONNECTED: &str = "已接入";
 const STATUS_FAILED: &str = "冒烟失败";
 const MISSING_MARKER: &str = "未在事实源中";
 const SMOKE_PROMPT: &str = "只回复 OK";
-const MAX_PROCESS_OUTPUT: u64 = 1024 * 1024;
-
-#[derive(Debug)]
-struct ProcessResult {
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
-    timed_out: bool,
-}
-
 #[derive(Debug, Deserialize)]
 struct CodexCache {
+    #[serde(default)]
+    fetched_at: Option<String>,
     #[serde(default)]
     models: Vec<CodexModel>,
 }
@@ -137,7 +128,7 @@ pub fn detect_one(
     Ok(ResourceOperation {
         store,
         errors,
-        cc_switch_providers: providers,
+        cc_switch_providers: Some(providers),
     })
 }
 
@@ -176,7 +167,7 @@ pub fn detect_many(
     ResourceOperation {
         store,
         errors,
-        cc_switch_providers: providers,
+        cc_switch_providers: Some(providers),
     }
 }
 
@@ -216,17 +207,31 @@ fn detect_into(
             "探测 {agent_id} 失败：未检测到 {}",
             definition.binary
         ));
+        if agent_id == "claude" {
+            return;
+        }
+    }
+
+    if agent_id == "pi" {
+        let result = status
+            .executable_path
+            .as_deref()
+            .ok_or_else(|| "未检测到 pi".to_string())
+            .and_then(|binary| detect_pi(Path::new(binary)));
+        match result {
+            Ok((models, provider_errors)) => {
+                merge_detected_models(store, agent_id, models);
+                errors.extend(provider_errors);
+            }
+            Err(error) => errors.push(format!("探测 {agent_id} 失败：{error}")),
+        }
+        return;
     }
 
     let models = match agent_id {
         "claude" => Ok(claude_presets()),
         "codex" => detect_codex(),
         "kimi" => detect_kimi(),
-        "pi" => status
-            .executable_path
-            .as_deref()
-            .ok_or_else(|| "未检测到 pi".to_string())
-            .and_then(|binary| detect_pi(Path::new(binary))),
         _ => Ok(Vec::new()),
     };
     match models {
@@ -263,7 +268,11 @@ fn detect_codex() -> Result<Vec<ResourceModel>, String> {
 fn parse_codex_cache(contents: &str, source: &str) -> Result<Vec<ResourceModel>, String> {
     let cache: CodexCache =
         serde_json::from_str(contents).map_err(|error| format!("解析模型缓存失败：{error}"))?;
-    Ok(cache
+    if cache.models.is_empty() {
+        return Err("模型缓存清单为空".to_string());
+    }
+    let fetched_at = cache.fetched_at.unwrap_or_default();
+    let models = cache
         .models
         .into_iter()
         .filter(|model| !model.slug.trim().is_empty())
@@ -279,6 +288,9 @@ fn parse_codex_cache(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
                 })
                 .collect::<Vec<_>>();
             let mut note = Vec::new();
+            if !fetched_at.trim().is_empty() {
+                note.push(format!("缓存抓取时间：{fetched_at}"));
+            }
             if let Some(priority) = model.priority {
                 note.push(format!("priority：{priority}"));
             }
@@ -303,7 +315,12 @@ fn parse_codex_cache(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
                 &note.join("；"),
             )
         })
-        .collect())
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        Err("模型缓存没有有效模型".to_string())
+    } else {
+        Ok(models)
+    }
 }
 
 fn detect_kimi() -> Result<Vec<ResourceModel>, String> {
@@ -314,128 +331,86 @@ fn detect_kimi() -> Result<Vec<ResourceModel>, String> {
 }
 
 fn parse_kimi_config(contents: &str, source: &str) -> Result<Vec<ResourceModel>, String> {
-    #[derive(Default)]
-    struct Section {
-        alias: String,
-        real_model: String,
-        thinking: bool,
-        context_size: Option<u64>,
-        efforts: Vec<String>,
-        default_effort: String,
-    }
-
-    fn finish(section: Option<Section>, source: &str, output: &mut Vec<ResourceModel>) {
-        let Some(section) = section else { return };
-        if section.alias.is_empty() {
-            return;
-        }
+    let root: toml::Value =
+        toml::from_str(contents).map_err(|error| format!("解析 Kimi TOML 失败：{error}"))?;
+    let sections = root
+        .get("models")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| "未找到 [models.\"…\"] 段".to_string())?;
+    let mut output = Vec::new();
+    for (alias, value) in sections {
+        let Some(section) = value.as_table() else {
+            continue;
+        };
+        let real_model = section
+            .get("model")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default();
+        let context_size = section
+            .get("max_context_size")
+            .and_then(toml::Value::as_integer)
+            .and_then(|value| u64::try_from(value).ok());
+        let capabilities = section
+            .get("capabilities")
+            .and_then(toml::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let efforts = section
+            .get("support_efforts")
+            .and_then(toml::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let default_effort = section
+            .get("default_effort")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default();
         let mut note = Vec::new();
-        if !section.real_model.is_empty() && section.real_model != section.alias {
-            note.push(format!("真实模型 ID：{}", section.real_model));
+        if !real_model.is_empty() && real_model != alias {
+            note.push(format!("真实模型 ID：{real_model}"));
         }
-        if let Some(context_size) = section.context_size {
+        if let Some(context_size) = context_size {
             note.push(format!("上下文：{context_size}"));
         }
-        if !section.efforts.is_empty() {
-            let default = if section.default_effort.is_empty() {
+        if !efforts.is_empty() {
+            let default = if default_effort.is_empty() {
                 String::new()
             } else {
-                format!("，默认 {}", section.default_effort)
+                format!("，默认 {default_effort}")
             };
-            note.push(format!("effort：{}{default}", section.efforts.join("/")));
+            note.push(format!("effort：{}{default}", efforts.join("/")));
         }
         output.push(detected_model(
-            &section.alias,
+            alias,
             "kimi",
             "",
             "Moonshot",
             "Kimi Code",
-            if section.thinking { "支持" } else { "未知" },
+            if capabilities.contains(&"thinking") {
+                "支持"
+            } else {
+                "未知"
+            },
             source,
             &note.join("；"),
         ));
     }
-
-    let mut output = Vec::new();
-    let mut current: Option<Section> = None;
-    for raw in contents.lines() {
-        let line = raw.trim();
-        if line.starts_with('[') {
-            finish(current.take(), source, &mut output);
-            if let Some(alias) = line
-                .strip_prefix("[models.\"")
-                .and_then(|value| value.strip_suffix("\"]"))
-            {
-                current = Some(Section {
-                    alias: alias.to_string(),
-                    ..Section::default()
-                });
-            }
-            continue;
-        }
-        let Some(section) = current.as_mut() else {
-            continue;
-        };
-        if let Some(value) = toml_string_value(line, "model") {
-            section.real_model = value;
-        } else if let Some(value) = toml_integer_value(line, "max_context_size") {
-            section.context_size = Some(value);
-        } else if let Some(value) = toml_string_array_value(line, "support_efforts") {
-            section.efforts = value;
-        } else if let Some(value) = toml_string_value(line, "default_effort") {
-            section.default_effort = value;
-        } else if line.starts_with("capabilities") && line.to_ascii_lowercase().contains("thinking")
-        {
-            section.thinking = true;
-        }
-    }
-    finish(current, source, &mut output);
     if output.is_empty() {
         return Err("未找到 [models.\"…\"] 段".to_string());
     }
     Ok(output)
 }
 
-fn toml_string_value(line: &str, key: &str) -> Option<String> {
-    let (left, right) = line.split_once('=')?;
-    if left.trim() != key {
-        return None;
-    }
-    let value = right.trim();
-    value
-        .strip_prefix('"')
-        .and_then(|value| value.strip_suffix('"'))
-        .map(str::to_string)
-}
-
-fn toml_integer_value(line: &str, key: &str) -> Option<u64> {
-    let (left, right) = line.split_once('=')?;
-    (left.trim() == key)
-        .then(|| right.trim().parse().ok())
-        .flatten()
-}
-
-fn toml_string_array_value(line: &str, key: &str) -> Option<Vec<String>> {
-    let (left, right) = line.split_once('=')?;
-    if left.trim() != key {
-        return None;
-    }
-    let inner = right.trim().strip_prefix('[')?.strip_suffix(']')?;
-    Some(
-        inner
-            .split(',')
-            .filter_map(|value| {
-                value
-                    .trim()
-                    .strip_prefix('"')
-                    .and_then(|value| value.strip_suffix('"'))
-                    .map(str::to_string)
-            })
-            .collect(),
-    )
-}
-
-fn detect_pi(binary: &Path) -> Result<Vec<ResourceModel>, String> {
+fn detect_pi(binary: &Path) -> Result<(Vec<ResourceModel>, Vec<String>), String> {
     let path = home_file(&[".pi", "agent", "models-store.json"])?;
     let contents = fs::read_to_string(&path)
         .map_err(|error| format!("读取 {} 失败：{error}", path.display()))?;
@@ -447,7 +422,10 @@ fn detect_pi(binary: &Path) -> Result<Vec<ResourceModel>, String> {
         None,
     )?;
     if listed.timed_out {
-        return Err("pi --list-models 超时".to_string());
+        return Err(format!(
+            "pi --list-models {}",
+            process_error_summary(&listed)
+        ));
     }
     let combined = if listed.stdout.trim().is_empty() {
         listed.stderr.as_str()
@@ -460,7 +438,7 @@ fn detect_pi(binary: &Path) -> Result<Vec<ResourceModel>, String> {
             process_error_summary(&listed)
         ));
     }
-    let models = parse_pi_sources(
+    let mut models = parse_pi_sources(
         &contents,
         combined,
         &source_read("~/.pi/agent/models-store.json + pi --list-models"),
@@ -469,6 +447,7 @@ fn detect_pi(binary: &Path) -> Result<Vec<ResourceModel>, String> {
         .iter()
         .map(|model| model.provider.clone())
         .collect::<HashSet<_>>();
+    let mut errors = Vec::new();
     for provider in providers {
         let auth = run_process(
             binary,
@@ -478,20 +457,24 @@ fn detect_pi(binary: &Path) -> Result<Vec<ResourceModel>, String> {
                 "--provider".to_string(),
                 provider.clone(),
                 "--json".to_string(),
-                "--no-refresh".to_string(),
             ],
             None,
             Duration::from_secs(20),
             None,
-        )?;
-        if !pi_auth_ready(&auth) {
-            return Err(format!(
-                "pi provider {provider} 未就绪：{}",
-                process_error_summary(&auth)
-            ));
+        );
+        let ready = auth.as_ref().is_ok_and(pi_auth_ready);
+        if !ready {
+            let detail = auth
+                .as_ref()
+                .map_or_else(|error| error.clone(), process_error_summary);
+            let message = format!("pi provider {provider} 未就绪：{detail}");
+            errors.push(message);
+            for model in models.iter_mut().filter(|model| model.provider == provider) {
+                model.meta = append_note_marker(&model.meta, "鉴权未就绪");
+            }
         }
     }
-    Ok(models)
+    Ok((models, errors))
 }
 
 fn parse_pi_sources(
@@ -511,9 +494,11 @@ fn parse_pi_sources(
             };
             let qualified = format!("{effective_provider}/{}", model.id);
             let available = listed.lines().any(|line| {
-                let line = line.trim();
-                line.contains(&qualified)
-                    || (line.contains(effective_provider) && line.contains(&model.id))
+                let tokens = line.split_whitespace().collect::<Vec<_>>();
+                tokens.iter().any(|token| *token == qualified)
+                    || tokens
+                        .windows(2)
+                        .any(|pair| pair[0] == effective_provider && pair[1] == model.id)
             });
             if !available {
                 continue;
@@ -551,7 +536,7 @@ fn claude_presets() -> Vec<ResourceModel> {
                 "官方订阅",
                 "未知",
                 "文档(2026-08-30)",
-                "",
+                "CLI 别名",
             )
         })
         .collect()
@@ -643,7 +628,7 @@ fn detected_model(
     billing_source: &str,
     thinking: &str,
     source: &str,
-    note: &str,
+    meta: &str,
 ) -> ResourceModel {
     ResourceModel {
         id: id.to_string(),
@@ -657,7 +642,8 @@ fn detected_model(
         source: source.to_string(),
         smoked_at: String::new(),
         smoke_model: String::new(),
-        note: note.to_string(),
+        meta: meta.to_string(),
+        note: String::new(),
     }
 }
 
@@ -697,7 +683,14 @@ fn merge_detected_models(
             if !existing.vendor.trim().is_empty() {
                 model.vendor.clone_from(&existing.vendor);
             }
-            model.note = remove_note_marker(&existing.note, MISSING_MARKER);
+            model.note.clone_from(&existing.note);
+            if let Some(failure) = existing
+                .meta
+                .split('；')
+                .find(|part| part.trim().starts_with("冒烟失败："))
+            {
+                model.meta = append_note_marker(&model.meta, failure.trim());
+            }
             *existing = model;
         } else {
             agent.models.push(model);
@@ -711,7 +704,7 @@ fn merge_detected_models(
             existing.id.clone(),
         );
         if !discovered_keys.contains(&key) && !existing.source.starts_with("申报(") {
-            existing.note = append_note_marker(&existing.note, MISSING_MARKER);
+            existing.meta = append_note_marker(&existing.meta, MISSING_MARKER);
         }
     }
     agent
@@ -730,16 +723,9 @@ fn append_note_marker(note: &str, marker: &str) -> String {
     }
 }
 
-fn remove_note_marker(note: &str, marker: &str) -> String {
-    note.split('；')
-        .filter(|part| part.trim() != marker)
-        .collect::<Vec<_>>()
-        .join("；")
-}
-
 pub fn add_model(
     mut store: ResourceStore,
-    request: AddResourceModelRequest,
+    request: ResourceModelRequest,
 ) -> Result<ResourceStore, String> {
     let id = request.id.trim();
     if id.is_empty() {
@@ -753,6 +739,9 @@ pub fn add_model(
         return Err(format!("手动输入失败：未知 agent：{}", request.agent_id));
     };
     let provider = request.provider.trim();
+    if request.agent_id == "pi" && provider.is_empty() {
+        return Err("手动输入失败：pi 模型必须填写 provider".to_string());
+    }
     if agent.models.iter().any(|model| {
         model.id == id && model.provider == provider && model.agent == request.agent_id
     }) {
@@ -778,6 +767,7 @@ pub fn add_model(
         source: format!("申报({})", Local::now().format("%Y-%m-%d")),
         smoked_at: String::new(),
         smoke_model: String::new(),
+        meta: String::new(),
         note: request.note.trim().to_string(),
     });
     Ok(store)
@@ -785,7 +775,7 @@ pub fn add_model(
 
 pub fn update_model(
     mut store: ResourceStore,
-    request: UpdateResourceModelRequest,
+    request: ResourceModelRequest,
 ) -> Result<ResourceStore, String> {
     let model = find_model_mut(
         &mut store,
@@ -841,29 +831,34 @@ pub fn smoke_one(
     definitions: &[ToolDefinition],
     settings: &Settings,
 ) -> Result<ResourceStore, String> {
-    let model = find_model(&store, &request.agent_id, &request.provider, &request.id)?.clone();
+    smoke_one_in_place(&mut store, request, definitions, settings)?;
+    Ok(store)
+}
+
+fn smoke_one_in_place(
+    store: &mut ResourceStore,
+    request: &ResourceModelKey,
+    definitions: &[ToolDefinition],
+    settings: &Settings,
+) -> Result<(), String> {
+    let model = find_model(store, &request.agent_id, &request.provider, &request.id)?.clone();
     let outcome = smoke_model(&model, definitions, settings);
-    let target = find_model_mut(
-        &mut store,
-        &request.agent_id,
-        &request.provider,
-        &request.id,
-    )?;
+    let target = find_model_mut(store, &request.agent_id, &request.provider, &request.id)?;
     match outcome {
         Ok(smoke_model) => {
             target.status = STATUS_CONNECTED.to_string();
             target.smoked_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
             target.smoke_model = smoke_model;
-            target.note = remove_smoke_failure(&target.note);
+            target.meta = remove_smoke_failure(&target.meta);
         }
         Err(error) => {
             target.status = STATUS_FAILED.to_string();
             target.smoked_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
             target.smoke_model.clear();
-            target.note = set_smoke_failure(&target.note, &safe_summary(&error));
+            target.meta = set_smoke_failure(&target.meta, &safe_summary(&error));
         }
     }
-    Ok(store)
+    Ok(())
 }
 
 pub fn smoke_selected(
@@ -872,10 +867,53 @@ pub fn smoke_selected(
     definitions: &[ToolDefinition],
     settings: &Settings,
 ) -> ResourceOperation {
-    let keys = store
+    let keys = selected_model_keys(&store, selection);
+    let mut errors = Vec::new();
+    if keys.is_empty()
+        && (!selection.agent_ids.is_empty() || !selection.cc_switch_providers.is_empty())
+    {
+        errors.push("所选资源没有可冒烟模型".to_string());
+    }
+    for key in keys {
+        match smoke_one_in_place(&mut store, &key, definitions, settings) {
+            Ok(()) => {
+                if let Ok(model) = find_model(&store, &key.agent_id, &key.provider, &key.id) {
+                    if model.status == STATUS_FAILED {
+                        errors.push(format!(
+                            "冒烟 {}/{} 失败：{}",
+                            key.agent_id, key.id, model.meta
+                        ));
+                    }
+                }
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+    let providers = match connection_overview(settings) {
+        Ok(overview) => Some(overview.cc_switch_providers),
+        Err(error) => {
+            errors.push(format!("刷新 cc-switch provider 失败：{error}"));
+            None
+        }
+    };
+    ResourceOperation {
+        store,
+        errors,
+        cc_switch_providers: providers,
+    }
+}
+
+fn selected_model_keys(
+    store: &ResourceStore,
+    selection: &SmokeSelectionRequest,
+) -> Vec<ResourceModelKey> {
+    store
         .agents
         .iter()
-        .filter(|agent| selection.agent_ids.iter().any(|id| id == &agent.id))
+        .filter(|agent| {
+            selection.agent_ids.iter().any(|id| id == &agent.id)
+                || (agent.id == "cc-switch" && !selection.cc_switch_providers.is_empty())
+        })
         .flat_map(|agent| {
             agent.models.iter().filter_map(|model| {
                 if model.agent == "cc-switch"
@@ -893,32 +931,7 @@ pub fn smoke_selected(
                 })
             })
         })
-        .collect::<Vec<_>>();
-    let mut errors = Vec::new();
-    for key in keys {
-        match smoke_one(store.clone(), &key, definitions, settings) {
-            Ok(updated) => {
-                store = updated;
-                if let Ok(model) = find_model(&store, &key.agent_id, &key.provider, &key.id) {
-                    if model.status == STATUS_FAILED {
-                        errors.push(format!(
-                            "冒烟 {}/{} 失败：{}",
-                            key.agent_id, key.id, model.note
-                        ));
-                    }
-                }
-            }
-            Err(error) => errors.push(error),
-        }
-    }
-    let providers = connection_overview(settings)
-        .map(|overview| overview.cc_switch_providers)
-        .unwrap_or_default();
-    ResourceOperation {
-        store,
-        errors,
-        cc_switch_providers: providers,
-    }
+        .collect()
 }
 
 fn smoke_model(
@@ -992,6 +1005,9 @@ fn smoke_model(
             parse_kimi_smoke(&result)
         }
         "pi" => {
+            if model.provider.trim().is_empty() {
+                return Err("pi 模型缺少 provider，无法冒烟".to_string());
+            }
             let result = run_process(
                 &binary,
                 &[
@@ -1360,7 +1376,7 @@ fn home_file(parts: &[&str]) -> Result<PathBuf, String> {
 
 fn process_completed(result: &ProcessResult) -> Result<(), String> {
     if result.timed_out {
-        Err("60 秒超时".to_string())
+        Err(timeout_summary(result))
     } else {
         Ok(())
     }
@@ -1380,127 +1396,9 @@ fn pi_auth_ready(result: &ProcessResult) -> bool {
     } else {
         json_lines(&result.stdout).collect::<Vec<_>>()
     };
-    values.iter().any(value_reports_ready)
-}
-
-fn value_reports_ready(value: &Value) -> bool {
-    match value {
-        Value::Object(map) => {
-            map.iter().any(|(key, value)| {
-                matches!(
-                    key.as_str(),
-                    "ready" | "ok" | "authenticated" | "available" | "configured" | "valid"
-                ) && value.as_bool() == Some(true)
-            }) || map
-                .get("status")
-                .and_then(Value::as_str)
-                .is_some_and(|status| {
-                    matches!(
-                        status.to_ascii_lowercase().as_str(),
-                        "ready" | "ok" | "authenticated"
-                    )
-                })
-                || map.values().any(value_reports_ready)
-        }
-        Value::Array(values) => values.iter().any(value_reports_ready),
-        _ => false,
-    }
-}
-
-fn run_process(
-    program: &Path,
-    args: &[String],
-    input: Option<&str>,
-    timeout: Duration,
-    cwd: Option<&Path>,
-) -> Result<ProcessResult, String> {
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .env("AI_CROSS_PEER", "1")
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("启动 {} 失败：{error}", program.display()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "读取子进程 stdout 失败".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "读取子进程 stderr 失败".to_string())?;
-    let stdout_reader = bounded_reader(stdout);
-    let stderr_reader = bounded_reader(stderr);
-    if let Some(input) = input {
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Err(error) = stdin.write_all(input.as_bytes()) {
-                terminate_process_tree(&mut child);
-                return Err(format!("写入子进程 stdin 失败：{error}"));
-            }
-        }
-    }
-
-    let deadline = Instant::now() + timeout;
-    let mut timed_out = false;
-    let code = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code(),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
-            Ok(None) => {
-                timed_out = true;
-                terminate_process_tree(&mut child);
-                break None;
-            }
-            Err(error) => {
-                terminate_process_tree(&mut child);
-                return Err(format!("等待子进程失败：{error}"));
-            }
-        }
-    };
-    let stdout = finish_bounded_reader(stdout_reader);
-    let stderr = finish_bounded_reader(stderr_reader);
-    Ok(ProcessResult {
-        code,
-        stdout: String::from_utf8_lossy(&stdout).to_string(),
-        stderr: String::from_utf8_lossy(&stderr).to_string(),
-        timed_out,
-    })
-}
-
-type Reader = (thread::JoinHandle<()>, mpsc::Receiver<Vec<u8>>);
-
-fn bounded_reader<R: Read + Send + 'static>(mut reader: R) -> Reader {
-    let (sender, receiver) = mpsc::channel();
-    let handle = thread::spawn(move || {
-        let mut output = Vec::new();
-        let _ = (&mut reader)
-            .take(MAX_PROCESS_OUTPUT)
-            .read_to_end(&mut output);
-        let _ = std::io::copy(&mut reader, &mut std::io::sink());
-        let _ = sender.send(output);
-    });
-    (handle, receiver)
-}
-
-fn finish_bounded_reader(reader: Reader) -> Vec<u8> {
-    let (handle, receiver) = reader;
-    match receiver.recv_timeout(Duration::from_secs(2)) {
-        Ok(output) => {
-            let _ = handle.join();
-            output
-        }
-        Err(_) => Vec::new(),
-    }
+    values
+        .iter()
+        .any(|value| value.get("ready").and_then(Value::as_bool) == Some(true))
 }
 
 fn output_reports_is_error(result: &ProcessResult) -> bool {
@@ -1520,24 +1418,9 @@ fn cc_verification_passed(text: &str) -> bool {
         .any(|line| line.trim().starts_with("结论：全部一致，无静默降级"))
 }
 
-fn terminate_process_tree(child: &mut std::process::Child) {
-    #[cfg(windows)]
-    {
-        let process_id = child.id().to_string();
-        let _ = Command::new("taskkill.exe")
-            .args(["/PID", &process_id, "/T", "/F"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 fn process_error_summary(result: &ProcessResult) -> String {
     if result.timed_out {
-        return "60 秒超时".to_string();
+        return timeout_summary(result);
     }
     let text = if result.stderr.trim().is_empty() {
         result.stdout.trim()
@@ -1554,8 +1437,40 @@ fn process_error_summary(result: &ProcessResult) -> String {
     }
 }
 
+fn timeout_summary(result: &ProcessResult) -> String {
+    if result.timeout.subsec_millis() == 0 {
+        format!("{} 秒超时", result.timeout.as_secs())
+    } else {
+        format!("{} 毫秒超时", result.timeout.as_millis())
+    }
+}
+
 fn safe_summary(text: &str) -> String {
     let mut value = text.replace(['\r', '\n'], " ");
+    static SK_TOKEN: OnceLock<Regex> = OnceLock::new();
+    static URL_CREDENTIALS: OnceLock<Regex> = OnceLock::new();
+    static QUERY_SECRET: OnceLock<Regex> = OnceLock::new();
+    static BEARER_TOKEN: OnceLock<Regex> = OnceLock::new();
+    value = SK_TOKEN
+        .get_or_init(|| Regex::new(r"sk-[A-Za-z0-9_-]{8,}").expect("valid token regex"))
+        .replace_all(&value, "[已隐藏]")
+        .into_owned();
+    value = URL_CREDENTIALS
+        .get_or_init(|| Regex::new(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@").expect("valid URL regex"))
+        .replace_all(&value, "${1}[已隐藏]@")
+        .into_owned();
+    value = QUERY_SECRET
+        .get_or_init(|| {
+            Regex::new(r"(?i)([?&](?:key|token)=)[^&#\s]+").expect("valid query secret regex")
+        })
+        .replace_all(&value, "${1}[已隐藏]")
+        .into_owned();
+    value = BEARER_TOKEN
+        .get_or_init(|| {
+            Regex::new(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+").expect("valid bearer regex")
+        })
+        .replace_all(&value, "Bearer [已隐藏]")
+        .into_owned();
     for (name, secret) in std::env::vars() {
         let upper = name.to_ascii_uppercase();
         if secret.len() >= 4
@@ -1608,14 +1523,18 @@ mod tests {
             .expect("codex fixture");
         assert_eq!(codex[0].id, "gpt-5.6-terra");
         assert_eq!(codex[0].thinking, "支持");
-        assert!(codex[0].note.contains("effort"));
+        assert!(codex[0].meta.contains("effort"));
+        assert!(codex[0].meta.contains("2026-08-30T00:00:00Z"));
 
         let kimi = parse_kimi_config(include_str!("../fixtures/kimi_config.toml"), "读:fixture")
             .expect("kimi fixture");
-        assert_eq!(kimi[0].id, "kimi-code/k3");
-        assert!(kimi[0].note.contains("k3"));
-        assert!(kimi[0].note.contains("1048576"));
-        assert!(kimi[0].note.contains("low/high/max"));
+        let kimi_k3 = kimi
+            .iter()
+            .find(|model| model.id == "kimi-code/k3")
+            .expect("k3 fixture model");
+        assert!(kimi_k3.meta.contains("k3"));
+        assert!(kimi_k3.meta.contains("1048576"));
+        assert!(kimi_k3.meta.contains("low/high/max"));
 
         let pi = parse_pi_sources(
             include_str!("../fixtures/pi_models_store.json"),
@@ -1626,7 +1545,7 @@ mod tests {
         assert_eq!(pi.len(), 1);
         assert_eq!(pi[0].provider, "zai-coding-cn");
         assert_eq!(pi[0].vendor, "Zhipu");
-        assert!(pi[0].note.contains("204800"));
+        assert!(pi[0].meta.contains("204800"));
 
         let (cc_models, providers) = parse_cc_switch_list(
             include_str!("../fixtures/cc_switch_list.json"),
@@ -1636,6 +1555,7 @@ mod tests {
         assert_eq!(cc_models.len(), 1);
         assert_eq!(providers[0].name, "Zhipu GLM");
         assert!(providers[0].has_token);
+        assert!(parse_codex_cache(r#"{"models":[]}"#, "读:fixture").is_err());
     }
 
     #[test]
@@ -1659,12 +1579,14 @@ mod tests {
                     source: "读:old".to_string(),
                     smoked_at: "2026-01-01".to_string(),
                     smoke_model: "old-model".to_string(),
+                    meta: "旧元数据".to_string(),
                     note: "保留备注".to_string(),
                 }],
             }],
         };
         let mut refreshed = fixture_model("old-model");
         refreshed.billing_source = "新源".to_string();
+        refreshed.meta = "新元数据".to_string();
         merge_detected_models(
             &mut store,
             "codex",
@@ -1673,6 +1595,7 @@ mod tests {
         let old = find_model(&store, "codex", "", "old-model").expect("old");
         assert_eq!(old.tier, "高");
         assert_eq!(old.note, "保留备注");
+        assert_eq!(old.meta, "新元数据");
         assert_eq!(old.status, STATUS_CONNECTED);
         assert_eq!(old.vendor, "用户厂商");
         assert_eq!(old.billing_source, "新源");
@@ -1686,8 +1609,144 @@ mod tests {
         merge_detected_models(&mut store, "codex", vec![fixture_model("new-model")]);
         assert!(find_model(&store, "codex", "", "old-model")
             .expect("missing retained")
-            .note
+            .meta
             .contains(MISSING_MARKER));
+    }
+
+    #[test]
+    fn detection_refreshes_meta_preserves_note_and_parses_commented_kimi_toml() {
+        let legacy: ResourceModel = serde_json::from_str(
+            r#"{"id":"legacy","agent":"codex","provider":"","vendor":"OpenAI","billing_source":"官方订阅","tier":"","thinking":"未知","status":"待冒烟","source":"读:old","smoked_at":"","smoke_model":"","note":"旧备注"}"#,
+        )
+        .expect("legacy resource without meta");
+        assert!(legacy.meta.is_empty());
+        assert_eq!(legacy.note, "旧备注");
+
+        let mut store = ResourceStore {
+            version: 1,
+            agents: vec![ResourceAgent {
+                id: "codex".to_string(),
+                kind: "内置".to_string(),
+                detected: true,
+                version: "test".to_string(),
+                models: vec![ResourceModel {
+                    id: "same".to_string(),
+                    agent: "codex".to_string(),
+                    provider: String::new(),
+                    vendor: "OpenAI".to_string(),
+                    billing_source: "官方订阅".to_string(),
+                    tier: String::new(),
+                    thinking: "未知".to_string(),
+                    status: STATUS_PENDING.to_string(),
+                    source: "读:old".to_string(),
+                    smoked_at: String::new(),
+                    smoke_model: String::new(),
+                    meta: "priority：1".to_string(),
+                    note: "用户备注".to_string(),
+                }],
+            }],
+        };
+        let mut refreshed = fixture_model("same");
+        refreshed.meta = "priority：2".to_string();
+        merge_detected_models(&mut store, "codex", vec![refreshed]);
+        let model = find_model(&store, "codex", "", "same").expect("merged model");
+        assert_eq!(model.meta, "priority：2");
+        assert_eq!(model.note, "用户备注");
+
+        let kimi = parse_kimi_config(
+            include_str!("../fixtures/kimi_config_inline_comments.toml"),
+            "读:fixture",
+        )
+        .expect("commented TOML fixture");
+        assert_eq!(kimi[0].id, "kimi-code/commented");
+        assert!(kimi[0].meta.contains("kimi-commented"));
+        assert!(kimi[0].meta.contains("low/high"));
+        assert_eq!(kimi[0].thinking, "支持");
+    }
+
+    #[test]
+    fn pi_source_matching_uses_exact_tokens_and_auth_requires_top_level_ready() {
+        let store = r#"{
+          "p": {"models": [
+            {"id":"glm-4","provider":"p"},
+            {"id":"glm-4.7","provider":"p"}
+          ]}
+        }"#;
+        let models = parse_pi_sources(store, "p glm-4.7", "读:fixture").expect("exact match");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "glm-4.7");
+
+        let result = |stdout: &str| ProcessResult {
+            code: Some(0),
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            timed_out: false,
+            timeout: Duration::from_secs(20),
+        };
+        assert!(!pi_auth_ready(&result(
+            r#"{"ready":false,"nested":{"ready":true}}"#
+        )));
+        assert!(!pi_auth_ready(&result(
+            r#"{"status":"ready","nested":{"ok":true}}"#
+        )));
+        assert!(pi_auth_ready(&result(r#"{"ready":true}"#)));
+    }
+
+    #[test]
+    fn provider_only_selection_includes_cc_switch_models() {
+        let store = ResourceStore {
+            version: 1,
+            agents: vec![ResourceAgent {
+                id: "cc-switch".to_string(),
+                kind: "provider 桥".to_string(),
+                detected: true,
+                version: "test".to_string(),
+                models: vec![detected_model(
+                    "glm-4.7",
+                    "cc-switch",
+                    "zai",
+                    "Zhipu",
+                    "zai",
+                    "未知",
+                    "读:fixture",
+                    "",
+                )],
+            }],
+        };
+        let keys = selected_model_keys(
+            &store,
+            &SmokeSelectionRequest {
+                agent_ids: Vec::new(),
+                cc_switch_providers: vec!["zai".to_string()],
+            },
+        );
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].agent_id, "cc-switch");
+        assert_eq!(keys[0].provider, "zai");
+
+        let pi_store = ResourceStore {
+            version: 1,
+            agents: vec![ResourceAgent {
+                id: "pi".to_string(),
+                kind: "内置".to_string(),
+                detected: true,
+                version: "test".to_string(),
+                models: Vec::new(),
+            }],
+        };
+        let error = add_model(
+            pi_store,
+            ResourceModelRequest {
+                agent_id: "pi".to_string(),
+                id: "glm-4.7".to_string(),
+                provider: String::new(),
+                vendor: "Zhipu".to_string(),
+                tier: String::new(),
+                note: String::new(),
+            },
+        )
+        .expect_err("pi provider is required");
+        assert!(error.contains("必须填写 provider"));
     }
 
     #[test]
@@ -1697,6 +1756,7 @@ mod tests {
             stdout: include_str!("../fixtures/pi_smoke_mismatch.jsonl").to_string(),
             stderr: String::new(),
             timed_out: false,
+            timeout: Duration::from_secs(60),
         };
         let error = parse_pi_smoke(&mismatch, "zai-coding-cn", "glm-4.7")
             .expect_err("identity mismatch must fail");
@@ -1707,6 +1767,7 @@ mod tests {
             stdout: include_str!("../fixtures/pi_smoke_thinking_only.jsonl").to_string(),
             stderr: String::new(),
             timed_out: false,
+            timeout: Duration::from_secs(60),
         };
         let error = parse_pi_smoke(&thinking_only, "zai-coding-cn", "glm-4.7")
             .expect_err("thinking block must not count as answer");
@@ -1717,6 +1778,7 @@ mod tests {
             stdout: include_str!("../fixtures/pi_smoke_success.jsonl").to_string(),
             stderr: String::new(),
             timed_out: false,
+            timeout: Duration::from_secs(60),
         };
         assert_eq!(
             parse_pi_smoke(&success, "zai-coding-cn", "glm-4.7").expect("pi success"),
@@ -1731,6 +1793,7 @@ mod tests {
             stdout: r#"{"is_error":false,"result":"OK","model":"sonnet"}"#.to_string(),
             stderr: String::new(),
             timed_out: false,
+            timeout: Duration::from_secs(60),
         };
         assert_eq!(parse_claude_smoke(&claude).expect("claude"), "sonnet");
 
@@ -1739,6 +1802,7 @@ mod tests {
             stdout: "{\"type\":\"thread.started\"}\n{\"type\":\"turn.completed\"}\n".to_string(),
             stderr: String::new(),
             timed_out: false,
+            timeout: Duration::from_secs(60),
         };
         assert!(parse_codex_smoke(&codex).is_ok());
 
@@ -1747,6 +1811,7 @@ mod tests {
             stdout: "OK\n".to_string(),
             stderr: String::new(),
             timed_out: false,
+            timeout: Duration::from_secs(60),
         };
         assert!(parse_kimi_smoke(&kimi).is_ok());
 
@@ -1754,6 +1819,28 @@ mod tests {
             "glm-4.7 → glm-4.7 一致\n结论：全部一致，无静默降级。可放心使用。"
         ));
         assert!(!cc_verification_passed("结论：1 个静默降级、0 个错误。"));
+    }
+
+    #[test]
+    fn safe_summary_redacts_common_cli_secret_shapes() {
+        let summary = safe_summary(
+            "sk-abcdefghijk https://user:pass@example.com/a?key=secret&token=other Bearer abc.def-123",
+        );
+        assert!(!summary.contains("sk-abcdefghijk"));
+        assert!(!summary.contains("user:pass"));
+        assert!(!summary.contains("key=secret"));
+        assert!(!summary.contains("token=other"));
+        assert!(!summary.contains("abc.def-123"));
+        assert!(summary.contains("[已隐藏]"));
+
+        let timeout = ProcessResult {
+            code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: true,
+            timeout: Duration::from_secs(20),
+        };
+        assert_eq!(process_error_summary(&timeout), "20 秒超时");
     }
 
     #[test]

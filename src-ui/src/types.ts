@@ -98,6 +98,7 @@ export type ResourceModel = {
   source: string;
   smoked_at: string;
   smoke_model: string;
+  meta: string;
   note: string;
 };
 
@@ -110,14 +111,14 @@ export type CcSwitchProvider = {
 export type ResourceOperation = {
   store: ResourceStore;
   errors: string[];
-  cc_switch_providers: CcSwitchProvider[];
+  cc_switch_providers: CcSwitchProvider[] | null;
 };
 
 export type ConnectionOverview = {
   cc_switch_providers: CcSwitchProvider[];
 };
 
-export type AddResourceModelRequest = {
+export type ResourceModelRequest = {
   agent_id: string;
   id: string;
   provider: string;
@@ -125,8 +126,6 @@ export type AddResourceModelRequest = {
   tier: string;
   note: string;
 };
-
-export type UpdateResourceModelRequest = AddResourceModelRequest;
 
 export type ResourceModelKey = {
   agent_id: string;

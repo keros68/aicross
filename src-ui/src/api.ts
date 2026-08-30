@@ -5,7 +5,7 @@ import type {
   FileNode,
   InitialState,
   AddManualAgentRequest,
-  AddResourceModelRequest,
+  ResourceModelRequest,
   ConnectionOverview,
   ResourceModelKey,
   ResourceOperation,
@@ -14,7 +14,6 @@ import type {
   Settings,
   SmokeSelectionRequest,
   Tool,
-  UpdateResourceModelRequest,
 } from "./types";
 
 export const api = {
@@ -51,9 +50,9 @@ export const api = {
     invoke<ResourceOperation>("detect_resource_agent", { agentId }),
   detectAllResources: (agentIds: string[]) =>
     invoke<ResourceOperation>("detect_all_resources", { agentIds }),
-  addResourceModel: (request: AddResourceModelRequest) =>
+  addResourceModel: (request: ResourceModelRequest) =>
     invoke<ResourceStore>("add_resource_model", { request }),
-  updateResourceModel: (request: UpdateResourceModelRequest) =>
+  updateResourceModel: (request: ResourceModelRequest) =>
     invoke<ResourceStore>("update_resource_model", { request }),
   removeResourceModel: (request: ResourceModelKey) =>
     invoke<ResourceStore>("remove_resource_model", { request }),

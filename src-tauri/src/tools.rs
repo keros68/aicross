@@ -1,10 +1,7 @@
 use crate::models::{ToolDefinition, ToolStatus};
-use std::io::{Read, Result as IoResult};
+use crate::process;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
 
 pub fn detect_all(definitions: &[ToolDefinition]) -> Vec<ToolStatus> {
     definitions.iter().map(detect).collect()
@@ -68,7 +65,7 @@ fn detect(definition: &ToolDefinition) -> ToolStatus {
     let path = resolve_binary(definition);
     let version = path
         .as_deref()
-        .and_then(version_for)
+        .and_then(process::version_for)
         .unwrap_or_else(|| "版本未知".to_string());
 
     ToolStatus {
@@ -77,82 +74,6 @@ fn detect(definition: &ToolDefinition) -> ToolStatus {
         executable_path: path.map(|value| value.to_string_lossy().to_string()),
         version,
     }
-}
-
-fn version_for(binary: &Path) -> Option<String> {
-    let mut child = Command::new(binary)
-        .arg("--version")
-        .env("AI_CROSS_PEER", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
-    let stderr = child.stderr.take()?;
-    let stdout_reader = pipe_reader(stdout);
-    let stderr_reader = pipe_reader(stderr);
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut timed_out = false;
-    loop {
-        if child.try_wait().ok()?.is_some() {
-            break;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            timed_out = true;
-            break;
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-
-    let join_deadline = Instant::now() + Duration::from_millis(500);
-    let stdout = finish_reader(stdout_reader, join_deadline);
-    let stderr = finish_reader(stderr_reader, join_deadline);
-    if timed_out {
-        return None;
-    }
-    let stdout = stdout?;
-    let stderr = stderr?;
-    let stdout = String::from_utf8_lossy(&stdout);
-    let stderr = String::from_utf8_lossy(&stderr);
-    let output = if stdout.trim().is_empty() {
-        stderr.as_ref()
-    } else {
-        stdout.as_ref()
-    };
-    output
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| {
-            let mut value = line.trim().to_string();
-            value.truncate(value.floor_char_boundary(120));
-            value
-        })
-}
-
-type PipeReader = (thread::JoinHandle<()>, mpsc::Receiver<IoResult<Vec<u8>>>);
-
-fn pipe_reader<R: Read + Send + 'static>(mut reader: R) -> PipeReader {
-    let (sender, receiver) = mpsc::channel();
-    let handle = thread::spawn(move || {
-        let mut output = Vec::new();
-        let result = reader.read_to_end(&mut output).map(|_| output);
-        let _ = sender.send(result);
-    });
-    (handle, receiver)
-}
-
-fn finish_reader(reader: PipeReader, deadline: Instant) -> Option<Vec<u8>> {
-    let (handle, receiver) = reader;
-    let output = receiver
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .ok()?
-        .ok()?;
-    handle.join().ok()?;
-    Some(output)
 }
 
 #[cfg(test)]

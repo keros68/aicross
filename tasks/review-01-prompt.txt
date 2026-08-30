@@ -1,0 +1,10 @@
+你是代码审查者。仓库在当前目录（Tauri 2 + Rust 后端 src-tauri/，React + TypeScript 前端 src-ui/）。本期是第 1 期「资源接入」。先读 tasks/TASK-01-resources.md（需求）、AGENTS.md（约定）、tasks/REPORT-01.md（实现方报告），再读本期改动的文件：src-tauri/src/resources.rs、config.rs、lib.rs、models.rs、tools.rs、pty.rs，src-tauri/fixtures/*，src-ui/src/components/Resources.tsx、App.tsx、api.ts、types.ts、SettingsDialog.tsx。不读 node_modules、target、dist。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照 TASK-01 交付项 A–E 与验收清单，缺什么、偏差什么（尤其：合并规则四条、冒烟判据表、真身核对、resources.json 字段是否与任务书一致）。
+2. 逻辑正确性：解析器对事实源格式变化的健壮性、合并时的键冲突、并发探测/冒烟对 resources.json 的写覆盖、子进程超时与僵尸、Windows 路径/编码。
+3. 边界：事实源文件缺失或为空、pi --list-models 输出格式变化、cc_switch.py 找不到、冒烟超时、模型 ID 含特殊字符。
+4. 安全：resources.json / note / 错误摘要 / fixture 里是否可能出现 key、token、带凭据的 URL 或环境变量值；是否读了 auth.json；shell 拼接。
+5. 代码质量：重复、可简化、界面文案是否符合 AGENTS.md 规范。
+6. 测试：覆盖了什么、最该补的 3 个。
+最后单独回答：对照 TASK-01 原始需求是否完整实现？一句话 + 缺项列表。

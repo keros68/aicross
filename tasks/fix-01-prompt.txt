@@ -1,0 +1,7 @@
+修正轮 R1。先读 AGENTS.md、tasks/TASK-01-resources.md、tasks/REPORT-01.md，再读 tasks/review-01-glm.md（另一厂商盲审）。逐条处理，规则：
+1. 必修（数据与判定正确性）：2.1 并发读-改-写丢失更新（store 加版本号 CAS 或把读改写整体串行化，冒烟所选期间的用户操作不得被覆盖）；2.2 只勾 provider 时冒烟所选静默无效；2.3 `--list-models` 可用性用子串匹配导致前缀误报（整词/`provider/id` token 比较）；2.4 stdin broken pipe 丢掉真实 stderr；2.7 python 子进程必须设 `PYTHONUTF8=1`（AGENTS.md 铁律：Windows 中文管道 GBK 会让核验静默失配）；2.8 kimi TOML 解析改用 toml crate；2.9 codex 空清单不得把全部条目标"未在事实源中"；2.11 add_manual_agent 非原子。
+2. 需求偏差：1.1 探测元数据与用户备注分开存（加独立字段 `meta` 或约定段），合并时刷新元数据、保留用户备注；1.2 pi auth check 未就绪按 provider 记录，不整体失败；1.3 去掉 `--no-refresh`（除非 `pi auth check --help` 明确有此 flag，有就在 REPORT 贴 help 原文）；1.4 状态与动作成对渲染（待冒烟/冒烟失败→「冒烟」，已接入→「移除」+「重新冒烟」）；1.5 claude 预设 note 标"CLI 别名"；1.6 codex fetched_at 写进 note 或 source；1.10 claude 未检测到时不合并预设。
+3. 安全：4.3 safe_summary 补正则擦除：`sk-[A-Za-z0-9_-]{8,}`、URL 里的 `user:pass@`、`?key=`/`token=` 查询参数、`Bearer …`；4.4 auth 就绪只认顶层 `ready`（或 pi 实际输出的字段，先看 fixture）。
+4. 质量：抽一个子进程工具模块统一 run_process / version_for / terminate 三处重复；smoke_selected 别整库克隆；冒烟后刷新 cc-switch 失败时保留旧 providers；两个 Request 类型合一；超时文案用真实值。手动 agent 启动参数支持引号。pi 模型 provider 为空时拒绝冒烟并提示。
+5. 补审查建议的 3 个测试（run_process 超时/broken pipe/截断；parse_pi_sources 前缀不误报 + auth ready 判定；二次探测元数据刷新且用户备注保留 + kimi 行内注释 fixture）。
+6. 修完重跑 cargo check / cargo test / cargo fmt -- --check / cargo clippy（若已配）/ npm run build，输出原文追加到 tasks/REPORT-01.md「修正轮 R1」，逐条列处理结果（已修 / 不采纳+原因）。不要 commit。不要发任何模型请求。

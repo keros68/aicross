@@ -1,4 +1,5 @@
 use crate::models::{Settings, TerminalRequest, ToolDefinition};
+use crate::process;
 use crate::tools::resolve_binary;
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -333,15 +334,8 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 fn terminate_child(child: &mut dyn Child) {
-    #[cfg(windows)]
     if let Some(process_id) = child.process_id() {
-        let process_id = process_id.to_string();
-        let _ = std::process::Command::new("taskkill.exe")
-            .args(["/PID", &process_id, "/T", "/F"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        process::terminate_process_id(process_id);
     }
     let _ = child.kill();
     let _ = child.wait();

@@ -165,24 +165,13 @@ pub struct ResourceModel {
     pub source: String,
     pub smoked_at: String,
     pub smoke_model: String,
+    #[serde(default)]
+    pub meta: String,
     pub note: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct AddResourceModelRequest {
-    pub agent_id: String,
-    pub id: String,
-    #[serde(default)]
-    pub provider: String,
-    pub vendor: String,
-    #[serde(default)]
-    pub tier: String,
-    #[serde(default)]
-    pub note: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct UpdateResourceModelRequest {
+pub struct ResourceModelRequest {
     pub agent_id: String,
     pub id: String,
     #[serde(default)]
@@ -222,7 +211,7 @@ pub struct SmokeSelectionRequest {
 pub struct ResourceOperation {
     pub store: ResourceStore,
     pub errors: Vec<String>,
-    pub cc_switch_providers: Vec<CcSwitchProvider>,
+    pub cc_switch_providers: Option<Vec<CcSwitchProvider>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

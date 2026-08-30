@@ -268,7 +268,8 @@ select, input {
 .resource-model-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
 .resource-model-fields label { display: flex; flex-direction: column; gap: 3px; color: var(--text-3); font-size: 10px; }
 .resource-model-fields select { min-width: 0; padding: 3px 5px; font-size: 11px; }
-.resource-source, .resource-smoked, .resource-note { margin-top: 7px; overflow: hidden; color: var(--text-3); font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.resource-source, .resource-smoked, .resource-meta, .resource-note { margin-top: 7px; overflow: hidden; color: var(--text-3); font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.resource-meta { white-space: normal; overflow-wrap: anywhere; }
 .resource-note { color: var(--text-2); white-space: normal; overflow-wrap: anywhere; }
 .resource-model-actions { display: flex; gap: 6px; margin-top: 8px; }
 

@@ -162,7 +162,11 @@ pub fn load_tools() -> Result<Loaded<Vec<ToolDefinition>>, String> {
     load_tools_from(&config_dir()?)
 }
 
-pub fn add_tool_override(definition: ToolDefinition) -> Result<Vec<ToolDefinition>, String> {
+pub fn add_tool_override_with_resources(
+    definition: ToolDefinition,
+    previous_resources: &ResourceStore,
+    next_resources: &ResourceStore,
+) -> Result<Vec<ToolDefinition>, String> {
     let directory = config_dir()?;
     let mut overrides =
         read_json::<Vec<ToolDefinition>>(&directory, "tools.json")?.unwrap_or_default();
@@ -170,37 +174,43 @@ pub fn add_tool_override(definition: ToolDefinition) -> Result<Vec<ToolDefinitio
         return Err(format!("工具标识已存在：{}", definition.id));
     }
     overrides.push(definition);
-    write_json("tools.json", &overrides)?;
-    load_tools().map(|loaded| loaded.value)
+    let definitions = merge_tool_definitions(overrides.clone())?;
+    write_json_in(&directory, "resources.json", next_resources)?;
+    if let Err(error) = write_json_in(&directory, "tools.json", &overrides) {
+        return match write_json_in(&directory, "resources.json", previous_resources) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!(
+                "{error}；恢复 resources.json 失败：{rollback_error}"
+            )),
+        };
+    }
+    Ok(definitions)
 }
 
 fn load_tools_from(directory: &Path) -> Result<Loaded<Vec<ToolDefinition>>, String> {
+    match read_json::<Vec<ToolDefinition>>(directory, "tools.json") {
+        Ok(overrides) => Ok(Loaded {
+            value: merge_tool_definitions(overrides.unwrap_or_default())?,
+            warning: None,
+        }),
+        Err(error) => Ok(Loaded {
+            value: merge_tool_definitions(Vec::new())?,
+            warning: Some(format!("{error}；已使用内置工具注册表")),
+        }),
+    }
+}
+
+fn merge_tool_definitions(overrides: Vec<ToolDefinition>) -> Result<Vec<ToolDefinition>, String> {
     let mut tools: Vec<ToolDefinition> = serde_json::from_str(include_str!("../tools.json"))
         .map_err(|error| format!("解析内置 tools.json 失败：{error}"))?;
-
-    match read_json::<Vec<ToolDefinition>>(directory, "tools.json") {
-        Ok(Some(overrides)) => {
-            for definition in overrides {
-                if let Some(existing) = tools.iter_mut().find(|tool| tool.id == definition.id) {
-                    *existing = definition;
-                } else {
-                    tools.push(definition);
-                }
-            }
-        }
-        Ok(None) => {}
-        Err(error) => {
-            return Ok(Loaded {
-                value: tools,
-                warning: Some(format!("{error}；已使用内置工具注册表")),
-            });
+    for definition in overrides {
+        if let Some(existing) = tools.iter_mut().find(|tool| tool.id == definition.id) {
+            *existing = definition;
+        } else {
+            tools.push(definition);
         }
     }
-
-    Ok(Loaded {
-        value: tools,
-        warning: None,
-    })
+    Ok(tools)
 }
 
 fn strip_windows_verbatim_prefix(path: String) -> String {

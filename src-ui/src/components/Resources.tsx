@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type {
   AddManualAgentRequest,
-  AddResourceModelRequest,
+  ResourceModelRequest,
   CcSwitchProvider,
   ResourceAgent,
   ResourceModel,
@@ -22,7 +22,7 @@ const agentNames: Record<string, string> = {
   "cc-switch": "cc-switch",
 };
 
-const emptyModel = (agentId: string): AddResourceModelRequest => ({
+const emptyModel = (agentId: string): ResourceModelRequest => ({
   agent_id: agentId,
   id: "",
   provider: "",
@@ -41,6 +41,42 @@ function notifyToolsChanged() {
 
 function operationErrors(operation: ResourceOperation) {
   return operation.errors.length > 0 ? operation.errors.join("\n") : "";
+}
+
+function parseCommandArgs(text: string) {
+  const args: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let started = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote) {
+        quote = null;
+      } else if (quote === '"' && character === "\\" && (text[index + 1] === '"' || text[index + 1] === "\\")) {
+        current += text[index + 1];
+        index += 1;
+      } else {
+        current += character;
+      }
+      started = true;
+    } else if (/\s/.test(character)) {
+      if (started) {
+        args.push(current);
+        current = "";
+        started = false;
+      }
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      started = true;
+    } else {
+      current += character;
+      started = true;
+    }
+  }
+  if (quote) throw new Error("启动参数引号未闭合");
+  if (started) args.push(current);
+  return args;
 }
 
 export function Resources() {
@@ -194,10 +230,13 @@ function ModelRow({ model, busy, onUpdate, onSmoke, onRemove }: {
       </div>
       <div className="resource-source" title={model.source}>{model.source || "来源未记录"}</div>
       {model.smoked_at && <div className="resource-smoked">最近冒烟：{model.smoked_at}{model.smoke_model ? `（${model.smoke_model}）` : ""}</div>}
+      {model.meta && <div className="resource-meta">{model.meta}</div>}
       {model.note && <div className="resource-note">{model.note}</div>}
       <div className="resource-model-actions">
-        <button className="button small" disabled={smoking || removing} onClick={() => void onSmoke(model)}>{smoking ? "冒烟中…" : "冒烟"}</button>
-        <button className="button small" disabled={smoking || removing} onClick={() => void onRemove(model)}>{removing ? "移除中…" : "移除"}</button>
+        {model.status === "已接入" ? <>
+          <button className="button small" disabled={smoking || removing} onClick={() => void onRemove(model)}>{removing ? "移除中…" : "移除"}</button>
+          <button className="button small" disabled={smoking || removing} onClick={() => void onSmoke(model)}>{smoking ? "冒烟中…" : "重新冒烟"}</button>
+        </> : <button className="button small" disabled={smoking || removing} onClick={() => void onSmoke(model)}>{smoking ? "冒烟中…" : "冒烟"}</button>}
       </div>
     </div>
   );
@@ -214,6 +253,7 @@ function ResourceModelDialog({ agentId, onClose, onSaved, onError }: { agentId: 
   const save = async () => {
     if (!value.id.trim()) { onError("模型 ID 不能为空"); return; }
     if (!value.vendor) { onError("请选择权重厂商"); return; }
+    if (agentId === "pi" && !value.provider.trim()) { onError("pi 模型必须填写 provider"); return; }
     setSaving(true);
     try {
       onSaved(await api.addResourceModel({ ...value, id: value.id.trim(), provider: value.provider.trim(), note: value.note.trim() }));
@@ -225,7 +265,7 @@ function ResourceModelDialog({ agentId, onClose, onSaved, onError }: { agentId: 
   };
   return <Dialog title={`手动输入：${agentNames[agentId] ?? agentId}`} onClose={onClose}>
     <label className="field-label">模型 ID<input autoFocus value={value.id} onChange={(event) => setValue({ ...value, id: event.target.value })} /></label>
-    <label className="field-label">provider（可空）<input value={value.provider} onChange={(event) => setValue({ ...value, provider: event.target.value })} /></label>
+    <label className="field-label">provider（可留空）<input value={value.provider} onChange={(event) => setValue({ ...value, provider: event.target.value })} /></label>
     <label className="field-label">权重厂商<select value={value.vendor} onChange={(event) => setValue({ ...value, vendor: event.target.value })}>{vendors.map((vendor) => <option key={vendor}>{vendor}</option>)}</select></label>
     <label className="field-label">档位<select value={value.tier} onChange={(event) => setValue({ ...value, tier: event.target.value })}>{tiers.map((tier) => <option value={tier} key={tier}>{tier || "未设置"}</option>)}</select></label>
     <label className="field-label">备注<input value={value.note} onChange={(event) => setValue({ ...value, note: event.target.value })} /></label>
@@ -241,7 +281,7 @@ function ManualAgentDialog({ onClose, onSaved, onError }: { onClose: () => void;
     if (!value.name.trim() || !value.binary.trim()) { onError("名称和二进制名不能为空"); return; }
     setSaving(true);
     try {
-      onSaved(await api.addManualAgent({ ...value, name: value.name.trim(), binary: value.binary.trim(), args: argsText.trim() ? argsText.trim().split(/\s+/) : [] }));
+      onSaved(await api.addManualAgent({ ...value, name: value.name.trim(), binary: value.binary.trim(), args: parseCommandArgs(argsText) }));
     } catch (error) {
       onError(`添加 agent 失败：${String(error)}`);
     } finally {
@@ -251,7 +291,7 @@ function ManualAgentDialog({ onClose, onSaved, onError }: { onClose: () => void;
   return <Dialog title="手动添加 agent" onClose={onClose}>
     <label className="field-label">名称<input autoFocus value={value.name} onChange={(event) => setValue({ ...value, name: event.target.value })} /></label>
     <label className="field-label">二进制名<input value={value.binary} onChange={(event) => setValue({ ...value, binary: event.target.value })} /></label>
-    <label className="field-label">启动参数<input value={argsText} placeholder="用空格分隔" onChange={(event) => setArgsText(event.target.value)} /></label>
+    <label className="field-label">启动参数<input value={argsText} placeholder="含空格的参数可使用引号" onChange={(event) => setArgsText(event.target.value)} /></label>
     <DialogActions onClose={onClose} onSave={save} saving={saving} label="添加" />
   </Dialog>;
 }
@@ -281,7 +321,7 @@ export function ResourceConnectionDialog({ onClose }: { onClose: () => void }) {
     try {
       const value = await api.detectAllResources([]);
       setStore(value.store);
-      setProviders(value.cc_switch_providers);
+      if (value.cc_switch_providers !== null) setProviders(value.cc_switch_providers);
       setError(operationErrors(value));
       notifyResourcesChanged();
     } catch (value) { setError(`全部探测失败：${String(value)}`); } finally { setBusy(null); }
@@ -291,7 +331,7 @@ export function ResourceConnectionDialog({ onClose }: { onClose: () => void }) {
     try {
       const value = await api.smokeSelectedResources({ agent_ids: agentIds, cc_switch_providers: providerNames });
       setStore(value.store);
-      setProviders(value.cc_switch_providers);
+      if (value.cc_switch_providers !== null) setProviders(value.cc_switch_providers);
       setError(operationErrors(value));
       notifyResourcesChanged();
     } catch (value) { setError(`冒烟失败：${String(value)}`); } finally { setBusy(null); }
@@ -299,7 +339,7 @@ export function ResourceConnectionDialog({ onClose }: { onClose: () => void }) {
 
   return <Dialog title="接入资源" onClose={onClose} wide>
     {error && <div className="error-line modal-error">{error}</div>}
-    <section className="connection-section"><h3>检测到的 agent</h3>{store ? store.agents.map((agent) => <label className="check-row" key={agent.id}><input type="checkbox" checked={agentIds.includes(agent.id)} onChange={() => toggle(agent.id, agentIds, setAgentIds)} />{agentNames[agent.id] ?? tools.find((tool) => tool.id === agent.id)?.name ?? agent.id}<small>{agent.detected ? "已检测" : "未检测"}</small></label>) : <div className="hint">正在读取…</div>}</section>
+    <section className="connection-section"><h3>检测到的 agent</h3>{store ? store.agents.filter((agent) => agent.detected && agent.id !== "cc-switch").map((agent) => <label className="check-row" key={agent.id}><input type="checkbox" checked={agentIds.includes(agent.id)} onChange={() => toggle(agent.id, agentIds, setAgentIds)} />{agentNames[agent.id] ?? tools.find((tool) => tool.id === agent.id)?.name ?? agent.id}<small>已检测</small></label>) : <div className="hint">正在读取…</div>}</section>
     <section className="connection-section"><h3>cc-switch 里的 provider</h3>{providers.length === 0 ? <div className="hint">未检测到 provider</div> : providers.map((provider) => <label className="check-row" key={provider.name}><input type="checkbox" checked={providerNames.includes(provider.name)} onChange={() => toggle(provider.name, providerNames, setProviderNames)} />{provider.name}<small>{provider.has_token ? "已配置" : "未配置"}</small></label>)}</section>
     <div className="modal-actions"><button className="button" onClick={onClose}>关闭</button><button className="button" disabled={busy !== null} onClick={() => void detectAll()}>{busy === "detect" ? "探测中…" : "全部探测"}</button><button className="button primary" disabled={busy !== null || (agentIds.length === 0 && providerNames.length === 0)} onClick={() => void smokeSelected()}>{busy === "smoke" ? "冒烟中…" : "冒烟所选"}</button></div>
   </Dialog>;
