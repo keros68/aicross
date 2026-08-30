@@ -34,6 +34,7 @@ export type FileNode = {
   relativePath: string;
   absolutePath: string;
   isDir: boolean;
+  isSymlink: boolean;
   muted: boolean;
 };
 

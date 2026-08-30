@@ -91,6 +91,7 @@ pub struct FileNode {
     pub relative_path: String,
     pub absolute_path: String,
     pub is_dir: bool,
+    pub is_symlink: bool,
     pub muted: bool,
 }
 

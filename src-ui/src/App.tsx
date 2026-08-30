@@ -21,6 +21,8 @@ const rightLabels: Record<RightTab, string> = {
   plan: "方案与编排",
   tasks: "任务列表",
 };
+const defaultLeftTabs = new Set<LeftTab>(["workspace", "resources", "sessions"]);
+const defaultRightTabs = new Set<RightTab>(["changes"]);
 
 export default function App() {
   const [initial, setInitial] = useState<InitialState | null>(null);
@@ -41,7 +43,13 @@ export default function App() {
 
   const refreshTools = useCallback(() => {
     setLoadingTools(true);
-    api.tools().then(setTools).catch((value) => setError(String(value))).finally(() => setLoadingTools(false));
+    api.tools()
+      .then((value) => {
+        setTools(value);
+        setError("");
+      })
+      .catch((value) => setError(String(value)))
+      .finally(() => setLoadingTools(false));
   }, []);
 
   useEffect(() => {
@@ -49,6 +57,7 @@ export default function App() {
       .then((value) => {
         setInitial(value);
         setSettingsDraft(value.settings);
+        setError("");
       })
       .catch((value) => setError(String(value)));
     refreshTools();
@@ -74,6 +83,7 @@ export default function App() {
       const value = await api.setProject(path);
       setInitial(value);
       setSettingsDraft(value.settings);
+      setError("");
     } catch (value) {
       setError(String(value));
     }
@@ -90,6 +100,7 @@ export default function App() {
       const saved = await api.saveSettings(settingsDraft);
       setInitial({ ...initial, settings: saved });
       setSettingsOpen(false);
+      setError("");
     } catch (value) {
       setError(String(value));
     }
@@ -178,7 +189,7 @@ export default function App() {
               <button className="expand-button" onClick={() => setLeftCollapsed(false)} aria-label="展开左栏">›</button>
             ) : (
               <>
-                <PanelTabs tabs={leftTabs} labels={leftLabels} active={leftTab} setActive={setLeftTab} onCollapse={() => setLeftCollapsed(true)} />
+                <PanelTabs tabs={leftTabs} labels={leftLabels} defaults={defaultLeftTabs} active={leftTab} setActive={setLeftTab} onCollapse={() => setLeftCollapsed(true)} />
                 {leftTab === "workspace" && <Workspace projectPath={initial.projectPath} />}
                 {leftTab === "resources" && <Placeholder title="资源" text="第 1 期接入" />}
                 {leftTab === "sessions" && <Sessions />}
@@ -189,7 +200,7 @@ export default function App() {
 
         <section className="center-panel">
           <nav className="tabbar center-tabs" aria-label="终端 tab">
-            <button className={`tab ${centerTab === "launchpad" ? "active" : ""}`} onClick={() => setCenterTab("launchpad")}>启动台</button>
+            <button className={`tab default-tab ${centerTab === "launchpad" ? "active" : ""}`} onClick={() => setCenterTab("launchpad")}>启动台</button>
             {terminalTabs.map((tab) => (
               <div className={`terminal-tab ${centerTab === tab.id ? "active" : ""}`} key={tab.id}>
                 <button className="terminal-tab-label" onClick={() => setCenterTab(tab.id)}>
@@ -225,7 +236,7 @@ export default function App() {
               <button className="expand-button" onClick={() => setRightCollapsed(false)} aria-label="展开右栏">‹</button>
             ) : (
               <>
-                <PanelTabs tabs={rightTabs} labels={rightLabels} active={rightTab} setActive={setRightTab} onCollapse={() => setRightCollapsed(true)} />
+                <PanelTabs tabs={rightTabs} labels={rightLabels} defaults={defaultRightTabs} active={rightTab} setActive={setRightTab} onCollapse={() => setRightCollapsed(true)} />
                 {rightTab === "changes" && <Changes projectPath={initial.projectPath} />}
                 {rightTab === "plan" && <Placeholder title="方案与编排" text="第 2 期接入" />}
                 {rightTab === "tasks" && <Placeholder title="任务列表" text="尚未启用" />}
@@ -245,19 +256,21 @@ export default function App() {
 function PanelTabs<T extends string>({
   tabs,
   labels,
+  defaults,
   active,
   setActive,
   onCollapse,
 }: {
   tabs: T[];
   labels: Record<T, string>;
+  defaults: ReadonlySet<T>;
   active: T;
   setActive: (tab: T) => void;
   onCollapse: () => void;
 }) {
   return (
     <nav className="tabbar panel-tabs">
-      {tabs.map((tab) => <button key={tab} className={`tab ${active === tab ? "active" : ""}`} onClick={() => setActive(tab)}>{labels[tab]}</button>)}
+      {tabs.map((tab) => <button key={tab} className={`tab ${defaults.has(tab) ? "default-tab" : ""} ${active === tab ? "active" : ""}`} onClick={() => setActive(tab)}>{labels[tab]}</button>)}
       <button className="collapse-button" onClick={onCollapse} aria-label="折叠栏">收起</button>
     </nav>
   );
@@ -304,7 +317,7 @@ function Launchpad({
                   <div className="tool-version mono">{tool.detected ? tool.version : tool.binary}</div>
                 </div>
                 <div className="tool-actions">
-                  <button className="button small" onClick={() => onExpand(expandedEnv === tool.id ? null : tool.id)}>环境变量</button>
+                  <button className="button small" onClick={() => onExpand(expandedEnv === tool.id ? null : tool.id)}>配置变量</button>
                   <button className="button small primary" disabled={!tool.detected} onClick={() => onLaunch(tool)}>启动</button>
                 </div>
               </div>

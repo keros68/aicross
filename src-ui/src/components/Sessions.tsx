@@ -7,7 +7,12 @@ export function Sessions() {
   const [selected, setSelected] = useState<SessionEntry | null>(null);
   const [error, setError] = useState("");
 
-  const load = () => api.sessions().then(setSessions).catch((value) => setError(String(value)));
+  const load = () => api.sessions()
+    .then((value) => {
+      setSessions(value);
+      setError("");
+    })
+    .catch((value) => setError(String(value)));
   useEffect(() => {
     void load();
   }, []);

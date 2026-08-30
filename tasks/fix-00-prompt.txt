@@ -1,0 +1,9 @@
+修正轮。先读 AGENTS.md、tasks/TASK-00-skeleton.md、tasks/REPORT-00.md，再读 tasks/review-00-glm.md（另一厂商模型的盲审，按六个维度列了发现，每条带文件:行号）。逐条处理，规则：
+
+1. 逻辑正确性与边界一节的每一条都要修，除非你能在 REPORT 里用代码证据说明它不成立（写"不采纳：原因"）。优先级：同步命令卡主线程（改 async + spawn_blocking）、pty spawn 失败路径进程泄漏、monitor 线程全局锁与锁中毒泄漏、`--version` 管道死锁（并发读 stdout/stderr 再带超时 join，修完后 codex 与 pi 的版本应能读出）、compare 仅 mtime 变化的假阳性（以 hash 为准）、Windows canonicalize 的 `\?\` 前缀、会话按字符串排序、debug WebView 目录污染项目、会话去重与垃圾文件跳过、tools.json 解析失败静默吞掉。
+2. 需求偏差：powershell 改为统一走 default_args；`dist` 保留在忽略列表但在修改记录面板里写一行"已忽略 .git / node_modules / target / dist"；"默认开启的 tab 用粗体"实现；补一个最简单的占位图标让 `tauri build` 能过（纯色 PNG 即可，`icons/` 目录不再 gitignore）。"窗口变窄自动折叠"不做，手动折叠即可。
+3. 安全：加基本 CSP；open_file 对 .exe/.bat/.cmd/.ps1/.msi 先弹确认。
+4. 代码质量一节按建议改；"环境变量"按钮改"配置变量"；后端错误信息给中文前缀（保留原始 io 错误文本在后面）。
+5. 补审查建议的 3 个测试：路径越界、tools.json 覆写合并、compare/diff 边界（含仅 mtime 变化不算修改）。
+6. 修完重跑 `cargo check`、`cargo test`、`cargo fmt -- --check`、`cd src-ui && npm run build`，输出原文贴进 tasks/REPORT-00.md 的新一节「修正轮 R1」，逐条列出审查发现的处理结果（已修 / 不采纳+原因）。窗口手测仍不可用就照实写"未验证"。
+不要 commit（由编排者提交）。

@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -14,7 +15,8 @@ use tauri::{AppHandle, Emitter};
 struct PtyRecord {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
+    closed: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -45,12 +47,7 @@ impl PtyManager {
         project: &Path,
         settings: &Settings,
     ) -> Result<(), String> {
-        if self
-            .records
-            .lock()
-            .map_err(|error| error.to_string())?
-            .contains_key(&request.terminal_id)
-        {
+        if self.lock_records().contains_key(&request.terminal_id) {
             return Err("终端标识已存在".to_string());
         }
 
@@ -63,7 +60,7 @@ impl PtyManager {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("创建终端失败：{error}"))?;
 
         let mut command = CommandBuilder::new(binary);
         command.args(args);
@@ -74,33 +71,39 @@ impl PtyManager {
             }
         }
 
-        let child = pair
+        let mut child = pair
             .slave
             .spawn_command(command)
             .map_err(|error| format!("启动失败：{error}"))?;
         drop(pair.slave);
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|error| error.to_string())?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|error| error.to_string())?;
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(error) => {
+                terminate_child(&mut *child);
+                return Err(format!("读取终端输出失败：{error}"));
+            }
+        };
+        let writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(error) => {
+                terminate_child(&mut *child);
+                return Err(format!("连接终端输入失败：{error}"));
+            }
+        };
         let terminal_id = request.terminal_id.clone();
+        let child = Arc::new(Mutex::new(child));
+        let closed = Arc::new(AtomicBool::new(false));
 
-        self.records
-            .lock()
-            .map_err(|error| error.to_string())?
-            .insert(
-                request.terminal_id.clone(),
-                PtyRecord {
-                    master: pair.master,
-                    writer,
-                    child,
-                },
-            );
+        self.lock_records().insert(
+            request.terminal_id.clone(),
+            PtyRecord {
+                master: pair.master,
+                writer,
+                child: Arc::clone(&child),
+                closed: Arc::clone(&closed),
+            },
+        );
 
         let reader_app = app.clone();
         let reader_id = terminal_id.clone();
@@ -127,25 +130,20 @@ impl PtyManager {
         let monitor_records = Arc::clone(&self.records);
         thread::spawn(move || loop {
             thread::sleep(Duration::from_millis(150));
-            let exit = {
-                let mut records = match monitor_records.lock() {
-                    Ok(records) => records,
-                    Err(_) => return,
-                };
-                let Some(record) = records.get_mut(&terminal_id) else {
-                    return;
-                };
-                match record.child.try_wait() {
-                    Ok(Some(status)) => Some(status.exit_code()),
-                    Ok(None) => None,
-                    Err(_) => Some(1),
-                }
+            if closed.load(Ordering::Acquire) {
+                return;
+            }
+            let exit = match lock_unpoisoned(&child).try_wait() {
+                Ok(Some(status)) => Some(status.exit_code()),
+                Ok(None) => None,
+                Err(_) => Some(1),
             };
 
             if let Some(code) = exit {
-                if let Ok(mut records) = monitor_records.lock() {
-                    records.remove(&terminal_id);
+                if closed.swap(true, Ordering::AcqRel) {
+                    return;
                 }
+                lock_unpoisoned(&monitor_records).remove(&terminal_id);
                 let _ = app.emit(
                     "pty-exit",
                     ExitEvent {
@@ -161,7 +159,7 @@ impl PtyManager {
     }
 
     pub fn write(&self, terminal_id: &str, data: &str) -> Result<(), String> {
-        let mut records = self.records.lock().map_err(|error| error.to_string())?;
+        let mut records = self.lock_records();
         let record = records
             .get_mut(terminal_id)
             .ok_or_else(|| "终端已退出".to_string())?;
@@ -169,11 +167,11 @@ impl PtyManager {
             .writer
             .write_all(data.as_bytes())
             .and_then(|_| record.writer.flush())
-            .map_err(|error| error.to_string())
+            .map_err(|error| format!("写入终端失败：{error}"))
     }
 
     pub fn resize(&self, terminal_id: &str, rows: u16, cols: u16) -> Result<(), String> {
-        let records = self.records.lock().map_err(|error| error.to_string())?;
+        let records = self.lock_records();
         let record = records
             .get(terminal_id)
             .ok_or_else(|| "终端已退出".to_string())?;
@@ -185,18 +183,14 @@ impl PtyManager {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|error| error.to_string())
+            .map_err(|error| format!("调整终端大小失败：{error}"))
     }
 
     pub fn close(&self, app: &AppHandle, terminal_id: &str) -> Result<(), String> {
-        let record = self
-            .records
-            .lock()
-            .map_err(|error| error.to_string())?
-            .remove(terminal_id);
-        if let Some(mut record) = record {
-            let _ = record.child.kill();
-            let _ = record.child.wait();
+        let record = self.lock_records().remove(terminal_id);
+        if let Some(record) = record {
+            record.closed.store(true, Ordering::Release);
+            terminate_child(&mut **lock_unpoisoned(&record.child));
         }
         let _ = app.emit(
             "pty-exit",
@@ -207,15 +201,18 @@ impl PtyManager {
         );
         Ok(())
     }
+
+    fn lock_records(&self) -> std::sync::MutexGuard<'_, HashMap<String, PtyRecord>> {
+        lock_unpoisoned(&self.records)
+    }
 }
 
 impl Drop for PtyManager {
     fn drop(&mut self) {
-        if let Ok(mut records) = self.records.lock() {
-            for (_, mut record) in records.drain() {
-                let _ = record.child.kill();
-                let _ = record.child.wait();
-            }
+        let mut records = lock_unpoisoned(&self.records);
+        for (_, record) in records.drain() {
+            record.closed.store(true, Ordering::Release);
+            terminate_child(&mut **lock_unpoisoned(&record.child));
         }
     }
 }
@@ -225,15 +222,12 @@ fn launch_command(
     settings: &Settings,
 ) -> Result<(String, Vec<String>), String> {
     if tool.id == "powershell" {
-        let binary = settings.default_shell.clone();
-        let args = if binary.to_ascii_lowercase().contains("powershell")
-            || binary.to_ascii_lowercase().contains("pwsh")
-        {
-            vec!["-NoLogo".to_string()]
-        } else {
-            Vec::new()
-        };
-        return Ok((binary, args));
+        let path = crate::tools::resolve_binary_name(&settings.default_shell)
+            .ok_or_else(|| format!("未检测到默认 shell：{}", settings.default_shell))?;
+        return Ok((
+            path.to_string_lossy().to_string(),
+            tool.default_args.clone(),
+        ));
     }
 
     let path = resolve_binary(tool).ok_or_else(|| format!("未检测到 {}", tool.name))?;
@@ -243,12 +237,54 @@ fn launch_command(
     ))
 }
 
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn terminate_child(child: &mut dyn Child) {
+    #[cfg(windows)]
+    if let Some(process_id) = child.process_id() {
+        let process_id = process_id.to_string();
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &process_id, "/T", "/F"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Read;
     use std::sync::mpsc;
     use std::time::Instant;
+
+    #[test]
+    fn powershell_launch_uses_registered_default_args() {
+        let tool = ToolDefinition {
+            id: "powershell".to_string(),
+            name: "PowerShell".to_string(),
+            binary: "ignored".to_string(),
+            default_args: vec!["registered-argument".to_string()],
+            description: "fixture".to_string(),
+        };
+        let settings = Settings {
+            default_shell: if cfg!(windows) {
+                "cmd.exe".to_string()
+            } else {
+                "sh".to_string()
+            },
+            ..Settings::default()
+        };
+        let (_, args) = launch_command(&tool, &settings).expect("resolve default shell");
+        assert_eq!(args, ["registered-argument"]);
+    }
 
     #[test]
     fn portable_pty_runs_a_child_and_reads_output() {

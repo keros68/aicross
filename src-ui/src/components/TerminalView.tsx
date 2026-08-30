@@ -23,13 +23,14 @@ export function TerminalView({
   const fitRef = useRef<FitAddon | null>(null);
 
   useEffect(() => {
+    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
     const terminal = new Terminal({
       cursorBlink: true,
       convertEol: false,
       fontFamily: '"Cascadia Mono", "IBM Plex Mono", Consolas, monospace',
       fontSize: 13,
       scrollback: 5000,
-      theme: terminalTheme(),
+      theme: terminalTheme(colorScheme.matches),
     });
     const fit = new FitAddon();
     fitRef.current = fit;
@@ -83,11 +84,16 @@ export function TerminalView({
       fit.fit();
     });
     observer.observe(hostRef.current!);
+    const updateTheme = (event: MediaQueryListEvent) => {
+      terminal.options.theme = terminalTheme(event.matches);
+    };
+    colorScheme.addEventListener("change", updateTheme);
 
     return () => {
       disposed = true;
       cleanupListeners.forEach((unlisten) => unlisten());
       observer.disconnect();
+      colorScheme.removeEventListener("change", updateTheme);
       dataSubscription.dispose();
       resizeSubscription.dispose();
       terminal.dispose();
@@ -101,10 +107,8 @@ export function TerminalView({
   return <div className="terminal-host" ref={hostRef} hidden={!active} />;
 }
 
-function terminalTheme() {
-  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+function terminalTheme(dark: boolean) {
   return dark
     ? { background: "#14161c", foreground: "#e8e9ed", cursor: "#86a6e6" }
     : { background: "#171a21", foreground: "#eef0f3", cursor: "#9fb9ee" };
 }
-

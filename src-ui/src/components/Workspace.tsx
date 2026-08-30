@@ -9,14 +9,20 @@ export function Workspace({ projectPath }: { projectPath: string }) {
 
   useEffect(() => {
     setSelected(null);
-    api.listDirectory("").then(setNodes).catch((value) => setError(String(value)));
+    setNodes([]);
+    api.listDirectory("")
+      .then((value) => {
+        setNodes(value);
+        setError("");
+      })
+      .catch((value) => setError(String(value)));
   }, [projectPath]);
 
   return (
-    <div className="pane-body workspace-pane">
+    <div className="pane-body workspace-pane" key={projectPath}>
       <div className="tree" role="tree">
         {nodes.map((node) => (
-          <TreeNode key={node.relativePath} node={node} onSelect={setSelected} />
+          <TreeNode key={node.relativePath} node={node} onSelect={setSelected} onError={setError} />
         ))}
       </div>
       {selected && !selected.isDir && (
@@ -32,7 +38,7 @@ export function Workspace({ projectPath }: { projectPath: string }) {
             </button>
             <button
               className="button small"
-              onClick={() => api.openFile(selected.relativePath).catch((value) => setError(String(value)))}
+              onClick={() => api.openFile(selected.relativePath).then(() => setError("")).catch((value) => setError(String(value)))}
             >
               打开
             </button>
@@ -47,9 +53,11 @@ export function Workspace({ projectPath }: { projectPath: string }) {
 function TreeNode({
   node,
   onSelect,
+  onError,
 }: {
   node: FileNode;
   onSelect: (node: FileNode) => void;
+  onError: (message: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileNode[] | null>(null);
@@ -57,7 +65,15 @@ function TreeNode({
   const activate = async () => {
     onSelect(node);
     if (!node.isDir) return;
-    if (!expanded && children === null) setChildren(await api.listDirectory(node.relativePath));
+    if (!expanded && children === null) {
+      try {
+        setChildren(await api.listDirectory(node.relativePath));
+        onError("");
+      } catch (value) {
+        onError(String(value));
+        return;
+      }
+    }
     setExpanded((value) => !value);
   };
 
@@ -65,17 +81,16 @@ function TreeNode({
     <div role="treeitem" aria-expanded={node.isDir ? expanded : undefined}>
       <button className={`tree-row ${node.muted ? "muted-node" : ""}`} onClick={activate}>
         <span className="tree-caret">{node.isDir ? (expanded ? "▾" : "▸") : ""}</span>
-        <span className="tree-kind">{node.isDir ? "□" : "·"}</span>
+        <span className="tree-kind">{node.isSymlink ? "↗" : node.isDir ? "□" : "·"}</span>
         <span className="tree-label">{node.name}</span>
       </button>
       {expanded && children && (
         <div className="tree-children" role="group">
           {children.map((child) => (
-            <TreeNode key={child.relativePath} node={child} onSelect={onSelect} />
+            <TreeNode key={child.relativePath} node={child} onSelect={onSelect} onError={onError} />
           ))}
         </div>
       )}
     </div>
   );
 }
-

@@ -24,9 +24,17 @@ export function Changes({ projectPath }: { projectPath: string }) {
   };
 
   const reset = async () => {
-    await api.resetBaseline();
-    setChanges([]);
-    setDiff(null);
+    setBusy(true);
+    setError("");
+    try {
+      await api.resetBaseline();
+      setChanges([]);
+      setDiff(null);
+    } catch (value) {
+      setError(String(value));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -35,18 +43,18 @@ export function Changes({ projectPath }: { projectPath: string }) {
         <button className="button small primary" disabled={busy} onClick={refresh}>
           {busy ? "刷新中" : "刷新"}
         </button>
-        <button className="button small" onClick={() => void reset()}>
+        <button className="button small" disabled={busy} onClick={() => void reset()}>
           重置基线
         </button>
       </div>
-      <div className="hint">基线为打开项目时的状态；忽略依赖与构建目录。</div>
+      <div className="hint">基线为打开项目时的状态。已忽略 .git / node_modules / target / dist</div>
       <div className="change-list">
         {changes.length === 0 && <div className="empty-state">暂无修改</div>}
         {changes.map((change) => (
           <button
             key={change.path}
             className="change-row"
-            onClick={() => api.diff(change.path).then(setDiff).catch((value) => setError(String(value)))}
+            onClick={() => api.diff(change.path).then((value) => { setDiff(value); setError(""); }).catch((value) => setError(String(value)))}
           >
             <span className={`change-badge ${change.kind}`}>{labels[change.kind]}</span>
             <span className="change-path mono">{change.path}</span>
@@ -63,4 +71,3 @@ export function Changes({ projectPath }: { projectPath: string }) {
     </div>
   );
 }
-
