@@ -31,6 +31,7 @@ pub fn resolve_binary_name(binary: &str) -> Option<PathBuf> {
     let lookup = if cfg!(windows) { "where.exe" } else { "which" };
     Command::new(lookup)
         .arg(binary)
+        .env("AI_CROSS_PEER", "1")
         .output()
         .ok()
         .filter(|output| output.status.success())
@@ -81,6 +82,7 @@ fn detect(definition: &ToolDefinition) -> ToolStatus {
 fn version_for(binary: &Path) -> Option<String> {
     let mut child = Command::new(binary)
         .arg("--version")
+        .env("AI_CROSS_PEER", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

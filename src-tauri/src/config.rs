@@ -1,4 +1,4 @@
-use crate::models::{Settings, ToolDefinition};
+use crate::models::{ResourceStore, Settings, ToolDefinition};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs;
@@ -34,7 +34,11 @@ fn read_json<T: DeserializeOwned>(directory: &Path, name: &str) -> Result<Option
 
 fn write_json<T: Serialize>(name: &str, value: &T) -> Result<(), String> {
     let directory = config_dir()?;
-    fs::create_dir_all(&directory).map_err(|error| format!("创建配置目录失败：{error}"))?;
+    write_json_in(&directory, name, value)
+}
+
+fn write_json_in<T: Serialize>(directory: &Path, name: &str, value: &T) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|error| format!("创建配置目录失败：{error}"))?;
     let contents = serde_json::to_string_pretty(value)
         .map_err(|error| format!("生成 {name} 失败：{error}"))?;
     let path = directory.join(name);
@@ -48,12 +52,36 @@ fn write_json<T: Serialize>(name: &str, value: &T) -> Result<(), String> {
         file.write_all(contents.as_bytes())
             .and_then(|_| file.sync_all())
             .map_err(|error| format!("写入 {name} 临时文件失败：{error}"))?;
-        fs::rename(&temporary, &path).map_err(|error| format!("替换 {name} 失败：{error}"))
+        replace_file(&temporary, &path, name)
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(temporary);
     }
     write_result
+}
+
+fn replace_file(temporary: &Path, path: &Path, name: &str) -> Result<(), String> {
+    match fs::rename(temporary, path) {
+        Ok(()) => return Ok(()),
+        Err(error) if !path.exists() => return Err(format!("替换 {name} 失败：{error}")),
+        Err(_) => {}
+    }
+
+    let directory = path
+        .parent()
+        .ok_or_else(|| format!("替换 {name} 失败：目标没有父目录"))?;
+    let backup = directory.join(format!(".{name}.{}.bak", Uuid::new_v4()));
+    fs::rename(path, &backup).map_err(|error| format!("备份现有 {name} 失败：{error}"))?;
+    if let Err(error) = fs::rename(temporary, path) {
+        let restore = fs::rename(&backup, path);
+        return match restore {
+            Ok(()) => Err(format!("替换 {name} 失败：{error}")),
+            Err(restore_error) => Err(format!(
+                "替换 {name} 失败：{error}；恢复旧文件失败：{restore_error}"
+            )),
+        };
+    }
+    fs::remove_file(&backup).map_err(|error| format!("清理 {name} 备份失败：{error}"))
 }
 
 pub fn load_settings() -> Result<Loaded<Settings>, String> {
@@ -99,8 +127,51 @@ pub fn save_recent(recent: &[String]) -> Result<(), String> {
     write_json("recent.json", &recent)
 }
 
+pub fn load_resources() -> Result<Loaded<ResourceStore>, String> {
+    let directory = config_dir()?;
+    Ok(
+        match read_json::<ResourceStore>(&directory, "resources.json") {
+            Ok(Some(value)) if value.version == 1 => Loaded {
+                value,
+                warning: None,
+            },
+            Ok(Some(value)) => Loaded {
+                value: ResourceStore::default(),
+                warning: Some(format!(
+                    "resources.json 版本不受支持：{}；已使用空资源清单",
+                    value.version
+                )),
+            },
+            Ok(None) => Loaded {
+                value: ResourceStore::default(),
+                warning: None,
+            },
+            Err(error) => Loaded {
+                value: ResourceStore::default(),
+                warning: Some(format!("{error}；已使用空资源清单")),
+            },
+        },
+    )
+}
+
+pub fn save_resources(resources: &ResourceStore) -> Result<(), String> {
+    write_json("resources.json", resources)
+}
+
 pub fn load_tools() -> Result<Loaded<Vec<ToolDefinition>>, String> {
     load_tools_from(&config_dir()?)
+}
+
+pub fn add_tool_override(definition: ToolDefinition) -> Result<Vec<ToolDefinition>, String> {
+    let directory = config_dir()?;
+    let mut overrides =
+        read_json::<Vec<ToolDefinition>>(&directory, "tools.json")?.unwrap_or_default();
+    if overrides.iter().any(|tool| tool.id == definition.id) {
+        return Err(format!("工具标识已存在：{}", definition.id));
+    }
+    overrides.push(definition);
+    write_json("tools.json", &overrides)?;
+    load_tools().map(|loaded| loaded.value)
 }
 
 fn load_tools_from(directory: &Path) -> Result<Loaded<Vec<ToolDefinition>>, String> {
@@ -196,6 +267,28 @@ mod tests {
         assert!(warning.contains("解析"));
         assert!(warning.contains(directory.join("settings.json").to_string_lossy().as_ref()));
 
+        fs::remove_dir_all(&directory).expect("remove fixture");
+    }
+
+    #[test]
+    fn json_config_can_be_replaced_repeatedly() {
+        let directory = std::env::temp_dir().join(format!("aicross-config-{}", Uuid::new_v4()));
+        write_json_in(
+            &directory,
+            "resources.json",
+            &serde_json::json!({"version": 1}),
+        )
+        .expect("first write");
+        write_json_in(
+            &directory,
+            "resources.json",
+            &serde_json::json!({"version": 2}),
+        )
+        .expect("replacement write");
+        let value: serde_json::Value = read_json(&directory, "resources.json")
+            .expect("read replacement")
+            .expect("resources exists");
+        assert_eq!(value["version"], 2);
         fs::remove_dir_all(&directory).expect("remove fixture");
     }
 }

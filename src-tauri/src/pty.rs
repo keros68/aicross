@@ -9,12 +9,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 struct PtyRecord {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     closed: Arc<AtomicBool>,
 }
@@ -22,7 +22,7 @@ struct PtyRecord {
 struct PreparedPty {
     master: Box<dyn MasterPty + Send>,
     reader: Box<dyn Read + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     closed: Arc<AtomicBool>,
 }
@@ -36,7 +36,16 @@ pub struct PtyManager {
 struct PtyState {
     records: HashMap<String, PtyRecord>,
     opening: HashSet<String>,
-    cancelled: HashSet<String>,
+    cancelled: HashMap<String, Instant>,
+}
+
+const CANCELLED_TTL: Duration = Duration::from_secs(5 * 60);
+
+impl PtyState {
+    fn cleanup_cancelled(&mut self, now: Instant) {
+        self.cancelled
+            .retain(|_, created_at| now.duration_since(*created_at) < CANCELLED_TTL);
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -64,7 +73,8 @@ impl PtyManager {
     ) -> Result<(), String> {
         {
             let mut state = self.lock_state();
-            if state.cancelled.remove(&request.terminal_id) {
+            state.cleanup_cancelled(Instant::now());
+            if state.cancelled.remove(&request.terminal_id).is_some() {
                 return Ok(());
             }
             if state.records.contains_key(&request.terminal_id)
@@ -94,7 +104,7 @@ impl PtyManager {
         {
             let mut state = self.lock_state();
             state.opening.remove(&terminal_id);
-            if state.cancelled.remove(&terminal_id) {
+            if state.cancelled.remove(&terminal_id).is_some() {
                 drop(state);
                 closed.store(true, Ordering::Release);
                 terminate_child(&mut **lock_unpoisoned(&child));
@@ -165,15 +175,20 @@ impl PtyManager {
     }
 
     pub fn write(&self, terminal_id: &str, data: &str) -> Result<(), String> {
-        let mut state = self.lock_state();
-        let record = state
-            .records
-            .get_mut(terminal_id)
-            .ok_or_else(|| "终端已退出".to_string())?;
-        record
-            .writer
+        let writer = {
+            let state = self.lock_state();
+            Arc::clone(
+                &state
+                    .records
+                    .get(terminal_id)
+                    .ok_or_else(|| "终端已退出".to_string())?
+                    .writer,
+            )
+        };
+        let mut writer = lock_unpoisoned(&writer);
+        writer
             .write_all(data.as_bytes())
-            .and_then(|_| record.writer.flush())
+            .and_then(|_| writer.flush())
             .map_err(|error| format!("写入终端失败：{error}"))
     }
 
@@ -197,9 +212,12 @@ impl PtyManager {
     pub fn close(&self, app: &AppHandle, terminal_id: &str) -> Result<(), String> {
         let record = {
             let mut state = self.lock_state();
+            state.cleanup_cancelled(Instant::now());
             let record = state.records.remove(terminal_id);
             if record.is_none() {
-                state.cancelled.insert(terminal_id.to_string());
+                state
+                    .cancelled
+                    .insert(terminal_id.to_string(), Instant::now());
             }
             record
         };
@@ -272,7 +290,7 @@ fn prepare_pty(
     Ok(PreparedPty {
         master: pair.master,
         reader,
-        writer,
+        writer: Arc::new(Mutex::new(writer)),
         child: Arc::new(Mutex::new(child)),
         closed: Arc::new(AtomicBool::new(false)),
     })
@@ -355,6 +373,20 @@ mod tests {
         };
         let (_, args) = launch_command(&tool, &settings).expect("resolve default shell");
         assert_eq!(args, ["registered-argument"]);
+    }
+
+    #[test]
+    fn cancelled_terminal_ids_expire() {
+        let now = Instant::now();
+        let mut state = PtyState::default();
+        state.cancelled.insert(
+            "expired".to_string(),
+            now - CANCELLED_TTL - Duration::from_secs(1),
+        );
+        state.cancelled.insert("recent".to_string(), now);
+        state.cleanup_cancelled(now);
+        assert!(!state.cancelled.contains_key("expired"));
+        assert!(state.cancelled.contains_key("recent"));
     }
 
     #[test]

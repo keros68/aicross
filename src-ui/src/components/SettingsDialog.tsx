@@ -33,6 +33,14 @@ export function SettingsDialog({
             <option value="sh">sh</option>
           </select>
         </label>
+        <label className="field-label">
+          ai-cross 目录
+          <input
+            value={value.aiCrossDir}
+            placeholder="留空时按默认位置查找"
+            onChange={(event) => onChange({ ...value, aiCrossDir: event.target.value })}
+          />
+        </label>
         <fieldset>
           <legend>显示的 tab</legend>
           {tabLabels.map(([key, label]) => (
@@ -54,4 +62,3 @@ export function SettingsDialog({
     </div>
   );
 }
-

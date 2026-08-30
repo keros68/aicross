@@ -1,0 +1,1 @@
+定向复核。读 tasks/review-00-glm-r2.md 第 3 节的 5 条问题，再读 tasks/REPORT-00.md「修正轮 R2」一节和现在的代码（src-tauri/src/lib.rs、config.rs、pty.rs，src-ui/src/App.tsx、components/Changes.tsx、components/TerminalView.tsx、styles.css）。逐条回答：已核实修复 / 未修 / 修出新问题，各一句依据带文件:行号。再看这几个文件里有没有本轮新引入的问题。最后一句话：代码层面是否可进入人工窗口 smoke。不要客套。

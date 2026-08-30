@@ -1,13 +1,16 @@
 mod config;
 mod models;
 mod pty;
+mod resources;
 mod sessions;
 mod tools;
 mod workspace;
 
 use models::{
-    ChangeEntry, DiffResult, FileNode, InitialState, SessionEntry, Settings, TerminalRequest,
-    ToolDefinition, ToolStatus,
+    AddManualAgentRequest, AddResourceModelRequest, ChangeEntry, ConnectionOverview, DiffResult,
+    FileNode, InitialState, ResourceModelKey, ResourceOperation, ResourceStore, SessionEntry,
+    Settings, SmokeSelectionRequest, TerminalRequest, ToolDefinition, ToolStatus,
+    UpdateResourceModelRequest,
 };
 use pty::PtyManager;
 use std::path::{Path, PathBuf};
@@ -22,6 +25,7 @@ struct AppState {
     recent: RwLock<Vec<String>>,
     settings: RwLock<Settings>,
     tool_definitions: RwLock<Vec<ToolDefinition>>,
+    resources: RwLock<ResourceStore>,
     warnings: Vec<String>,
     snapshots: Arc<Mutex<SnapshotStore>>,
     pty: Arc<PtyManager>,
@@ -36,6 +40,144 @@ fn get_initial_state(state: State<'_, AppState>) -> Result<InitialState, String>
 async fn detect_tools(state: State<'_, AppState>) -> Result<Vec<ToolStatus>, String> {
     let definitions = read_lock(&state.tool_definitions, "读取工具注册表")?.clone();
     run_blocking("检测工具", move || Ok(tools::detect_all(&definitions))).await
+}
+
+#[tauri::command]
+fn get_resources(state: State<'_, AppState>) -> Result<ResourceStore, String> {
+    Ok(read_lock(&state.resources, "读取资源清单")?.clone())
+}
+
+#[tauri::command]
+async fn detect_resource_agent(
+    agent_id: String,
+    state: State<'_, AppState>,
+) -> Result<ResourceOperation, String> {
+    let store = read_lock(&state.resources, "读取资源清单")?.clone();
+    let definitions = read_lock(&state.tool_definitions, "读取工具注册表")?.clone();
+    let settings = read_lock(&state.settings, "读取设置")?.clone();
+    let operation = run_blocking("探测资源", move || {
+        let operation = resources::detect_one(store, &agent_id, &definitions, &settings)?;
+        config::save_resources(&operation.store)?;
+        Ok(operation)
+    })
+    .await?;
+    *write_lock(&state.resources, "更新资源清单")? = operation.store.clone();
+    Ok(operation)
+}
+
+#[tauri::command]
+async fn detect_all_resources(
+    agent_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<ResourceOperation, String> {
+    let store = read_lock(&state.resources, "读取资源清单")?.clone();
+    let definitions = read_lock(&state.tool_definitions, "读取工具注册表")?.clone();
+    let settings = read_lock(&state.settings, "读取设置")?.clone();
+    let operation = run_blocking("探测全部资源", move || {
+        let operation = resources::detect_many(store, &agent_ids, &definitions, &settings);
+        config::save_resources(&operation.store)?;
+        Ok(operation)
+    })
+    .await?;
+    *write_lock(&state.resources, "更新资源清单")? = operation.store.clone();
+    Ok(operation)
+}
+
+#[tauri::command]
+async fn add_resource_model(
+    request: AddResourceModelRequest,
+    state: State<'_, AppState>,
+) -> Result<ResourceStore, String> {
+    update_resources(&state, "手动输入模型", move |store| {
+        resources::add_model(store, request)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_resource_model(
+    request: UpdateResourceModelRequest,
+    state: State<'_, AppState>,
+) -> Result<ResourceStore, String> {
+    update_resources(&state, "更新模型资源", move |store| {
+        resources::update_model(store, request)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn remove_resource_model(
+    request: ResourceModelKey,
+    state: State<'_, AppState>,
+) -> Result<ResourceStore, String> {
+    update_resources(&state, "移除模型资源", move |store| {
+        resources::remove_model(store, request)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn add_manual_agent(
+    request: AddManualAgentRequest,
+    state: State<'_, AppState>,
+) -> Result<ResourceStore, String> {
+    let definition = resources::manual_agent_definition(request)?;
+    let mut store = read_lock(&state.resources, "读取资源清单")?.clone();
+    let definitions = run_blocking("手动添加 agent", move || {
+        config::add_tool_override(definition)
+    })
+    .await?;
+    resources::ensure_agents(&mut store, &definitions);
+    let saved = store.clone();
+    run_blocking("保存资源清单", move || config::save_resources(&saved)).await?;
+    *write_lock(&state.tool_definitions, "更新工具注册表")? = definitions;
+    *write_lock(&state.resources, "更新资源清单")? = store.clone();
+    Ok(store)
+}
+
+#[tauri::command]
+async fn smoke_resource_model(
+    request: ResourceModelKey,
+    state: State<'_, AppState>,
+) -> Result<ResourceStore, String> {
+    let store = read_lock(&state.resources, "读取资源清单")?.clone();
+    let definitions = read_lock(&state.tool_definitions, "读取工具注册表")?.clone();
+    let settings = read_lock(&state.settings, "读取设置")?.clone();
+    let updated = run_blocking("模型冒烟", move || {
+        let updated = resources::smoke_one(store, &request, &definitions, &settings)?;
+        config::save_resources(&updated)?;
+        Ok(updated)
+    })
+    .await?;
+    *write_lock(&state.resources, "更新资源清单")? = updated.clone();
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn smoke_selected_resources(
+    request: SmokeSelectionRequest,
+    state: State<'_, AppState>,
+) -> Result<ResourceOperation, String> {
+    let store = read_lock(&state.resources, "读取资源清单")?.clone();
+    let definitions = read_lock(&state.tool_definitions, "读取工具注册表")?.clone();
+    let settings = read_lock(&state.settings, "读取设置")?.clone();
+    let operation = run_blocking("所选资源冒烟", move || {
+        let operation = resources::smoke_selected(store, &request, &definitions, &settings);
+        config::save_resources(&operation.store)?;
+        Ok(operation)
+    })
+    .await?;
+    *write_lock(&state.resources, "更新资源清单")? = operation.store.clone();
+    Ok(operation)
+}
+
+#[tauri::command]
+async fn get_connection_overview(state: State<'_, AppState>) -> Result<ConnectionOverview, String> {
+    let settings = read_lock(&state.settings, "读取设置")?.clone();
+    run_blocking("读取接入资源", move || {
+        resources::connection_overview(&settings)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -189,12 +331,13 @@ async fn open_terminal(
 }
 
 #[tauri::command]
-fn write_terminal(
+async fn write_terminal(
     terminal_id: String,
     data: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.pty.write(&terminal_id, &data)
+    let pty = Arc::clone(&state.pty);
+    run_blocking("写入终端", move || pty.write(&terminal_id, &data)).await
 }
 
 #[tauri::command]
@@ -259,6 +402,25 @@ where
         .map_err(|error| format!("{operation}线程失败：{error}"))?
 }
 
+async fn update_resources<F>(
+    state: &State<'_, AppState>,
+    operation: &'static str,
+    update: F,
+) -> Result<ResourceStore, String>
+where
+    F: FnOnce(ResourceStore) -> Result<ResourceStore, String> + Send + 'static,
+{
+    let store = read_lock(&state.resources, "读取资源清单")?.clone();
+    let updated = run_blocking(operation, move || {
+        let updated = update(store)?;
+        config::save_resources(&updated)?;
+        Ok(updated)
+    })
+    .await?;
+    *write_lock(&state.resources, "更新资源清单")? = updated.clone();
+    Ok(updated)
+}
+
 fn requires_open_confirmation(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
@@ -288,15 +450,24 @@ pub fn run() {
             let settings = config::load_settings().map_err(std::io::Error::other)?;
             let tools = config::load_tools()
                 .map_err(|error| std::io::Error::other(format!("读取工具注册表失败：{error}")))?;
-            let warnings = [recent.warning, settings.warning, tools.warning]
-                .into_iter()
-                .flatten()
-                .collect();
+            let mut resources = config::load_resources()
+                .map_err(|error| std::io::Error::other(format!("读取资源清单失败：{error}")))?;
+            resources::ensure_agents(&mut resources.value, &tools.value);
+            let warnings = [
+                recent.warning,
+                settings.warning,
+                tools.warning,
+                resources.warning,
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
             app.manage(AppState {
                 project: RwLock::new(project),
                 recent: RwLock::new(recent.value),
                 settings: RwLock::new(settings.value),
                 tool_definitions: RwLock::new(tools.value),
+                resources: RwLock::new(resources.value),
                 warnings,
                 snapshots: Arc::new(Mutex::new(snapshots)),
                 pty: Arc::new(PtyManager::default()),
@@ -321,6 +492,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_initial_state,
             detect_tools,
+            get_resources,
+            detect_resource_agent,
+            detect_all_resources,
+            add_resource_model,
+            update_resource_model,
+            remove_resource_model,
+            add_manual_agent,
+            smoke_resource_model,
+            smoke_selected_resources,
+            get_connection_overview,
             set_project,
             save_settings,
             list_directory,

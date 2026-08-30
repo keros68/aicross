@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "./api";
 import { Changes } from "./components/Changes";
+import { ResourceConnectionDialog, Resources } from "./components/Resources";
 import { Sessions } from "./components/Sessions";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { TerminalView } from "./components/TerminalView";
@@ -29,6 +30,7 @@ export default function App() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [settingsDraft, setSettingsDraft] = useState<Settings | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [connectionOpen, setConnectionOpen] = useState(false);
   const [leftTab, setLeftTab] = useState<LeftTab>("workspace");
   const [rightTab, setRightTab] = useState<RightTab>("changes");
   const [leftCollapsed, setLeftCollapsed] = useState(false);
@@ -61,6 +63,11 @@ export default function App() {
       })
       .catch((value) => setError(String(value)));
     refreshTools();
+  }, [refreshTools]);
+
+  useEffect(() => {
+    window.addEventListener("aicross:tools-changed", refreshTools);
+    return () => window.removeEventListener("aicross:tools-changed", refreshTools);
   }, [refreshTools]);
 
   const settings = initial?.settings;
@@ -184,6 +191,7 @@ export default function App() {
           </select>
         )}
         <button className="button small" onClick={() => void chooseProject()}>打开目录</button>
+        <button className="button small" onClick={() => setConnectionOpen(true)}>接入资源</button>
         <button className="button small" onClick={() => setSettingsOpen(true)}>设置</button>
       </header>
 
@@ -199,7 +207,7 @@ export default function App() {
               <>
                 <PanelTabs tabs={leftTabs} labels={leftLabels} defaults={defaultLeftTabs} active={leftTab} setActive={setLeftTab} onCollapse={() => setLeftCollapsed(true)} />
                 {leftTab === "workspace" && <Workspace projectPath={initial.projectPath} />}
-                {leftTab === "resources" && <Placeholder title="资源" text="第 1 期接入" />}
+                {leftTab === "resources" && <Resources />}
                 {leftTab === "sessions" && <Sessions />}
               </>
             )}
@@ -257,6 +265,7 @@ export default function App() {
       {settingsOpen && (
         <SettingsDialog value={settingsDraft} onChange={setSettingsDraft} onSave={() => void saveSettings()} onClose={() => { setSettingsDraft(initial.settings); setSettingsOpen(false); }} />
       )}
+      {connectionOpen && <ResourceConnectionDialog onClose={() => setConnectionOpen(false)} />}
     </div>
   );
 }

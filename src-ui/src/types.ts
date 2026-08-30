@@ -20,6 +20,7 @@ export type TabSettings = {
 
 export type Settings = {
   defaultShell: string;
+  aiCrossDir: string;
   tabs: TabSettings;
 };
 
@@ -71,3 +72,75 @@ export type TerminalTab = {
 };
 
 export type EnvEntry = { key: string; value: string };
+
+export type ResourceStore = {
+  version: number;
+  agents: ResourceAgent[];
+};
+
+export type ResourceAgent = {
+  id: string;
+  kind: string;
+  detected: boolean;
+  version: string;
+  models: ResourceModel[];
+};
+
+export type ResourceModel = {
+  id: string;
+  agent: string;
+  provider: string;
+  vendor: string;
+  billing_source: string;
+  tier: string;
+  thinking: string;
+  status: string;
+  source: string;
+  smoked_at: string;
+  smoke_model: string;
+  note: string;
+};
+
+export type CcSwitchProvider = {
+  name: string;
+  has_token: boolean;
+  models: string[];
+};
+
+export type ResourceOperation = {
+  store: ResourceStore;
+  errors: string[];
+  cc_switch_providers: CcSwitchProvider[];
+};
+
+export type ConnectionOverview = {
+  cc_switch_providers: CcSwitchProvider[];
+};
+
+export type AddResourceModelRequest = {
+  agent_id: string;
+  id: string;
+  provider: string;
+  vendor: string;
+  tier: string;
+  note: string;
+};
+
+export type UpdateResourceModelRequest = AddResourceModelRequest;
+
+export type ResourceModelKey = {
+  agent_id: string;
+  id: string;
+  provider: string;
+};
+
+export type AddManualAgentRequest = {
+  name: string;
+  binary: string;
+  args: string[];
+};
+
+export type SmokeSelectionRequest = {
+  agent_ids: string[];
+  cc_switch_providers: string[];
+};
