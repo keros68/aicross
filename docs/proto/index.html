@@ -1,0 +1,1832 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>aicross 派发控制台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    color-scheme: light dark;
+    --bg: #F5F6F8;
+    --surface: #FFFFFF;
+    --surface-alt: #EEF0F3;
+    --border: #DDE1E6;
+    --border-strong: #C7CCD4;
+    --text: #171A21;
+    --text-2: #565C68;
+    --text-3: #8A8F99;
+    --accent: #2C4A8C;
+    --accent-contrast: #FFFFFF;
+    --accent-soft: #E7ECF7;
+    --success: #2E7D4F;
+    --success-soft: #E4F3EA;
+    --warning: #B8791A;
+    --warning-soft: #FBF0DD;
+    --danger: #C0433A;
+    --danger-soft: #FBEAE8;
+    --v-claude: #BD5B3C;
+    --v-codex: #3C8C7C;
+    --v-kimi: #4C6FB0;
+    --v-glm: #7C5FB8;
+    --v-deepseek: #A8527F;
+    --v-stepfun: #9C8A3E;
+    --v-custom: #6E7480;
+    --v-claude-soft: #F5E8E3;
+    --v-codex-soft: #E2F0EC;
+    --v-kimi-soft: #E7EDF7;
+    --v-glm-soft: #EEE8F7;
+    --v-deepseek-soft: #F5E7EF;
+    --v-stepfun-soft: #F2EEDD;
+    --v-custom-soft: #EEF0F3;
+    --shadow: 0 12px 32px -8px rgba(23,26,33,0.18);
+    --shadow-soft: 0 4px 14px -6px rgba(23,26,33,0.14);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg: #14161C;
+      --surface: #1B1E26;
+      --surface-alt: #23262F;
+      --border: #2E323C;
+      --border-strong: #3A3F4B;
+      --text: #E8E9ED;
+      --text-2: #A9AEBB;
+      --text-3: #6E7480;
+      --accent: #86A6E6;
+      --accent-contrast: #0F1420;
+      --accent-soft: #1E2A47;
+      --success: #5FBF87;
+      --success-soft: #16281F;
+      --warning: #E0A94A;
+      --warning-soft: #332811;
+      --danger: #E2766D;
+      --danger-soft: #35201E;
+      --v-claude: #E08363;
+      --v-codex: #5FB3A0;
+      --v-kimi: #7D9BD6;
+      --v-glm: #A489D6;
+      --v-deepseek: #CC7CA8;
+      --v-stepfun: #D4BE68;
+      --v-custom: #9BA1AD;
+      --v-claude-soft: #33241D;
+      --v-codex-soft: #1B2E29;
+      --v-kimi-soft: #1E2636;
+      --v-glm-soft: #2A2337;
+      --v-deepseek-soft: #332230;
+      --v-stepfun-soft: #332F1E;
+      --v-custom-soft: #23262F;
+      --shadow: 0 16px 40px -10px rgba(0,0,0,0.55);
+      --shadow-soft: 0 6px 18px -8px rgba(0,0,0,0.45);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg: #14161C;
+    --surface: #1B1E26;
+    --surface-alt: #23262F;
+    --border: #2E323C;
+    --border-strong: #3A3F4B;
+    --text: #E8E9ED;
+    --text-2: #A9AEBB;
+    --text-3: #6E7480;
+    --accent: #86A6E6;
+    --accent-contrast: #0F1420;
+    --accent-soft: #1E2A47;
+    --success: #5FBF87;
+    --success-soft: #16281F;
+    --warning: #E0A94A;
+    --warning-soft: #332811;
+    --danger: #E2766D;
+    --danger-soft: #35201E;
+    --v-claude: #E08363;
+    --v-codex: #5FB3A0;
+    --v-kimi: #7D9BD6;
+    --v-glm: #A489D6;
+    --v-deepseek: #CC7CA8;
+    --v-stepfun: #D4BE68;
+    --v-custom: #9BA1AD;
+    --v-claude-soft: #33241D;
+    --v-codex-soft: #1B2E29;
+    --v-kimi-soft: #1E2636;
+    --v-glm-soft: #2A2337;
+    --v-deepseek-soft: #332230;
+    --v-stepfun-soft: #332F1E;
+    --v-custom-soft: #23262F;
+    --shadow: 0 16px 40px -10px rgba(0,0,0,0.55);
+    --shadow-soft: 0 6px 18px -8px rgba(0,0,0,0.45);
+  }
+
+  *{ box-sizing: border-box; }
+  html,body{ height:100%; }
+  body{
+    margin:0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "IBM Plex Sans", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono{ font-family: "IBM Plex Mono", "Consolas", monospace; }
+  h1,h2,h3{ margin:0; text-wrap: balance; }
+  button{ font-family: inherit; }
+  ::selection{ background: var(--accent-soft); }
+  @media (prefers-reduced-motion: reduce){ *{ transition: none !important; animation: none !important; } }
+
+  a.link{ color: var(--accent); text-decoration: none; }
+  a.link:hover{ text-decoration: underline; }
+
+  button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible{
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* ---------- shell ---------- */
+  .app{ height: 100vh; display:flex; flex-direction:column; min-width: 0; }
+  .topbar{
+    flex: 0 0 auto;
+    display:flex; align-items:baseline; gap:14px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .brand{ font-weight:700; font-size:17px; letter-spacing: 0.01em; }
+  .brand::before{
+    content:"";
+    display:inline-block; width:8px; height:8px; border-radius:2px;
+    background: var(--accent); margin-right:8px; transform: translateY(-1px);
+  }
+  .topbar-meta{ color: var(--text-2); font-size:13px; }
+  .topbar-spacer{ flex:1; }
+
+  .screen{ flex:1; min-height:0; }
+  .screen[hidden]{ display:none; }
+
+  /* ---------- screen 1: 三栏 ---------- */
+  #screen-dispatch{ display:grid; grid-template-columns: 270px 1fr 300px; height:100%; min-height:0; }
+  @media (max-width: 1180px){
+    #screen-dispatch{ grid-template-columns: 236px 1fr 264px; }
+  }
+  @media (max-width: 900px){
+    #screen-dispatch{ grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+    .roster{ border-right:none; border-bottom:1px solid var(--border); max-height:260px; }
+    .plan-col{ border-left:none; border-top:1px solid var(--border); max-height:360px; }
+  }
+
+  /* ---------- 左栏：资源 ---------- */
+  .roster{
+    border-right: 1px solid var(--border);
+    background: var(--surface);
+    padding: 16px 14px 20px;
+    overflow-y: auto;
+  }
+  .roster-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; }
+  .roster-title{
+    font-size:11px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase;
+    color: var(--text-3);
+  }
+  .dot{ width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+
+  .agent-block{ margin-bottom:12px; }
+  .agent-block:last-child{ margin-bottom:0; }
+  .agent-head{ display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  .agent-toggle{
+    display:flex; align-items:center; gap:6px; flex:1; min-width:0;
+    background:none; border:none; cursor:pointer; padding:4px 2px; text-align:left; color:var(--text);
+  }
+  .agent-caret{ color: var(--text-3); font-size:10px; flex:0 0 auto; }
+  .agent-name{ font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .agent-version{ font-size:11px; color: var(--text-3); white-space:nowrap; }
+  .agent-actions{ display:flex; gap:4px; flex:0 0 auto; }
+  .agent-actions .btn-sm{ padding:3px 8px; font-size:10.5px; }
+  .agent-probe-note{ font-size:11px; color: var(--text-3); padding:0 2px 4px 24px; min-height:14px; }
+  .agent-models{ padding-left:14px; border-left:1px solid var(--border); margin-left:6px; margin-top:2px; }
+  .agent-models[hidden]{ display:none; }
+  .agent-model-group{ font-size:10px; color: var(--text-3); text-transform:uppercase; letter-spacing:0.06em; padding:6px 8px 2px; }
+  .agent-empty{ font-size:11.5px; color: var(--text-3); padding:4px 8px; }
+
+  .roster-model{
+    display:block; width:100%; text-align:left;
+    background:none; border: 1px solid transparent; border-radius:8px;
+    padding: 6px 8px; margin-bottom:2px; cursor:pointer;
+    color: var(--text);
+  }
+  .roster-model:hover{ background: var(--surface-alt); border-color: var(--border); }
+  .roster-model-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .roster-model-id{ font-size:12.5px; font-weight:500; }
+  .roster-model-meta{ font-size:11px; color: var(--text-3); margin-top:3px; }
+  .rstatus{ font-size:10px; font-weight:600; padding:1px 7px; border-radius:8px; white-space:nowrap; }
+  .rstatus-active{ background: var(--success-soft); color: var(--success); }
+  .rstatus-pending{ background: var(--warning-soft); color: var(--warning); }
+  .rstatus-off{ background: var(--surface-alt); color: var(--text-3); border:1px solid var(--border-strong); }
+
+  .add-agent-btn{ width:100%; border-style:dashed; margin-top:10px; }
+
+  /* ---------- 中栏：对话 ---------- */
+  .conversation{ display:flex; flex-direction:column; min-height:0; min-width:0; }
+  .thread{ flex:1; overflow-y:auto; padding: 22px 28px 12px; display:flex; flex-direction:column; gap:14px; }
+  .thread-inner{ max-width: 720px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:14px; }
+
+  .msg{ max-width: 620px; }
+  .msg.user{ align-self:flex-end; margin-left:auto; }
+  .msg.model{ align-self:flex-start; }
+  .msg-bubble{
+    background: var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding: 12px 14px;
+  }
+  .msg.user .msg-bubble{ background: var(--accent-soft); border-color: transparent; }
+  .msg.model .msg-bubble{ border-left-width:3px; }
+  .msg-head{ display:flex; align-items:center; gap:7px; margin-bottom:6px; }
+  .msg-author{ font-size:12px; font-weight:600; }
+  .vendor-tag{
+    font-size:10.5px; font-weight:600; padding:1px 6px; border-radius:5px;
+    letter-spacing:0.02em;
+  }
+  .msg-role{ font-size:11px; color: var(--text-3); }
+  .msg-body{ font-size:13.5px; color: var(--text); }
+  .msg-body p{ margin: 0 0 8px; }
+  .msg-body p:last-child{ margin-bottom:0; }
+  .msg-body ol, .msg-body ul{ margin: 6px 0 0; padding-left: 20px; }
+  .msg-body li{ margin-bottom: 4px; }
+
+  .attachments{ display:flex; gap:8px; margin-top:9px; flex-wrap:wrap; }
+  .attachment-chip{
+    display:inline-flex; align-items:center; gap:6px;
+    border:1px solid var(--border-strong); border-radius:7px;
+    padding: 4px 9px; font-size:12px; background: var(--surface);
+  }
+  .attachment-chip::before{
+    content:""; width:10px; height:12px; flex:0 0 auto;
+    background: var(--text-3);
+    clip-path: polygon(0 0, 65% 0, 100% 35%, 100% 100%, 0 100%);
+  }
+
+  .msg.system{ align-self:center; }
+  .msg.system .msg-bubble{
+    background:transparent; border:none; padding: 2px 4px;
+    color: var(--text-3); font-size:12px; text-align:center;
+  }
+
+  .status-line{
+    align-self:center; display:flex; align-items:center; gap:8px;
+    font-size:12px; color: var(--text-2); background: var(--surface-alt);
+    border:1px solid var(--border); border-radius:20px; padding:5px 12px 5px 8px;
+  }
+  .status-badge{
+    font-size:10.5px; font-weight:600; padding:2px 7px; border-radius:10px;
+    text-transform:uppercase; letter-spacing:0.03em;
+  }
+  .status-badge.queued{ background: var(--surface); color: var(--text-3); border:1px solid var(--border-strong); }
+  .status-badge.running{ background: var(--warning-soft); color: var(--warning); }
+  .status-badge.done{ background: var(--success-soft); color: var(--success); }
+
+  .view-result-row{ align-self:center; margin-top:4px; }
+
+  .plan-summary-strip{
+    max-width:720px; margin:0 auto 8px; width:100%;
+    font-size:12px; color: var(--text-2); background: var(--surface-alt);
+    border:1px solid var(--border); border-radius:8px; padding:7px 12px;
+    cursor:pointer; text-align:left;
+  }
+  .plan-summary-strip:hover{ border-color: var(--accent); color: var(--text); }
+
+  /* ---------- composer ---------- */
+  .composer{
+    flex: 0 0 auto; border-top:1px solid var(--border); background: var(--surface);
+    padding: 10px 28px 16px;
+  }
+  .composer-inner{ max-width:720px; margin:0 auto; }
+  select{
+    font-family: inherit; font-size:12.5px; color: var(--text);
+    background: var(--surface-alt); border:1px solid var(--border-strong);
+    border-radius:6px; padding: 5px 8px;
+  }
+  .composer-row2{ display:flex; gap:10px; align-items:flex-start; }
+  .input-wrap{ position:relative; flex:1; }
+  #composer-input{
+    width:100%; font-family: "IBM Plex Mono", monospace; font-size:13px;
+    background: var(--surface-alt); border:1px solid var(--border-strong);
+    border-radius:9px; padding: 10px 40px 10px 12px; color: var(--text);
+  }
+  .at-btn{
+    position:absolute; right:6px; top:50%; transform:translateY(-50%);
+    width:26px; height:26px; border-radius:6px; border:1px solid var(--border-strong);
+    background: var(--surface); color: var(--text-2); font-family:"IBM Plex Mono",monospace;
+    font-size:13px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+  }
+  .at-btn:hover{ background: var(--surface-alt); }
+
+  .mention-popup{
+    position:absolute; bottom: calc(100% + 8px); left:0; width: 280px;
+    background: var(--surface); border:1px solid var(--border-strong); border-radius:10px;
+    box-shadow: var(--shadow); padding:6px; max-height: 280px; overflow-y:auto; z-index:20;
+  }
+  .mention-popup[hidden]{ display:none; }
+  .mention-group-label{ font-size:10.5px; color: var(--text-3); text-transform:uppercase; letter-spacing:0.06em; padding: 6px 8px 2px; }
+  .mention-item{
+    display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+    background:none; border:none; border-radius:7px; padding:6px 8px; cursor:pointer;
+    font-size:12.5px; color: var(--text); font-family:"IBM Plex Mono",monospace;
+  }
+  .mention-item:hover{ background: var(--surface-alt); }
+
+  /* ---------- 右栏：方案与编排 ---------- */
+  .plan-col{
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    padding: 16px 14px 20px;
+    overflow-y: auto;
+    display:flex; flex-direction:column; gap:18px;
+    transition: background-color .3s;
+  }
+  .plan-col.flash{ background: var(--accent-soft); }
+  .plan-section{ display:flex; flex-direction:column; gap:9px; }
+  .plan-section-title{
+    font-size:11px; font-weight:600; letter-spacing:0.07em; text-transform:uppercase;
+    color: var(--text-3);
+  }
+  .plan-section label{ font-size:12px; color: var(--text-2); display:flex; align-items:center; gap:6px; }
+  #preset-hint{ font-size:11.5px; color: var(--text-3); }
+
+  .stage-bar-head{ display:flex; align-items:center; justify-content:space-between; margin-top:2px; }
+  .stage-bar{ display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+  .stage-chip{
+    font-family:"IBM Plex Mono", monospace; font-size:12px;
+    border:1px solid var(--border-strong); background: var(--surface-alt);
+    border-radius:8px; padding:6px 9px; cursor:pointer; color: var(--text);
+    max-width:100%; overflow-wrap:anywhere; text-align:left;
+  }
+  .stage-chip:hover{ border-color: var(--accent); }
+  .stage-chip.placeholder{ border-style:dashed; color: var(--text-3); }
+  .stage-arrow{ color: var(--text-3); font-size:13px; }
+
+  .node-editor{
+    border:1px solid var(--border-strong); border-radius:10px;
+    background: var(--surface-alt); padding:10px 12px;
+  }
+  .node-editor[hidden]{ display:none; }
+  .node-editor-row{ display:flex; align-items:center; gap:6px; margin-bottom:8px; font-size:12px; flex-wrap:wrap; }
+  .node-editor-row:last-of-type{ margin-bottom:0; }
+  .node-editor-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
+  .builder-node-remove{
+    background:none; border:none; color: var(--text-3); cursor:pointer;
+    font-size:14px; padding:2px 6px;
+  }
+  .builder-node-remove:hover{ color: var(--danger); }
+
+  .link-btn{ background:none; border:none; color: var(--accent); font-size:12.5px; cursor:pointer; padding:4px 2px; text-align:left; }
+  .link-btn:hover{ text-decoration: underline; }
+
+  /* ---------- buttons ---------- */
+  .btn{
+    font-size:13px; font-weight:600; border-radius:8px; padding: 9px 16px;
+    border:1px solid var(--border-strong); background: var(--surface); color: var(--text);
+    cursor:pointer;
+  }
+  .btn:hover{ background: var(--surface-alt); }
+  .btn-primary{ background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+  .btn-primary:hover{ filter: brightness(1.06); }
+  .btn-ghost{ background:transparent; border-color:transparent; color: var(--text-2); }
+  .btn-ghost:hover{ background: var(--surface-alt); color: var(--text); }
+  .btn-sm{ padding:5px 11px; font-size:12px; border-radius:7px; }
+
+  /* ---------- modal 通用 ---------- */
+  .modal-overlay{
+    position:fixed; inset:0; background: rgba(10,12,16,0.45);
+    display:flex; align-items:flex-start; justify-content:center;
+    padding: 5vh 16px; z-index:100; overflow-y:auto;
+  }
+  .modal-overlay[hidden]{ display:none; }
+  .modal{
+    background: var(--surface); border:1px solid var(--border); border-radius:14px;
+    box-shadow: var(--shadow); width: 100%; max-width: 660px; padding: 22px 24px 20px;
+  }
+  .modal-title{ font-size:16px; font-weight:700; margin-bottom:3px; }
+  .modal-task{ font-size:12.5px; color: var(--text-2); margin-bottom:16px; }
+  .modal-section{ margin-bottom:18px; }
+  .modal-section-title{
+    font-size:11px; font-weight:600; letter-spacing:0.07em; text-transform:uppercase;
+    color: var(--text-3); margin-bottom:9px;
+  }
+  .modal label{ font-size:12.5px; color: var(--text-2); display:block; }
+  .modal input[type="text"]{
+    width:100%; font-family:inherit; font-size:13px; color: var(--text);
+    background: var(--surface-alt); border:1px solid var(--border-strong);
+    border-radius:7px; padding:7px 9px; margin-top:4px;
+  }
+  .modal select{ width:100%; margin-top:4px; }
+
+  .plan-summary-line{
+    font-family:"IBM Plex Mono", monospace; font-size:12.5px; line-height:1.7;
+    background: var(--surface-alt); border-radius:8px; padding:10px 12px; color: var(--text);
+  }
+
+  .route-line{
+    display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+    font-family:"IBM Plex Mono", monospace; font-size:12px; line-height:1.9;
+    padding: 8px 10px; border-radius:8px; background: var(--surface-alt);
+    border-left: 3px solid var(--accent);
+    margin-bottom:6px;
+  }
+
+  .material-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+  .material-list li{
+    display:flex; align-items:center; gap:9px; padding: 8px 10px; border-radius:8px;
+    border:1px solid var(--border); background: var(--surface-alt);
+  }
+  .material-list label{ display:flex; align-items:center; gap:9px; flex:1; cursor:pointer; font-size:12.5px; color: var(--text); }
+  .material-tag{
+    font-size:10.5px; color: var(--text-3); border:1px solid var(--border-strong);
+    border-radius:5px; padding:1px 6px;
+  }
+  .material-list li.excluded{ border-color: var(--warning); background: var(--warning-soft); }
+  .excluded-note{ font-size:11.5px; color: var(--warning); margin-left:auto; white-space:nowrap; }
+
+  .isolation-note{
+    font-size:12px; color: var(--text-2); background: var(--surface-alt);
+    border-radius:8px; padding:9px 11px;
+  }
+
+  .authorize-line{ font-size:12.5px; color: var(--text); margin-bottom:12px; }
+  .authorize-line b{ font-weight:600; }
+  .modal-actions{ display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+
+  /* ---------- 接入资源面板 ---------- */
+  .resource-row{
+    display:flex; align-items:center; gap:10px; padding:8px 10px;
+    border:1px solid var(--border); border-radius:8px; background: var(--surface-alt);
+    margin-bottom:6px;
+  }
+  .resource-row:last-child{ margin-bottom:0; }
+  .resource-row label{ display:flex; align-items:center; gap:8px; font-size:13px; flex:1; }
+  .resource-version, .resource-key{ font-size:11.5px; color: var(--text-3); }
+  .resource-status{ font-size:11px; font-weight:600; color: var(--text-3); white-space:nowrap; }
+
+  /* ---------- 表单式构建器 ---------- */
+  .builder-stage{
+    border:1px solid var(--border); border-radius:10px; padding:10px 12px;
+    margin-bottom:10px; background: var(--surface-alt);
+  }
+  .builder-stage-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+  .builder-stage-name{ font-size:12px; font-weight:600; color: var(--text-2); }
+  .builder-nodes{ display:flex; flex-direction:column; gap:8px; margin-bottom:8px; }
+  .builder-node{
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:12px;
+    background: var(--surface); border:1px solid var(--border); border-radius:7px; padding:6px 8px;
+  }
+  .builder-node select{ font-size:11.5px; padding:3px 6px; width:auto; margin-top:0; }
+  .builder-add-stage{ width:100%; border-style:dashed; margin-bottom:14px; }
+  .builder-notation{
+    font-family:"IBM Plex Mono", monospace; font-size:12px; background: var(--surface);
+    border:1px solid var(--border); border-radius:8px; padding:10px 12px; color: var(--text-2);
+    word-break:break-all;
+  }
+
+  /* ---------- screen 2: result ---------- */
+  #screen-result{ overflow-y:auto; padding: 22px 32px 60px; }
+  .result-wrap{ max-width: 1120px; margin:0 auto; }
+  .result-top{ display:flex; align-items:center; gap:14px; margin-bottom:6px; }
+  .result-title{ font-size:18px; font-weight:700; }
+  .result-back{ font-size:12.5px; }
+
+  .route-echo{ margin: 14px 0 22px; display:flex; flex-direction:column; gap:6px; }
+
+  .verdict-grid{ display:grid; grid-template-columns: repeat(3, 1fr); gap:14px; margin-bottom: 26px; }
+  @media (max-width: 880px){ .verdict-grid{ grid-template-columns: 1fr; } }
+
+  .verdict-card{
+    background: var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding: 14px 15px; display:flex; flex-direction:column; gap:10px;
+    border-top-width:3px;
+  }
+  .verdict-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .verdict-model{ display:flex; align-items:center; gap:8px; }
+  .verdict-model-id{ font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:13px; }
+  .verdict-role{ font-size:11px; color: var(--text-3); }
+  .verdict-status{ font-size:11px; font-weight:600; padding:2px 8px; border-radius:9px; background: var(--success-soft); color: var(--success); }
+  .verdict-body{ font-size:13px; }
+  .verdict-body ul{ margin:0; padding-left:18px; }
+  .verdict-body li{ margin-bottom:7px; }
+  .verdict-body li:last-child{ margin-bottom:0; }
+  .verdict-actions{ display:flex; gap:7px; flex-wrap:wrap; padding-top:8px; border-top:1px solid var(--border); }
+
+  .section-block{
+    background: var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding: 16px 18px; margin-bottom:16px;
+  }
+  .section-head{ display:flex; align-items:baseline; gap:9px; margin-bottom:11px; }
+  .section-head h2{ font-size:14px; font-weight:700; }
+  .section-count{ font-size:11.5px; color: var(--text-3); }
+
+  .plain-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:9px; }
+  .plain-list li{ font-size:13px; padding-left:16px; position:relative; }
+  .plain-list li::before{ content:"·"; position:absolute; left:2px; color: var(--text-3); font-weight:700; }
+
+  .disagree-item{ margin-bottom:12px; }
+  .disagree-item:last-child{ margin-bottom:0; }
+  .disagree-topic{ font-size:12px; font-weight:600; color: var(--text-2); margin-bottom:6px; }
+  .disagree-views{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+  @media (max-width:700px){ .disagree-views{ grid-template-columns: 1fr; } }
+  .disagree-view{
+    font-size:12.5px; background: var(--surface-alt); border-radius:8px; padding:9px 10px;
+  }
+  .disagree-view b{ font-weight:600; }
+
+  .unique-list{ display:flex; flex-direction:column; gap:10px; }
+  .unique-item{
+    display:flex; align-items:flex-start; gap:12px;
+    border-left:3px solid var(--accent); background: var(--accent-soft);
+    border-radius:0 8px 8px 0; padding: 10px 12px;
+  }
+  .unique-text{ flex:1; font-size:13px; }
+  .unique-source{ font-size:11px; color: var(--text-3); margin-top:3px; }
+  .unique-actions{ display:flex; gap:6px; flex-shrink:0; position:relative; }
+  .verified-badge{ font-size:11px; font-weight:600; color: var(--success); }
+
+  .forward-popover{
+    position:absolute; top: calc(100% + 6px); right:0; width:220px;
+    background: var(--surface); border:1px solid var(--border-strong); border-radius:9px;
+    box-shadow: var(--shadow-soft); padding:5px; z-index:15;
+  }
+  .forward-popover[hidden]{ display:none; }
+  .forward-popover button{
+    display:block; width:100%; text-align:left; background:none; border:none;
+    padding:6px 8px; border-radius:6px; font-size:12px; cursor:pointer; color: var(--text);
+    font-family:"IBM Plex Mono",monospace;
+  }
+  .forward-popover button:hover{ background: var(--surface-alt); }
+
+  .decide-row{ display:flex; justify-content:flex-end; margin-bottom:16px; }
+
+  .table-scroll{ overflow-x:auto; }
+  table.bill{ width:100%; border-collapse:collapse; font-size:12.5px; }
+  table.bill th, table.bill td{ text-align:left; padding: 8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  table.bill th{ color: var(--text-3); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; }
+  table.bill td.num{ font-family:"IBM Plex Mono",monospace; font-variant-numeric: tabular-nums; }
+
+  details.trace{ border:1px solid var(--border); border-radius:9px; padding: 4px 12px; margin-bottom:8px; background: var(--surface-alt); }
+  details.trace:last-child{ margin-bottom:0; }
+  details.trace summary{ cursor:pointer; padding:9px 0; font-family:"IBM Plex Mono",monospace; font-size:12px; color: var(--text-2); }
+  details.trace pre{
+    margin: 0 0 12px; font-family:"IBM Plex Mono",monospace; font-size:11.5px; line-height:1.6;
+    background: var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px;
+    overflow-x:auto; color: var(--text-2);
+  }
+  summary::-webkit-details-marker{ color: var(--text-3); }
+
+  /* vendor color utility */
+  .c-claude{ color: var(--v-claude); } .bg-claude{ background: var(--v-claude-soft); } .b-claude{ border-left-color: var(--v-claude) !important; border-top-color: var(--v-claude) !important; }
+  .c-codex{ color: var(--v-codex); } .bg-codex{ background: var(--v-codex-soft); } .b-codex{ border-left-color: var(--v-codex) !important; border-top-color: var(--v-codex) !important; }
+  .c-kimi{ color: var(--v-kimi); } .bg-kimi{ background: var(--v-kimi-soft); } .b-kimi{ border-left-color: var(--v-kimi) !important; border-top-color: var(--v-kimi) !important; }
+  .c-glm{ color: var(--v-glm); } .bg-glm{ background: var(--v-glm-soft); } .b-glm{ border-left-color: var(--v-glm) !important; border-top-color: var(--v-glm) !important; }
+  .c-deepseek{ color: var(--v-deepseek); } .bg-deepseek{ background: var(--v-deepseek-soft); } .b-deepseek{ border-left-color: var(--v-deepseek) !important; border-top-color: var(--v-deepseek) !important; }
+  .c-stepfun{ color: var(--v-stepfun); } .bg-stepfun{ background: var(--v-stepfun-soft); } .b-stepfun{ border-left-color: var(--v-stepfun) !important; border-top-color: var(--v-stepfun) !important; }
+  .c-custom{ color: var(--v-custom); } .bg-custom{ background: var(--v-custom-soft); } .b-custom{ border-left-color: var(--v-custom) !important; border-top-color: var(--v-custom) !important; }
+  .dot-claude{ background: var(--v-claude); } .dot-codex{ background: var(--v-codex); } .dot-kimi{ background: var(--v-kimi); } .dot-glm{ background: var(--v-glm); } .dot-deepseek{ background: var(--v-deepseek); } .dot-stepfun{ background: var(--v-stepfun); } .dot-custom{ background: var(--v-custom); }
+
+  /* toast */
+  #toast{
+    position:fixed; left:50%; bottom:26px; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); font-size:13px;
+    padding: 10px 16px; border-radius:8px; box-shadow: var(--shadow); z-index:200;
+  }
+  #toast[hidden]{ display:none; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">aicross</div>
+    <div class="topbar-meta">项目：Q3 留存分析方案复查</div>
+    <div class="topbar-spacer"></div>
+  </header>
+
+  <!-- ============ 屏 1：资源 / 对话 / 方案与编排 ============ -->
+  <section id="screen-dispatch" class="screen">
+
+    <!-- 左栏：资源 -->
+    <aside class="roster" id="roster">
+      <div class="roster-head">
+        <div class="roster-title">资源</div>
+        <button class="btn btn-sm" id="open-resource-btn" type="button">接入资源</button>
+      </div>
+      <div id="resource-tree"></div>
+      <button class="btn btn-sm add-agent-btn" id="add-agent-btn" type="button">＋ 手动添加</button>
+    </aside>
+
+    <!-- 中栏：对话 -->
+    <main class="conversation">
+      <div class="thread" id="thread">
+        <div class="thread-inner" id="thread-inner">
+
+          <div class="msg user">
+            <div class="msg-bubble">
+              <div class="msg-body">
+                <p>帮我看看这份方案能不能用。需求在 spec.md，数据在 data.csv，想知道现在的分析路径有没有硬伤。</p>
+              </div>
+              <div class="attachments">
+                <span class="attachment-chip mono">spec.md</span>
+                <span class="attachment-chip mono">data.csv</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg system"><div class="msg-bubble">已读取附件 spec.md、data.csv</div></div>
+
+          <div class="msg model">
+            <div class="msg-bubble b-claude">
+              <div class="msg-head">
+                <span class="msg-author">fable-5</span>
+                <span class="vendor-tag bg-claude c-claude">Claude</span>
+                <span class="msg-role">出方案</span>
+              </div>
+              <div class="msg-body">
+                <p>我看了 spec.md 和 data.csv，建议方案：</p>
+                <ol>
+                  <li>留存按 spec 里定义的 30 天窗口计算，用 data.csv 的 <span class="mono">signup_date</span>、<span class="mono">last_active_date</span> 两列。</li>
+                  <li>缺失的 <span class="mono">last_active_date</span> 按未留存处理。</li>
+                  <li>按 <span class="mono">channel</span> 分组；样本量最小的“数据合作”渠道并入“其他”。</li>
+                  <li>结论：各渠道留存率无显著差异，不需要按渠道调整获客预算。</li>
+                </ol>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="composer-inner">
+          <button type="button" class="plan-summary-strip" id="plan-summary-strip"></button>
+          <div class="composer-row2">
+            <div class="input-wrap">
+              <input id="composer-input" type="text" autocomplete="off"
+                value="@codex/gpt-5.6-terra @kimi/k3 @cc-switch/glm-5.2 交叉复查 fable-5 的方案：统计假设是否成立、data.csv 是否有质量问题">
+              <button class="at-btn" id="at-btn" type="button" title="提及模型">@</button>
+              <div class="mention-popup" id="mention-popup" hidden></div>
+            </div>
+            <button class="btn btn-primary" id="send-btn" type="button">发送</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 右栏：方案与编排 -->
+    <aside class="plan-col" id="plan-col">
+      <div class="plan-section">
+        <div class="plan-section-title">编排</div>
+        <label>预设
+          <select id="preset-select">
+            <option value="shared" selected>共享对话</option>
+            <option value="economy">经济流水线</option>
+            <option value="blind">盲审</option>
+            <option value="arena" disabled>擂台（第 2 期）</option>
+            <option value="panel" disabled>评审团（第 2 期）</option>
+          </select>
+        </label>
+        <span id="preset-hint"></span>
+
+        <div class="stage-bar-head">
+          <span></span>
+          <button class="btn btn-sm" id="open-builder-btn" type="button">编辑编排</button>
+        </div>
+        <div class="stage-bar" id="stage-bar"></div>
+        <div class="node-editor" id="node-editor" hidden>
+          <div id="node-editor-rows"></div>
+          <div class="node-editor-actions">
+            <button class="btn btn-sm" id="node-editor-add" type="button">添加节点</button>
+            <button class="btn btn-primary btn-sm" id="node-editor-done" type="button">完成</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-section">
+        <button type="button" class="link-btn" id="open-explain-btn">讲解 →</button>
+      </div>
+    </aside>
+
+  </section>
+
+  <!-- ============ 屏 2：结果 ============ -->
+  <section id="screen-result" class="screen" hidden>
+    <div class="result-wrap">
+      <div class="result-top">
+        <button class="btn btn-ghost btn-sm result-back" id="back-btn" type="button">← 返回对话</button>
+      </div>
+      <h1 class="result-title">盲审结果：fable-5 的留存分析方案</h1>
+
+      <div class="route-echo" id="route-echo"></div>
+
+      <div class="verdict-grid" id="verdict-grid"></div>
+
+      <div class="decide-row">
+        <button class="btn" id="human-decide-btn" type="button">交人裁决</button>
+      </div>
+
+      <div class="section-block">
+        <div class="section-head"><h2>共识</h2><span class="section-count">三路一致</span></div>
+        <ul class="plain-list">
+          <li>结论“无显著差异”缺少统计检验支撑，仅凭描述统计不能直接支持不调整预算的决定。</li>
+          <li>“其他”类别的合并规则未写清楚，需要在报告或附录里说明具体包含哪些渠道。</li>
+        </ul>
+      </div>
+
+      <div class="section-block">
+        <div class="section-head"><h2>分歧</h2><span class="section-count">并列呈报，不投票</span></div>
+
+        <div class="disagree-item">
+          <div class="disagree-topic">缺失值的处理方式</div>
+          <div class="disagree-views">
+            <div class="disagree-view"><b class="c-codex">gpt-5.6-terra</b> 认为：按未留存处理会低估留存率，建议先核实缺失是否由埋点丢失导致。</div>
+            <div class="disagree-view"><b class="c-glm">glm-5.2</b> 认为：缺失比例不高，可以先按未留存处理并标注假设，不必阻塞上线。</div>
+          </div>
+        </div>
+
+        <div class="disagree-item">
+          <div class="disagree-topic">“数据合作”渠道样本量过小</div>
+          <div class="disagree-views">
+            <div class="disagree-view"><b class="c-kimi">k3</b> 认为：不应并入“其他”，应单独标注为不可比，否则会掩盖真实差异。</div>
+            <div class="disagree-view"><b class="c-codex">gpt-5.6-terra</b> 认为：合并可以接受，只要在报告里注明。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-block">
+        <div class="section-head"><h2>独有发现</h2><span class="section-count">仅一路提到，不因此降权</span></div>
+        <div class="unique-list" id="unique-list"></div>
+      </div>
+
+      <div class="section-block">
+        <div class="section-head"><h2>本次用量</h2></div>
+        <div class="table-scroll">
+          <table class="bill">
+            <thead><tr><th>阶段</th><th>模型</th><th>in tokens</th><th>out tokens</th><th>耗时</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr><td>盲审</td><td class="mono">codex/gpt-5.6-terra</td><td class="num">18,240</td><td class="num">2,150</td><td class="num">47s</td><td>完成</td></tr>
+              <tr><td>盲审</td><td class="mono">kimi/k3</td><td class="num">21,006</td><td class="num">1,860</td><td class="num">52s</td><td>完成</td></tr>
+              <tr><td>盲审</td><td class="mono">cc-switch/glm-5.2</td><td class="num">15,732</td><td class="num">1,420</td><td class="num">39s</td><td>完成</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <details class="section-block" style="padding-bottom:6px;">
+        <summary style="cursor:pointer; font-weight:700; font-size:14px; list-style:none;">留痕</summary>
+        <div style="margin-top:12px;">
+          <details class="trace">
+            <summary>.dispatch/20260830-1432-codex-terra-verifier.md</summary>
+            <pre>---
+通道: codex exec
+模型: gpt-5.6-terra
+档位: 中档
+thinking: 中
+角色: 把关
+状态: 完成
+tokens_in: 18240
+tokens_out: 2150
+耗时: 47s
+---
+
+## 复查结论
+1. 缺失值处理假设有风险：last_active_date 缺失被当作“未流失”过快，
+   建议先确认是否为埋点丢失导致，而非真实流失。
+2. 结论“无显著差异”未给出检验方法（t 检验 / 卡方 / 置信区间），
+   目前只是描述性对比，不能直接支持“不调整渠道预算”的决策。
+3. 未做基线校准或 A/A 测试，当前留存率数字本身是否可信无法判断。
+（省略）</pre>
+          </details>
+          <details class="trace">
+            <summary>.dispatch/20260830-1432-kimi-k3-verifier.md</summary>
+            <pre>---
+通道: kimi cli
+模型: k3
+档位: 中档
+thinking: 中
+角色: 把关
+状态: 完成
+tokens_in: 21006
+tokens_out: 1860
+耗时: 52s
+---
+
+## 复查结论
+1. data.csv 第三列（last_active_date）有 12 个空值，spec.md 未提到
+   允许缺失，建议先核实数据源再定处理方式。
+2. “数据合作”渠道样本量明显偏小，不应直接并入“其他”，应单独标注
+   为不可比。
+3. 结论部分只写了“无显著差异”，没有给出具体检验方法或 p 值。
+（省略）</pre>
+          </details>
+          <details class="trace">
+            <summary>.dispatch/20260830-1433-glm-glm5.2-verifier.md</summary>
+            <pre>---
+通道: cc_switch.py exec
+模型: glm-5.2
+档位: 低档
+thinking: 低
+角色: 把关
+状态: 完成
+tokens_in: 15732
+tokens_out: 1420
+耗时: 39s
+---
+
+## 复查结论
+1. spec.md 定义的 30 天留存窗口按自然日计算，data.csv 的时间戳是
+   UTC，边界处理会有偏差，需要统一。
+2. “无显著差异”缺统计检验，建议至少补一个卡方检验或分渠道置信区间。
+3. 缺失值比例不算高，可以先按未留存处理并标注假设，不必阻塞上线。
+（省略）</pre>
+          </details>
+        </div>
+      </details>
+
+    </div>
+  </section>
+</div>
+
+<!-- ============ G1 闸门 ============ -->
+<div class="modal-overlay" id="gate-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gate-title">
+    <div class="modal-title" id="gate-title">发送前确认</div>
+    <div class="modal-task" id="gate-task-line">任务：交叉复查 fable-5 的方案 · 预设：共享对话</div>
+
+    <div class="modal-section">
+      <div class="modal-section-title">本次方案</div>
+      <div class="plan-summary-line" id="gate-plan-summary"></div>
+    </div>
+
+    <div class="modal-section" id="gate-materials-section">
+      <div class="modal-section-title">原始材料</div>
+      <ul class="material-list">
+        <li>
+          <label><input type="checkbox" checked> <span class="mono">spec.md</span></label>
+          <span class="material-tag">附件</span>
+        </li>
+        <li>
+          <label><input type="checkbox" checked> <span class="mono">data.csv</span></label>
+          <span class="material-tag">附件</span>
+        </li>
+        <li>
+          <label><input type="checkbox" checked> <span>用户消息：“帮我看看这份方案能不能用……”</span></label>
+          <span class="material-tag">消息</span>
+        </li>
+        <li class="excluded">
+          <label><input type="checkbox"> <span>fable-5 的方案回复</span></label>
+          <span class="excluded-note">我方结论，盲审默认不发</span>
+        </li>
+      </ul>
+    </div>
+
+    <div class="modal-section" id="gate-isolation-section">
+      <div class="isolation-note">三路各自在只含所选材料的空目录里运行，只读，互不可见。</div>
+    </div>
+
+    <div class="modal-section" style="margin-bottom:14px;">
+      <div class="authorize-line">材料将发送至 <b>OpenAI</b>、<b>Moonshot</b>、<b>智谱</b>。</div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn" id="gate-cancel" type="button">取消</button>
+      <button class="btn btn-primary" id="gate-confirm" type="button">确认派发</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 接入资源面板 ============ -->
+<div class="modal-overlay" id="resource-modal" hidden>
+  <div class="modal">
+    <div class="modal-title">接入资源</div>
+    <div class="modal-task">检测本机已安装的 agent（CLI 壳与 provider 桥），勾选后加入资源清单。</div>
+
+    <div class="modal-section" style="margin-bottom:14px;">
+      <div class="modal-section-title">检测到的 agent</div>
+      <div class="resource-row">
+        <label><input type="checkbox" checked> Claude Code</label>
+        <span class="mono resource-version">2.1.251</span>
+        <span class="resource-status" data-status>已检测</span>
+      </div>
+      <div class="resource-row">
+        <label><input type="checkbox" checked> Codex CLI</label>
+        <span class="mono resource-version">0.149.1</span>
+        <span class="resource-status" data-status>已检测</span>
+      </div>
+      <div class="resource-row">
+        <label><input type="checkbox" checked> Kimi Code CLI</label>
+        <span class="mono resource-version">0.39.1</span>
+        <span class="resource-status" data-status>已检测</span>
+      </div>
+      <div class="resource-row">
+        <label><input type="checkbox" checked> pi</label>
+        <span class="mono resource-version">0.84.2</span>
+        <span class="resource-status" data-status>已检测</span>
+      </div>
+      <div class="resource-row">
+        <label><input type="checkbox" checked> cc-switch</label>
+        <span class="resource-key">provider 桥</span>
+        <span class="resource-status" data-status>已检测</span>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn" id="resource-close" type="button">关闭</button>
+      <button class="btn" id="resource-smoke" type="button">冒烟测试</button>
+      <button class="btn btn-primary" id="resource-add" type="button">加入清单</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 手动输入模型 ============ -->
+<div class="modal-overlay" id="manual-model-modal" hidden>
+  <div class="modal">
+    <div class="modal-title">手动输入模型</div>
+    <div class="modal-task" id="manual-model-target"></div>
+    <div class="modal-section" style="display:flex; flex-direction:column; gap:10px;">
+      <label>模型 ID<input type="text" id="manual-model-id" class="mono" placeholder="例如 glm-5.3"></label>
+      <label>档位
+        <select id="manual-model-tier">
+          <option>低档</option><option selected>中档</option><option>高档</option>
+        </select>
+      </label>
+      <label>备注<input type="text" id="manual-model-note" placeholder="可选"></label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="manual-model-cancel" type="button">取消</button>
+      <button class="btn btn-primary" id="manual-model-add" type="button">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 手动添加 agent ============ -->
+<div class="modal-overlay" id="manual-agent-modal" hidden>
+  <div class="modal">
+    <div class="modal-title">手动添加 agent</div>
+    <div class="modal-section" style="display:flex; flex-direction:column; gap:10px;">
+      <label>名称<input type="text" id="manual-agent-name" placeholder="例如 aider"></label>
+      <label>类型
+        <select id="manual-agent-type">
+          <option value="CLI 壳">CLI 壳</option>
+          <option value="provider 桥">provider 桥</option>
+        </select>
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="manual-agent-cancel" type="button">取消</button>
+      <button class="btn btn-primary" id="manual-agent-add" type="button">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 表单式构建器 ============ -->
+<div class="modal-overlay" id="builder-modal" hidden>
+  <div class="modal" style="max-width:720px;">
+    <div class="modal-title">编辑编排</div>
+    <div class="modal-task">阶段按顺序执行，同一阶段内的节点并行。</div>
+
+    <div id="builder-stages"></div>
+    <button class="btn btn-sm builder-add-stage" id="builder-add-stage" type="button">＋ 添加阶段</button>
+
+    <div class="modal-section-title">一行记法</div>
+    <div class="builder-notation mono" id="builder-notation"></div>
+
+    <div class="modal-actions" style="margin-top:16px;">
+      <button class="btn" id="builder-close" type="button">关闭</button>
+      <button class="btn" id="builder-save-preset" type="button">保存为预设</button>
+      <button class="btn btn-primary" id="builder-apply" type="button">应用</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 讲解 ============ -->
+<div class="modal-overlay" id="explain-overlay" hidden>
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-title">讲解</div>
+    <div class="modal-task">按预设说明控制台会做什么。</div>
+    <div id="explain-content"></div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="explain-close" type="button">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- 资源：agent → 模型 两级数据 ----------
+  var AGENTS = [
+    { slug:"claude-code", label:"Claude Code", version:"2.1.251", detected:true, models:[
+        {id:"fable-5", vendor:"claude", status:"已接入", source:"订阅"},
+        {id:"sonnet-5", vendor:"claude", status:"已接入", source:"订阅"},
+        {id:"haiku-4.5", vendor:"claude", status:"已接入", source:"订阅"}
+      ]
+    },
+    { slug:"codex", label:"Codex CLI", version:"0.149.1", detected:true, models:[
+        {id:"gpt-5.6-sol", vendor:"codex", status:"已接入", source:"coding plan"},
+        {id:"gpt-5.6-terra", vendor:"codex", status:"已接入", source:"coding plan"},
+        {id:"gpt-5.6-luna", vendor:"codex", status:"待冒烟", source:"coding plan"}
+      ]
+    },
+    { slug:"kimi", label:"Kimi Code CLI", version:"0.39.1", detected:true, models:[
+        {id:"k3", vendor:"kimi", status:"已接入", source:"coding plan"},
+        {id:"kimi-for-coding", vendor:"kimi", status:"待冒烟", source:"coding plan"}
+      ]
+    },
+    { slug:"pi", label:"pi", version:"0.84.2", detected:true, models:[
+        {id:"glm-5.2", vendor:"glm", group:"GLM", status:"已接入", source:"coding plan"},
+        {id:"glm-5-turbo", vendor:"glm", group:"GLM", status:"未接入", source:"coding plan"},
+        {id:"deepseek-v4-flash", vendor:"deepseek", group:"DeepSeek", status:"未接入", source:"coding plan"},
+        {id:"stepfun-v3", vendor:"stepfun", group:"StepFun", status:"未接入", source:"coding plan"}
+      ]
+    },
+    { slug:"cc-switch", label:"cc-switch", version:"provider 桥", detected:true, models:[
+        {id:"glm-5.2", vendor:"glm", group:"Zhipu GLM", status:"已接入", source:"API"},
+        {id:"stepfun-v3", vendor:"stepfun", group:"StepFun", status:"未接入", source:"API"}
+      ]
+    }
+  ];
+
+  var ALL_MODELS = [];
+  function rebuildAllModels(){
+    ALL_MODELS = [];
+    AGENTS.forEach(function(agent){
+      agent.models.forEach(function(m){
+        ALL_MODELS.push({
+          key: agent.slug + "/" + m.id,
+          agentSlug: agent.slug,
+          agentLabel: agent.label,
+          id: m.id,
+          vendor: m.vendor,
+          status: m.status,
+          source: m.source,
+          group: m.group || null
+        });
+      });
+    });
+  }
+  function accessibleModels(){
+    return ALL_MODELS.filter(function(m){ return m.status === "已接入"; });
+  }
+  function statusClass(status){
+    if (status === "已接入") return "rstatus-active";
+    if (status === "待冒烟") return "rstatus-pending";
+    return "rstatus-off";
+  }
+
+  function renderResourceTree(){
+    var wrap = document.getElementById("resource-tree");
+    wrap.innerHTML = "";
+    AGENTS.forEach(function(agent){
+      var block = document.createElement("div");
+      block.className = "agent-block";
+
+      var modelsHtml = "";
+      if (!agent.models.length) {
+        modelsHtml = '<div class="agent-empty">暂无模型</div>';
+      } else {
+        var lastGroup;
+        agent.models.forEach(function(m){
+          if (m.group && m.group !== lastGroup) {
+            modelsHtml += '<div class="agent-model-group">' + m.group + '</div>';
+            lastGroup = m.group;
+          }
+          var key = agent.slug + "/" + m.id;
+          modelsHtml +=
+            '<button type="button" class="roster-model" data-model-key="' + key + '" title="' +
+              (m.status === "已接入" ? "点击将 @" + key + " 加入输入框" : key + "：" + m.status + "，暂不可用于编排") + '">' +
+              '<div class="roster-model-top">' +
+                '<span class="roster-model-id mono">' + m.id + '</span>' +
+                '<span class="rstatus ' + statusClass(m.status) + '">' + m.status + '</span>' +
+              '</div>' +
+              '<div class="roster-model-meta">' + m.source + '</div>' +
+            '</button>';
+        });
+      }
+
+      block.innerHTML =
+        '<div class="agent-head">' +
+          '<button type="button" class="agent-toggle">' +
+            '<span class="agent-caret">▾</span>' +
+            '<span class="agent-name">' + agent.label + '</span>' +
+            '<span class="mono agent-version">' + agent.version + '</span>' +
+            '<span class="rstatus ' + (agent.detected ? "rstatus-active" : "rstatus-off") + '">' + (agent.detected ? "已检测" : "未检测") + '</span>' +
+          '</button>' +
+          '<div class="agent-actions">' +
+            '<button type="button" class="btn btn-sm" data-probe="' + agent.slug + '">探测</button>' +
+            '<button type="button" class="btn btn-sm" data-manual="' + agent.slug + '">手动输入</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="agent-probe-note" id="probe-note-' + agent.slug + '"></div>' +
+        '<div class="agent-models">' + modelsHtml + '</div>';
+
+      wrap.appendChild(block);
+    });
+  }
+
+  document.getElementById("resource-tree").addEventListener("click", function(e){
+    var modelRow = e.target.closest("[data-model-key]");
+    if (modelRow) {
+      var key = modelRow.getAttribute("data-model-key");
+      var m = ALL_MODELS.filter(function(x){ return x.key === key; })[0];
+      if (m.status === "已接入") { insertMention(m.key); }
+      else { showToast(m.key + "：" + m.status + "，暂不可用于编排"); }
+      return;
+    }
+    var probeBtn = e.target.closest("[data-probe]");
+    if (probeBtn) {
+      var slug = probeBtn.getAttribute("data-probe");
+      var agent = AGENTS.filter(function(a){ return a.slug === slug; })[0];
+      var note = document.getElementById("probe-note-" + slug);
+      note.textContent = "探测中…";
+      setTimeout(function(){ note.textContent = "已读取 " + agent.models.length + " 个模型"; }, 600);
+      return;
+    }
+    var manualBtn = e.target.closest("[data-manual]");
+    if (manualBtn) { openManualModelModal(manualBtn.getAttribute("data-manual")); return; }
+
+    var toggle = e.target.closest(".agent-toggle");
+    if (toggle) {
+      var block = toggle.closest(".agent-block");
+      var modelsWrap = block.querySelector(".agent-models");
+      var caret = toggle.querySelector(".agent-caret");
+      var willHide = !modelsWrap.hidden;
+      modelsWrap.hidden = willHide;
+      caret.textContent = willHide ? "▸" : "▾";
+    }
+  });
+
+  // ---------- 手动输入模型 ----------
+  var manualTargetAgent = null;
+  function openManualModelModal(slug){
+    manualTargetAgent = slug;
+    var agent = AGENTS.filter(function(a){ return a.slug === slug; })[0];
+    document.getElementById("manual-model-target").textContent = "添加到：" + agent.label;
+    document.getElementById("manual-model-id").value = "";
+    document.getElementById("manual-model-tier").value = "中档";
+    document.getElementById("manual-model-note").value = "";
+    document.getElementById("manual-model-modal").hidden = false;
+  }
+  document.getElementById("manual-model-cancel").addEventListener("click", function(){
+    document.getElementById("manual-model-modal").hidden = true;
+  });
+  document.getElementById("manual-model-add").addEventListener("click", function(){
+    var id = document.getElementById("manual-model-id").value.trim();
+    if (!id) { showToast("请填写模型 ID"); return; }
+    var agent = AGENTS.filter(function(a){ return a.slug === manualTargetAgent; })[0];
+    agent.models.push({id:id, vendor:"custom", status:"待冒烟", source:"手动"});
+    rebuildAllModels();
+    renderResourceTree();
+    document.getElementById("manual-model-modal").hidden = true;
+    showToast("已添加，待冒烟");
+  });
+
+  // ---------- 手动添加 agent ----------
+  document.getElementById("add-agent-btn").addEventListener("click", function(){
+    document.getElementById("manual-agent-name").value = "";
+    document.getElementById("manual-agent-modal").hidden = false;
+  });
+  document.getElementById("manual-agent-cancel").addEventListener("click", function(){
+    document.getElementById("manual-agent-modal").hidden = true;
+  });
+  document.getElementById("manual-agent-add").addEventListener("click", function(){
+    var name = document.getElementById("manual-agent-name").value.trim();
+    if (!name) { showToast("请填写名称"); return; }
+    var type = document.getElementById("manual-agent-type").value;
+    var slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || ("agent-" + (AGENTS.length + 1));
+    AGENTS.push({slug: slug, label: name, version: type, detected:false, models:[]});
+    rebuildAllModels();
+    renderResourceTree();
+    document.getElementById("manual-agent-modal").hidden = true;
+    showToast("已添加 " + name + "，暂无模型");
+  });
+
+  // ---------- 接入资源面板（顶部） ----------
+  document.getElementById("open-resource-btn").addEventListener("click", function(){
+    document.getElementById("resource-modal").hidden = false;
+  });
+  document.getElementById("resource-close").addEventListener("click", function(){
+    document.getElementById("resource-modal").hidden = true;
+  });
+  document.getElementById("resource-smoke").addEventListener("click", function(){
+    var rows = document.querySelectorAll("#resource-modal .resource-row");
+    rows.forEach(function(row){
+      if (!row.querySelector("input[type=checkbox]").checked) return;
+      row.querySelector("[data-status]").textContent = "冒烟中…";
+    });
+    setTimeout(function(){
+      rows.forEach(function(row){
+        if (!row.querySelector("input[type=checkbox]").checked) return;
+        row.querySelector("[data-status]").textContent = "已冒烟 · 型号核对通过";
+      });
+    }, 900);
+  });
+  document.getElementById("resource-add").addEventListener("click", function(){
+    document.getElementById("resource-modal").hidden = true;
+    showToast("已加入清单");
+  });
+
+  // ---------- 编排：数据模型 ----------
+  var TIERS = ["低档","中档","高档"];
+  var THINKINGS = ["关","低","中","高"];
+  var VIS_OPTS = ["共享","盲"];
+
+  var PRESET_LABELS = { shared:"共享对话", economy:"经济流水线", blind:"盲审" };
+
+  var STAGE_PRESETS = {
+    shared: [
+      { name:"对话", nodes:[ {model:"claude-code/fable-5", tier:"高档", thinking:"高", vis:"共享"} ] }
+    ],
+    economy: [
+      { name:"出方案", nodes:[ {model:"claude-code/fable-5", tier:"高档", thinking:"高", vis:"共享"} ] },
+      { name:"执行",   nodes:[ {model:"codex/gpt-5.6-sol", tier:"低档", thinking:"低", vis:"共享"} ] },
+      { name:"验收",   nodes:[ {model:"pi/glm-5.2", tier:"中档", thinking:"高", vis:"共享"} ] }
+    ],
+    blind: [
+      { name:"出方案", nodes:[ {model:"claude-code/fable-5", tier:"高档", thinking:"高", vis:"共享"} ] },
+      { name:"盲审", nodes:[
+          {model:"codex/gpt-5.6-terra", tier:"中档", thinking:"中", vis:"盲"},
+          {model:"kimi/k3", tier:"中档", thinking:"中", vis:"盲"},
+          {model:"cc-switch/glm-5.2", tier:"低档", thinking:"低", vis:"盲"}
+        ] },
+      { name:"验收", nodes:[] }
+    ]
+  };
+  var EXPLAIN_CONTENT = {
+    shared: {
+      label:"共享对话",
+      def:"一个 thread 大家都看得见，是流水线的退化形式：所有节点同一阶段、互相可见。",
+      steps:[
+        "@ 出去的 agent 加入同一个对话，拿到目前为止的全部上下文。",
+        "每条回复对其他参与者可见。",
+        "你在结果页决定采纳、重派或升级。"
+      ]
+    },
+    economy: {
+      label:"经济流水线",
+      def:"强模型出方案、便宜模型执行、强模型验收，验收默认换厂商。",
+      steps:[
+        "fable-5 出方案，产物交给执行阶段。",
+        "gpt-5.6-sol 按方案执行，结果原样回传。",
+        "glm-5.2 换厂商验收，核查执行结果。",
+        "你在结果页决定采纳、重派或升级。"
+      ]
+    },
+    blind: {
+      label:"盲审",
+      def:"同一份材料发给多路模型，各自隔离运行、互不可见，结果并排比对。",
+      steps:[
+        "把 spec.md、data.csv 送给 3 路验证者，各自在空目录里只读运行，互不可见。",
+        "收回三份结论并排展示。",
+        "只有一路提到的发现单列，不因其余未提及而降权。",
+        "你在结果页决定采纳、重派或升级。"
+      ]
+    }
+  };
+  var currentPresetName = "shared";
+  var currentPlan;
+
+  function applyPreset(name){
+    var preset = STAGE_PRESETS[name];
+    if (!preset) return;
+    currentPresetName = name;
+    currentPlan = JSON.parse(JSON.stringify(preset));
+    renderStageBar();
+  }
+  function renderExplainOverlay(){
+    var order = ["shared", "economy", "blind"];
+    var wrap = document.getElementById("explain-content");
+    wrap.innerHTML = order.map(function(key){
+      var e = EXPLAIN_CONTENT[key];
+      var steps = e.steps.map(function(t){ return "<li>" + t + "</li>"; }).join("");
+      return '<div class="modal-section">' +
+        '<div class="modal-section-title">' + e.label + '</div>' +
+        '<p style="font-size:12.5px;color:var(--text-2);margin:0 0 8px;">' + e.def + '</p>' +
+        '<ol style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;">' + steps + '</ol>' +
+        '</div>';
+    }).join("");
+  }
+  document.getElementById("open-explain-btn").addEventListener("click", function(){
+    renderExplainOverlay();
+    document.getElementById("explain-overlay").hidden = false;
+  });
+  document.getElementById("explain-close").addEventListener("click", function(){
+    document.getElementById("explain-overlay").hidden = true;
+  });
+
+  function stageLabel(stage){
+    if (!stage.nodes.length) return "[＋ " + stage.name + "]";
+    var models = stage.nodes.map(function(n){ return n.model; }).join(" ｜ ");
+    return "[" + models + " · " + stage.name + "]";
+  }
+  function nodeNotation(n){
+    var s = n.model;
+    if (n.vis === "盲") s += "@blind";
+    if (n.thinking === "高") s += "#high";
+    else if (n.thinking === "低") s += "#low";
+    else if (n.thinking === "关") s += "#off";
+    return s;
+  }
+  function planNotation(){
+    return currentPlan.map(function(stage){
+      if (!stage.nodes.length) return "[…]";
+      if (stage.nodes.length === 1) return nodeNotation(stage.nodes[0]);
+      return "[" + stage.nodes.map(nodeNotation).join(" | ") + "]";
+    }).join(" → ");
+  }
+  function planSummaryText(){
+    var blindStage = currentPlan.filter(function(s){ return s.nodes.some(function(n){ return n.vis === "盲"; }); })[0];
+    if (blindStage) return "当前方案：盲审 · " + blindStage.nodes.length + " 路（点击查看编排）";
+    var label = PRESET_LABELS[currentPresetName] || currentPresetName;
+    return "当前方案：" + label + " · " + currentPlan.length + " 段（点击查看编排）";
+  }
+  function updatePlanSummaryStrip(){
+    document.getElementById("plan-summary-strip").textContent = planSummaryText();
+  }
+
+  // ---------- 编排：阶段条 ----------
+  function renderStageBar(){
+    var bar = document.getElementById("stage-bar");
+    bar.innerHTML = "";
+    currentPlan.forEach(function(stage, idx){
+      if (idx > 0) {
+        var arrow = document.createElement("span");
+        arrow.className = "stage-arrow";
+        arrow.textContent = "→";
+        bar.appendChild(arrow);
+      }
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "stage-chip" + (stage.nodes.length === 0 ? " placeholder" : "");
+      chip.textContent = stageLabel(stage);
+      chip.addEventListener("click", function(){ openNodeEditor(idx); });
+      bar.appendChild(chip);
+    });
+    updatePlanSummaryStrip();
+  }
+
+  document.getElementById("plan-summary-strip").addEventListener("click", function(){
+    var col = document.getElementById("plan-col");
+    col.scrollIntoView({ block: "nearest" });
+    col.classList.add("flash");
+    setTimeout(function(){ col.classList.remove("flash"); }, 1200);
+  });
+
+  // ---------- 编排：节点快速编辑（阶段条内联面板） ----------
+  var editingStageIndex = null;
+
+  function optionsHtml(list, current){
+    return list.map(function(v){ return '<option' + (v === current ? ' selected' : '') + '>' + v + '</option>'; }).join("");
+  }
+  function modelOptionsHtml(current){
+    return accessibleModels().map(function(m){
+      return '<option value="' + m.key + '"' + (m.key === current ? ' selected' : '') + '>' + m.key + '</option>';
+    }).join("");
+  }
+
+  function openNodeEditor(idx){
+    editingStageIndex = idx;
+    var stage = currentPlan[idx];
+    if (!stage.nodes.length) {
+      var a = accessibleModels();
+      stage.nodes.push({model: a[0].key, tier:"中档", thinking:"中", vis:"共享"});
+    }
+    renderNodeEditorRows();
+    document.getElementById("node-editor").hidden = false;
+  }
+  function renderNodeEditorRows(){
+    var wrap = document.getElementById("node-editor-rows");
+    var stage = currentPlan[editingStageIndex];
+    var html = "";
+    stage.nodes.forEach(function(node, i){
+      html += '<div class="node-editor-row">' +
+        '<select data-idx="' + i + '" data-field="model">' + modelOptionsHtml(node.model) + '</select>' +
+        '<select data-idx="' + i + '" data-field="tier">' + optionsHtml(TIERS, node.tier) + '</select>' +
+        '<span>thinking=</span>' +
+        '<select data-idx="' + i + '" data-field="thinking">' + optionsHtml(THINKINGS, node.thinking) + '</select>' +
+        '<select data-idx="' + i + '" data-field="vis">' + optionsHtml(VIS_OPTS, node.vis) + '</select>' +
+        (stage.nodes.length > 1 ? '<button type="button" class="builder-node-remove" data-remove-idx="' + i + '">×</button>' : '') +
+        '</div>';
+    });
+    wrap.innerHTML = html;
+  }
+  document.getElementById("node-editor-rows").addEventListener("change", function(e){
+    var sel = e.target.closest("select[data-field]");
+    if (!sel) return;
+    var i = +sel.getAttribute("data-idx");
+    currentPlan[editingStageIndex].nodes[i][sel.getAttribute("data-field")] = sel.value;
+    renderStageBar();
+  });
+  document.getElementById("node-editor-rows").addEventListener("click", function(e){
+    var rm = e.target.closest("[data-remove-idx]");
+    if (!rm) return;
+    currentPlan[editingStageIndex].nodes.splice(+rm.getAttribute("data-remove-idx"), 1);
+    renderNodeEditorRows();
+    renderStageBar();
+  });
+  document.getElementById("node-editor-add").addEventListener("click", function(){
+    var stage = currentPlan[editingStageIndex];
+    var used = stage.nodes.map(function(n){ return n.model; });
+    var pool = accessibleModels().filter(function(m){ return used.indexOf(m.key) === -1; });
+    var next = pool[0] || accessibleModels()[0];
+    var vis = stage.nodes[0] ? stage.nodes[0].vis : "共享";
+    stage.nodes.push({model: next.key, tier:"中档", thinking:"中", vis: vis});
+    renderNodeEditorRows();
+    renderStageBar();
+  });
+  document.getElementById("node-editor-done").addEventListener("click", function(){
+    document.getElementById("node-editor").hidden = true;
+  });
+
+  // ---------- 编排：表单式构建器 ----------
+  function renderBuilder(){
+    var wrap = document.getElementById("builder-stages");
+    var html = "";
+    currentPlan.forEach(function(stage, sIdx){
+      html += '<div class="builder-stage">' +
+        '<div class="builder-stage-head"><span class="builder-stage-name">阶段 ' + (sIdx + 1) + ' · ' + stage.name + '</span>' +
+        (currentPlan.length > 1 ? '<button type="button" class="builder-node-remove" data-remove-stage="' + sIdx + '">删除阶段</button>' : '') +
+        '</div><div class="builder-nodes">';
+      stage.nodes.forEach(function(node, nIdx){
+        html += '<div class="builder-node">' +
+          '<select data-stage="' + sIdx + '" data-node="' + nIdx + '" data-field="model">' + modelOptionsHtml(node.model) + '</select>' +
+          '<select data-stage="' + sIdx + '" data-node="' + nIdx + '" data-field="tier">' + optionsHtml(TIERS, node.tier) + '</select>' +
+          '<span>thinking</span>' +
+          '<select data-stage="' + sIdx + '" data-node="' + nIdx + '" data-field="thinking">' + optionsHtml(THINKINGS, node.thinking) + '</select>' +
+          '<select data-stage="' + sIdx + '" data-node="' + nIdx + '" data-field="vis">' + optionsHtml(VIS_OPTS, node.vis) + '</select>' +
+          (stage.nodes.length > 1 ? '<button type="button" class="builder-node-remove" data-remove-node="' + nIdx + '" data-stage-of="' + sIdx + '">×</button>' : '') +
+          '</div>';
+      });
+      html += '</div><button type="button" class="btn btn-sm builder-add-node" data-add-node="' + sIdx + '">＋ 添加节点</button></div>';
+    });
+    wrap.innerHTML = html;
+    document.getElementById("builder-notation").textContent = planNotation();
+  }
+  document.getElementById("builder-stages").addEventListener("change", function(e){
+    var sel = e.target.closest("select[data-field]");
+    if (!sel) return;
+    var s = +sel.getAttribute("data-stage"), n = +sel.getAttribute("data-node"), f = sel.getAttribute("data-field");
+    currentPlan[s].nodes[n][f] = sel.value;
+    document.getElementById("builder-notation").textContent = planNotation();
+  });
+  document.getElementById("builder-stages").addEventListener("click", function(e){
+    var addNode = e.target.closest("[data-add-node]");
+    if (addNode) {
+      var sIdx = +addNode.getAttribute("data-add-node");
+      var used = currentPlan[sIdx].nodes.map(function(n){ return n.model; });
+      var pool = accessibleModels().filter(function(m){ return used.indexOf(m.key) === -1; });
+      var next = pool[0] || accessibleModels()[0];
+      var vis = currentPlan[sIdx].nodes[0] ? currentPlan[sIdx].nodes[0].vis : "共享";
+      currentPlan[sIdx].nodes.push({model: next.key, tier:"中档", thinking:"中", vis: vis});
+      renderBuilder();
+      return;
+    }
+    var removeNode = e.target.closest("[data-remove-node]");
+    if (removeNode) {
+      currentPlan[+removeNode.getAttribute("data-stage-of")].nodes.splice(+removeNode.getAttribute("data-remove-node"), 1);
+      renderBuilder();
+      return;
+    }
+    var removeStage = e.target.closest("[data-remove-stage]");
+    if (removeStage) {
+      if (currentPlan.length > 1) currentPlan.splice(+removeStage.getAttribute("data-remove-stage"), 1);
+      renderBuilder();
+    }
+  });
+  document.getElementById("builder-add-stage").addEventListener("click", function(){
+    currentPlan.push({name:"新阶段", nodes:[{model: accessibleModels()[0].key, tier:"中档", thinking:"中", vis:"共享"}]});
+    renderBuilder();
+  });
+  document.getElementById("open-builder-btn").addEventListener("click", function(){
+    renderBuilder();
+    document.getElementById("builder-modal").hidden = false;
+  });
+  document.getElementById("builder-close").addEventListener("click", function(){
+    document.getElementById("builder-modal").hidden = true;
+    renderStageBar();
+  });
+  document.getElementById("builder-save-preset").addEventListener("click", function(){
+    showToast("已保存为预设");
+  });
+  document.getElementById("builder-apply").addEventListener("click", function(){
+    document.getElementById("builder-modal").hidden = true;
+    renderStageBar();
+    showToast("已应用");
+  });
+
+  // ---------- composer / @ 提及弹层 ----------
+  var input = document.getElementById("composer-input");
+  var popup = document.getElementById("mention-popup");
+
+  function renderMentionPopup(filter){
+    filter = (filter || "").toLowerCase();
+    var html = "";
+    AGENTS.forEach(function(agent){
+      var models = ALL_MODELS.filter(function(m){
+        return m.agentSlug === agent.slug && m.status === "已接入" && m.key.toLowerCase().indexOf(filter) !== -1;
+      });
+      if (!models.length) return;
+      html += '<div class="mention-group-label">' + agent.label + '</div>';
+      models.forEach(function(m){
+        html += '<button type="button" class="mention-item" data-id="' + m.key + '">' +
+                  '<span class="dot dot-' + m.vendor + '"></span>' + m.key +
+                '</button>';
+      });
+    });
+    popup.innerHTML = html || '<div class="mention-group-label">无匹配模型</div>';
+  }
+
+  function openPopup(filter){
+    renderMentionPopup(filter);
+    popup.hidden = false;
+  }
+  function closePopup(){ popup.hidden = true; }
+
+  function insertMention(key){
+    var val = input.value;
+    var trailing = val.match(/@[\w.\-\/]*$/);
+    if (trailing) {
+      val = val.slice(0, val.length - trailing[0].length);
+    } else if (val.length && !/\s$/.test(val)) {
+      val += " ";
+    }
+    input.value = val + "@" + key + " ";
+    closePopup();
+    input.focus();
+  }
+
+  document.getElementById("at-btn").addEventListener("click", function(){
+    if (popup.hidden) { openPopup(""); } else { closePopup(); }
+  });
+
+  input.addEventListener("input", function(){
+    var trailing = input.value.match(/@([\w.\-\/]*)$/);
+    if (trailing) { openPopup(trailing[1]); } else { closePopup(); }
+  });
+
+  popup.addEventListener("click", function(e){
+    var btn = e.target.closest(".mention-item");
+    if (btn) insertMention(btn.getAttribute("data-id"));
+  });
+
+  document.addEventListener("click", function(e){
+    if (!popup.hidden && !popup.contains(e.target) && e.target !== input && e.target.id !== "at-btn") {
+      closePopup();
+    }
+  });
+
+  // ---------- preset ----------
+  var presetHints = {
+    shared:  "@ 出去的 agent 拿到全部对话。",
+    economy: "方案 → 执行 → 验收，验收默认换厂商。",
+    blind:   "同材料发三路隔离环境，互不可见，只收原始材料。"
+  };
+  var presetSelect = document.getElementById("preset-select");
+  var presetHint = document.getElementById("preset-hint");
+  function updatePresetHint(){ presetHint.textContent = presetHints[presetSelect.value] || ""; }
+  presetSelect.addEventListener("change", function(){
+    updatePresetHint();
+    applyPreset(presetSelect.value);
+  });
+
+  // ---------- toast ----------
+  var toastTimer = null;
+  function showToast(msg){
+    var el = document.getElementById("toast");
+    el.textContent = msg;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ el.hidden = true; }, 2200);
+  }
+
+  // ---------- G1 gate ----------
+  var gateModal = document.getElementById("gate-modal");
+  function resetMaterialChecklist(){
+    var boxes = document.querySelectorAll("#gate-materials-section input[type=checkbox]");
+    var defaults = [true, true, true, false];
+    boxes.forEach(function(cb, i){ cb.checked = defaults[i]; });
+  }
+  document.getElementById("send-btn").addEventListener("click", function(){
+    document.getElementById("gate-plan-summary").textContent = currentPlan.map(stageLabel).join(" → ");
+    document.getElementById("gate-task-line").textContent =
+      "任务：交叉复查 fable-5 的方案 · 预设：" + (PRESET_LABELS[currentPresetName] || currentPresetName);
+    var isBlind = currentPresetName === "blind";
+    document.getElementById("gate-materials-section").hidden = !isBlind;
+    document.getElementById("gate-isolation-section").hidden = !isBlind;
+    if (isBlind) resetMaterialChecklist();
+    gateModal.hidden = false;
+  });
+  document.getElementById("gate-cancel").addEventListener("click", function(){
+    gateModal.hidden = true;
+  });
+  document.getElementById("gate-confirm").addEventListener("click", function(){
+    gateModal.hidden = true;
+    runDispatch();
+  });
+
+  function runDispatch(){
+    var threadInner = document.getElementById("thread-inner");
+    var thread = document.getElementById("thread");
+    var rows = [
+      {id:"gpt-5.6-terra", vendor:"codex"},
+      {id:"k3", vendor:"kimi"},
+      {id:"glm-5.2", vendor:"glm"}
+    ];
+    var els = rows.map(function(r){
+      var row = document.createElement("div");
+      row.className = "status-line";
+      row.innerHTML = '<span class="mono">' + r.id + '</span><span class="status-badge queued">排队中</span>';
+      threadInner.appendChild(row);
+      return row;
+    });
+    thread.scrollTop = thread.scrollHeight;
+
+    setTimeout(function(){
+      els.forEach(function(row){
+        row.querySelector(".status-badge").className = "status-badge running";
+        row.querySelector(".status-badge").textContent = "运行中";
+      });
+    }, 700);
+
+    setTimeout(function(){
+      els.forEach(function(row){
+        row.querySelector(".status-badge").className = "status-badge done";
+        row.querySelector(".status-badge").textContent = "已完成";
+      });
+      var resultRow = document.createElement("div");
+      resultRow.className = "view-result-row";
+      resultRow.innerHTML = '<button class="btn btn-primary btn-sm" id="view-result-btn" type="button">查看结果</button>';
+      threadInner.appendChild(resultRow);
+      document.getElementById("view-result-btn").addEventListener("click", showResultScreen);
+      thread.scrollTop = thread.scrollHeight;
+    }, 1700);
+  }
+
+  // ---------- screen switch ----------
+  function showResultScreen(){
+    document.getElementById("screen-dispatch").hidden = true;
+    document.getElementById("screen-result").hidden = false;
+  }
+  document.getElementById("back-btn").addEventListener("click", function(){
+    document.getElementById("screen-result").hidden = true;
+    document.getElementById("screen-dispatch").hidden = false;
+  });
+
+  // ---------- route echo (screen 2) ----------
+  var ROUTE_LINES = [
+    {vendor:"codex", text:"[aicross] 交叉复查方案 → gpt-5.6-terra ｜ 中档 · thinking=中 ｜ 理由：跨厂商核验，统计方法把关"},
+    {vendor:"kimi",  text:"[aicross] 交叉复查方案 → k3 ｜ 中档 · thinking=中 ｜ 理由：跨厂商核验，兼顾数据质量核查"},
+    {vendor:"glm",   text:"[aicross] 交叉复查方案 → glm-5.2 ｜ 低档 · thinking=低 ｜ 理由：覆盖式复查取并集"}
+  ];
+  (function(){
+    var wrap = document.getElementById("route-echo");
+    ROUTE_LINES.forEach(function(r){
+      var div = document.createElement("div");
+      div.className = "route-line mono b-" + r.vendor;
+      div.textContent = r.text;
+      wrap.appendChild(div);
+    });
+  })();
+
+  // ---------- verdict cards ----------
+  var VERDICTS = [
+    {
+      id:"gpt-5.6-terra", vendor:"codex", vendorLabel:"Codex",
+      points:[
+        "缺失值处理假设有风险：last_active_date 缺失被当作“未流失”太快，建议先确认是否为埋点丢失导致，而非真实流失。",
+        "结论“无显著差异”没有给出检验方法（t 检验 / 卡方 / 置信区间），目前只是描述性对比，不能直接支持“不调整渠道预算”的决策。",
+        "未做基线校准或 A/A 测试，当前留存率数字本身是否可信无法判断。",
+        "“其他”类别的合并规则可以接受，但要在最终报告里注明具体包含哪些渠道。"
+      ]
+    },
+    {
+      id:"k3", vendor:"kimi", vendorLabel:"Kimi",
+      points:[
+        "data.csv 第三列（last_active_date）有 12 个空值，spec.md 未提到允许缺失，建议先核实数据源再定处理方式。",
+        "“数据合作”渠道样本量明显偏小，不应直接并入“其他”，应单独标注为不可比，否则会掩盖真实差异。",
+        "结论部分只写了“无显著差异”，没有给出具体的检验方法或 p 值，证据不够。",
+        "渠道字段的取值需要在附录列出，当前不知道一共有几个渠道。"
+      ]
+    },
+    {
+      id:"glm-5.2", vendor:"glm", vendorLabel:"GLM",
+      points:[
+        "spec.md 定义的 30 天留存窗口按自然日计算，data.csv 的时间戳是 UTC，边界处理会有偏差，需要统一。",
+        "“无显著差异”缺统计检验，建议至少补一个卡方检验或分渠道置信区间。",
+        "“其他”类别定义模糊，合并规则需要写清楚。",
+        "缺失值比例不算高，可以先按未留存处理并标注假设，不必阻塞上线。"
+      ]
+    }
+  ];
+
+  (function(){
+    var grid = document.getElementById("verdict-grid");
+    VERDICTS.forEach(function(v){
+      var card = document.createElement("div");
+      card.className = "verdict-card b-" + v.vendor;
+      var lis = v.points.map(function(p){ return "<li>" + p + "</li>"; }).join("");
+      card.innerHTML =
+        '<div class="verdict-head">' +
+          '<div class="verdict-model">' +
+            '<span class="verdict-model-id mono">' + v.id + '</span>' +
+            '<span class="vendor-tag bg-' + v.vendor + ' c-' + v.vendor + '">' + v.vendorLabel + '</span>' +
+          '</div>' +
+          '<span class="verdict-status">已完成</span>' +
+        '</div>' +
+        '<div class="verdict-role">角色：把关（盲审）</div>' +
+        '<div class="verdict-body"><ul>' + lis + '</ul></div>' +
+        '<div class="verdict-actions">' +
+          '<button class="btn btn-sm" data-act="采纳">采纳</button>' +
+          '<button class="btn btn-sm" data-act="重派">重派</button>' +
+          '<button class="btn btn-sm" data-act="升级">升级</button>' +
+        '</div>';
+      grid.appendChild(card);
+    });
+    grid.addEventListener("click", function(e){
+      var btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      var card = btn.closest(".verdict-card");
+      var modelId = card.querySelector(".verdict-model-id").textContent;
+      showToast(modelId + "：已" + btn.getAttribute("data-act"));
+    });
+  })();
+
+  document.getElementById("human-decide-btn").addEventListener("click", function(){
+    showToast("已交人裁决，等待最终决定");
+  });
+
+  // ---------- unique findings ----------
+  var UNIQUE = [
+    {id:"k3", vendor:"kimi", vendorLabel:"Kimi",
+     text:"data.csv 第三列（last_active_date）有 12 个空值，其余两路未提及。"},
+    {id:"gpt-5.6-terra", vendor:"codex", vendorLabel:"Codex",
+     text:"方案没有做基线校准或 A/A 测试，无法判断当前留存率数字本身是否可信。"},
+    {id:"glm-5.2", vendor:"glm", vendorLabel:"GLM",
+     text:"spec.md 的 30 天窗口按自然日计算，data.csv 时间戳是 UTC，两者边界定义不一致。"}
+  ];
+
+  (function(){
+    var wrap = document.getElementById("unique-list");
+    UNIQUE.forEach(function(u){
+      var item = document.createElement("div");
+      item.className = "unique-item b-" + u.vendor;
+      item.innerHTML =
+        '<div class="unique-text">' + u.text +
+          '<div class="unique-source">来源：<span class="c-' + u.vendor + '">' + u.id + '</span>（' + u.vendorLabel + '）</div>' +
+        '</div>' +
+        '<div class="unique-actions">' +
+          '<button class="btn btn-sm verify-btn" type="button">核验</button>' +
+          '<button class="btn btn-sm forward-btn" type="button">转发</button>' +
+          '<div class="forward-popover" hidden></div>' +
+        '</div>';
+      wrap.appendChild(item);
+    });
+
+    wrap.addEventListener("click", function(e){
+      var verifyBtn = e.target.closest(".verify-btn");
+      if (verifyBtn) {
+        verifyBtn.outerHTML = '<span class="verified-badge">已核验</span>';
+        return;
+      }
+      var forwardBtn = e.target.closest(".forward-btn");
+      if (forwardBtn) {
+        var pop = forwardBtn.nextElementSibling;
+        var wasHidden = pop.hidden;
+        document.querySelectorAll(".forward-popover").forEach(function(p){ p.hidden = true; });
+        if (wasHidden) {
+          var item = forwardBtn.closest(".unique-item");
+          var sourceId = item.querySelector(".unique-source span").textContent;
+          var others = ALL_MODELS.filter(function(m){ return m.status === "已接入" && m.id !== sourceId; }).slice(0, 4);
+          pop.innerHTML = others.map(function(m){
+            return '<button type="button" data-forward="' + m.key + '">转给 ' + m.key + '</button>';
+          }).join("");
+          pop.hidden = false;
+        }
+        return;
+      }
+      var forwardTarget = e.target.closest("[data-forward]");
+      if (forwardTarget) {
+        showToast("已转发给 " + forwardTarget.getAttribute("data-forward"));
+        document.querySelectorAll(".forward-popover").forEach(function(p){ p.hidden = true; });
+      }
+    });
+
+    document.addEventListener("click", function(e){
+      if (!e.target.closest(".unique-actions")) {
+        document.querySelectorAll(".forward-popover").forEach(function(p){ p.hidden = true; });
+      }
+    });
+  })();
+
+  // ---------- init ----------
+  rebuildAllModels();
+  renderResourceTree();
+  updatePresetHint();
+  applyPreset("shared");
+})();
+</script>
+</body>
+</html>
