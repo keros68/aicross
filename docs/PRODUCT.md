@@ -1,9 +1,9 @@
 # aicross 控制台 — 产品说明第一稿
 
-> 名字：**aicross**（用户定，2026-08-30）。形态：桌面应用，Tauri 2 + Rust + React/TS（与 coffeecli 同栈，独立实现，AGPL-3.0）。代码仓库 `D:\workicross`，实现走经济流水线（Codex 实现 → 他家盲审），任务书在该仓库 `tasks/`。
+> 名字：**aicross**（用户定，2026-08-30）。形态：桌面应用，Tauri 2 + Rust + React/TS（与 coffeecli 同栈，独立实现，AGPL-3.0）。代码仓库 `D:\work\aicross`，实现走经济流水线（Codex 实现 → 他家盲审），任务书在该仓库 `tasks/`。
 
 > 2026-08-30。形态讨论的收敛结果，不是实现方案。
-> 前置阅读：`D:\workgentteam\COMPETITIVE-LANDSCAPE.md`（2026-08-30 补充节）、`D:\workgentteam\SPEC.md` v1.12。
+> 前置阅读：`D:\work\agentteam\COMPETITIVE-LANDSCAPE.md`（2026-08-30 补充节）、`D:\work\agentteam\SPEC.md` v1.12。
 
 ## 一句话
 
@@ -145,7 +145,7 @@ fable-5 → [gpt-5.6 | kimi-2.7 | deepseek-v4-flash] → glm-5.3
 
 ## 待验证（动手前）
 
-1. ~~三家 CLI 能否被程序化续聊~~ 已验证全 PASS（08-30，命令见 `D:\workgentteam\COMPETITIVE-LANDSCAPE.md` 同日节）。
+1. ~~三家 CLI 能否被程序化续聊~~ 已验证全 PASS（08-30，命令见 `D:\work\agentteam\COMPETITIVE-LANDSCAPE.md` 同日节）。
 2. agmsg 的 license，能否作消息传输底座。
 3. AgentConnect 的"谁能看某 agent 对话"能否做到按消息隔离（若能，它离本产品最近）。
 4. 各 CLI 的 usage 输出能否折算成订阅额度百分比（`usage_probe.py` 现有能力的边界）。
