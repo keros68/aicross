@@ -1,11 +1,107 @@
+# Rust
+/target
+*.pdb
+
+# Node / Frontend
 node_modules/
-target/
 dist/
-.npm-cache/
 .vite/
+.npm-cache/
+
+# aicross runtime / local scratch
 .aicross-webview/
-src-tauri/gen/
+port/
+
+# Dispatch run logs: 34 MB of raw model transcripts. Conclusions live in
+# tasks/REPORT-*.md and tasks/review-*.md, which are tracked.
+tasks/*.raw
+tasks/*.jsonl
+tasks/log-*.err
+
+# Tauri generated
+src-tauri/target/
+/gen
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment & secrets
+.env
+.env.local
+models.json
+
+# AI agent guardrails — kept locally so Claude Code reads them on every
+# session, but not published. CLAUDE.md is the team's candid "how to
+# work in this repo" memo (release pitfalls we've hit, tooling rules
+# we've broken N times, CF Worker routing internals); it's not the
+# contributor guide. A public-facing CONTRIBUTING.md, when needed,
+# should be authored separately.
+CLAUDE.md
+
+# Dev artifacts, scripts & logs
 *.log
-!tasks/*.md
-tasks/log-*
-tasks/review-*.raw
+run-dev.bat
+run-dev-release.bat
+scripts/clean-dictionary.js
+scripts/merge-taekchef-dict.js
+scripts/taekchef-translations.json
+logo.png
+logo.svg
+src-ui/gen-icon.mjs
+src-ui/README.md
+src-ui/src/assets/hero.png
+src-ui/src/assets/react.svg
+src-ui/src/assets/vite.svg
+src/bin_test.rs
+src/translation.rs_test_append
+DEVELOPMENT_PROGRESS.md
+claude_help*.txt
+check_err.txt
+diff.txt
+error.log
+cargo_check_output.txt
+
+# Legacy / temp
+/ui
+# Local read-only browsing material (upstream source clones, etc.).
+# Not bundled into the binary, not part of the repo.
+/reference/
+ico.png
+dev.bat
+/2
+tmp/
+/backup-0.1.15/
+fragments.json
+missing.json
+merge_claude_dict.js
+cargo_err.txt
+cargo_out.txt
+
+# Root-level node (Tauri plugin installed at root)
+/package.json
+/package-lock.json
+
+# Agent config (local dev)
+.agent/
+.claude/
+
+# Sidecar build artifacts
+.free-code-build/
+binaries/
+
+# Upstream dev sources
+.test-opencode
+# Game bundles and raw files (user-downloaded to ~/.coffee-cli/play/ at runtime, or local dev files)
+/play/
+
+# Local agent/tool plan scratch (e.g. .zcode/plans — session-scoped, not for the repo)
+/.zcode/
