@@ -15,7 +15,18 @@ aicross：多厂商 agent 的桌面派发控制台。用户在一个窗口里接
 
 ## 与 coffeecli 的关系（必须遵守）
 
-`D:\work\coffeecli` 是第三方项目（AGPL-3.0）。**可以读它的源码学结构、可以借鉴形态、可以顺手记下它的 bug（记到 `docs/coffeecli-notes.md`）；不得复制它的任何文件或函数。** 本仓库每个文件都自己写。本仓库 license 为 AGPL-3.0，`NOTICE` 注明形态参考自 Coffee CLI。
+**2026-08-31 推翻原规则：本仓库现在是 Coffee CLI 的 fork。** 原来写的「不得复制它的任何文件或函数，每个文件都自己写」已作废，别再照它办事。
+
+上游是 `D:\work\coffeecli`（github.com/edison7009/Coffee-CLI，AGPL-3.0）。桌面外壳、终端、工作区、会话与修改记录直接来自上游代码。
+
+按上游 `TRADEMARKS.md` 的方案 B（完全重新品牌化）执行，四条义务：
+
+1. **保留 AGPL-3.0**（`LICENSE` 与上游同一份）。
+2. **保留 `NOTICE` 与 `TRADEMARKS.md` 原貌**——`NOTICE` 里上游那段是逐字复制的，不许改、不许删；aicross 自己的说明加在它前面。
+3. **改名换标**：产品名 aicross，图标换掉。`Coffee CLI` / `Gambit` / `Pitch` / `VibeID` / `Vibetype` / `Hyper-Agent` / `Sentinel Protocol` / `哨兵协议` 都是上游主张的商标，**不在 AGPL 授权范围内**，界面与文档里不得用它们当本产品的名字。
+4. **不冒充原创**：不删任何版权头，不声称上游代码是自己写的。`README.md` 显著位置写明 fork 自 Coffee CLI。
+
+上游代码里的既有毛病可以顺手记到 `docs/coffeecli-notes.md`，也可以直接改——这是我们自己的分支。
 
 ## 纪律
 

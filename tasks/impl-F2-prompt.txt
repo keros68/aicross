@@ -1,0 +1,13 @@
+先读根目录 AGENTS.md（本仓库是 Coffee CLI 的 fork，四条义务写在「与 coffeecli 的关系」一节），再读 tasks/REPORT-F1.md 的「C 节保留项」，再读 tasks/TASK-F2-decouple.md，按任务书执行。
+
+本期是安全性修复：本程序现在与用户机器上正在运行的上游 Coffee CLI 共用配置目录、keyring、环境变量与 hook 注册，一启动就会抢它的东西。A 节最优先。
+
+硬要求：不要写、不要读、不要删用户的 ~/.coffee-cli、~/.claude、~/.codex、~/.kimi-code、~/.config/opencode 和 Hermes 目录下的任何文件。本期的目的就是断开这些写入，不是换个地方写。需要测试外部配置行为就用临时 HOME 或临时目录。
+
+不要迁移上游数据：~/.aicross 首次运行是空的，这是预期行为，不要写迁移代码。
+
+上游自带 80 个 cargo 测试，数量不许减少；改名牵动断言就改断言，不许删测试。
+
+验收命令必须实际跑过，命令与输出原文贴进报告；跑不了的写「未验证」，不要写「已验证」。
+
+完成后写 tasks/REPORT-F2.md，其中必须明确回答：是否还存在任何在用户没有显式触发的情况下写外部 CLI 配置的代码路径。不要 commit，不要 push。

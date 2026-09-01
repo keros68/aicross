@@ -1,0 +1,5 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1024" height="1024" rx="224" fill="#18212c" />
+  <text x="512" y="632" text-anchor="middle" fill="#ffffff"
+        font-family="Consolas, 'Courier New', monospace" font-size="380" font-weight="700">AC</text>
+</svg>

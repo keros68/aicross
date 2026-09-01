@@ -1,0 +1,7 @@
+先读仓库根目录的 AGENTS.md，再读 tasks/TASK-1B-visual.md，按任务书实现。
+
+基准文件是 docs/proto/index.html 和 docs/PRODUCT.md 的「视觉纪律」「形态」两节，动手前先把这三份读完。
+
+任务书里的「边界」和「验收」两节是硬要求：只改前端、不改 Rust、不加依赖、不引 CDN；验收命令必须实际跑过，把命令与输出原文贴进报告，跑不了的写「未验证」不要写「已验证」。
+
+完成后写 tasks/REPORT-1B.md。不要 commit，不要 push。

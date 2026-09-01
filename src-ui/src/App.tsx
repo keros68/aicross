@@ -1,365 +1,282 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { api } from "./api";
-import { Changes } from "./components/Changes";
-import { ResourceConnectionDialog, Resources } from "./components/Resources";
-import { Sessions } from "./components/Sessions";
-import { SettingsDialog } from "./components/SettingsDialog";
-import { TerminalView } from "./components/TerminalView";
-import { Workspace } from "./components/Workspace";
-import type { EnvEntry, InitialState, Settings, TerminalTab, Tool } from "./types";
+// App.tsx — 3-panel IDE layout (frameless window)
 
-type LeftTab = "workspace" | "resources" | "sessions";
-type RightTab = "changes" | "plan" | "tasks";
+import { useEffect, useRef, useState } from 'react';
+import { useAppState, useAppDispatch } from './store/app-state';
+import { retryInvoke } from './tauri';
+import { subscribeAgentStatus } from './lib/agent-status-bus';
+import { routeFileDrop } from './lib/file-drop';
+import { initHistoryAutoRefresh } from './lib/history-cache';
+import { TitleBar } from './components/common/TitleBar';
+import { ResizeEdges } from './components/common/ResizeEdges';
+import { SettingsModal } from './components/common/SettingsModal';
+import { Explorer } from './components/left/Explorer';
+import { CenterPanel } from './components/center/CenterPanel';
+import { ActiveGambit } from './components/center/ActiveGambit';
+import { RightPanel } from './components/right/Compiler';
+import { GitStatusProvider } from './lib/git-status';
+import './styles/global.css';
 
-const leftLabels: Record<LeftTab, string> = {
-  workspace: "工作区",
-  resources: "资源",
-  sessions: "记录",
-};
-const rightLabels: Record<RightTab, string> = {
-  changes: "修改记录",
-  plan: "方案与编排",
-  tasks: "任务列表",
-};
-const defaultLeftTabs = new Set<LeftTab>(["workspace", "resources", "sessions"]);
-const defaultRightTabs = new Set<RightTab>(["changes"]);
+// CSS transition duration on .panel-left / .panel-right in global.css.
+// Bumping this here = bump the matching --panel-slide-ms variable too,
+// otherwise React unmounts mid-animation and the panel snaps.
+const PANEL_SLIDE_MS = 250;
 
-export default function App() {
-  const [initial, setInitial] = useState<InitialState | null>(null);
-  const [tools, setTools] = useState<Tool[]>([]);
-  const [settingsDraft, setSettingsDraft] = useState<Settings | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [connectionOpen, setConnectionOpen] = useState(false);
-  const [leftTab, setLeftTab] = useState<LeftTab>("workspace");
-  const [rightTab, setRightTab] = useState<RightTab>("changes");
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
-  const [centerTab, setCenterTab] = useState("launchpad");
-  const [toolEnv, setToolEnv] = useState<Record<string, EnvEntry[]>>({});
-  const [expandedEnv, setExpandedEnv] = useState<string | null>(null);
-  const [loadingTools, setLoadingTools] = useState(true);
-  const [error, setError] = useState("");
-  const counters = useRef<Record<string, number>>({});
-
-  const refreshTools = useCallback(() => {
-    setLoadingTools(true);
-    api.tools()
-      .then((value) => {
-        setTools(value);
-        setError("");
-      })
-      .catch((value) => setError(String(value)))
-      .finally(() => setLoadingTools(false));
-  }, []);
+/**
+ * Drive the slide-open / slide-closed animation for a single side panel.
+ *
+ *   hidden=true  → if currently mounted, apply `is-collapsed` (CSS animates
+ *                  width 320→0) then unmount after PANEL_SLIDE_MS so the
+ *                  child stops firing IPC + event subs while invisible.
+ *   hidden=false → mount immediately at width 0 (`is-collapsed`), then
+ *                  drop the class on the next paint so CSS animates
+ *                  0→320. Two rAFs are needed: one to commit React's
+ *                  initial collapsed render, a second to let the browser
+ *                  paint at width 0 before the class flip — otherwise the
+ *                  transition has no "from" frame and the panel just snaps.
+ *
+ * Initial render skips the animation: a panel hidden from launch starts
+ * unmounted with no flicker; a visible-by-default panel renders at full
+ * width with no fake collapse-then-expand.
+ */
+function useSlidingPanel(hidden: boolean): { mounted: boolean; collapsed: boolean } {
+  const [mounted, setMounted] = useState(!hidden);
+  const [collapsed, setCollapsed] = useState(false);
+  const isFirstRun = useRef(true);
+  const timeoutRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
-    api.initialState()
-      .then((value) => {
-        setInitial(value);
-        setSettingsDraft(value.settings);
-        setError("");
-      })
-      .catch((value) => setError(String(value)));
-    refreshTools();
-  }, [refreshTools]);
-
-  useEffect(() => {
-    window.addEventListener("aicross:tools-changed", refreshTools);
-    return () => window.removeEventListener("aicross:tools-changed", refreshTools);
-  }, [refreshTools]);
-
-  const settings = initial?.settings;
-  const leftTabs = useMemo(
-    () => (settings ? (Object.keys(leftLabels) as LeftTab[]).filter((key) => settings.tabs[key]) : []),
-    [settings],
-  );
-  const rightTabs = useMemo(
-    () => (settings ? (Object.keys(rightLabels) as RightTab[]).filter((key) => settings.tabs[key]) : []),
-    [settings],
-  );
-
-  useEffect(() => {
-    if (!leftTabs.includes(leftTab) && leftTabs[0]) setLeftTab(leftTabs[0]);
-    if (!rightTabs.includes(rightTab) && rightTabs[0]) setRightTab(rightTabs[0]);
-  }, [leftTab, leftTabs, rightTab, rightTabs]);
-
-  const changeProject = useCallback(async (path: string) => {
-    try {
-      const value = await api.setProject(path);
-      setInitial(value);
-      setSettingsDraft(value.settings);
-      setError("");
-    } catch (value) {
-      setError(String(value));
+    if (isFirstRun.current) {
+      isFirstRun.current = false;
+      return;
     }
-  }, []);
-
-  const chooseProject = async () => {
-    const selected = await open({ directory: true, multiple: false, defaultPath: initial?.projectPath });
-    if (typeof selected === "string") await changeProject(selected);
-  };
-
-  const saveSettings = async () => {
-    if (!settingsDraft || !initial) return;
-    try {
-      const saved = await api.saveSettings(settingsDraft);
-      setInitial({ ...initial, settings: saved });
-      setSettingsOpen(false);
-      setError("");
-    } catch (value) {
-      setError(String(value));
+    if (timeoutRef.current !== null) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
     }
-  };
-
-  const updateEnv = (toolId: string, rows: EnvEntry[]) => {
-    setToolEnv((value) => ({ ...value, [toolId]: rows }));
-  };
-
-  const launch = (tool: Tool) => {
-    const rows = toolEnv[tool.id] ?? [];
-    const env: Record<string, string> = {};
-    for (const row of rows) {
-      const key = row.key.trim();
-      if (!key) continue;
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-        setError(`环境变量名无效：${key}`);
-        return;
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (hidden) {
+      setCollapsed(true);
+      timeoutRef.current = window.setTimeout(() => {
+        setMounted(false);
+        setCollapsed(false);
+        timeoutRef.current = null;
+      }, PANEL_SLIDE_MS);
+    } else {
+      setMounted(true);
+      setCollapsed(true);
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = requestAnimationFrame(() => {
+          setCollapsed(false);
+          rafRef.current = null;
+        });
+      });
+    }
+    return () => {
+      if (timeoutRef.current !== null) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
       }
-      if (Object.hasOwn(env, key)) {
-        setError(`环境变量重复：${key}`);
-        return;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
-      env[key] = row.value;
-    }
-    const number = (counters.current[tool.id] ?? 0) + 1;
-    counters.current[tool.id] = number;
-    const id = crypto.randomUUID();
-    const tab: TerminalTab = {
-      id,
-      toolId: tool.id,
-      title: `${tool.name} ${number}`,
-      running: true,
-      env,
     };
-    setTerminalTabs((value) => [...value, tab]);
-    setCenterTab(id);
-    setError("");
-  };
+  }, [hidden]);
 
-  const handleExit = useCallback((id: string) => {
-    setTerminalTabs((tabs) => tabs.map((tab) => (tab.id === id ? { ...tab, running: false } : tab)));
+  return { mounted, collapsed };
+}
+
+export function App() {
+  const { state } = useAppState();
+  const dispatch = useAppDispatch();
+
+  const leftPanel = useSlidingPanel(state.leftPanelHidden);
+  const rightPanel = useSlidingPanel(state.rightPanelHidden);
+
+  // Subscribe to hook-driven agent status events from each AI CLI.
+  // The Rust hook server emits these as they arrive from the per-tool
+  // forwarder script (Python for Claude / Codex, JS for OpenCode).
+  // File-edit attribution per tool was removed in v2.7.x — ChangesBoard
+  // now reads `compute_folder_stats` (tool-agnostic snapshot diff)
+  // inside FileStatsProvider, so this subscription is purely for tab
+  // status indicators.
+  useEffect(() => {
+    return subscribeAgentStatus((payload) => {
+      dispatch({ type: 'SET_AGENT_STATUS', id: payload.tab_id, status: payload.status });
+    });
+  }, [dispatch]);
+
+  // Apply theme + shape on mount and change — must sync with the inline script in index.html
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', state.currentTheme);
+    try { localStorage.setItem('cc-theme', state.currentTheme); } catch {}
+  }, [state.currentTheme]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-shape', state.currentShape);
+    try { localStorage.setItem('cc-shape', state.currentShape); } catch {}
+  }, [state.currentShape]);
+
+  // Sync the UI language to the <html> lang attribute so CSS :lang(zh)
+  // selectors can fire. This is what swaps the splash-label out of the
+  // English-italic-serif "art font" (which looks ugly with CJK glyphs)
+  // into a normal-weight bold display in Chinese — see TierTerminal.css
+  // .splash-label rules. Without this attribute on <html>, every component
+  // using .splash-label silently fell through to the italic serif and
+  // each component had to inline-style its own CJK workaround.
+  useEffect(() => {
+    document.documentElement.lang = state.currentLang;
+  }, [state.currentLang]);
+
+  // Wallpaper image opacity: expose as CSS variable --wallpaper-opacity
+  // (0.0–1.0) for the .launchpad-bg / .tier-terminal-bg / .multi-agent-bg
+  // img+video elements. Larger value = more visible image.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--wallpaper-opacity', String(state.wallpaperOpacity / 100));
+    try { localStorage.setItem('cc-wallpaper-opacity', String(state.wallpaperOpacity)); } catch {}
+  }, [state.wallpaperOpacity]);
+
+  // Startup: resolve IPC
+  useEffect(() => {
+    const timer = setTimeout(retryInvoke, 100);
+    return () => clearTimeout(timer);
   }, []);
-  const handleTerminalError = useCallback((message: string) => setError(message), []);
 
-  const closeTerminal = async (tab: TerminalTab) => {
-    if (tab.running) {
-      try {
-        await api.closeTerminal(tab.id);
-      } catch (value) {
-        setError(String(value));
-        return;
-      }
-    }
-    setTerminalTabs((tabs) => tabs.filter((item) => item.id !== tab.id));
-    if (centerTab === tab.id) setCenterTab("launchpad");
-  };
+  // OS-external file drops (Finder / File Explorer → our window). Tauri
+  // captures these at the window level and emits a single global event —
+  // DOM `drop` does NOT fire. payload.position is in physical pixels, so
+  // divide by devicePixelRatio for CSS-pixel hit-testing. Intra-app drags
+  // (left Explorer → terminal/Gambit) bypass HTML5 drag entirely and use
+  // pointer events; see explorer-drag.ts.
+  useEffect(() => {
+    let unlistenTauri: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+      const fn = await getCurrentWebview().onDragDropEvent((event) => {
+        if (event.payload.type !== 'drop') return;
+        const paths = event.payload.paths;
+        if (!paths || paths.length === 0) return;
+        const dpr = window.devicePixelRatio || 1;
+        routeFileDrop(paths, {
+          x: event.payload.position.x / dpr,
+          y: event.payload.position.y / dpr,
+        });
+      });
+      if (cancelled) fn();
+      else unlistenTauri = fn;
+    })().catch(() => {});
+    return () => { cancelled = true; unlistenTauri?.(); };
+  }, []);
 
-  if (!initial || !settings || !settingsDraft) {
-    return <main className="loading-screen">正在打开 aicross…</main>;
-  }
+  // No tool-icon preload anymore. v1.1.4–v1.9.x tried to keep the
+  // <img>-based Launchpad icons flicker-free by warming the HTTP cache
+  // with `new Image()`, then warming the decoded-image cache with
+  // `img.decode()`, then adding `decoding="sync"` on the render site —
+  // each layer made the flash less common but never eliminated it,
+  // because Chromium treats `decoding="sync"` as a hint and WebView2's
+  // decoded-image cache evicts under sustained use. The fix that
+  // actually works is to never use <img> for these icons: SVG logos
+  // ship as inline strings, PNG rasters ship as `?inline` data URIs
+  // rendered via CSS background-image. Both flows render synchronously
+  // as part of the parent's first paint. See CenterPanel.tsx `bgIcon`
+  // and the OPENCODE_SVG comment for the full history.
 
-  const shellClasses = [
-    "shell",
-    leftTabs.length === 0 ? "no-left" : "",
-    rightTabs.length === 0 ? "no-right" : "",
-    leftCollapsed ? "left-collapsed" : "",
-    rightCollapsed ? "right-collapsed" : "",
-  ].filter(Boolean).join(" ");
+  // Previously prefetched session history at startup — but that caused a
+  // noticeable stutter on cold launch (JSON parse + state fan-out) even
+  // though the Rust call itself ran on a blocking thread pool. Removed.
+  // HistoryBoard's own useEffect now fetches lazily when the user first
+  // opens the History tab, which is the only place the data is consumed.
+
+  // Suppress the default browser right-click menu in production. Desktop
+  // apps should not expose "Back / Reload / Save As / Print / Inspect" to
+  // end users. File/dir and terminal custom menus use stopPropagation, so
+  // their events never reach this document-level handler — no exemption
+  // needed for them. The xterm wrap is still whitelisted as a defensive
+  // fallback in case a future code path forgets to stopPropagation.
+  //
+  // In `npm run dev` / `cargo tauri dev` we deliberately skip this handler
+  // so the native WebView2 context menu is available — that's the only way
+  // to reach "Inspect Element" since Tauri 2 doesn't bind F12 by default.
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('.tier-xterm-wrap')) return;
+      e.preventDefault();
+    };
+    document.addEventListener('contextmenu', handler);
+    return () => document.removeEventListener('contextmenu', handler);
+  }, []);
+
+  // History list auto-refresh — install the window-foreground listener +
+  // 60s background poll that keep the session-history cache live so users
+  // no longer have to restart Coffee CLI to see newly-created sessions
+  // (issue: "会话记录列表始终是第一次打开软件时的,要重启才能看到新的").
+  // refreshHistory no-ops until the user first opens the History tab
+  // (prefetchHistory flips status to 'ready'), so users who never open it
+  // pay only the 60s setInterval tick (a function call that early-returns).
+  useEffect(() => initHistoryAutoRefresh(), []);
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">aicross</div>
-        <div className="project-path mono" title={initial.projectPath}>{initial.projectPath}</div>
-        <div className="topbar-spacer" />
-        {initial.recentProjects.length > 0 && (
-          <select className="recent-select" value="" onChange={(event) => void changeProject(event.target.value)} aria-label="最近项目">
-            <option value="" disabled>最近项目</option>
-            {initial.recentProjects.map((path) => <option value={path} key={path}>{path}</option>)}
-          </select>
-        )}
-        <button className="button small" onClick={() => void chooseProject()}>打开目录</button>
-        <button className="button small" onClick={() => setConnectionOpen(true)}>接入资源</button>
-        <button className="button small" onClick={() => setSettingsOpen(true)}>设置</button>
-      </header>
+    <>
+      {/* Custom titlebar — drag region + minimize / maximize / close */}
+      <TitleBar />
 
-      {initial.warnings.map((warning) => <div className="global-warning" key={warning}>{warning}</div>)}
-      {error && <div className="global-error"><span>{error}</span><button onClick={() => setError("")}>关闭</button></div>}
+      {/* 3-panel workspace. Titlebar toggles flip leftPanelHidden /
+          rightPanelHidden. The OS window itself doesn't resize (same
+          model as VS Code / Cursor / Warp) — toggling just collapses
+          the panel's width to 0 over a 250ms CSS transition while the
+          center column's `flex: 1` smoothly reclaims the freed space.
+          Once the slide-out animation completes the panel fully
+          UNMOUNTS so Explorer / RightPanel stop firing IPC + event
+          subs while hidden; on show, we mount in the collapsed state
+          and let CSS animate it back open. */}
+      <GitStatusProvider>
+        <div className="app-layout">
+          {leftPanel.mounted && (
+            <aside
+              className={`panel panel-left${leftPanel.collapsed ? ' is-collapsed' : ''}`}
+            >
+              <Explorer />
+            </aside>
+          )}
 
-      <main className={shellClasses}>
-        {leftTabs.length > 0 && (
-          <aside className="side-panel left-panel">
-            {leftCollapsed ? (
-              <button className="expand-button" onClick={() => setLeftCollapsed(false)} aria-label="展开左栏">›</button>
-            ) : (
-              <>
-                <PanelTabs tabs={leftTabs} labels={leftLabels} defaults={defaultLeftTabs} active={leftTab} setActive={setLeftTab} onCollapse={() => setLeftCollapsed(true)} />
-                {leftTab === "workspace" && <Workspace projectPath={initial.projectPath} />}
-                {leftTab === "resources" && <Resources />}
-                {leftTab === "sessions" && <Sessions />}
-              </>
-            )}
-          </aside>
-        )}
+          {/* Center: always mounted */}
+          <main className="panel panel-center">
+            <CenterPanel />
+          </main>
 
-        <section className="center-panel">
-          <nav className="tabbar center-tabs" aria-label="终端 tab">
-            <button className={`tab default-tab ${centerTab === "launchpad" ? "active" : ""}`} onClick={() => setCenterTab("launchpad")}>启动台</button>
-            {terminalTabs.map((tab) => (
-              <div className={`terminal-tab ${centerTab === tab.id ? "active" : ""}`} key={tab.id}>
-                <button className="terminal-tab-label" onClick={() => setCenterTab(tab.id)}>
-                  <span className={`status-dot ${tab.running ? "running" : "exited"}`} />
-                  {tab.title}
-                </button>
-                <button className="tab-close" aria-label={`关闭 ${tab.title}`} onClick={() => void closeTerminal(tab)}>×</button>
-              </div>
-            ))}
-          </nav>
-          <div className="center-content">
-            {centerTab === "launchpad" && (
-              <Launchpad
-                tools={tools}
-                loading={loadingTools}
-                expandedEnv={expandedEnv}
-                env={toolEnv}
-                onExpand={setExpandedEnv}
-                onEnvChange={updateEnv}
-                onLaunch={launch}
-                onRefresh={refreshTools}
-              />
-            )}
-            {terminalTabs.map((tab) => (
-              <TerminalView key={tab.id} tab={tab} active={centerTab === tab.id} onExit={handleExit} onError={handleTerminalError} />
-            ))}
-          </div>
-        </section>
-
-        {rightTabs.length > 0 && (
-          <aside className="side-panel right-panel">
-            {rightCollapsed ? (
-              <button className="expand-button" onClick={() => setRightCollapsed(false)} aria-label="展开右栏">‹</button>
-            ) : (
-              <>
-                <PanelTabs tabs={rightTabs} labels={rightLabels} defaults={defaultRightTabs} active={rightTab} setActive={setRightTab} onCollapse={() => setRightCollapsed(true)} />
-                {rightTab === "changes" && <Changes projectPath={initial.projectPath} />}
-                {rightTab === "plan" && <Placeholder title="方案与编排" text="第 2 期接入" />}
-                {rightTab === "tasks" && <Placeholder title="任务列表" text="尚未启用" />}
-              </>
-            )}
-          </aside>
-        )}
-      </main>
-
-      {settingsOpen && (
-        <SettingsDialog value={settingsDraft} onChange={setSettingsDraft} onSave={() => void saveSettings()} onClose={() => { setSettingsDraft(initial.settings); setSettingsOpen(false); }} />
-      )}
-      {connectionOpen && <ResourceConnectionDialog onClose={() => setConnectionOpen(false)} />}
-    </div>
-  );
-}
-
-function PanelTabs<T extends string>({
-  tabs,
-  labels,
-  defaults,
-  active,
-  setActive,
-  onCollapse,
-}: {
-  tabs: T[];
-  labels: Record<T, string>;
-  defaults: ReadonlySet<T>;
-  active: T;
-  setActive: (tab: T) => void;
-  onCollapse: () => void;
-}) {
-  return (
-    <nav className="tabbar panel-tabs">
-      {tabs.map((tab) => <button key={tab} className={`tab ${defaults.has(tab) ? "default-tab" : ""} ${active === tab ? "active" : ""}`} onClick={() => setActive(tab)}>{labels[tab]}</button>)}
-      <button className="collapse-button" onClick={onCollapse} aria-label="折叠栏">收起</button>
-    </nav>
-  );
-}
-
-function Placeholder({ title, text }: { title: string; text: string }) {
-  return <div className="placeholder"><div className="placeholder-title">{title}</div><div>{text}</div></div>;
-}
-
-function Launchpad({
-  tools,
-  loading,
-  expandedEnv,
-  env,
-  onExpand,
-  onEnvChange,
-  onLaunch,
-  onRefresh,
-}: {
-  tools: Tool[];
-  loading: boolean;
-  expandedEnv: string | null;
-  env: Record<string, EnvEntry[]>;
-  onExpand: (id: string | null) => void;
-  onEnvChange: (id: string, rows: EnvEntry[]) => void;
-  onLaunch: (tool: Tool) => void;
-  onRefresh: () => void;
-}) {
-  return (
-    <div className="launchpad">
-      <div className="launchpad-head">
-        <div><h1>启动台</h1><p>在当前项目目录打开本机 CLI。</p></div>
-        <button className="button small" disabled={loading} onClick={onRefresh}>{loading ? "检测中" : "重新检测"}</button>
-      </div>
-      <div className="tool-list">
-        {tools.map((tool) => {
-          const rows = env[tool.id] ?? [];
-          return (
-            <article className="tool-card" key={tool.id}>
-              <div className="tool-main">
-                <div className="tool-copy">
-                  <div className="tool-title-row"><h2>{tool.name}</h2><span className={`detection ${tool.detected ? "detected" : "missing"}`}>{tool.detected ? "已检测" : "未检测"}</span></div>
-                  <p>{tool.description}</p>
-                  <div className="tool-version mono">{tool.detected ? tool.version : tool.binary}</div>
-                </div>
-                <div className="tool-actions">
-                  <button className="button small" onClick={() => onExpand(expandedEnv === tool.id ? null : tool.id)}>配置变量</button>
-                  <button className="button small primary" disabled={!tool.detected} onClick={() => onLaunch(tool)}>启动</button>
-                </div>
-              </div>
-              {expandedEnv === tool.id && <EnvironmentEditor rows={rows} onChange={(value) => onEnvChange(tool.id, value)} />}
-            </article>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function EnvironmentEditor({ rows, onChange }: { rows: EnvEntry[]; onChange: (rows: EnvEntry[]) => void }) {
-  const update = (index: number, patch: Partial<EnvEntry>) => onChange(rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
-  return (
-    <div className="env-editor">
-      <div className="hint">仅传给本次进程，值不写入日志。</div>
-      {rows.map((row, index) => (
-        <div className="env-row" key={index}>
-          <input aria-label="环境变量名" placeholder="变量名" value={row.key} onChange={(event) => update(index, { key: event.target.value })} />
-          <input aria-label="环境变量值" type="password" placeholder="值" value={row.value} onChange={(event) => update(index, { value: event.target.value })} />
-          <button className="icon-button" aria-label="删除环境变量" onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}>×</button>
+          {rightPanel.mounted && (
+            <aside
+              className={`panel panel-right${rightPanel.collapsed ? ' is-collapsed' : ''}`}
+            >
+              <RightPanel />
+            </aside>
+          )}
         </div>
-      ))}
-      <button className="button small" onClick={() => onChange([...rows, { key: "", value: "" }])}>添加变量</button>
-    </div>
+      </GitStatusProvider>
+
+      {/* App-level overlay — the floating compose window. Rendered here so
+          it's isolated from TierTerminal re-renders (xterm output, agent
+          status events, etc.) and can be dragged freely across the whole
+          app window. Internally reads the active tab's gambit state. */}
+      <ActiveGambit />
+
+      {/* Personalization settings — centered modal opened by the titlebar
+          gear. App-level overlay (gated on state.settingsOpen) so it floats
+          above the whole workspace, like ActiveGambit. */}
+      <SettingsModal />
+
+      {/* 8 transparent resize-edge strips (window chrome). Three-platform
+          unified — Windows + macOS already get edge cursors via OS shims,
+          but the strips fill in Linux's missing cursor + drag behaviour
+          for our `decorations: false` borderless window. */}
+      <ResizeEdges />
+    </>
   );
 }

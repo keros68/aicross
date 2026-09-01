@@ -1,0 +1,522 @@
+/* Gambit.css — docked compose panel (anchored at the bottom of the center panel) */
+
+/* Panel shape: line-only terminal-multiplexer aesthetic. The default
+   .gambit multi-layer soft glow looks fuzzy against Panel's hard-edge
+   tmux/iTerm2 vibe — override to a single sharp 1px ring coloured with
+   `var(--border)` so it sits in the same visual register as the
+   side-panel dividers and the main-content outline. */
+[data-shape="panel"] .gambit {
+    box-shadow: 0 0 0 1px var(--border);
+}
+
+/* Soft + Sharp: same theme-uniform 1px ring as Panel. The default
+   multi-layer drop shadow read as a halo against busy desktops in
+   these two minimalist shapes. Slab keeps its 3D inset edges + glow
+   (deliberate physical-slab aesthetic), Glass has its own treatment
+   in global.css. */
+[data-shape="soft"] .gambit,
+[data-shape="sharp"] .gambit {
+    box-shadow: 0 0 0 1px var(--border);
+}
+
+
+.gambit {
+    position: fixed;
+    /* Anchor at origin; JS applies transform: translate3d(x, y, 0) for position. */
+    top: 0;
+    left: 0;
+    z-index: 200; /* above xterm (z:1); ctx-menu at 9999 stays above this */
+    display: flex;
+    flex-direction: column;
+    /* Paper-like docked panel: bg follows the active theme palette. */
+    background: var(--bg-panel);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: none; /* All shapes are fully borderless — shape identity comes from radius, shadow, and inset-light alone. */
+    /* Shape-aware radius: soft=16px, glass=18px, slab=4px, sharp/panel=0px. */
+    border-radius: var(--shape-radius-panel, 10px);
+    /* 5-layer all-around soft glow — the first layer is a
+       sharp 1px ring (spread=1, blur=0) so all four edges get a
+       guaranteed baseline outline regardless of how blur antialiasing
+       falls off on the host GPU or how busy the surrounding wallpaper
+       is on top vs. side. Without the ring, blur-only layers were
+       reading much weaker on the top/bottom edges than on the left/
+       right because the wallpaper above and below the card was
+       darker/busier and ate the soft halo.
+       Layers 2-5 are pure blur (1 → 4 px) with alpha 80→60→40→20%,
+       giving the organic feathered falloff the card actually wants.
+       Colour comes from --shadow-rgb on the active theme so the
+       glow carries the palette. Pulled into a local CSS var so the
+       [data-shape] overrides below can prepend their inset accents
+       and reuse the same falloff. */
+    --gambit-shadow:
+        0 0 0 1px rgba(var(--shadow-rgb), 0.18),
+        0 0 1px rgba(var(--shadow-rgb), 0.80),
+        0 0 2px rgba(var(--shadow-rgb), 0.60),
+        0 0 3px rgba(var(--shadow-rgb), 0.40),
+        0 0 4px rgba(var(--shadow-rgb), 0.20);
+    box-shadow: var(--gambit-shadow);
+    color: var(--text-1, #e8e4de);
+    font-family: inherit;
+    overflow: hidden;
+    user-select: none;
+    /* Fade-only entrance keeps the transform slot free for drag positioning. */
+    animation: gambitIn 0.18s ease-out;
+    /* Hint the compositor to GPU-layer this element for smooth drag. */
+    will-change: transform;
+}
+
+@keyframes gambitIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+[data-theme="light"] .gambit {
+    /* Inherits the same 4-layer 80/60/40/20 falloff defined on
+       .gambit. With --shadow-rgb=0,0,0 (light theme black) the
+       shadow reads naturally against the ivory background. */
+    color: var(--text-1, #2a2823);
+}
+
+/* ─── Shape overlays (mirror .task-card / .panel-* styling) ─── */
+
+/* Slab: inset 3D light edges like a physical stone slab */
+[data-shape="slab"] .gambit {
+    box-shadow:
+        inset 1px 1px 0 0 var(--shape-edge-light-top),
+        inset -1px -1px 0 0 var(--shape-edge-light-bottom),
+        var(--gambit-shadow);
+}
+
+/* Sharp: identity is 0-radius corners. No extra trim — the natural
+   4-layer falloff defined on .gambit already reads correctly here. */
+
+/* Glass: handled in global.css to keep the Liquid-Glass language
+   consolidated alongside the cards / segmented controls / popups. */
+
+/* Panel: same 4-layer falloff as every other shape. The original
+   v1.4 panel override used a heavier shadow to project a "thick
+   plate" feel, but the new natural 4-layer formula reads heavy
+   enough at 80% on the closest layer that the special-case override
+   stopped pulling its weight visually. */
+
+/* ─── Docked panel (anchored at the bottom of the center panel) ──────
+   Mirrors the VS Code "bottom panel" UX: native rounded corners, soft
+   glow ring, and backdrop-filter all stay. The panel sits with 8px of
+   breathing room on left/right/bottom (set inline in Gambit.tsx) so its
+   shadow has room to fall off. A top-edge strip lets the user resize
+   height; visual chrome — including which shape (soft/slab/glass/sharp/
+   panel) is active — passes through. */
+.gambit.gambit--docked {
+    animation: none;     /* fade-in is jarring when opening mid-session */
+    will-change: auto;   /* not GPU-translated when docked */
+}
+
+.gambit.gambit--docked .gambit-textarea {
+    /* The dock-resize flex row eats 6px of top space; trim the textarea's
+       top padding so text doesn't sit too low. */
+    padding-top: 4px;
+}
+/* Keep the pill overlay aligned with the textarea's first line in dock mode. */
+.gambit.gambit--docked .gambit-pills {
+    top: 4px;
+}
+
+/* Top-edge resize handle — implemented as a real flex row, NOT an
+   absolute overlay. An earlier version positioned this over the textarea
+   with z-index:2; that worked for clicks but in WebView2 the focused
+   textarea's I-beam cursor "bled through" the overlay so the ns-resize
+   cursor never appeared on hover. Making it a flex item gives it its
+   own physical row at the top of the dock — the textarea genuinely
+   starts below, no spatial overlap, cursor switches reliably.
+
+   Hit area (10px) is decoupled from the visible affordance (a 2px
+   hairline at the very top edge that only lights up on hover/active),
+   matching native window-pane splitter UX. */
+.gambit-dock-resize {
+    flex-shrink: 0;
+    /* 6px hit zone — kept compact so the dock's top breathing stays
+       SHORTER than the 14px side breathing (typical chat-input rhythm).
+       The cursor !important rule below + visible affordance via the
+       ::after hairline still let users find the grab area without it
+       eating noticeable vertical real estate. */
+    height: 6px;
+    /* !important is required: global.css line ~87 sets a universal
+       `* { cursor: default !important }` reset (so the app feels like
+       a desktop tool, not a browser page). The textarea overrides it
+       with its own !important rule; we follow the same pattern here. */
+    cursor: ns-resize !important;
+    position: relative;  /* pseudo positioning context */
+    background: transparent;
+}
+.gambit-dock-resize::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: transparent;
+    transition: background-color 0.12s;
+    /* Pseudo MUST be transparent to pointer events. Otherwise it
+       intercepts the top 2px and — having no cursor rule of its own —
+       falls back to the global `* { cursor: default !important }` reset,
+       so hovering on the visible line shows the wrong cursor while
+       hovering 1px below (parent's exposed hit area) shows ns-resize.
+       With pointer-events:none the parent stays the hit target
+       everywhere; :hover still fires on the parent (CSS evaluates :hover
+       by visual containment, not just hit-target), so the line still
+       lights up correctly. */
+    pointer-events: none;
+}
+.gambit-dock-resize:hover::after,
+.gambit-dock-resize:active::after {
+    background: var(--accent, #C4956A);
+}
+
+/* ─── Skill pills (attached skills, inline in the input box) ──── */
+/* Each attached skill shows as a removable pill that flows inline with the
+   textarea; on send it expands to a one-line instruction pointing the
+   agent at the skill's SKILL.md path. */
+.gambit-skill-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 2px 4px 2px 9px;
+    border-radius: 999px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--accent, #C4956A);
+    background: color-mix(in srgb, var(--accent, #C4956A) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent, #C4956A) 35%, transparent);
+}
+.gambit-skill-pill-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.gambit-skill-pill-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: inherit;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.15s, background-color 0.15s;
+}
+.gambit-skill-pill-x:hover {
+    opacity: 1;
+    background: color-mix(in srgb, var(--accent, #C4956A) 30%, transparent);
+}
+
+/* ─── Skill picker (footer left, before thumbnail strip) ──── */
+/* Same 30×30 footprint as .gambit-thumb so the footer's vertical
+   rhythm doesn't shift when an image gets pasted. position:relative
+   is the popover's anchor — popover opens UPWARD since the footer
+   is at the bottom of the Gambit window and downward would clip
+   into the OS taskbar / dock. */
+.gambit-skill-bar {
+    position: relative;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+}
+
+.gambit-skill-add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--shape-radius-btn, 6px);
+    color: var(--text-2, #9e9c98);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+.gambit-skill-add:hover {
+    color: var(--accent, #C4956A);
+    border-color: var(--accent, #C4956A);
+    background: rgba(196, 150, 106, 0.10);
+}
+
+@keyframes gambitSkillPopoverIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px) scale(0.96);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.gambit-skill-popover {
+    position: absolute;
+    /* Bottom-anchored: popover opens UPWARD from the "+" button.
+       4px gap so the popover's bottom border doesn't touch the
+       footer's top edge. */
+    bottom: calc(100% + 4px);
+    left: 0;
+    min-width: 200px;
+    max-width: 320px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 4px;
+    background: var(--bg-panel, #28241e);
+    border: 1px solid var(--border, #38332c);
+    border-radius: var(--radius-md, 8px);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+    z-index: 100;
+    /* Slide-up entrance: starts slightly below + 96% scale, lands at
+       full size with the same easeOutQuint curve the toast uses
+       (0.16, 1, 0.3, 1) — fast take-off, smooth landing. transform-
+       origin at bottom-left so the scale anchors to the "+" button. */
+    transform-origin: bottom left;
+    animation: gambitSkillPopoverIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.gambit-skill-popover-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-1, #e8e4de);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    border-radius: var(--radius-sm, 6px);
+    transition: background-color 0.12s;
+    gap: 12px;
+}
+.gambit-skill-popover-item:hover {
+    background: var(--bg-hover, #2f2a23);
+}
+
+/* Right-aligned slug hint — `/screenshot` etc. so the user knows
+   what's about to appear in their textarea. Dimmer than the display
+   name so it reads as supporting metadata, not a primary label. */
+.gambit-skill-popover-slash {
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    color: var(--text-3, #6f6c66);
+    flex-shrink: 0;
+}
+
+/* ─── Input box (textarea + absolute pill overlay) ──────────── */
+/* The textarea is a normal full-width field; skill pills float over its
+   first line as an absolute overlay, and the textarea's first-line
+   text-indent (set inline from the measured pill width) reserves their
+   width. So a pill behaves like inline skinned text — no hanging indent. */
+.gambit-input {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    cursor: text;
+}
+
+.gambit-pills {
+    position: absolute;
+    top: 10px;
+    left: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    max-width: calc(100% - 28px);
+    z-index: 1;
+}
+
+/* ─── Textarea ─────────────────────────────────────────────── */
+.gambit-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 1.5em;
+    padding: 10px 14px;
+    /* Height is JS-driven (auto-grow); .gambit-input owns the scroll. */
+    overflow: hidden;
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: none;
+    color: var(--text-1, #e8e4de);
+    font-family: var(--font, inherit);
+    font-size: 14px;
+    line-height: 1.5;
+    user-select: text;
+    cursor: text;
+}
+
+.gambit-textarea::placeholder {
+    color: var(--text-2, #9e9c98);
+    opacity: 0.55;
+}
+
+/* ─── Thumbnail strip (derived view of image paths in draft) ─ */
+/* Pure visual — no state of its own. Regex scans draft text for
+   absolute image paths; each unique match gets a thumb. Clicking a
+   thumb selects the matching path in the textarea, so Backspace
+   deletes the path (and hence the thumb) in one stroke. */
+/* Lives inside .gambit-footer as the left flex item. Thumbs align
+   left (default), send button sits flush right. Scrolls horizontally
+   when too many. min-width:0 so the flex item can actually shrink
+   below its content width (default would push the send button
+   off-screen with many thumbs). Thumb size matches the send button
+   (30×30) so the footer height stays constant whether thumbs are
+   present or not. */
+.gambit-thumb-strip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    /* Scrollbar hidden via global rule. */
+}
+
+.gambit-thumb {
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--shape-radius-btn, 6px);
+    overflow: hidden;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.gambit-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+.gambit-thumb--broken {
+    display: none;
+}
+
+/* ─── Preview overlay (fullscreen zoom-in) ───────────────────── */
+/* Click anywhere in the dimmed background closes; clicking the
+   image itself does not (so the user can right-click-save or just
+   admire without accidentally dismissing). ESC also closes. */
+.gambit-preview-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.78);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    cursor: zoom-out;
+    animation: gambitIn 0.14s ease-out;
+}
+.gambit-preview-overlay img {
+    max-width: 92vw;
+    max-height: 92vh;
+    object-fit: contain;
+    border-radius: var(--shape-radius-btn, 4px);
+    box-shadow: 0 4px 12px rgba(var(--shadow-rgb), 0.25), 0 12px 32px rgba(var(--shadow-rgb), 0.30);
+    user-select: none;
+    -webkit-user-drag: none;
+    cursor: default;
+}
+
+/* Soft + Sharp + Panel: theme-uniform 1px ring instead of the soft
+   drop shadow halo. Matches the Gambit window/ball treatment so
+   minimalist shapes stay consistent end-to-end. */
+[data-shape="soft"] .gambit-preview-overlay img,
+[data-shape="sharp"] .gambit-preview-overlay img,
+[data-shape="panel"] .gambit-preview-overlay img {
+    box-shadow: 0 0 0 1px var(--border);
+}
+
+/* ─── Footer (send button) ───────────────────────────────────── */
+.gambit-footer {
+    display: flex;
+    align-items: center;
+    /* Hint texts grow in the middle; send button pinned right. */
+    justify-content: flex-end;
+    padding: 6px 10px 8px;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.gambit-send {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    background: var(--accent, #C4956A);
+    border: none;
+    /* Pill var is 9999px in soft/glass (→ circle), 4px in slab, 0 in sharp/panel.
+       So the send button is round on soft and square on hard-edged themes. */
+    border-radius: var(--shape-radius-pill, 50%);
+    /* Icon colour = the deep terminal-area background, so the glyph reads
+       as a piece of the workspace surface sitting on the accent fill.
+       Glass shape overrides this back to #fff + adds a specular inset
+       (see global.css) — translucent glass fills wash a deep glyph out
+       against variable wallpaper, so glass keeps white. */
+    color: var(--bg-terminal, #fff);
+    cursor: pointer;
+    transition: background 0.12s, transform 0.08s, opacity 0.12s, filter 0.12s;
+}
+
+.gambit-send:hover:not(.gambit-send--empty) {
+    filter: brightness(1.12);
+    transform: translateY(-1px);
+}
+
+.gambit-send:active:not(.gambit-send--empty) {
+    transform: translateY(0);
+    filter: brightness(0.95);
+}
+
+/* Nothing to send yet: visually dim without using `disabled` so the click
+   still registers and shows the empty hint. */
+.gambit-send--empty {
+    opacity: 0.35;
+    cursor: default;
+}
+
+/* Send-failure state: the draft is preserved and a one-line hint appears
+   next to the button. The button gets a subtle amber tint so the user's
+   eye moves to it without a modal or toast. Auto-clears after 2.5s. */
+.gambit-send--failed {
+    background: #d97757 !important;
+}
+
+.gambit-send-hint {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: var(--text-2, #bdb5a3);
+    opacity: 0.85;
+    margin-right: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Right-click context menu styles live in TierTerminal.css under
+   .term-ctx-menu / .term-ctx-item / .term-ctx-sep — Gambit reuses them so
+   both panels share one visual language. */

@@ -1,0 +1,131 @@
+[package]
+name = "aicross"
+version = "0.1.0"
+edition = "2021"
+description = "多厂商 agent CLI 的桌面派发控制台"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/keros68/aicross"
+keywords = ["ai", "prompt", "coding", "llm", "tree-sitter"]
+categories = ["command-line-utilities", "development-tools"]
+build = "build.rs"
+
+[[bin]]
+name = "aicross"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tier Terminal — PTY (portable-pty, WezTerm's cross-platform PTY library)
+portable-pty = "0.9"
+# tokio: only the features we actually touch (grep'd against src/). Trimmed
+# from "full" to drop unused subsystems (process, signal, tracing, parking_lot
+# pulled in by full but not used here). `rt-multi-thread` + `macros` for
+# #[tokio::main] / spawn; `net` for TcpListener; `time` for sleep; `io-util`
+# for AsyncBufReadExt/AsyncWriteExt; `sync` for Mutex.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync"] }
+
+# Regex (used by terminal.rs for ANSI strip)
+regex = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Tauri
+# `devtools` feature dropped: it only enables WebView devtools in *release*
+# builds, and our shipped UI explicitly blocks F12 / Ctrl+Shift+I and the
+# context menu (see src-ui/src/main.tsx + App.tsx). Dev builds get devtools
+# automatically without the feature flag, so dev workflow is unaffected.
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+
+# Utilities
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+log = "0.4"
+dirs = "5"
+# Pure-Rust font parsing for the terminal font picker (list installed
+# families + monospace flag). No system deps, unlike font-kit.
+ttf-parser = "0.20"
+base64 = "0.22.1"
+# PNG encoder for clipboard-image paste (issue #96): the Tauri clipboard
+# plugin's read_image() returns raw RGBA — no original format — so we encode
+# to PNG before writing the temp file the AI CLI references by path. Reuses
+# the same png 0.17.x already pulled in transitively by tauri, no extra build.
+png = "0.17"
+# In-app self-update downloader (Windows). Blocking + rustls, runs on a
+# spawn_blocking thread; streams the installer so we can emit download %.
+ureq = "2"
+# Compile-time embed of openai/skills .curated tree (~6 MB / 38 skills / 742
+# files) into the binary's rodata. Seeded into ~/.coffee-cli/skills-library/
+# on first launch — avoids GitHub API at runtime (rate limit, GFW, errors)
+# at the cost of ~2-3 MB in the shipped installer post-compression.
+include_dir = "0.7"
+notify = "6.1.1"
+# Coalesces bursts of fs events (e.g. CLI writing 50 files in a row) into a
+# single handler callback so the frontend doesn't re-scan 50 times.
+notify-debouncer-full = "0.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+keyring = "3"
+
+# Multi-agent MCP server (v1.0: 3 tools, HTTP Streamable transport)
+# See docs/MULTI-AGENT-ARCHITECTURE.md §5.5 for why HTTP over stdio.
+# Note: schemars is NOT a direct dep — we use rmcp's re-exported schemars
+# to avoid version conflicts (rmcp 0.8 uses schemars 1.x internally).
+rmcp = { version = "0.8", features = ["server", "macros", "transport-streamable-http-server"] }
+axum = "0.7"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+# Drop unwinding tables. Panics terminate the process directly — fine for
+# a desktop app where panics are bugs anyway, and Tauri's command boundary
+# catches plugin errors via Result<_, _> rather than catch_unwind.
+panic = "abort"
+codegen-units = 1
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+# Prevents two Coffee CLI processes from running side-by-side. Without this,
+# launching twice spawns two WebView2 instances that fight over the OS IME
+# context, parking the candidate popup at primary-monitor (0,0). The plugin
+# detects an existing instance, forwards the activation, and exits the
+# duplicate. Multi-window users still get there via the existing tab-detach
+# path (same process, no IME conflict).
+tauri-plugin-single-instance = "2"
+
+# Win32 bindings:
+#   - DWM: force square window corners on Windows 11 (otherwise rounds
+#     borderless windows by default).
+#   - System_Console: AttachConsole for the `mcp-status` CLI subcommand
+#     so its stdout reaches the parent terminal in release builds
+#     (which link with windows_subsystem = "windows").
+#   - System_Threading: process-liveness probe for the manifest reader,
+#     plus OpenProcess for Job Object assignment.
+#   - System_JobObjects: bind every PTY child (claude/codex/etc.) to a
+#     kill-on-close job so orphan `claude.exe` / `node.exe` can't outlive
+#     a closed Coffee CLI and lock `~/.claude/` session files.
+#   - System_Registry: read the real PATH (HKCU+HKLM) so a GUI-launched
+#     process finds CLIs installed via scoop/volta/nvm/mise/native-
+#     installer etc. — replaces the old 5-dir hardcoded PATH repair
+#     (src/windows_path.rs).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
+
+# `libc::kill(pid, 0)` for process-liveness probe in cli::mcp_status.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -1,0 +1,236 @@
+/* MultiAgentGrid.css — "4 paper slices" layout.
+   User-defined aesthetic (2026-04-23): each pane must feel identical to
+   a single-terminal tab. No border, no card background, no internal
+   padding, no header strip. Only the active pane is rendered at full
+   brightness; the other three dim down. A tiny 1/2/3/4 badge in the
+   top-right of each pane uses the active theme accent.
+   Follows CLAUDE.md §4 (no native tooltips, no transform hover). */
+
+.multi-agent-grid-standalone {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  /* No gap, no padding — four terminals sit edge-to-edge like paper slices. */
+  /* position:relative anchors the absolute-positioned .multi-agent-bg
+     layer inside, so the user's wallpaper renders behind all four panes
+     (including empty ones showing the CLI picker). */
+  position: relative;
+}
+
+/* Grid-level wallpaper layer. Identical behavior to .launchpad-bg so
+   switching between Launchpad and a multi-agent Tab has zero visual
+   discontinuity in the background. */
+.multi-agent-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.multi-agent-bg img,
+.multi-agent-bg video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* User-controlled image opacity. Same --wallpaper-opacity variable
+     as launchpad and tier-terminal — see CenterPanel.css for rationale. */
+  opacity: var(--wallpaper-opacity, 0.7);
+}
+
+/* Make sure panes sit above the bg layer regardless of DOM order. */
+.multi-agent-grid-standalone > .multi-agent-pane {
+  z-index: 1;
+}
+
+/* Default 2×2 quadrant. */
+.multi-agent-grid--grid {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+/* 1×N vertical strip: N equal-height columns side by side. Useful
+   for screens wider than tall, or when the user wants each agent's
+   output visible as a continuous vertical stream. Slot numbering is
+   driven by CSS order of the N columns, not the 2x2 grid-areas,
+   so pane-slot-N → Nth column.
+
+   The `--columns-{2,3,4}` variant determines how many columns the grid
+   gets. Without a variant class, defaults to 4 for backward compat. */
+.multi-agent-grid--columns {
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: 1fr;
+}.multi-agent-grid--columns .multi-agent-pane.pane-slot-1 { grid-column: 1; grid-row: 1; }
+.multi-agent-grid--columns .multi-agent-pane.pane-slot-2 { grid-column: 2; grid-row: 1; }
+.multi-agent-grid--columns .multi-agent-pane.pane-slot-3 { grid-column: 3; grid-row: 1; }
+.multi-agent-grid--columns .multi-agent-pane.pane-slot-4 { grid-column: 4; grid-row: 1; }
+
+.multi-agent-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  /* No border / background / radius — blend into the tab surface. */
+  /* Only allowed animation: opacity (no position/scale per §4). */
+  transition: opacity 160ms ease;
+}
+
+/* Slot numbering matches the visible badge (1 = top-left, 2 = top-right,
+   3 = bottom-left, 4 = bottom-right). Reading order Z.
+   SCOPED UNDER `--grid` so these 2×2 placements only apply to the 2×2
+   quadrant mode. Without this scope, the 2-pane and 3-pane splits
+   (which set grid-template-columns inline via FourSplitGrid paneCount)
+   would have pane-slot-3 pinned to row 2, breaking the side-by-side
+   layout. Columns mode has its own scoped pane-slot rules above. */
+.multi-agent-grid--grid .multi-agent-pane.pane-slot-1 { grid-column: 1; grid-row: 1; }
+.multi-agent-grid--grid .multi-agent-pane.pane-slot-2 { grid-column: 2; grid-row: 1; }
+.multi-agent-grid--grid .multi-agent-pane.pane-slot-3 { grid-column: 1; grid-row: 2; }
+.multi-agent-grid--grid .multi-agent-pane.pane-slot-4 { grid-column: 2; grid-row: 2; }
+
+/* Focus handling: when any pane's xterm has keyboard focus, the other
+   three fade so the user's eye follows the typing cursor. Default
+   (no focus) shows all panes at full brightness. */
+.multi-agent-pane.is-dimmed {
+  opacity: 0.35;
+}
+
+.multi-agent-pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ─── Pane number badge ─────────────────────────────────────────────
+   Large elegant 1/2/3/4 in the top-right of every pane. Uses the app's
+   display font (not monospace) at a light weight for a gentle but
+   visible marker. Accent-tinted so it re-colors with the theme palette.
+   Tabular numerals keep the digits the same width across panes. */
+/* Industrial-style pane-number tag. Sharp-cornered square filled
+   with a darkened tint of the theme accent, bold white number
+   centered inside. The darker fill is produced by mixing the
+   accent with 45% black — keeps the theme hue, but high enough
+   contrast against white text to read at a glance. Small and
+   blocky on purpose: feels like a physical label, not a UI chip. */
+.pane-number-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 200;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* color-mix: 55% theme accent + 45% black. Well-supported since
+     Chrome 111 / Safari 16.4; Tauri's WebView2 is Edge-based and
+     supports it. Fallback uses the raw accent — acceptable. */
+  background: color-mix(in srgb, var(--accent, #6cc275) 55%, #000);
+  border-radius: 0;
+  border: none;
+  padding: 0;
+  font-size: 14px;
+  font-family: var(--font-display, 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif);
+  font-weight: 700;
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
+  line-height: 1;
+  color: #fff;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Active-pane badge variant — interactive close button. The × is only
+   revealed on hover (see .pane-badge-num / .pane-badge-x below), so the
+   idle state reads identical to the empty-pane badge and the user only
+   sees "close" affordance when they're reaching for it. */
+.pane-number-badge--closable {
+  pointer-events: auto;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.pane-number-badge--closable:hover {
+  /* Claude-brand orange (#D97757). Same tone used for Claude's
+     executing-state dot in the tab strip — "about to do something
+     consequential" reads the same across the app. */
+  background: #d97757;
+}
+
+.pane-number-badge--closable:active {
+  filter: brightness(0.92);
+}
+
+.pane-badge-num,
+.pane-badge-x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.pane-badge-x {
+  display: none;
+  font-size: 18px;
+  font-weight: 600;
+  /* × glyph sits optically low at this weight — lift a pixel so the
+     geometric center of the cross matches where the digit sat. */
+  transform: translateY(-1px);
+}
+
+.pane-number-badge--closable:hover .pane-badge-num { display: none; }
+.pane-number-badge--closable:hover .pane-badge-x   { display: flex; }
+
+/* ─── Empty-pane picker (simpler, no card) ──────────────────────── */
+
+.empty-pane-picker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 20px;
+  gap: 14px;
+  color: var(--text-secondary, #aaa);
+}
+.empty-pane-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.empty-pane-option {
+  padding: 9px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text-1, #e9e9ea);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent, #6cc275) 28%, transparent);
+  border-radius: var(--shape-radius-button, 6px);
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.empty-pane-option:hover {
+  background: color-mix(in srgb, var(--accent, #6cc275) 12%, transparent);
+  border-color: var(--accent, #6cc275);
+  color: var(--accent, #6cc275);
+}
+
+.empty-pane-option:active {
+  background: color-mix(in srgb, var(--accent, #6cc275) 20%, transparent);
+}
+
+/* Disabled state — the CLI binary is not installed on this machine.
+   Visual parity with .launchpad-card-disabled (opacity 0.35 + not-allowed)
+   so users recognize the same "greyed = not installed" language from the
+   Desktop launchpad. The button is fully inert — no hover tint, no click. */
+.empty-pane-option:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}

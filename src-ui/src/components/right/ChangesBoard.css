@@ -1,0 +1,360 @@
+/* Full-height container. List sits naturally in the flow (full panel
+ * height); when a file is selected, DiffPanel mounts as a bottom-anchored
+ * overlay (~55% of this container's height) — so the upper half of the
+ * list stays visible while the diff is open. position:relative anchors
+ * the absolutely-positioned diff overlay to this box. */
+.changes-fullview {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.changes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  /* 0 top padding — the 8px below .right-tabs is the only spacing
+   * between tabs and the first changed-file row, matching Sessions. */
+  padding: 0 0 12px 0;
+}
+
+/* Sentinel for IntersectionObserver-based progressive load. Zero-
+ * height marker at the bottom of the rendered window; once it scrolls
+ * into view the list grows by another PAGE_SIZE rows. */
+.changes-sentinel {
+  height: 1px;
+  width: 100%;
+  pointer-events: none;
+}
+
+.changes-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: transparent;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.4;
+  /* Match Explorer's tree row chrome (Explorer.css L182-198): rounded
+   * corners + theme-driven hover/active backgrounds. */
+  border-radius: var(--radius-sm);
+}
+
+.changes-row:hover {
+  background: var(--bg-hover);
+}
+
+.changes-row.selected {
+  background: var(--bg-active);
+}
+
+/* Top-edge resize handle for the half-paper diff overlay. 8px tall hit
+ * area centered on the diff's top edge (bottom: diffHeight% via inline
+ * style). Visual band is just 2px tall, accent-tinted on hover so the
+ * affordance is discoverable but not visually busy when not interacted
+ * with. ns-resize cursor over the whole 8px hit area means users don't
+ * need pixel-perfect aim. z-index above the diff panel so the grab
+ * registers even if a diff line is right under the cursor.
+ *
+ * !important on cursor is REQUIRED — global.css:86 sets a universal
+ * `* { cursor: default !important }` reset (so the app feels like a
+ * desktop tool, not a browser page). Without !important the handle
+ * shows the default arrow on hover instead of ns-resize, and users
+ * never discover the grab affordance. Same pattern Gambit's dock
+ * resize handle uses (Gambit.css ~line 274). */
+.diff-resize-handle {
+  position: absolute;
+  /* Match .diff-panel's edge-to-edge negative margins so the grab
+   * area extends all the way across the panel, not just the inner
+   * 16px-padded content area. */
+  left: -16px;
+  right: -16px;
+  height: 8px;
+  /* Center the 8px hit area on the diff's top border line: shift up
+   * by half the height. */
+  margin-bottom: -4px;
+  cursor: ns-resize !important;
+  z-index: 6;
+  background: transparent;
+  transition: background-color 0.15s ease;
+}
+
+.diff-resize-handle:hover,
+.diff-resize-handle:active {
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 3px,
+    var(--accent) 3px,
+    var(--accent) 5px,
+    transparent 5px,
+    transparent 8px
+  );
+}
+
+/* Glass shape opt-out — same global :not() rule (global.css:1218)
+ * that nukes panel children's backgrounds also nukes our hover
+ * gradient. !important alone isn't enough: the global rule's
+ * specificity is (0,3,1) due to :is()/:not() taking their argument
+ * specificity. Adding `.panel-right` as an ancestor brings my
+ * override to (0,4,0), which beats global cleanly. */
+[data-shape="glass"] .panel-right .diff-resize-handle:hover,
+[data-shape="glass"] .panel-right .diff-resize-handle:active {
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 3px,
+    var(--accent) 3px,
+    var(--accent) 5px,
+    transparent 5px,
+    transparent 8px
+  ) !important;
+}
+
+.changes-name {
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  max-width: 50%;
+}
+
+.changes-path {
+  color: var(--text-3, var(--text-2));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.changes-stats {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.changes-stats .diff-add { color: #4ec76b; }
+.changes-stats .diff-del { color: #e07070; }
+
+/* ── Branch header (top of the changes panel) ───────────────────────── */
+.changes-branch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  /* Faint lift so this reads as the repo "bar" anchored at the top, with the
+   * Unstaged/Staged/Untracked group labels below it as lighter sub-headers —
+   * a clear two-level hierarchy instead of two competing header rows.
+   * No border-bottom: on themes whose --border is solid (cappuccino #333,
+   * light rgba(0,0,0,0.1)) the 1px line read as an abrupt extra separator
+   * stacked under this wash; the wash alone carries the hierarchy, and
+   * the enlarged branch name (below) makes the bar read without a hard rule. */
+  background: rgba(255, 255, 255, 0.025);
+  /* Follow the active shape at the element tier (one step below panel):
+   * soft/glass/carbon 8px, slab 3px, sharp/panel 0. Panel-radius (16px)
+   * was too much on this slim bar — it read as a pill; btn-radius keeps a
+   * gentle round without swallowing the short edges. */
+  border-radius: var(--shape-radius-btn, 6px);
+  flex-shrink: 0;
+}
+.changes-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-1);
+  /* Bigger than the 12px file rows below: this is the repo bar — short
+   * content (branch name + counts), so it can afford larger type to read
+   * as the top-level anchor without truncating like a long file path. */
+  font-size: 14px;
+  font-weight: 600;
+}
+.changes-branch svg { flex-shrink: 0; opacity: 0.8; }
+.changes-branch-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.changes-branch-stats {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+  /* One step below the 14px branch name so the +/− counts read as supporting
+   * metadata, not a peer of the branch name itself. */
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.changes-branch-stats .diff-add { color: #4ec76b; }
+.changes-branch-stats .diff-del { color: #e07070; }
+
+/* ── Git group sections (Unstaged / Staged / Untracked) ─────────────── */
+.changes-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 4px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-2));
+  user-select: none;
+}
+.changes-group-count {
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--bg-hover);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "已提交" session-commit row — single line: hash + subject (fills,
+ * truncates) + relative time (right). Replaces the old 3-line wrap layout
+ * (chevron+hash on line 1, subject on line 2, count pill on line 3) which
+ * wasted vertical space when several commits stacked. The count pill is
+ * dropped: the file list below an expanded commit already shows the files, so
+ * a redundant number was noise (per user feedback). Sits under a "已提交"
+ * group header (count pill there carries the commit total). The subject is a
+ * sentence, so it MUST NOT inherit any header's text-transform: uppercase. */
+.changes-commit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  width: 100%;
+  text-align: left;
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: var(--radius-sm);
+  user-select: none;
+}
+/* Toggleable session-commit row (expand to lazy-load files). The global
+   `* { cursor: default !important }` (global.css) forces an explicit pointer
+   override or the row shows no click affordance. */
+.changes-commit-toggleable {
+  cursor: pointer !important;
+}
+.changes-commit-toggleable:hover {
+  background: var(--bg-hover);
+}
+.changes-commit-hash {
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-3, var(--text-2));
+}
+.changes-commit-subject {
+  flex: 1 1 auto;           /* fill remaining space, truncate */
+  position: relative;       /* anchor for the ::after tooltip */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-1);     /* brightest — the main info, not a muted label */
+}
+.changes-commit-time {
+  flex: 0 0 auto;
+  color: var(--text-3, var(--text-2));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Themed tooltip — replaces the native title= chrome (per the no-native-
+ * tooltips rule; matches the heatmap's data-tip pill). Shows the full commit
+ * subject (the header truncates it with ellipsis). white-space: normal so a
+ * long subject wraps inside the pill instead of overflowing the panel.
+ *
+ * Clipping guard: unlike native title= (which floats in the OS layer above
+ * the webview), this is a DOM ::after — it's subject to the ScrollPanel's
+ * overflow. `max-width: min(260px, 100%)` caps the pill at 260px OR the
+ * subject's own width (whichever is smaller), so the tooltip's right edge
+ * can NEVER exceed the subject's right edge → no right-edge clipping even
+ * when the right panel is dragged narrow. (Vertical is fine: the commit-
+ * header sits at the top of the scroll list, so the tooltip drops DOWN into
+ * the file-list area, in-viewport.) */
+.changes-commit-subject[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  max-width: min(260px, 100%);
+  padding: 6px 10px;
+  background: var(--bg-panel);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+  word-break: break-word;
+  pointer-events: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20), 0 6px 20px rgba(0, 0, 0, 0.22);
+  z-index: 100;
+}
+
+/* Single-letter git status badge (M/A/D/R/C/U/?). Fixed width so file
+ * names align in a column regardless of status letter. */
+.changes-status {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-family: var(--font-mono, monospace);
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.changes-status-m { color: #e0a458; } /* modified */
+.changes-status-a { color: #4ec76b; } /* added (staged) */
+.changes-status-d { color: #e07070; } /* deleted */
+.changes-status-r,
+.changes-status-c { color: #6c9fd8; } /* renamed / copied */
+.changes-status-u { color: #d98b6c; } /* unmerged */
+.changes-status-untracked { color: #8aa872; } /* ? untracked */
+
+/* "Initialize Git here" button shown in the not-a-repo empty state. */
+.changes-init-btn {
+  margin-top: 14px;
+  padding: 6px 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer !important;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.changes-init-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg-app, #fff);
+}
+.changes-init-btn:disabled {
+  opacity: 0.6;
+  cursor: default !important;
+}

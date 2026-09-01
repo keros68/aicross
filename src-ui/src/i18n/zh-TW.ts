@@ -1,0 +1,191 @@
+export const zhTW = {
+  'app.title': 'aicross',
+  'explorer.tab.workspace': '工作區',
+  'explorer.tab.history': '會話記錄',
+  'explorer.workspace.select-dir': '點擊選擇工作目錄',
+
+  // Context Menu
+  'menu.copy_abs': '複製絕對路徑',
+  'menu.copy_rel': '複製相對路徑',
+  'menu.copy_ref': '複製為 @reference',
+  'menu.cut': '剪下',
+  'menu.copy': '複製',
+  'menu.paste': '貼上',
+  'menu.select_all': '全選',
+  'menu.rename': '重新命名',
+  'menu.delete': '刪除',
+  'menu.show_in_folder': '在檔案總管中顯示',
+  'menu.open': '開啟',
+  'menu.pin': '置頂',
+  'menu.unpin': '取消置頂',
+  'menu.copy_session_id': '複製會話ID',
+  'menu.copy_resume_command': '複製恢復命令',
+  'menu.copy_full_path': '複製完整路徑',
+
+
+  // Tools
+  'tool.terminal': '終端機',
+  'tool.remote': '遠端終端機',
+  'library.agent_tools': 'Agent 工具',
+  'sentinel.protocol': '工作階段監控',
+  'tool.two_split': '獨立二屏',
+  'tool.three_split': '獨立三屏',
+  'tool.four_split': '獨立四屏',
+  'tool_config.command': '啟動命令',
+  'tool_config.extra_args': '額外參數',
+  'tool_config.default_cwd': '啟動目錄',
+  'tool_config.history_path': '歷史對話目錄',
+  'tool_config.reset': '重設',
+  'tool_config.cancel': '取消',
+  'tool_config.save': '儲存',
+
+  // Remote Terminal
+  'remote.title': '遠端終端機',
+  'remote.host': '伺服器位址',
+  'remote.host_placeholder': '例如 192.168.1.100',
+  'remote.username': '使用者名稱',
+  'remote.password': '密碼',
+  'remote.connect': '連線',
+  'remote.connecting': '連線中...',
+  'remote.connect_failed': '連線失敗',
+
+  'tab.new': '選擇工具',
+
+
+  // Task Board
+  'task.notes_placeholder': '新增備註...',
+  'task.section.working': '進行中',
+  'task.section.todo': '待辦',
+  'task.section.done': '已完成',
+  'task.greeting.morning': '早安，今天想做些什麼？',
+  'task.greeting.afternoon': '午安，還有什麼要做的？',
+  'task.greeting.evening': '晚安，想來點大事嗎？',
+  'task.tab.tasks': '任務列表',
+  'task.tab.changes': '修改記錄',
+  'changes.empty': '暫無修改。',
+  'launchpad.open_folder': '開啟資料夾',
+  'launchpad.detect_help_trigger': "識別不到?",
+  'launchpad.detect_help_tip': "若你曾經用過英文開發者製作的 AI 終端工具,可能把含中日韓等其他語言字元的 PATH 改成亂碼,導致所有終端都識別不到。3種修復方案 ① 重裝該 AI 工具 ② 手動修復工具 PATH ③ 讓 AI 幫你修復 PATH",
+  'launchpad.switch_model_trigger': "切換模型",
+  'launchpad.switch_model_tip': "給所有的 AI 工具一鍵快速地切換模型,推薦使用 EchoBird,點擊\"切換模型\"打開 Echobird.ai 下載安裝即可。",
+  'changes.clean': '沒有改動 — 工作區乾淨。',
+  'changes.no_git': '未安裝 Git — 程式碼比對、分支等功能不可用。',
+  'changes.not_repo': '目前資料夾不是 Git 儲存庫。',
+  'changes.init_here': '在此初始化 Git',
+  'changes.initializing': '正在初始化…',
+  'changes.committed': '已提交',
+  'changes.uncommitted': '未提交',
+  'changes.untracked': '未追蹤',
+  'diff.loading': '載入中…',
+  'diff.error': '無法載入差異',
+  'diff.no_changes': '沒有改動',
+  'diff.too_large': '檔案較大,未渲染逐行差異',
+  'diff.unchanged_lines': '⋯ {count} 行未變更',
+  'task.default_title': '新任務',
+  'task.search_sessions': '搜尋歷史對話...',
+  'task.filter_all_projects': '全部',
+  'menu.no_recent': '沒有任何近期對話',
+  'task.messages': '{count} 則訊息',
+
+  // Actions
+
+  // Time
+  'time.just_now': '剛剛',
+  'time.today': '今天',
+  'time.yesterday': '昨天',
+  'time.days_ago': '{days} 天前',
+
+  // Settings modal (titlebar gear)
+  'settings.title': '設定',
+  'settings.appearance': '外觀',
+  'settings.wallpaper': '桌布',
+  'settings.terminal': '終端',
+  'settings.language': '語言',
+  'settings.feedback': 'BUG / 建議',
+  'settings.feedback.desc': '遇到 BUG 或建議，點擊下方提交你的問題：',
+  'settings.wallpaper.pick': '選擇圖片或影片',
+  'settings.wallpaper.clear': '移除桌布',
+  'settings.wallpaper.opacity': '透明度',
+  'settings.terminal.scheme': '文字顏色',
+  'settings.terminal.font': '字型',
+  'settings.terminal.font.default': '預設(內建)',
+  'settings.terminal.shell': '預設終端',
+  'settings.terminal.shell.auto': '系統預設',
+  'settings.terminal.shell.not_recommended': '不推薦',
+  'settings.font.monospace': '等寬',
+  'settings.font.other': '其他字型',
+  'settings.font.search': '搜尋字型…',
+  'settings.gambit': '快捷鍵',
+  'settings.send.title': '發送訊息',
+  'settings.send.newline': '換行',
+  'settings.gambit.hotkey': '開關快捷鍵',
+  // 頂部快捷開關顯示模式(設定 → 快捷鍵)
+  'settings.titlebar.toggle': '頂部快捷開關',
+  'settings.titlebar.toggle.icon-hotkey': '圖示 + 快捷鍵',
+  'settings.titlebar.toggle.icon': '僅圖示',
+  'settings.titlebar.toggle.hidden': '隱藏',
+  'settings.tasks': '任務',
+  'settings.tasks.view': '任務形態',
+  'task.view.list': '待辦式',
+  'task.view.note': '便籤式',
+  'task.view.list.sub': '緊湊清單，逐條勾選',
+  'task.view.note.sub': '大便籤，隨手寫、整段發給 AI',
+  'task.view.prompt': '提示詞式',
+  'task.view.prompt.sub': '按分類攢 AI 提示詞，一鍵發送',
+  'task.prompt.new_category': '新分類',
+  'task.prompt.category_placeholder': '分類名（選已有或輸入新的）',
+  'task.prompt.body_placeholder': '寫提示詞，整段發給 AI…',
+  'task.note_placeholder': '寫點什麼，整段發給 AI…',
+  'task.welcome_note': `歡迎來到 aicross
+
+這張就是「便籤」——隨手寫，寫完點右上角 ▶ 整段發給 AI，不用再擠小輸入框。
+
+上手三步：
+1. 中間挑個工具（Claude / Codex / OpenCode…），選好資料夾就開跑
+2. 左上三個圓點切優先級（紅 / 黃 / 綠），自動排序；拖底邊能把便籤拉大拉小
+3. 右上「修改記錄」看 AI 改了哪些檔案；設定裡換主題、語言，或在「待辦式 / 便籤式」之間切換
+
+看完刪掉這張，開始你的第一個任務吧。`,
+  'task.show_guide': '查看使用攻略',
+
+  // Theme Menu
+  'theme.section.color': '配色',
+  'theme.section.shape': '形態',
+  'theme.section.icons': '圖示風格',
+  'theme.color.light': '明亮',
+  'theme.color.dark': '暗黑',
+  'theme.color.cappuccino': '代碼夜',
+  'theme.color.sakura': '夜櫻',
+  'theme.color.lavender': '薰衣草霧',
+  'theme.color.mint': '薄荷深海',
+  'theme.color.obsidian': '黑曜石',
+  'theme.color.cobalt': '鈷藍',
+  'theme.color.moss': '苔蘚',
+  'theme.color.crimson': '暗紅',
+  'theme.color.sunset': '落日橙',
+  'theme.color.amber': '琥珀',
+  'theme.color.emerald': '翠綠',
+  'theme.color.teal': '青碧',
+  'theme.color.indigo': '靛藍',
+  'theme.color.fuchsia': '品紅',
+
+  // 合併輸入
+  'gambit.title': '合併輸入',
+  'gambit.placeholder': '輸入內容... ({send} 發送, {newline} 換行, 可貼上圖片, Alt+↑↓ 翻歷史)',
+  'gambit.send_failed_hint': '請先開啟活動工作階段',
+  'gambit.send_empty_hint': '先輸入內容或貼上圖片 (Ctrl+V)',
+
+
+  'heatmap.title': '{sessions} 次對話、{messages} 則訊息',
+  'heatmap.title_empty': '故事還沒開始 — 跟 AI 聊起來，點亮你的第一格',
+  'heatmap.legend_less': '少',
+  'heatmap.legend_more': '多',
+  'heatmap.tooltip_some': '{date} · {count} 則訊息',
+  'heatmap.tooltip_one': '{date} · 1 則訊息',
+  'heatmap.tooltip_none': '{date} · 沒有活動',
+
+  // Skills 面板開關提示
+  'skills.toast.enabled': '已啟用',
+  'skills.toast.disabled': '已關閉',
+
+} as const;

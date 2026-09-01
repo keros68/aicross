@@ -128,7 +128,7 @@
     line-height: 1.55;
     -webkit-font-smoothing: antialiased;
   }
-  .mono{ font-family: "IBM Plex Mono", "Consolas", monospace; }
+  .mono{ font-family: "IBM Plex Mono", "Consolas", monospace; font-variant-numeric: tabular-nums; }
   h1,h2,h3{ margin:0; text-wrap: balance; }
   button{ font-family: inherit; }
   ::selection{ background: var(--accent-soft); }
@@ -142,43 +142,67 @@
     outline-offset: 2px;
   }
 
-  /* ---------- shell ---------- */
-  .app{ height: 100vh; display:flex; flex-direction:column; min-width: 0; }
+  /* ---------- shell：外壳走 chrome 灰，内容面走白 ---------- */
+  .app{ height: 100vh; display:flex; flex-direction:column; min-width: 0; background: var(--bg); }
   .topbar{
     flex: 0 0 auto;
-    display:flex; align-items:baseline; gap:14px;
-    padding: 12px 20px;
+    display:flex; align-items:center; gap:12px;
+    padding: 8px 12px;
     border-bottom: 1px solid var(--border);
-    background: var(--surface);
+    background: var(--bg);
   }
-  .brand{ font-weight:700; font-size:17px; letter-spacing: 0.01em; }
-  .brand::before{
-    content:"";
-    display:inline-block; width:8px; height:8px; border-radius:2px;
-    background: var(--accent); margin-right:8px; transform: translateY(-1px);
+  .brand{ display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; }
+  .brand-mark{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:22px; height:22px; border-radius:4px;
+    background: var(--accent); color: var(--accent-contrast);
+    font-family:"IBM Plex Mono", monospace; font-size:11px; font-weight:700;
   }
-  .topbar-meta{ color: var(--text-2); font-size:13px; }
+  .topbar-sep{ width:1px; height:16px; background: var(--border-strong); }
+  .topbar-meta{ color: var(--text-2); font-size:12px; }
   .topbar-spacer{ flex:1; }
-
-  .screen{ flex:1; min-height:0; }
-  .screen[hidden]{ display:none; }
-
-  /* ---------- screen 1: 三栏 ---------- */
-  #screen-dispatch{ display:grid; grid-template-columns: 270px 1fr 300px; height:100%; min-height:0; }
-  @media (max-width: 1180px){
-    #screen-dispatch{ grid-template-columns: 236px 1fr 264px; }
+  .icon-btn{
+    width:28px; height:28px; border-radius:8px; line-height:1;
+    border:1px solid transparent; background:transparent; color: var(--text-2);
+    font-size:13px; cursor:pointer;
   }
+  .icon-btn:hover{ background: var(--surface); border-color: var(--border); color: var(--text); }
+
+  #workbench{ flex:1; min-height:0; display:grid; grid-template-columns: 270px 1fr 300px; }
+  @media (max-width: 1180px){ #workbench{ grid-template-columns: 224px 1fr 264px; } }
   @media (max-width: 900px){
-    #screen-dispatch{ grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+    #workbench{ grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
     .roster{ border-right:none; border-bottom:1px solid var(--border); max-height:260px; }
     .plan-col{ border-left:none; border-top:1px solid var(--border); max-height:360px; }
   }
 
+  /* ---------- 中栏：标签栏 + 内容面 ---------- */
+  .center{ display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .tabbar{
+    flex:0 0 auto; display:flex; align-items:flex-end; gap:2px;
+    padding: 6px 8px 0; border-bottom:1px solid var(--border);
+  }
+  .tab{
+    font-family:"IBM Plex Mono", monospace; font-size:12px;
+    padding: 8px 12px; margin-bottom:-1px; cursor:pointer;
+    border:1px solid transparent; border-bottom-color: var(--border);
+    border-radius: 8px 8px 0 0;
+    background:transparent; color: var(--text-3);
+  }
+  .tab:hover:not(:disabled){ color: var(--text); }
+  .tab.is-active{
+    background: var(--surface); color: var(--text);
+    border-color: var(--border); border-bottom-color: var(--surface);
+  }
+  .tab:disabled{ opacity:.45; cursor:default; }
+  .pane{ flex:1; min-height:0; background: var(--surface); display:flex; flex-direction:column; }
+  .pane[hidden]{ display:none !important; }
+
   /* ---------- 左栏：资源 ---------- */
   .roster{
     border-right: 1px solid var(--border);
-    background: var(--surface);
-    padding: 16px 14px 20px;
+    background: var(--bg);
+    padding: 16px 16px 20px;
     overflow-y: auto;
   }
   .roster-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; }
@@ -190,61 +214,63 @@
 
   .agent-block{ margin-bottom:12px; }
   .agent-block:last-child{ margin-bottom:0; }
-  .agent-head{ display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  .agent-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
   .agent-toggle{
-    display:flex; align-items:center; gap:6px; flex:1; min-width:0;
+    display:flex; align-items:center; gap:8px; flex:1 1 100%; min-width:0;
     background:none; border:none; cursor:pointer; padding:4px 2px; text-align:left; color:var(--text);
   }
-  .agent-caret{ color: var(--text-3); font-size:10px; flex:0 0 auto; }
-  .agent-name{ font-size:12.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .agent-caret{ color: var(--text-3); font-size:11px; flex:0 0 auto; }
+  .agent-name{ font-family:"IBM Plex Mono", monospace; font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .agent-version{ font-size:11px; color: var(--text-3); white-space:nowrap; }
-  .agent-actions{ display:flex; gap:4px; flex:0 0 auto; }
-  .agent-actions .btn-sm{ padding:3px 8px; font-size:10.5px; }
-  .agent-probe-note{ font-size:11px; color: var(--text-3); padding:0 2px 4px 24px; min-height:14px; }
+  .agent-actions{ display:flex; gap:4px; flex:0 0 auto; margin-left:20px; }
+  .agent-actions .btn-sm{
+    background:transparent; border-color:transparent;
+    color: var(--text-3); padding:2px 4px; font-size:11px;
+  }
+  .agent-actions .btn-sm:hover{ background:transparent; color: var(--accent); text-decoration:underline; }
   .agent-models{ padding-left:14px; border-left:1px solid var(--border); margin-left:6px; margin-top:2px; }
   .agent-models[hidden]{ display:none; }
-  .agent-model-group{ font-size:10px; color: var(--text-3); text-transform:uppercase; letter-spacing:0.06em; padding:6px 8px 2px; }
-  .agent-empty{ font-size:11.5px; color: var(--text-3); padding:4px 8px; }
+  .agent-model-group{ font-size:11px; color: var(--text-3); text-transform:uppercase; letter-spacing:0.06em; padding:8px 8px 2px; }
+  .agent-empty{ font-size:12px; color: var(--text-3); padding:4px 8px; }
 
   .roster-model{
     display:block; width:100%; text-align:left;
-    background:none; border: 1px solid transparent; border-radius:8px;
-    padding: 6px 8px; margin-bottom:2px; cursor:pointer;
+    background:none; border:none; border-radius:4px;
+    padding: 4px 8px; cursor:pointer;
     color: var(--text);
   }
-  .roster-model:hover{ background: var(--surface-alt); border-color: var(--border); }
-  .roster-model-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
-  .roster-model-id{ font-size:12.5px; font-weight:500; }
-  .roster-model-meta{ font-size:11px; color: var(--text-3); margin-top:3px; }
-  .rstatus{ font-size:10px; font-weight:600; padding:1px 7px; border-radius:8px; white-space:nowrap; }
+  .roster-model:hover{ background: var(--surface-alt); }
+  .roster-model-id{ font-size:13px; font-weight:500; }
+  .roster-model-meta{ font-size:11px; color: var(--text-3); margin-top:4px; }
+  .rstatus{ font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; white-space:nowrap; }
   .rstatus-active{ background: var(--success-soft); color: var(--success); }
   .rstatus-pending{ background: var(--warning-soft); color: var(--warning); }
   .rstatus-off{ background: var(--surface-alt); color: var(--text-3); border:1px solid var(--border-strong); }
 
-  .add-agent-btn{ width:100%; border-style:dashed; margin-top:10px; }
 
   /* ---------- 中栏：对话 ---------- */
-  .conversation{ display:flex; flex-direction:column; min-height:0; min-width:0; }
-  .thread{ flex:1; overflow-y:auto; padding: 22px 28px 12px; display:flex; flex-direction:column; gap:14px; }
-  .thread-inner{ max-width: 720px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:14px; }
+  .conversation{ flex:1; display:flex; flex-direction:column; min-height:0; min-width:0; }
+  .thread{ flex:1; overflow-y:auto; padding: 24px 28px 12px; display:flex; flex-direction:column; gap:16px; }
+  .thread-inner{ max-width: 860px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:16px; }
 
-  .msg{ max-width: 620px; }
+  .msg{ max-width: 660px; }
+  .msg.user{ max-width: 540px; }
   .msg.user{ align-self:flex-end; margin-left:auto; }
   .msg.model{ align-self:flex-start; }
   .msg-bubble{
-    background: var(--surface); border:1px solid var(--border); border-radius:12px;
-    padding: 12px 14px;
+    background: var(--surface); border:1px solid var(--border); border-radius:8px;
+    padding: 12px 16px;
   }
-  .msg.user .msg-bubble{ background: var(--accent-soft); border-color: transparent; }
+  .msg.user .msg-bubble{ background: var(--surface-alt); border-color: transparent; }
   .msg.model .msg-bubble{ border-left-width:3px; }
-  .msg-head{ display:flex; align-items:center; gap:7px; margin-bottom:6px; }
-  .msg-author{ font-size:12px; font-weight:600; }
+  .msg-head{ display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .msg-author{ font-family:"IBM Plex Mono", monospace; font-size:12px; font-weight:600; }
   .vendor-tag{
-    font-size:10.5px; font-weight:600; padding:1px 6px; border-radius:5px;
+    font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px;
     letter-spacing:0.02em;
   }
   .msg-role{ font-size:11px; color: var(--text-3); }
-  .msg-body{ font-size:13.5px; color: var(--text); }
+  .msg-body{ font-size:14px; color: var(--text); }
   .msg-body p{ margin: 0 0 8px; }
   .msg-body p:last-child{ margin-bottom:0; }
   .msg-body ol, .msg-body ul{ margin: 6px 0 0; padding-left: 20px; }
@@ -252,14 +278,9 @@
 
   .attachments{ display:flex; gap:8px; margin-top:9px; flex-wrap:wrap; }
   .attachment-chip{
-    display:inline-flex; align-items:center; gap:6px;
-    border:1px solid var(--border-strong); border-radius:7px;
-    padding: 4px 9px; font-size:12px; background: var(--surface);
-  }
-  .attachment-chip::before{
-    content:""; width:10px; height:12px; flex:0 0 auto;
-    background: var(--text-3);
-    clip-path: polygon(0 0, 65% 0, 100% 35%, 100% 100%, 0 100%);
+    display:inline-flex; align-items:center; gap:8px;
+    border:1px solid var(--border-strong); border-radius:8px;
+    padding: 4px 8px; font-size:12px; background: var(--surface);
   }
 
   .msg.system{ align-self:center; }
@@ -271,10 +292,10 @@
   .status-line{
     align-self:center; display:flex; align-items:center; gap:8px;
     font-size:12px; color: var(--text-2); background: var(--surface-alt);
-    border:1px solid var(--border); border-radius:20px; padding:5px 12px 5px 8px;
+    border:1px solid var(--border); border-radius:999px; padding:4px 12px 4px 8px;
   }
   .status-badge{
-    font-size:10.5px; font-weight:600; padding:2px 7px; border-radius:10px;
+    font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px;
     text-transform:uppercase; letter-spacing:0.03em;
   }
   .status-badge.queued{ background: var(--surface); color: var(--text-3); border:1px solid var(--border-strong); }
@@ -285,33 +306,33 @@
 
   .plan-summary-strip{
     max-width:720px; margin:0 auto 8px; width:100%;
-    font-size:12px; color: var(--text-2); background: var(--surface-alt);
-    border:1px solid var(--border); border-radius:8px; padding:7px 12px;
+    font-size:12px; color: var(--accent); background: transparent;
+    border:none; padding:4px 0;
     cursor:pointer; text-align:left;
   }
-  .plan-summary-strip:hover{ border-color: var(--accent); color: var(--text); }
+  .plan-summary-strip:hover{ text-decoration:underline; }
 
   /* ---------- composer ---------- */
   .composer{
     flex: 0 0 auto; border-top:1px solid var(--border); background: var(--surface);
-    padding: 10px 28px 16px;
+    padding: 12px 28px 16px;
   }
   .composer-inner{ max-width:720px; margin:0 auto; }
   select{
-    font-family: inherit; font-size:12.5px; color: var(--text);
+    font-family: inherit; font-size:12px; color: var(--text);
     background: var(--surface-alt); border:1px solid var(--border-strong);
-    border-radius:6px; padding: 5px 8px;
+    border-radius:8px; padding: 4px 8px;
   }
-  .composer-row2{ display:flex; gap:10px; align-items:flex-start; }
+  .composer-row2{ display:flex; gap:12px; align-items:flex-start; }
   .input-wrap{ position:relative; flex:1; }
   #composer-input{
-    width:100%; font-family: "IBM Plex Mono", monospace; font-size:13px;
+    width:100%; font-family: inherit; font-size:14px;
     background: var(--surface-alt); border:1px solid var(--border-strong);
-    border-radius:9px; padding: 10px 40px 10px 12px; color: var(--text);
+    border-radius:8px; padding: 12px 40px 12px 12px; color: var(--text);
   }
   .at-btn{
     position:absolute; right:6px; top:50%; transform:translateY(-50%);
-    width:26px; height:26px; border-radius:6px; border:1px solid var(--border-strong);
+    width:28px; height:28px; border-radius:8px; border:1px solid var(--border-strong);
     background: var(--surface); color: var(--text-2); font-family:"IBM Plex Mono",monospace;
     font-size:13px; cursor:pointer; display:flex; align-items:center; justify-content:center;
   }
@@ -319,68 +340,70 @@
 
   .mention-popup{
     position:absolute; bottom: calc(100% + 8px); left:0; width: 280px;
-    background: var(--surface); border:1px solid var(--border-strong); border-radius:10px;
-    box-shadow: var(--shadow); padding:6px; max-height: 280px; overflow-y:auto; z-index:20;
+    background: var(--surface); border:1px solid var(--border-strong); border-radius:8px;
+    box-shadow: var(--shadow); padding:8px; max-height: 280px; overflow-y:auto; z-index:20;
   }
   .mention-popup[hidden]{ display:none; }
-  .mention-group-label{ font-size:10.5px; color: var(--text-3); text-transform:uppercase; letter-spacing:0.06em; padding: 6px 8px 2px; }
+  .mention-group-label{ font-size:11px; color: var(--text-3); text-transform:uppercase; letter-spacing:0.06em; padding: 8px 8px 2px; }
   .mention-item{
     display:flex; align-items:center; gap:8px; width:100%; text-align:left;
-    background:none; border:none; border-radius:7px; padding:6px 8px; cursor:pointer;
-    font-size:12.5px; color: var(--text); font-family:"IBM Plex Mono",monospace;
+    background:none; border:none; border-radius:8px; padding:8px 8px; cursor:pointer;
+    font-size:12px; color: var(--text); font-family:"IBM Plex Mono",monospace;
   }
   .mention-item:hover{ background: var(--surface-alt); }
 
   /* ---------- 右栏：方案与编排 ---------- */
   .plan-col{
     border-left: 1px solid var(--border);
-    background: var(--surface);
-    padding: 16px 14px 20px;
+    background: var(--bg);
+    padding: 16px 16px 20px;
     overflow-y: auto;
-    display:flex; flex-direction:column; gap:18px;
+    display:flex; flex-direction:column; gap:20px;
     transition: background-color .3s;
   }
   .plan-col.flash{ background: var(--accent-soft); }
-  .plan-section{ display:flex; flex-direction:column; gap:9px; }
+  .plan-section{ display:flex; flex-direction:column; gap:8px; }
   .plan-section-title{
     font-size:11px; font-weight:600; letter-spacing:0.07em; text-transform:uppercase;
     color: var(--text-3);
   }
-  .plan-section label{ font-size:12px; color: var(--text-2); display:flex; align-items:center; gap:6px; }
-  #preset-hint{ font-size:11.5px; color: var(--text-3); }
+  .plan-section label{ font-size:12px; color: var(--text-2); display:flex; align-items:center; gap:8px; }
+  #preset-hint{ font-size:12px; color: var(--text-3); }
 
   .stage-bar-head{ display:flex; align-items:center; justify-content:space-between; margin-top:2px; }
   .stage-bar{ display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
   .stage-chip{
-    font-family:"IBM Plex Mono", monospace; font-size:12px;
-    border:1px solid var(--border-strong); background: var(--surface-alt);
-    border-radius:8px; padding:6px 9px; cursor:pointer; color: var(--text);
+    display:flex; flex-direction:column; gap:2px;
+    border:1px solid var(--border); background: transparent;
+    border-radius:8px; padding:4px 8px; cursor:pointer; color: var(--text);
     max-width:100%; overflow-wrap:anywhere; text-align:left;
   }
   .stage-chip:hover{ border-color: var(--accent); }
+  .stage-name{ font-size:12px; font-weight:600; }
+  .stage-models{ font-family:"IBM Plex Mono", monospace; font-size:11px; color: var(--text-2); }
   .stage-chip.placeholder{ border-style:dashed; color: var(--text-3); }
-  .stage-arrow{ color: var(--text-3); font-size:13px; }
+  .stage-arrow{ color: var(--border-strong); font-size:12px; }
 
   .node-editor{
-    border:1px solid var(--border-strong); border-radius:10px;
-    background: var(--surface-alt); padding:10px 12px;
+    border:1px solid var(--border-strong); border-radius:8px;
+    background: var(--surface-alt); padding:12px 12px;
   }
   .node-editor[hidden]{ display:none; }
-  .node-editor-row{ display:flex; align-items:center; gap:6px; margin-bottom:8px; font-size:12px; flex-wrap:wrap; }
+  .node-editor-row{ display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:12px; flex-wrap:wrap; }
   .node-editor-row:last-of-type{ margin-bottom:0; }
   .node-editor-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
   .builder-node-remove{
     background:none; border:none; color: var(--text-3); cursor:pointer;
-    font-size:14px; padding:2px 6px;
+    font-size:14px; padding:2px 8px;
   }
   .builder-node-remove:hover{ color: var(--danger); }
 
-  .link-btn{ background:none; border:none; color: var(--accent); font-size:12.5px; cursor:pointer; padding:4px 2px; text-align:left; }
+  .link-btn{ background:none; border:none; color: var(--accent); font-size:12px; cursor:pointer; padding:4px 2px; text-align:left; }
   .link-btn:hover{ text-decoration: underline; }
 
   /* ---------- buttons ---------- */
   .btn{
-    font-size:13px; font-weight:600; border-radius:8px; padding: 9px 16px;
+    font-size:13px; font-weight:600; border-radius:8px; padding: 8px 16px;
     border:1px solid var(--border-strong); background: var(--surface); color: var(--text);
     cursor:pointer;
   }
@@ -389,7 +412,7 @@
   .btn-primary:hover{ filter: brightness(1.06); }
   .btn-ghost{ background:transparent; border-color:transparent; color: var(--text-2); }
   .btn-ghost:hover{ background: var(--surface-alt); color: var(--text); }
-  .btn-sm{ padding:5px 11px; font-size:12px; border-radius:7px; }
+  .btn-sm{ padding:4px 12px; font-size:12px; border-radius:8px; }
 
   /* ---------- modal 通用 ---------- */
   .modal-overlay{
@@ -399,160 +422,181 @@
   }
   .modal-overlay[hidden]{ display:none; }
   .modal{
-    background: var(--surface); border:1px solid var(--border); border-radius:14px;
-    box-shadow: var(--shadow); width: 100%; max-width: 660px; padding: 22px 24px 20px;
+    background: var(--surface); border:1px solid var(--border); border-radius:8px;
+    box-shadow: var(--shadow); width: 100%; max-width: 660px; padding: 24px 24px 20px;
   }
   .modal-title{ font-size:16px; font-weight:700; margin-bottom:3px; }
-  .modal-task{ font-size:12.5px; color: var(--text-2); margin-bottom:16px; }
+  .modal-task{ font-size:12px; color: var(--text-2); margin-bottom:16px; }
   .modal-section{ margin-bottom:18px; }
   .modal-section-title{
     font-size:11px; font-weight:600; letter-spacing:0.07em; text-transform:uppercase;
     color: var(--text-3); margin-bottom:9px;
   }
-  .modal label{ font-size:12.5px; color: var(--text-2); display:block; }
+  .modal label{ font-size:12px; color: var(--text-2); display:block; }
   .modal input[type="text"]{
     width:100%; font-family:inherit; font-size:13px; color: var(--text);
     background: var(--surface-alt); border:1px solid var(--border-strong);
-    border-radius:7px; padding:7px 9px; margin-top:4px;
+    border-radius:8px; padding:8px 8px; margin-top:4px;
   }
   .modal select{ width:100%; margin-top:4px; }
 
   .plan-summary-line{
-    font-family:"IBM Plex Mono", monospace; font-size:12.5px; line-height:1.7;
-    background: var(--surface-alt); border-radius:8px; padding:10px 12px; color: var(--text);
+    font-family:"IBM Plex Mono", monospace; font-size:12px; line-height:1.7;
+    background: var(--surface-alt); border-radius:8px; padding:12px 12px; color: var(--text);
   }
 
   .route-line{
-    display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px;
     font-family:"IBM Plex Mono", monospace; font-size:12px; line-height:1.9;
-    padding: 8px 10px; border-radius:8px; background: var(--surface-alt);
+    padding: 8px 12px; border-radius:8px; background: var(--surface-alt);
     border-left: 3px solid var(--accent);
     margin-bottom:6px;
   }
 
-  .material-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+  .material-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
   .material-list li{
-    display:flex; align-items:center; gap:9px; padding: 8px 10px; border-radius:8px;
+    display:flex; align-items:center; gap:8px; padding: 8px 12px; border-radius:8px;
     border:1px solid var(--border); background: var(--surface-alt);
   }
-  .material-list label{ display:flex; align-items:center; gap:9px; flex:1; cursor:pointer; font-size:12.5px; color: var(--text); }
+  .material-list label{ display:flex; align-items:center; gap:8px; flex:1; cursor:pointer; font-size:12px; color: var(--text); }
   .material-tag{
-    font-size:10.5px; color: var(--text-3); border:1px solid var(--border-strong);
-    border-radius:5px; padding:1px 6px;
+    font-size:11px; color: var(--text-3); border:1px solid var(--border-strong);
+    border-radius:999px; padding:2px 8px;
   }
   .material-list li.excluded{ border-color: var(--warning); background: var(--warning-soft); }
-  .excluded-note{ font-size:11.5px; color: var(--warning); margin-left:auto; white-space:nowrap; }
+  .excluded-note{ font-size:12px; color: var(--warning); margin-left:auto; white-space:nowrap; }
 
   .isolation-note{
     font-size:12px; color: var(--text-2); background: var(--surface-alt);
-    border-radius:8px; padding:9px 11px;
+    border-radius:8px; padding:8px 12px;
   }
 
-  .authorize-line{ font-size:12.5px; color: var(--text); margin-bottom:12px; }
+  .authorize-line{ font-size:12px; color: var(--text); margin-bottom:12px; }
   .authorize-line b{ font-weight:600; }
-  .modal-actions{ display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+  .modal-actions{ display:flex; justify-content:flex-end; gap:12px; flex-wrap:wrap; }
 
   /* ---------- 接入资源面板 ---------- */
-  .resource-row{
-    display:flex; align-items:center; gap:10px; padding:8px 10px;
-    border:1px solid var(--border); border-radius:8px; background: var(--surface-alt);
-    margin-bottom:6px;
+  .modal.wide{ max-width: 980px; }
+  .agent-card-grid{
+    display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap:12px; margin-bottom:16px;
   }
-  .resource-row:last-child{ margin-bottom:0; }
-  .resource-row label{ display:flex; align-items:center; gap:8px; font-size:13px; flex:1; }
-  .resource-version, .resource-key{ font-size:11.5px; color: var(--text-3); }
-  .resource-status{ font-size:11px; font-weight:600; color: var(--text-3); white-space:nowrap; }
+  .agent-card{
+    border:1px solid var(--border); border-radius:8px;
+    background: var(--surface); padding:12px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .agent-card-head{ display:flex; align-items:center; gap:8px; }
+  .agent-card-mark{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:24px; height:24px; border-radius:4px; flex:0 0 auto;
+    background: var(--surface-alt); border:1px solid var(--border);
+    font-family:"IBM Plex Mono", monospace; font-size:11px; color: var(--text-2);
+  }
+  .agent-card-name{ font-family:"IBM Plex Mono", monospace; font-size:13px; font-weight:600; flex:1; min-width:0; }
+  .agent-card-ver{ font-size:11px; color: var(--text-3); }
+  .agent-card-models{
+    display:flex; flex-direction:column;
+    border-top:1px solid var(--border); padding-top:8px;
+  }
+  .agent-card-model{ display:flex; align-items:center; gap:8px; padding:4px 0; font-size:12px; }
+  .agent-card-model .mono{ flex:1; min-width:0; overflow-wrap:anywhere; }
+  .agent-card-group{
+    font-size:11px; color: var(--text-3); text-transform:uppercase;
+    letter-spacing:0.06em; padding:8px 0 0;
+  }
+  .agent-card-note{ font-size:11px; color: var(--text-3); min-height:16px; }
+  .agent-card-actions{ display:flex; gap:8px; border-top:1px solid var(--border); padding-top:8px; }
+
 
   /* ---------- 表单式构建器 ---------- */
   .builder-stage{
-    border:1px solid var(--border); border-radius:10px; padding:10px 12px;
+    border:1px solid var(--border); border-radius:8px; padding:12px 12px;
     margin-bottom:10px; background: var(--surface-alt);
   }
   .builder-stage-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
   .builder-stage-name{ font-size:12px; font-weight:600; color: var(--text-2); }
   .builder-nodes{ display:flex; flex-direction:column; gap:8px; margin-bottom:8px; }
   .builder-node{
-    display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:12px;
-    background: var(--surface); border:1px solid var(--border); border-radius:7px; padding:6px 8px;
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12px;
+    background: var(--surface); border:1px solid var(--border); border-radius:8px; padding:8px 8px;
   }
-  .builder-node select{ font-size:11.5px; padding:3px 6px; width:auto; margin-top:0; }
+  .builder-node select{ font-size:12px; padding:4px 8px; width:auto; margin-top:0; }
   .builder-add-stage{ width:100%; border-style:dashed; margin-bottom:14px; }
   .builder-notation{
     font-family:"IBM Plex Mono", monospace; font-size:12px; background: var(--surface);
-    border:1px solid var(--border); border-radius:8px; padding:10px 12px; color: var(--text-2);
+    border:1px solid var(--border); border-radius:8px; padding:12px 12px; color: var(--text-2);
     word-break:break-all;
   }
 
   /* ---------- screen 2: result ---------- */
-  #screen-result{ overflow-y:auto; padding: 22px 32px 60px; }
+  #pane-result{ display:block; overflow-y:auto; padding: 24px 32px 60px; }
   .result-wrap{ max-width: 1120px; margin:0 auto; }
-  .result-top{ display:flex; align-items:center; gap:14px; margin-bottom:6px; }
+  .result-top{ display:flex; align-items:center; gap:16px; margin-bottom:6px; }
   .result-title{ font-size:18px; font-weight:700; }
-  .result-back{ font-size:12.5px; }
+  .result-back{ font-size:12px; }
 
-  .route-echo{ margin: 14px 0 22px; display:flex; flex-direction:column; gap:6px; }
+  .route-echo{ margin: 14px 0 22px; display:flex; flex-direction:column; gap:8px; }
 
-  .verdict-grid{ display:grid; grid-template-columns: repeat(3, 1fr); gap:14px; margin-bottom: 26px; }
-  @media (max-width: 880px){ .verdict-grid{ grid-template-columns: 1fr; } }
+  .verdict-grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom: 24px; }
 
   .verdict-card{
-    background: var(--surface); border:1px solid var(--border); border-radius:12px;
-    padding: 14px 15px; display:flex; flex-direction:column; gap:10px;
+    background: var(--surface); border:1px solid var(--border); border-radius:8px;
+    padding: 16px 16px; display:flex; flex-direction:column; gap:12px;
     border-top-width:3px;
   }
   .verdict-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .verdict-model{ display:flex; align-items:center; gap:8px; }
   .verdict-model-id{ font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:13px; }
   .verdict-role{ font-size:11px; color: var(--text-3); }
-  .verdict-status{ font-size:11px; font-weight:600; padding:2px 8px; border-radius:9px; background: var(--success-soft); color: var(--success); }
+  .verdict-status{ font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; background: var(--success-soft); color: var(--success); }
   .verdict-body{ font-size:13px; }
   .verdict-body ul{ margin:0; padding-left:18px; }
   .verdict-body li{ margin-bottom:7px; }
   .verdict-body li:last-child{ margin-bottom:0; }
-  .verdict-actions{ display:flex; gap:7px; flex-wrap:wrap; padding-top:8px; border-top:1px solid var(--border); }
+  .verdict-actions{ display:flex; gap:8px; flex-wrap:wrap; padding-top:8px; border-top:1px solid var(--border); }
 
   .section-block{
-    background: var(--surface); border:1px solid var(--border); border-radius:12px;
-    padding: 16px 18px; margin-bottom:16px;
+    background: var(--surface); border:1px solid var(--border); border-radius:8px;
+    padding: 16px 20px; margin-bottom:16px;
   }
-  .section-head{ display:flex; align-items:baseline; gap:9px; margin-bottom:11px; }
+  .section-head{ display:flex; align-items:baseline; gap:8px; margin-bottom:11px; }
   .section-head h2{ font-size:14px; font-weight:700; }
-  .section-count{ font-size:11.5px; color: var(--text-3); }
+  .section-count{ font-size:12px; color: var(--text-3); }
 
-  .plain-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:9px; }
+  .plain-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
   .plain-list li{ font-size:13px; padding-left:16px; position:relative; }
   .plain-list li::before{ content:"·"; position:absolute; left:2px; color: var(--text-3); font-weight:700; }
 
   .disagree-item{ margin-bottom:12px; }
   .disagree-item:last-child{ margin-bottom:0; }
   .disagree-topic{ font-size:12px; font-weight:600; color: var(--text-2); margin-bottom:6px; }
-  .disagree-views{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
-  @media (max-width:700px){ .disagree-views{ grid-template-columns: 1fr; } }
+  .disagree-views{ display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:12px; }
   .disagree-view{
-    font-size:12.5px; background: var(--surface-alt); border-radius:8px; padding:9px 10px;
+    font-size:12px; background: var(--surface-alt); border-radius:8px; padding:8px 12px;
   }
   .disagree-view b{ font-weight:600; }
 
-  .unique-list{ display:flex; flex-direction:column; gap:10px; }
+  .unique-list{ display:flex; flex-direction:column; gap:12px; }
   .unique-item{
     display:flex; align-items:flex-start; gap:12px;
     border-left:3px solid var(--accent); background: var(--accent-soft);
-    border-radius:0 8px 8px 0; padding: 10px 12px;
+    border-radius:0 8px 8px 0; padding: 12px 12px;
   }
   .unique-text{ flex:1; font-size:13px; }
   .unique-source{ font-size:11px; color: var(--text-3); margin-top:3px; }
-  .unique-actions{ display:flex; gap:6px; flex-shrink:0; position:relative; }
+  .unique-actions{ display:flex; gap:8px; flex-shrink:0; position:relative; }
   .verified-badge{ font-size:11px; font-weight:600; color: var(--success); }
 
   .forward-popover{
     position:absolute; top: calc(100% + 6px); right:0; width:220px;
-    background: var(--surface); border:1px solid var(--border-strong); border-radius:9px;
-    box-shadow: var(--shadow-soft); padding:5px; z-index:15;
+    background: var(--surface); border:1px solid var(--border-strong); border-radius:8px;
+    box-shadow: var(--shadow-soft); padding:4px; z-index:15;
   }
   .forward-popover[hidden]{ display:none; }
   .forward-popover button{
     display:block; width:100%; text-align:left; background:none; border:none;
-    padding:6px 8px; border-radius:6px; font-size:12px; cursor:pointer; color: var(--text);
+    padding:8px 8px; border-radius:8px; font-size:12px; cursor:pointer; color: var(--text);
     font-family:"IBM Plex Mono",monospace;
   }
   .forward-popover button:hover{ background: var(--surface-alt); }
@@ -560,16 +604,16 @@
   .decide-row{ display:flex; justify-content:flex-end; margin-bottom:16px; }
 
   .table-scroll{ overflow-x:auto; }
-  table.bill{ width:100%; border-collapse:collapse; font-size:12.5px; }
-  table.bill th, table.bill td{ text-align:left; padding: 8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  table.bill{ width:100%; border-collapse:collapse; font-size:12px; }
+  table.bill th, table.bill td{ text-align:left; padding: 8px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
   table.bill th{ color: var(--text-3); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; }
   table.bill td.num{ font-family:"IBM Plex Mono",monospace; font-variant-numeric: tabular-nums; }
 
-  details.trace{ border:1px solid var(--border); border-radius:9px; padding: 4px 12px; margin-bottom:8px; background: var(--surface-alt); }
+  details.trace{ border:1px solid var(--border); border-radius:8px; padding: 4px 12px; margin-bottom:8px; background: var(--surface-alt); }
   details.trace:last-child{ margin-bottom:0; }
-  details.trace summary{ cursor:pointer; padding:9px 0; font-family:"IBM Plex Mono",monospace; font-size:12px; color: var(--text-2); }
+  details.trace summary{ cursor:pointer; padding:8px 0; font-family:"IBM Plex Mono",monospace; font-size:12px; color: var(--text-2); }
   details.trace pre{
-    margin: 0 0 12px; font-family:"IBM Plex Mono",monospace; font-size:11.5px; line-height:1.6;
+    margin: 0 0 12px; font-family:"IBM Plex Mono",monospace; font-size:12px; line-height:1.6;
     background: var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px;
     overflow-x:auto; color: var(--text-2);
   }
@@ -589,7 +633,7 @@
   #toast{
     position:fixed; left:50%; bottom:26px; transform: translateX(-50%);
     background: var(--text); color: var(--bg); font-size:13px;
-    padding: 10px 16px; border-radius:8px; box-shadow: var(--shadow); z-index:200;
+    padding: 12px 16px; border-radius:8px; box-shadow: var(--shadow); z-index:200;
   }
   #toast[hidden]{ display:none; }
 </style>
@@ -598,26 +642,33 @@
 
 <div class="app">
   <header class="topbar">
-    <div class="brand">aicross</div>
-    <div class="topbar-meta">项目：Q3 留存分析方案复查</div>
+    <div class="brand"><span class="brand-mark">AC</span>aicross</div>
+    <div class="topbar-sep"></div>
+    <div class="topbar-meta mono">Q3 留存分析方案复查</div>
     <div class="topbar-spacer"></div>
+    <button class="icon-btn" id="open-resource-btn" type="button" title="接入资源">⚙</button>
+    <button class="icon-btn" id="theme-btn" type="button" title="切换深浅色">◐</button>
   </header>
 
-  <!-- ============ 屏 1：资源 / 对话 / 方案与编排 ============ -->
-  <section id="screen-dispatch" class="screen">
+  <div id="workbench">
 
     <!-- 左栏：资源 -->
     <aside class="roster" id="roster">
       <div class="roster-head">
         <div class="roster-title">资源</div>
-        <button class="btn btn-sm" id="open-resource-btn" type="button">接入资源</button>
       </div>
       <div id="resource-tree"></div>
-      <button class="btn btn-sm add-agent-btn" id="add-agent-btn" type="button">＋ 手动添加</button>
+      <button type="button" class="link-btn" id="roster-more"></button>
     </aside>
 
     <!-- 中栏：对话 -->
-    <main class="conversation">
+    <main class="center">
+      <div class="tabbar">
+        <button class="tab is-active" type="button" data-pane="chat">对话</button>
+        <button class="tab" type="button" data-pane="result" id="tab-result" disabled>结果</button>
+      </div>
+      <div class="pane" id="pane-chat">
+      <div class="conversation">
       <div class="thread" id="thread">
         <div class="thread-inner" id="thread-inner">
 
@@ -671,50 +722,10 @@
           </div>
         </div>
       </div>
-    </main>
-
-    <!-- 右栏：方案与编排 -->
-    <aside class="plan-col" id="plan-col">
-      <div class="plan-section">
-        <div class="plan-section-title">编排</div>
-        <label>预设
-          <select id="preset-select">
-            <option value="shared" selected>共享对话</option>
-            <option value="economy">经济流水线</option>
-            <option value="blind">盲审</option>
-            <option value="arena" disabled>擂台（第 2 期）</option>
-            <option value="panel" disabled>评审团（第 2 期）</option>
-          </select>
-        </label>
-        <span id="preset-hint"></span>
-
-        <div class="stage-bar-head">
-          <span></span>
-          <button class="btn btn-sm" id="open-builder-btn" type="button">编辑编排</button>
-        </div>
-        <div class="stage-bar" id="stage-bar"></div>
-        <div class="node-editor" id="node-editor" hidden>
-          <div id="node-editor-rows"></div>
-          <div class="node-editor-actions">
-            <button class="btn btn-sm" id="node-editor-add" type="button">添加节点</button>
-            <button class="btn btn-primary btn-sm" id="node-editor-done" type="button">完成</button>
-          </div>
-        </div>
       </div>
-
-      <div class="plan-section">
-        <button type="button" class="link-btn" id="open-explain-btn">讲解 →</button>
       </div>
-    </aside>
-
-  </section>
-
-  <!-- ============ 屏 2：结果 ============ -->
-  <section id="screen-result" class="screen" hidden>
+      <div class="pane" id="pane-result" hidden>
     <div class="result-wrap">
-      <div class="result-top">
-        <button class="btn btn-ghost btn-sm result-back" id="back-btn" type="button">← 返回对话</button>
-      </div>
       <h1 class="result-title">盲审结果：fable-5 的留存分析方案</h1>
 
       <div class="route-echo" id="route-echo"></div>
@@ -772,7 +783,7 @@
         </div>
       </div>
 
-      <details class="section-block" style="padding-bottom:6px;">
+      <details class="section-block" style="padding-bottom:8px;">
         <summary style="cursor:pointer; font-weight:700; font-size:14px; list-style:none;">留痕</summary>
         <div style="margin-top:12px;">
           <details class="trace">
@@ -844,14 +855,51 @@ tokens_out: 1420
       </details>
 
     </div>
-  </section>
+      </div>
+    </main>
+
+    <!-- 右栏：方案与编排 -->
+    <aside class="plan-col" id="plan-col">
+      <div class="plan-section">
+        <div class="plan-section-title">编排</div>
+        <label>预设
+          <select id="preset-select">
+            <option value="shared" selected>共享模式</option>
+            <option value="economy">经济模式</option>
+            <option value="blind">盲审模式</option>
+            <option value="arena" disabled>擂台模式（第 2 期）</option>
+            <option value="panel" disabled>评审团模式（第 2 期）</option>
+          </select>
+        </label>
+        <span id="preset-hint"></span>
+
+        <div class="stage-bar-head">
+          <button class="btn btn-sm" id="open-builder-btn" type="button">编辑编排</button>
+        </div>
+        <div class="stage-bar" id="stage-bar"></div>
+        <div class="node-editor" id="node-editor" hidden>
+          <div id="node-editor-rows"></div>
+          <div class="node-editor-actions">
+            <button class="btn btn-sm" id="node-editor-add" type="button">添加节点</button>
+            <button class="btn btn-primary btn-sm" id="node-editor-done" type="button">完成</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="plan-section">
+        <button type="button" class="link-btn" id="open-explain-btn">讲解 →</button>
+      </div>
+    </aside>
+
+  </div>
+
 </div>
 
 <!-- ============ G1 闸门 ============ -->
 <div class="modal-overlay" id="gate-modal" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gate-title">
     <div class="modal-title" id="gate-title">发送前确认</div>
-    <div class="modal-task" id="gate-task-line">任务：交叉复查 fable-5 的方案 · 预设：共享对话</div>
+    <div class="modal-task" id="gate-task-line">任务：交叉复查 fable-5 的方案 · 预设：共享模式</div>
 
     <div class="modal-section">
       <div class="modal-section-title">本次方案</div>
@@ -897,43 +945,13 @@ tokens_out: 1420
 
 <!-- ============ 接入资源面板 ============ -->
 <div class="modal-overlay" id="resource-modal" hidden>
-  <div class="modal">
+  <div class="modal wide">
     <div class="modal-title">接入资源</div>
-    <div class="modal-task">检测本机已安装的 agent（CLI 壳与 provider 桥），勾选后加入资源清单。</div>
-
-    <div class="modal-section" style="margin-bottom:14px;">
-      <div class="modal-section-title">检测到的 agent</div>
-      <div class="resource-row">
-        <label><input type="checkbox" checked> Claude Code</label>
-        <span class="mono resource-version">2.1.251</span>
-        <span class="resource-status" data-status>已检测</span>
-      </div>
-      <div class="resource-row">
-        <label><input type="checkbox" checked> Codex CLI</label>
-        <span class="mono resource-version">0.149.1</span>
-        <span class="resource-status" data-status>已检测</span>
-      </div>
-      <div class="resource-row">
-        <label><input type="checkbox" checked> Kimi Code CLI</label>
-        <span class="mono resource-version">0.39.1</span>
-        <span class="resource-status" data-status>已检测</span>
-      </div>
-      <div class="resource-row">
-        <label><input type="checkbox" checked> pi</label>
-        <span class="mono resource-version">0.84.2</span>
-        <span class="resource-status" data-status>已检测</span>
-      </div>
-      <div class="resource-row">
-        <label><input type="checkbox" checked> cc-switch</label>
-        <span class="resource-key">provider 桥</span>
-        <span class="resource-status" data-status>已检测</span>
-      </div>
-    </div>
-
+    <div class="modal-task">检测本机已安装的 agent，冒烟通过后加入左栏可派发清单。</div>
+    <div class="agent-card-grid" id="agent-card-grid"></div>
     <div class="modal-actions">
-      <button class="btn" id="resource-close" type="button">关闭</button>
-      <button class="btn" id="resource-smoke" type="button">冒烟测试</button>
-      <button class="btn btn-primary" id="resource-add" type="button">加入清单</button>
+      <button class="btn" id="add-agent-btn" type="button">＋ 手动添加 agent</button>
+      <button class="btn btn-primary" id="resource-close" type="button">关闭</button>
     </div>
   </div>
 </div>
@@ -943,7 +961,7 @@ tokens_out: 1420
   <div class="modal">
     <div class="modal-title">手动输入模型</div>
     <div class="modal-task" id="manual-model-target"></div>
-    <div class="modal-section" style="display:flex; flex-direction:column; gap:10px;">
+    <div class="modal-section" style="display:flex; flex-direction:column; gap:12px;">
       <label>模型 ID<input type="text" id="manual-model-id" class="mono" placeholder="例如 glm-5.3"></label>
       <label>档位
         <select id="manual-model-tier">
@@ -963,7 +981,7 @@ tokens_out: 1420
 <div class="modal-overlay" id="manual-agent-modal" hidden>
   <div class="modal">
     <div class="modal-title">手动添加 agent</div>
-    <div class="modal-section" style="display:flex; flex-direction:column; gap:10px;">
+    <div class="modal-section" style="display:flex; flex-direction:column; gap:12px;">
       <label>名称<input type="text" id="manual-agent-name" placeholder="例如 aider"></label>
       <label>类型
         <select id="manual-agent-type">
@@ -1081,73 +1099,55 @@ tokens_out: 1420
     var wrap = document.getElementById("resource-tree");
     wrap.innerHTML = "";
     AGENTS.forEach(function(agent){
+      var usable = agent.models.filter(function(m){ return m.status === "已接入"; });
+      if (!usable.length) return;
+
+      var modelsHtml = "", lastGroup;
+      usable.forEach(function(m){
+        if (m.group && m.group !== lastGroup) {
+          modelsHtml += '<div class="agent-model-group">' + m.group + '</div>';
+          lastGroup = m.group;
+        }
+        var key = agent.slug + "/" + m.id;
+        modelsHtml +=
+          '<button type="button" class="roster-model" data-model-key="' + key + '" title="点击将 @' + key + ' 加入输入框">' +
+            '<span class="roster-model-id mono">' + m.id + '</span>' +
+            '<div class="roster-model-meta">' + m.source + '</div>' +
+          '</button>';
+      });
+
       var block = document.createElement("div");
       block.className = "agent-block";
-
-      var modelsHtml = "";
-      if (!agent.models.length) {
-        modelsHtml = '<div class="agent-empty">暂无模型</div>';
-      } else {
-        var lastGroup;
-        agent.models.forEach(function(m){
-          if (m.group && m.group !== lastGroup) {
-            modelsHtml += '<div class="agent-model-group">' + m.group + '</div>';
-            lastGroup = m.group;
-          }
-          var key = agent.slug + "/" + m.id;
-          modelsHtml +=
-            '<button type="button" class="roster-model" data-model-key="' + key + '" title="' +
-              (m.status === "已接入" ? "点击将 @" + key + " 加入输入框" : key + "：" + m.status + "，暂不可用于编排") + '">' +
-              '<div class="roster-model-top">' +
-                '<span class="roster-model-id mono">' + m.id + '</span>' +
-                '<span class="rstatus ' + statusClass(m.status) + '">' + m.status + '</span>' +
-              '</div>' +
-              '<div class="roster-model-meta">' + m.source + '</div>' +
-            '</button>';
-        });
-      }
-
       block.innerHTML =
         '<div class="agent-head">' +
           '<button type="button" class="agent-toggle">' +
             '<span class="agent-caret">▾</span>' +
             '<span class="agent-name">' + agent.label + '</span>' +
             '<span class="mono agent-version">' + agent.version + '</span>' +
-            '<span class="rstatus ' + (agent.detected ? "rstatus-active" : "rstatus-off") + '">' + (agent.detected ? "已检测" : "未检测") + '</span>' +
           '</button>' +
-          '<div class="agent-actions">' +
-            '<button type="button" class="btn btn-sm" data-probe="' + agent.slug + '">探测</button>' +
-            '<button type="button" class="btn btn-sm" data-manual="' + agent.slug + '">手动输入</button>' +
-          '</div>' +
         '</div>' +
-        '<div class="agent-probe-note" id="probe-note-' + agent.slug + '"></div>' +
         '<div class="agent-models">' + modelsHtml + '</div>';
-
       wrap.appendChild(block);
     });
+    renderRosterFoot();
+  }
+
+  function renderRosterFoot(){
+    var pending = 0, off = 0;
+    AGENTS.forEach(function(a){ a.models.forEach(function(m){
+      if (m.status === "待冒烟") pending++;
+      else if (m.status === "未接入") off++;
+    }); });
+    var parts = [];
+    if (pending) parts.push(pending + " 个待冒烟");
+    if (off) parts.push(off + " 个未接入");
+    parts.push("管理 →");
+    document.getElementById("roster-more").textContent = parts.join(" · ");
   }
 
   document.getElementById("resource-tree").addEventListener("click", function(e){
     var modelRow = e.target.closest("[data-model-key]");
-    if (modelRow) {
-      var key = modelRow.getAttribute("data-model-key");
-      var m = ALL_MODELS.filter(function(x){ return x.key === key; })[0];
-      if (m.status === "已接入") { insertMention(m.key); }
-      else { showToast(m.key + "：" + m.status + "，暂不可用于编排"); }
-      return;
-    }
-    var probeBtn = e.target.closest("[data-probe]");
-    if (probeBtn) {
-      var slug = probeBtn.getAttribute("data-probe");
-      var agent = AGENTS.filter(function(a){ return a.slug === slug; })[0];
-      var note = document.getElementById("probe-note-" + slug);
-      note.textContent = "探测中…";
-      setTimeout(function(){ note.textContent = "已读取 " + agent.models.length + " 个模型"; }, 600);
-      return;
-    }
-    var manualBtn = e.target.closest("[data-manual]");
-    if (manualBtn) { openManualModelModal(manualBtn.getAttribute("data-manual")); return; }
-
+    if (modelRow) { insertMention(modelRow.getAttribute("data-model-key")); return; }
     var toggle = e.target.closest(".agent-toggle");
     if (toggle) {
       var block = toggle.closest(".agent-block");
@@ -1158,6 +1158,7 @@ tokens_out: 1420
       caret.textContent = willHide ? "▸" : "▾";
     }
   });
+  document.getElementById("roster-more").addEventListener("click", openResourcePanel);
 
   // ---------- 手动输入模型 ----------
   var manualTargetAgent = null;
@@ -1180,6 +1181,7 @@ tokens_out: 1420
     agent.models.push({id:id, vendor:"custom", status:"待冒烟", source:"手动"});
     rebuildAllModels();
     renderResourceTree();
+    renderAgentCards();
     document.getElementById("manual-model-modal").hidden = true;
     showToast("已添加，待冒烟");
   });
@@ -1200,33 +1202,92 @@ tokens_out: 1420
     AGENTS.push({slug: slug, label: name, version: type, detected:false, models:[]});
     rebuildAllModels();
     renderResourceTree();
+    renderAgentCards();
     document.getElementById("manual-agent-modal").hidden = true;
     showToast("已添加 " + name + "，暂无模型");
   });
 
-  // ---------- 接入资源面板（顶部） ----------
-  document.getElementById("open-resource-btn").addEventListener("click", function(){
+  // ---------- 接入资源：卡片页 ----------
+  function agentMark(agent){
+    return agent.slug.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase();
+  }
+
+  function renderAgentCards(){
+    var grid = document.getElementById("agent-card-grid");
+    grid.innerHTML = "";
+    AGENTS.forEach(function(agent){
+      var rows = "", lastGroup;
+      if (!agent.models.length) {
+        rows = '<div class="agent-empty">暂无模型</div>';
+      } else {
+        agent.models.forEach(function(m){
+          if (m.group && m.group !== lastGroup) {
+            rows += '<div class="agent-card-group">' + m.group + '</div>';
+            lastGroup = m.group;
+          }
+          rows +=
+            '<div class="agent-card-model">' +
+              '<span class="mono">' + m.id + '</span>' +
+              '<span class="rstatus ' + statusClass(m.status) + '">' + m.status + '</span>' +
+            '</div>';
+        });
+      }
+      var card = document.createElement("div");
+      card.className = "agent-card";
+      card.innerHTML =
+        '<div class="agent-card-head">' +
+          '<span class="agent-card-mark">' + agentMark(agent) + '</span>' +
+          '<span class="agent-card-name">' + agent.label + '</span>' +
+          '<span class="rstatus ' + (agent.detected ? "rstatus-active" : "rstatus-off") + '">' +
+            (agent.detected ? "已检测" : "未检测") + '</span>' +
+        '</div>' +
+        '<div class="agent-card-ver mono">' + agent.version + '</div>' +
+        '<div class="agent-card-models">' + rows + '</div>' +
+        '<div class="agent-card-note" id="probe-note-' + agent.slug + '"></div>' +
+        '<div class="agent-card-actions">' +
+          '<button type="button" class="btn btn-sm" data-probe="' + agent.slug + '">探测</button>' +
+          '<button type="button" class="btn btn-sm" data-smoke="' + agent.slug + '">冒烟</button>' +
+          '<button type="button" class="btn btn-sm" data-manual="' + agent.slug + '">手动输入</button>' +
+        '</div>';
+      grid.appendChild(card);
+    });
+  }
+
+  function openResourcePanel(){
+    renderAgentCards();
     document.getElementById("resource-modal").hidden = false;
-  });
+  }
+  document.getElementById("open-resource-btn").addEventListener("click", openResourcePanel);
   document.getElementById("resource-close").addEventListener("click", function(){
     document.getElementById("resource-modal").hidden = true;
   });
-  document.getElementById("resource-smoke").addEventListener("click", function(){
-    var rows = document.querySelectorAll("#resource-modal .resource-row");
-    rows.forEach(function(row){
-      if (!row.querySelector("input[type=checkbox]").checked) return;
-      row.querySelector("[data-status]").textContent = "冒烟中…";
-    });
+
+  document.getElementById("agent-card-grid").addEventListener("click", function(e){
+    var btn = e.target.closest("button[data-probe], button[data-smoke], button[data-manual]");
+    if (!btn) return;
+    var slug = btn.getAttribute("data-probe") || btn.getAttribute("data-smoke") || btn.getAttribute("data-manual");
+    var agent = AGENTS.filter(function(a){ return a.slug === slug; })[0];
+
+    if (btn.hasAttribute("data-manual")) { openManualModelModal(slug); return; }
+
+    var note = document.getElementById("probe-note-" + slug);
+    if (btn.hasAttribute("data-probe")) {
+      note.textContent = "探测中…";
+      setTimeout(function(){ note.textContent = "已读取 " + agent.models.length + " 个模型"; }, 600);
+      return;
+    }
+
+    var pending = agent.models.filter(function(m){ return m.status === "待冒烟"; });
+    if (!pending.length) { note.textContent = "没有待冒烟的模型"; return; }
+    note.textContent = "冒烟中…";
     setTimeout(function(){
-      rows.forEach(function(row){
-        if (!row.querySelector("input[type=checkbox]").checked) return;
-        row.querySelector("[data-status]").textContent = "已冒烟 · 型号核对通过";
-      });
+      pending.forEach(function(m){ m.status = "已接入"; });
+      rebuildAllModels();
+      renderResourceTree();
+      renderAgentCards();
+      document.getElementById("probe-note-" + slug).textContent = "型号核对通过，已加入清单";
+      showToast(agent.label + "：" + pending.length + " 个模型已接入");
     }, 900);
-  });
-  document.getElementById("resource-add").addEventListener("click", function(){
-    document.getElementById("resource-modal").hidden = true;
-    showToast("已加入清单");
   });
 
   // ---------- 编排：数据模型 ----------
@@ -1234,7 +1295,7 @@ tokens_out: 1420
   var THINKINGS = ["关","低","中","高"];
   var VIS_OPTS = ["共享","盲"];
 
-  var PRESET_LABELS = { shared:"共享对话", economy:"经济流水线", blind:"盲审" };
+  var PRESET_LABELS = { shared:"共享模式", economy:"经济模式", blind:"盲审模式" };
 
   var STAGE_PRESETS = {
     shared: [
@@ -1257,7 +1318,7 @@ tokens_out: 1420
   };
   var EXPLAIN_CONTENT = {
     shared: {
-      label:"共享对话",
+      label:"共享模式",
       def:"一个 thread 大家都看得见，是流水线的退化形式：所有节点同一阶段、互相可见。",
       steps:[
         "@ 出去的 agent 加入同一个对话，拿到目前为止的全部上下文。",
@@ -1266,7 +1327,7 @@ tokens_out: 1420
       ]
     },
     economy: {
-      label:"经济流水线",
+      label:"经济模式",
       def:"强模型出方案、便宜模型执行、强模型验收，验收默认换厂商。",
       steps:[
         "fable-5 出方案，产物交给执行阶段。",
@@ -1276,7 +1337,7 @@ tokens_out: 1420
       ]
     },
     blind: {
-      label:"盲审",
+      label:"盲审模式",
       def:"同一份材料发给多路模型，各自隔离运行、互不可见，结果并排比对。",
       steps:[
         "把 spec.md、data.csv 送给 3 路验证者，各自在空目录里只读运行，互不可见。",
@@ -1304,8 +1365,8 @@ tokens_out: 1420
       var steps = e.steps.map(function(t){ return "<li>" + t + "</li>"; }).join("");
       return '<div class="modal-section">' +
         '<div class="modal-section-title">' + e.label + '</div>' +
-        '<p style="font-size:12.5px;color:var(--text-2);margin:0 0 8px;">' + e.def + '</p>' +
-        '<ol style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;">' + steps + '</ol>' +
+        '<p style="font-size:12px;color:var(--text-2);margin:0 0 8px;">' + e.def + '</p>' +
+        '<ol style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;">' + steps + '</ol>' +
         '</div>';
     }).join("");
   }
@@ -1339,7 +1400,7 @@ tokens_out: 1420
   }
   function planSummaryText(){
     var blindStage = currentPlan.filter(function(s){ return s.nodes.some(function(n){ return n.vis === "盲"; }); })[0];
-    if (blindStage) return "当前方案：盲审 · " + blindStage.nodes.length + " 路（点击查看编排）";
+    if (blindStage) return "当前方案：盲审模式 · " + blindStage.nodes.length + " 路（点击查看编排）";
     var label = PRESET_LABELS[currentPresetName] || currentPresetName;
     return "当前方案：" + label + " · " + currentPlan.length + " 段（点击查看编排）";
   }
@@ -1361,7 +1422,16 @@ tokens_out: 1420
       var chip = document.createElement("button");
       chip.type = "button";
       chip.className = "stage-chip" + (stage.nodes.length === 0 ? " placeholder" : "");
-      chip.textContent = stageLabel(stage);
+      var nameEl = document.createElement("span");
+      nameEl.className = "stage-name";
+      nameEl.textContent = stage.nodes.length ? stage.name : "＋ " + stage.name;
+      chip.appendChild(nameEl);
+      if (stage.nodes.length) {
+        var modelsEl = document.createElement("span");
+        modelsEl.className = "stage-models";
+        modelsEl.textContent = stage.nodes.map(function(n){ return n.model; }).join(" ｜ ");
+        chip.appendChild(modelsEl);
+      }
       chip.addEventListener("click", function(){ openNodeEditor(idx); });
       bar.appendChild(chip);
     });
@@ -1666,13 +1736,27 @@ tokens_out: 1420
   }
 
   // ---------- screen switch ----------
-  function showResultScreen(){
-    document.getElementById("screen-dispatch").hidden = true;
-    document.getElementById("screen-result").hidden = false;
+  function showPane(name){
+    document.getElementById("pane-chat").hidden = (name !== "chat");
+    document.getElementById("pane-result").hidden = (name !== "result");
+    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(t){
+      t.classList.toggle("is-active", t.dataset.pane === name);
+    });
   }
-  document.getElementById("back-btn").addEventListener("click", function(){
-    document.getElementById("screen-result").hidden = true;
-    document.getElementById("screen-dispatch").hidden = false;
+  Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(t){
+    t.addEventListener("click", function(){ if (!t.disabled) showPane(t.dataset.pane); });
+  });
+  function showResultScreen(){
+    document.getElementById("tab-result").disabled = false;
+    showPane("result");
+  }
+
+  // ---------- 深浅色 ----------
+  document.getElementById("theme-btn").addEventListener("click", function(){
+    var root = document.documentElement;
+    var dark = root.getAttribute("data-theme") === "dark"
+      || (!root.getAttribute("data-theme") && matchMedia("(prefers-color-scheme: dark)").matches);
+    root.setAttribute("data-theme", dark ? "light" : "dark");
   });
 
   // ---------- route echo (screen 2) ----------

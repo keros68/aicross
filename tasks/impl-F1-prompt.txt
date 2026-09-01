@@ -1,0 +1,9 @@
+先读仓库根目录的 AGENTS.md（特别是「与 coffeecli 的关系」一节，本仓库现在是 Coffee CLI 的 fork，四条义务写在那里），再读 tasks/TASK-F1-rebrand.md，按任务书执行。
+
+本期只做改名换标：不删功能、不搬 port/ 里的代码、不改业务逻辑。
+
+任务书的「边界」和「验收」两节是硬要求。LICENSE、NOTICE、TRADEMARKS.md、port/ 下的文件、源码版权头，一个字都不许动。验收命令必须实际跑过，把命令与输出原文贴进报告；跑不了的写「未验证」，不要写「已验证」。
+
+C 节里分不清是用户可见字符串还是内部标识符的，保守留着不动，在报告里列清单。
+
+完成后写 tasks/REPORT-F1.md。不要 commit，不要 push。

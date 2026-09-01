@@ -1,2 +1,0 @@
-provider       model       context
-zai-coding-cn  glm-4.7     204800

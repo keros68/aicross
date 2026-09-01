@@ -1,3 +1,0 @@
-{"type":"message_end","message":{"role":"assistant","provider":"zai-coding-cn","model":"glm-4.7","content":[{"type":"thinking","thinking":"brief"},{"type":"text","text":"OK"}]}}
-{"type":"agent_settled"}
-{"type":"debug","provider":"other-provider","model":"other-model"}

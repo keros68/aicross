@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "aicross",
+  "version": "0.1.0",
+  "identifier": "com.aicross.desktop",
+  "build": {
+    "frontendDist": "./src-ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "",
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "./src-ui" }
+  },
+
+  "app": {
+    "windows": [
+      {
+        "title": "aicross",
+        "label": "main",
+        "width": 1600,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": false,
+        "transparent": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "rpm", "dmg", "app", "msi", "nsis"],
+    "publisher": "aicross",
+    "resources": [],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/256x256.png",
+      "icons/512x512.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "windows": {
+      "nsis": {
+        "template": "installer.nsi",
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

@@ -1,0 +1,1888 @@
+.main-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-terminal);
+  border-top: none;
+  border-radius: 0; /* Fully flush, edge to edge */
+}
+
+/* Tool-tab strip. Portaled into the titlebar (#titlebar-tab-slot) so the tabs
+   sit on the drag bar like Windows Terminal / Chrome instead of a separate row
+   inside the content. Fixed height, bottom-aligned in the taller bar (via
+   .titlebar-tabs) so the tabs hug the content below and a reserve sits above. */
+.chrome-tabs-header {
+  display: flex;
+  align-items: stretch;
+  height: 32px;
+  padding: 0 2px 0 8px;
+  border-bottom: none;
+  position: relative;
+  z-index: 10;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chrome-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  background: transparent;
+  /* --shape-radius-tab is ALREADY a top-only radius (e.g. `10px 10px 0 0`, or 0
+     in sharp/slab) — so the tab is rounded on top, square at the bottom. It
+     fills the bar to its bottom edge, and the active tab's fill meets the
+     content directly below (Windows-Terminal seam). Do NOT re-wrap this in
+     `var() var() 0 0` — that expands to 10 values and the browser drops it. */
+  border-radius: var(--shape-radius-tab);
+  cursor: pointer;
+  user-select: none;
+  flex: 0 1 auto;
+  max-width: 200px;
+  min-width: 0;
+  /* `transform` is part of the transition so siblings ease into their
+   * shifted positions when another tab is being dragged past them
+   * (browser-style slide-aside). The dragged tab itself overrides
+   * this with `transition: none` via `.dragging` so it tracks the
+   * cursor 1:1. */
+  transition: background 0.15s, color 0.15s, transform 0.18s ease;
+}
+
+
+.chrome-tab:hover:not(.active) {
+  background: var(--bg-hover);
+}
+
+.chrome-tab.active {
+  color: var(--text-1);
+  background: var(--bg-terminal);
+  z-index: 2;
+  /* Prevent active tab from lagging behind during theme changes (flash bug) */
+  transition: color 0.15s;
+}
+
+/* Active drag state — pointer-down a tab and slide it horizontally.
+ * INTENTIONALLY zero visual effect (no opacity, no shadow, no cursor
+ * change): the dragged tab's bottom edge meets the terminal area's
+ * top edge, and any elevation / dimming there breaks the chrome-tab
+ * → terminal seam continuity. The tab just moves; its appearance
+ * stays identical to its non-drag self.
+ *
+ * Two rules below are mechanical, not stylistic:
+ *   z-index — ensures the dragged tab renders above siblings during
+ *             their slide-aside translateX, so it isn't visually
+ *             clipped by them.
+ *   transition: none — the tab tracks the cursor 1:1 (translateX is
+ *             applied inline via React state); a transition here
+ *             would lag behind the cursor. */
+.chrome-tab.dragging {
+  z-index: 5;
+  transition: none;
+}
+
+/* The Chrome "flare" pseudo-elements that seamed the active tab into the
+   terminal directly below it were removed when the strip moved up into the
+   titlebar — there's no adjacent terminal to bridge into up here. The active
+   tab now reads via its --bg-terminal fill alone (WT-style flat tab). */
+
+.chrome-tab-new {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  margin-left: 4px;
+  align-self: center;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.chrome-tab-new:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+/* ─── Tab Actions (Status Dots ↔ Close Button Overlay) ─── */
+.tab-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.tab-close-btn {
+  position: absolute;
+  inset: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, background-color 0.15s, color 0.15s;
+}
+
+.chrome-tab:hover .tab-close-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tab-close-btn:hover {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+/* ─── Tab Status Indicator (3×3 dot grid) ─── */
+
+@keyframes tab-status-wave {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+.tab-status-grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 3px);
+  grid-template-rows: repeat(3, 3px);
+  gap: 2px;
+  place-content: center;
+  flex-shrink: 0;
+  transition: opacity 0.15s ease;
+}
+
+.chrome-tab:hover .tab-status-grid {
+  opacity: 0;
+}
+
+.tab-status-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  animation: tab-status-wave 1.2s ease-in-out infinite;
+}
+
+/* idle — Wave-Double — green */
+.status-idle .tab-status-dot { background-color: #34d399; box-shadow: 0 0 3px #34d39988; }
+.status-idle .tab-status-dot:nth-child(1) { animation-delay: 0s; }
+.status-idle .tab-status-dot:nth-child(2) { animation-delay: 0.15s; }
+.status-idle .tab-status-dot:nth-child(3) { animation-delay: 0.3s; }
+.status-idle .tab-status-dot:nth-child(4) { animation-delay: 0.1s; }
+.status-idle .tab-status-dot:nth-child(5) { animation-delay: 0.25s; }
+.status-idle .tab-status-dot:nth-child(6) { animation-delay: 0.4s; }
+.status-idle .tab-status-dot:nth-child(7) { animation-delay: 0s; }
+.status-idle .tab-status-dot:nth-child(8) { animation-delay: 0.15s; }
+.status-idle .tab-status-dot:nth-child(9) { animation-delay: 0.3s; }
+
+/* working — Snake-CCW — Claude orange (matches the "Thinking..." color in Claude Code CLI output) */
+.status-working .tab-status-dot { background-color: #D97757; box-shadow: 0 0 3px #D9775788; }
+.status-working .tab-status-dot:nth-child(1) { animation-delay: 0s; }
+.status-working .tab-status-dot:nth-child(2) { animation-delay: 1.05s; }
+.status-working .tab-status-dot:nth-child(3) { animation-delay: 0.9s; }
+.status-working .tab-status-dot:nth-child(4) { animation-delay: 0.15s; }
+.status-working .tab-status-dot:nth-child(5) { animation-delay: 0.6s; }
+.status-working .tab-status-dot:nth-child(6) { animation-delay: 0.75s; }
+.status-working .tab-status-dot:nth-child(7) { animation-delay: 0.3s; }
+.status-working .tab-status-dot:nth-child(8) { animation-delay: 0.45s; }
+.status-working .tab-status-dot:nth-child(9) { animation-delay: 0.6s; }
+
+/* wait_input — Ripple — blue. Claude is blocked on a permission prompt
+   ("approve / deny" dialog or similar); user must intervene. */
+.status-waiting .tab-status-dot { background-color: #60a5fa; box-shadow: 0 0 3px #60a5fa88; }
+.status-waiting .tab-status-dot:nth-child(1) { animation-delay: 0.3s; }
+.status-waiting .tab-status-dot:nth-child(2) { animation-delay: 0.15s; }
+.status-waiting .tab-status-dot:nth-child(3) { animation-delay: 0.3s; }
+.status-waiting .tab-status-dot:nth-child(4) { animation-delay: 0.15s; }
+.status-waiting .tab-status-dot:nth-child(5) { animation-delay: 0s; }
+.status-waiting .tab-status-dot:nth-child(6) { animation-delay: 0.15s; }
+.status-waiting .tab-status-dot:nth-child(7) { animation-delay: 0.3s; }
+.status-waiting .tab-status-dot:nth-child(8) { animation-delay: 0.15s; }
+.status-waiting .tab-status-dot:nth-child(9) { animation-delay: 0.3s; }
+
+/* Linux variant — single static dot, no animation, no box-shadow blur.
+   The 9-dot wave/snake/ripple loops + box-shadow halos peg WebKit2GTK +
+   Cairo (no compositor-thread opacity for non-promoted layers; box-shadow
+   blur re-rasters on CPU each frame). Sized up to 5px so a lone dot reads
+   as deliberate. Color still conveys idle/working/waiting via the status-
+   class background-color rules above; we override box-shadow here to kill
+   the halo. Specificity (0,2,0) matches the status-* rules and source
+   order wins. */
+.tab-status-grid--static {
+  grid-template-columns: 5px;
+  grid-template-rows: 5px;
+}
+.tab-status-grid--static .tab-status-dot {
+  width: 5px;
+  height: 5px;
+  animation: none;
+  box-shadow: none;
+}
+
+/* ─── Terminal Wrapper ─── */
+
+.terminal-wrapper {
+  position: relative;
+  flex-direction: column;
+}
+
+/* ─── Launchpad Grid Overlay ─── */
+.launchpad-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.launchpad-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.launchpad-bg img,
+.launchpad-bg video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* User-controlled image opacity (--wallpaper-opacity set on :root from
+     app-state, 0.0–1.0). Replaces the prior black-overlay scheme so the
+     image fades into the active theme's base color rather than being
+     washed black — important because most Coffee CLI themes have a
+     non-black background that the old overlay clashed with. */
+  opacity: var(--wallpaper-opacity, 0.7);
+}
+
+.launchpad-slider-viewport {
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.launchpad-slider-track {
+  display: flex;
+  width: 200%;
+  height: 100%;
+  transition: transform 0.5s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.launchpad-slider-track.slide-to-library {
+  transform: translateX(-50%);
+}
+
+.launchpad-page {
+  width: 50%;
+  height: 100%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+}
+
+/* ─── Top-anchored chrome (mode label) ───────────────────────────────
+   Lives at the launchpad-container level so it does NOT translate
+   with the slider track. Always mounted; cross-fades between Desktop
+   chrome (gear) and Library chrome (chevron back + tab pill with
+   inline pin-count badge) via opacity. Mixing motion types — content
+   slides, chrome fades — reads more polished than forcing both onto
+   the same animation. pointer-events:none in the hidden state so
+   users can't click an invisible button during the fade.
+*/
+.launchpad-chrome {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 3;
+}
+.launchpad-chrome.is-visible {
+  opacity: 1;
+}
+.launchpad-chrome.is-visible > * {
+  pointer-events: auto;
+}
+
+/* Desktop chrome: only the 9-dot launcher at top-right. */
+.launchpad-chrome--desktop > .mode-switch-btn {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+}
+
+/* Library chrome: back button at top-left. Tab pill (.library-tabs--top)
+   self-positions via its own rule. Pin counter is plain inline text
+   inside the Agents tab — no separate styled element. */
+.launchpad-chrome--library > .launchpad-chrome-back {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+}
+
+.launchpad-inner {
+  max-width: 628px;
+  width: 100%;
+  padding: 32px;
+}
+
+.launchpad-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  width: 100%;
+}
+
+/* "Can't detect?" - plain small text hugging the bottom-right corner of
+   the pinned cards. No pill / icon / border (per design feedback): just
+   muted right-aligned text with a dotted underline. Negative margin-bottom
+   cancels this line's own height so the grid->heatmap gap stays at the
+   heatmap-card's built-in 24px (this line lives inside that gap, adding
+   ~zero net height). Tooltip is a themed data-tip ::after (NOT native
+   title=); width is fixed at 340px + right-anchored so CJK wraps normally
+   instead of one-char-per-line (width:auto + left:center shrank the
+   available width to the tiny trigger). span so the Glass/Carbon nuclear
+   :not() rule (targets div/...) leaves it alone. */
+.detect-help {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+  margin-bottom: -20px;
+}
+.detect-help-trigger {
+  position: relative;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-2);
+  cursor: help;
+  user-select: none;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  transition: color 0.15s ease;
+}
+.detect-help-trigger:hover {
+  color: var(--text-1);
+}
+.detect-help-trigger[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 340px;
+  padding: 10px 14px;
+  background: var(--bg-panel);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: pre-line;
+  word-break: break-word;
+  pointer-events: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20), 0 6px 20px rgba(0, 0, 0, 0.22);
+  z-index: 100;
+}
+
+/* "Switch model" link to EchoBird (our sister project). Sits next to
+   "Can't detect?" in the same right-aligned muted footer row, with a
+   thin gap. Solid underline link (not dotted help-style) so it reads as
+   an outbound action, not a hover hint. Same data-tip pill tooltip as
+   detect-help-trigger, anchored to the right so CJK wraps normally.
+   span/a so the Glass/Carbon nuclear :not() rule leaves it alone. */
+.detect-help { gap: 14px; }
+.switch-model-trigger {
+  position: relative;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color 0.15s ease;
+}
+.switch-model-trigger:hover {
+  color: var(--text-1);
+}
+.switch-model-trigger[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 340px;
+  padding: 10px 14px;
+  background: var(--bg-panel);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: pre-line;
+  word-break: break-word;
+  pointer-events: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20), 0 6px 20px rgba(0, 0, 0, 0.22);
+  z-index: 100;
+}
+
+/* Card + folder button share a group wrapper */
+.launchpad-card-group {
+  display: flex;
+  flex-direction: row;
+  /* Transparent placeholder border so Panel-shape's border-color
+     transition has a known starting value. Without it, switching to
+     Panel made border-color animate from `currentColor` (≈ white text
+     in dark themes) → var(--border), causing a 150ms white flash. */
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+  transition: transform 0.25s, box-shadow 0.25s;
+}
+
+.launchpad-card-group:hover {
+  transform: translateY(-2px);
+}
+
+/* Frosted glass cards when wallpaper is active.
+   bg + backdrop-filter MUST live on the rounded WRAPPER, not the
+   inner rectangular .launchpad-card. Putting them on the inner
+   card creates a fresh stacking context whose backdrop-filter is
+   promoted to its own GPU layer; that layer ignores the wrapper's
+   `overflow:hidden + border-radius` clip, leaking past the rounded
+   corners — visible as 4 sharp corner residues on Soft (16px) and
+   as a colored blur fringe on the inner card's exposed left edge
+   (the right edge is shielded by .launchpad-folder-btn). Same fix
+   pattern as [data-shape="glass"] in global.css. */
+.launchpad-has-bg .launchpad-card-group {
+  background: rgba(18, 18, 24, 0.52);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+}
+.launchpad-has-bg .launchpad-card {
+  background: transparent !important;
+}
+.launchpad-has-bg .launchpad-card-group:hover {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+[data-theme="light"] .launchpad-has-bg .launchpad-card-group {
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.launchpad-card {
+  flex: 1;
+  background: var(--bg-card);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  /* Fluid horizontal costs: on narrow windows the padding/gap shrink
+     before the name has to ellipsize (issue: agent name overlapped the
+     folder icon when the window was compressed horizontally). */
+  padding: 16px clamp(8px, 1.2vw, 16px) 16px clamp(14px, 1.8vw, 24px);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: clamp(6px, 0.9vw, 12px);
+  height: 80px;
+  cursor: pointer;
+  position: relative;
+  transition: background-color 0.2s;
+  min-width: 0;
+}
+
+/* Folder button — pinned to right side of card */
+.launchpad-folder-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  /* Theme-accent colored — follows each theme like the heatmap's bright
+     cells, so it's clearly visible and on-palette. Was --text-3 @ opacity
+     0.18, so dim that users didn't notice the open-folder affordance and
+     kept asking how to set the directory. */
+  color: var(--accent);
+  opacity: 0.9;
+  transition: opacity 0.15s;
+}
+
+.launchpad-folder-btn:hover {
+  opacity: 1;
+}
+
+/* Recent-folders dropdown (opened from a tool card's folder icon).
+   Same opaque-bg recipe as .term-ctx-menu so it reads solid across every
+   theme incl. glass (portal'd to <body>, which is under html[data-shape]). */
+.folder-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 200px;
+  max-width: 290px;
+  padding: 4px;
+  background-color: var(--bg-app);
+  background-image: linear-gradient(var(--bg-panel), var(--bg-panel));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20), 0 6px 20px rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.folder-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm, 5px);
+  color: var(--text-1);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.folder-menu-item:hover { background: var(--bg-hover); }
+.folder-menu-item svg { flex-shrink: 0; opacity: 0.7; color: var(--accent); }
+.folder-menu-name { flex-shrink: 0; font-weight: 600; }
+.folder-menu-path {
+  color: var(--text-3, var(--text-2));
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.folder-menu-sep { height: 1px; background: var(--border); margin: 4px 2px; }
+.folder-menu-open .folder-menu-name { font-weight: 500; color: var(--text-2); }
+/* Per-row delete affordance: hidden at rest, muted on row hover, red on its own hover. */
+.folder-menu-del {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: var(--text-3, var(--text-2));
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.folder-menu-item:hover .folder-menu-del { opacity: 0.55; }
+.folder-menu-item:hover .folder-menu-del:hover {
+  opacity: 1;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 15%, transparent);
+}
+.folder-menu-item .folder-menu-del svg { opacity: 1; color: inherit; }
+
+.launchpad-folder-btn svg {
+  /* Fluid with the card: full 28px at normal widths, down to 22px on
+     narrow windows so the button stays affordable (name ellipsizes first,
+     the folder affordance never gets overlapped). */
+  width: clamp(22px, 2vw, 28px);
+  height: clamp(22px, 2vw, 28px);
+  flex-shrink: 0;
+}
+
+.launchpad-card-disabled .launchpad-folder-btn {
+  pointer-events: none;
+}
+
+/* (Per-tool launch settings now live on the Library cards, not on
+   the main launchpad — gear is a one-time setup affordance, not a
+   recurring action like the folder picker. See .library-gear-btn.) */
+
+/* Disabled state — tool not installed */
+.launchpad-card-disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+
+.launchpad-card-disabled:hover {
+  transform: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+}
+
+
+
+.launchpad-icon {
+  /* Fluid pixel box (44px at normal widths, down to 32px on narrow
+     windows). Every icon inside is forced to fill this box so visual
+     sizes stay uniform regardless of the source asset's internal
+     viewBox utilization (brand SVGs had wildly different content-to-
+     viewBox ratios before). Tune here if the grid density changes. */
+  width: clamp(32px, 3.2vw, 44px);
+  height: clamp(32px, 3.2vw, 44px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Force every icon's outermost element (span wrapper, <img>, or inline
+   <svg>) to fill the fixed-size container. object-fit: contain preserves
+   the asset's aspect ratio. Inline `width="1em"` attrs on the source
+   components become no-ops under this override, which is the goal:
+   one source of truth for visible size lives in CSS. */
+.launchpad-icon > *,
+.launchpad-icon > * > svg {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain;
+}
+
+.launchpad-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  /* Clip the name when the card gets too narrow — the span below
+     ellipsizes instead of painting over the folder button (narrow-window
+     overlap fix). */
+  overflow: hidden;
+}
+
+.launchpad-card span {
+  font-size: clamp(15px, 1.35vw, 18px);
+  font-weight: 500;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+/* Agent name: ellipsize when the card is squeezed instead of overflowing
+   onto the folder button. The terminal card's inline-flex name (with the
+   remote-link icon) only clips — flex items can't ellipsize — which is
+   fine for its short CJK label. */
+.launchpad-card-info > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.launchpad-card-cwd {
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  color: var(--text-3) !important;
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Shrink with the card (was a fixed 160px that could out-wide a narrow
+     card and overflow). */
+  max-width: 100%;
+  letter-spacing: 0.3px;
+}
+
+/* (folder button is now a transparent overlay — no per-shape overrides needed) */
+
+/* ─── Premium Toast Notification ─── */
+
+/* iOS-style top banner — Portaled to document.body, so positioned
+   against the real viewport rather than any inner container.
+   `position: fixed` + viewport-relative top means the slide-down
+   animation truly reads as "drops in from the top edge of the
+   window" (system-banner idiom), not "slides out from inside
+   the terminal area." top:48 sits a comfortable margin under
+   the custom titlebar (~40px on Windows / Linux Tauri) without
+   landing on the chrome-tabs-header. */
+@keyframes slideDownToast {
+  0% { transform: translate(-50%, -200%); opacity: 0; }
+  15% { transform: translate(-50%, 0); opacity: 1; }
+  85% { transform: translate(-50%, 0); opacity: 1; }
+  100% { transform: translate(-50%, -200%); opacity: 0; }
+}
+
+.toast-notification {
+  position: fixed;
+  top: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-panel);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  padding: 14px 28px;
+  /* Capsule (iOS-style banner shape) — fully rounded ends instead of
+     the project's standard --radius-md rectangles. Keeps the toast
+     visually distinct from cards / panels / modals (which all use
+     --radius-md), so it reads instantly as "transient notification"
+     rather than another piece of permanent chrome. */
+  border-radius: 999px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20), 0 6px 20px rgba(0, 0, 0, 0.22);
+  z-index: 1000;
+  font-size: 16px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  animation: slideDownToast 3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: none;
+}
+/* ─── Mode Switch Button (Library vs Desktop) ─────────────── */
+/* Naked glyph — no bg, no border, no plate. Chrome is the enemy of
+   high-end feel; a 48px filled pill around a 24px icon makes the
+   chrome carry more visual weight than the symbol it frames.
+   Color stays neutral (NOT accent) — having stripped border/bg to
+   reduce visual weight, then painting it in brand-accent would just
+   re-add weight via color. VS Code / Linear / Notion all keep
+   secondary chrome in dim grey for the same reason. */
+.mode-switch-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  /* Default: dim text-3 + opacity 0.7 → near-invisible-but-present
+     restraint. Hover: jump to full text-1 → noticeable affordance
+     lift without ever pulling attention when not interacting. */
+  color: var(--text-3);
+  opacity: 0.7;
+  cursor: pointer;
+  transition: color 0.2s ease, opacity 0.2s ease;
+}
+
+.mode-switch-btn:hover {
+  /* Hover lifts to brand accent — color as INTERACTION REWARD,
+     not default decoration. Same pattern as Linear/Arc: app feels
+     alive on intent, recedes when idle. */
+  color: var(--accent);
+  opacity: 1;
+}
+
+.mode-switch-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  /* Inherit color from .mode-switch-btn (text-2 → text-1 on hover)
+     instead of hardcoding accent. Naked glyph in subdued text-2 reads
+     as restrained chrome; hover lifts to text-1 for affordance. */
+  color: inherit;
+  background: transparent;
+  transition: transform 0.4s ease;
+}
+.empty-icon {
+  color: var(--text-3);
+  opacity: 0.6;
+}
+
+/* ─── Library (Agents) ─────────────────────────────────────────────────── */
+
+.library-page {
+  position: relative;
+  align-items: flex-start;
+}
+
+.library-page .launchpad-inner {
+  max-width: 1200px;
+  /* 84px top: tab pill bottom edge at 60 (top:24 + h:~36) + 24px
+     breathing room — matches the 24px above the pill for visual
+     symmetry. Back button (top:16 + h:48 → bottom:64) also clears
+     within this band. Bottom 32px standard; Gambit owns the bottom. */
+  padding-top: 84px;
+  padding-bottom: 32px;
+}
+
+.library-grid {
+  display: grid;
+  /* minmax(0, 1fr) — without it, long item names (e.g. "Independent
+     Triple", "Personality Test") force columns past 1/4 width and the
+     last column overflows the panel. Pairs with min-width:0 on
+     .library-item-name so the ellipsis can actually clip. */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  align-content: start;
+}
+
+/* Agent Tools sub-grid: same 4-col layout as the AI CLIs grid above,
+   so every row holds 4 cards:
+     Row 1: multi-agent | three-agent | two-agent | installer
+     Row 2: four-split  | three-split | two-split | hyper-agent
+   协作 counts and 独立 counts line up column-by-column (4↔4, 3↔3, 2↔2). */
+.library-grid.library-grid--tools {
+  margin-top: 8px;
+}
+
+/* Section heading between the AI CLIs grid and the Agent Tools grid. */
+.library-section-title {
+  margin-top: 28px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2, #aaa);
+  user-select: none;
+}
+
+.library-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  /* Unselected cards sit at reduced opacity so the SELECTED ones (full
+     opacity + accent border) visually pop forward. Inverse of the usual
+     "highlight selected" — we instead "fade unselected", which keeps the
+     selected look clean (no background tint, no shadow, just normal). */
+  opacity: 0.55;
+  transition: opacity 0.18s, border-color 0.18s;
+}
+
+.library-item:hover {
+  opacity: 0.85;
+  border-color: var(--accent);
+}
+
+/* Selected state — pinned to launchpad. Same 1px border width as the
+   default (only the COLOR changes), so toggling pinned never shifts
+   the card by even a pixel. Combined with full opacity, the card
+   "comes into focus" while its peers stay muted. No background tint:
+   the contrast against still-faded neighbors is enough. */
+.library-item.is-pinned {
+  opacity: 1;
+  border-color: var(--accent);
+}
+.library-item.is-pinned:hover {
+  opacity: 1;
+}
+
+.library-item-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  font-size: 22px;
+  color: var(--text-1);
+}
+
+.library-item-icon img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+}
+
+.library-item-icon svg {
+  width: 28px;
+  height: 28px;
+}
+
+.library-item-name {
+  flex: 1;
+  /* Required so this flex child can shrink below its intrinsic
+     content width — otherwise text-overflow:ellipsis is a no-op
+     and long names push the grid column past its 1fr share. */
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* (.library-pin-btn removed — pin state is now signaled by border +
+   opacity on .library-item.is-pinned, no right-side checkmark. The
+   right slot is reserved for the launch-settings gear on CLI tools.) */
+
+/* Per-tool launch settings gear, shown in the same right-edge slot
+   formerly occupied by the pin checkmark. Only rendered for the 7 CLI
+   tools that take a launch path. Click → opens the override modal;
+   stopPropagation so it doesn't also toggle pin/unpin. Visual treatment
+   matches the inline globe / launchpad gear pattern (0.18 baseline /
+   0.7 hover). */
+.library-gear-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  opacity: 0.35;
+  transition: opacity 0.15s, color 0.15s;
+}
+.library-item:hover .library-gear-btn {
+  opacity: 0.6;
+}
+/* Selected (pinned) cards highlight the gear in accent — same color the
+   border switches to — so the launch-settings affordance is visible at a
+   glance on the tools the user actually cares about. */
+.library-item.is-pinned .library-gear-btn {
+  opacity: 1;
+  color: var(--accent);
+}
+.library-gear-btn:hover {
+  opacity: 1 !important;
+  color: var(--accent);
+}
+.library-gear-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ─── Library tab switcher (Agents / Skills) ──────────────────────────── */
+
+/* Top-center pill, anchored to launchpad-container (lives outside the
+   sliding track so it doesn't animate with the page content). Bottom
+   stays clear for Gambit's compose panel. The legacy bottom-positioned
+   .library-tabs (without the --top modifier) would still work if any
+   caller wants it back, but we removed all bottom callers. */
+.library-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  z-index: 3;
+}
+
+.library-tabs--top {
+  position: absolute;
+  /* top:24 — vertically centered against the back button (top:16,
+     h:48 → center y:40; tab pill h:~36 → center y at 24+18 = 42).
+     Equal 24px gap above the pill (to container top) AND below the
+     pill (to cards padding-top:84) — symmetric header band, no more
+     "tab feels squeezed against cards" asymmetry. */
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  /* Self-fading opacity (see hoist rationale in CenterPanel.tsx). */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.library-tabs--top.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.library-tab {
+  padding: 8px 28px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  /* Concentric corners — inner radius = outer radius − padding (4px).
+     Hardcoding var(--radius-sm) broke in the soft theme where
+     --radius-md is 4 but --radius-sm is 3, making the inner
+     active-tab corner round PAST the outer pill. max(0,…) clamps
+     for the square-corner theme. */
+  border-radius: max(0px, calc(var(--radius-md) - 4px));
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.library-tab:hover { color: var(--text-1); }
+
+.library-tab.active {
+  background: var(--accent);
+  color: #1a1917;
+}
+
+/* ─── Skills panel (toggle list inside Library tab) ────────────────────── */
+
+/* ─── Skills marketplace header (tabs + add / manage) ────────── */
+.skills-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 4px;
+  /* One row, never wraps: extra market tabs scroll horizontally inside
+     .skills-tabs instead of stacking into more rows and growing the header
+     taller (which would eat the card area and strand the actions mid-height).
+     Stays put because the CARD LIST owns the scroll (see
+     .library-page--skills), so the header never bleeds into the top pill. */
+  flex-shrink: 0;
+}
+
+/* Skills tab: the card list scrolls internally instead of the whole page.
+   Without this, cards scroll up behind the semi-transparent Agents/Skills
+   pill and "bleed through" at the top. Making the grid the scroll area
+   clips cards below the (static) header. */
+.library-page--skills {
+  overflow: hidden;
+  align-items: stretch;
+}
+.library-page--skills .launchpad-inner {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+  min-height: 0;
+}
+.library-page--skills .skills-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Pack rows to the top at their natural height. Without this, the grid's
+     default align-content: stretch expands rows to fill the flex:1 height,
+     making cards balloon when there are only a few. */
+  align-content: start;
+}
+.library-page--skills .skills-empty { flex: 1; }
+.skills-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  /* Many markets scroll sideways here, keeping the header one row tall. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.skills-tabs::-webkit-scrollbar { height: 4px; }
+.skills-tabs::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+.skills-tabs::-webkit-scrollbar-track { background: transparent; }
+.skills-tab {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s, background-color 0.12s;
+}
+.skills-tab:hover { color: var(--text-1); background: var(--bg-hover); }
+.skills-tab.is-active { color: var(--accent); font-weight: 600; }
+.skills-header-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.skills-link-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px;
+  transition: color 0.12s;
+}
+.skills-link-btn:hover { color: var(--accent); }
+
+/* ─── Add-marketplace modal ──────────────────────────────────── */
+.skills-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+}
+.skills-modal {
+  width: 440px;
+  max-width: 92vw;
+  padding: 20px;
+  background: var(--bg-panel, #28241e);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.skills-modal-title { font-size: 15px; font-weight: 700; color: var(--text-1); margin-bottom: 8px; }
+.skills-modal-hint { font-size: 12px; color: var(--text-3); line-height: 1.5; margin-bottom: 12px; }
+.skills-modal-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  background: var(--bg-app, #1a1917);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text-1);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.skills-modal-input:focus { border-color: var(--accent); }
+.skills-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.skills-modal-btn {
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 13px;
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s, opacity 0.12s;
+}
+.skills-modal-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.skills-modal-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.skills-modal-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ─── Manage marketplaces list (升级 / 删除 per market) ───────── */
+.skills-manage { width: 560px; }
+.skills-manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 4px 0;
+}
+.skills-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+}
+.skills-manage-info { flex: 1; min-width: 0; }
+.skills-manage-titlerow { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.skills-manage-name { font-size: 13px; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skills-manage-meta { font-size: 12px; color: var(--text-2); flex-shrink: 0; }
+.skills-manage-path {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skills-manage-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.skills-manage-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.skills-manage-del:hover:not(:disabled) { color: #e85454; border-color: #e85454; }
+.skills-manage-del:disabled { opacity: 0.5; cursor: default; }
+
+/* ─── Skill card skeletons (first-load shimmer) + lazy sentinel ─ */
+.skills-card-skeleton { pointer-events: none; opacity: 0.7; }
+.skills-skel-icon,
+.skills-skel-bar {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--text-3) 18%, transparent) 0%,
+    color-mix(in srgb, var(--text-3) 35%, transparent) 50%,
+    color-mix(in srgb, var(--text-3) 18%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: skills-skel-shimmer 1.4s ease-in-out infinite;
+}
+.skills-skel-icon {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+}
+.skills-skel-bar { display: block; height: 12px; border-radius: var(--radius-xs, 4px); }
+.skills-skel-title { width: 55%; }
+.skills-skel-desc { width: 80%; height: 10px; margin-top: 6px; }
+@keyframes skills-skel-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.skills-sentinel { width: 100%; height: 1px; }
+
+.skills-empty {
+  padding: 60px 24px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+.skills-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  padding: 8px 4px 80px;
+}
+
+/* Single-row card layout: [icon] [name+desc] [toggle].
+   Description truncates to one line with ellipsis; full text is
+   exposed on hover via the mouse-tracked tooltip rendered into
+   document.body via portal (see .skills-tooltip below).
+   min-width: 0 here is the *grid item* equivalent of the flex-child
+   trick: without it, the card refuses to shrink below its intrinsic
+   min-content, and a long English description forces the card wider
+   than its grid column — the description then visually overflows
+   the panel without ever triggering text-overflow: ellipsis on the
+   inner desc element (because the desc element thinks it has
+   unlimited width). */
+.skills-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+
+/* No accent border for enabled state — the right-side toggle is the
+   canonical state indicator. An accent border on the card visually
+   reads as "selected/focused", which we don't have here (skills are
+   on/off, not selectable). Keep border neutral; the toggle alone
+   communicates state. */
+
+/* Big bare icon — no background plate, no rounded clip, no border.
+   The icon's own art carries the visual weight. object-fit: contain
+   preserves aspect ratio so non-square assets (an SVG with whitespace
+   around the glyph, etc) don't get cropped. Fallback first-letter
+   renders at the same size for visual rhythm. */
+.skills-card-icon {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.skills-card-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* Theme-aware corner radius — matches the card's --radius-md so
+     icon corners visually rhyme with the card they sit in. Effect
+     is real for opaque filled-canvas icons (screenshot-style); a
+     no-op for transparent-glyph icons (vibeid-style) since the
+     corners are already empty pixels. Either way, harmless. */
+  border-radius: var(--radius-md);
+}
+
+.skills-card-icon-fallback {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+/* Vertical stack of name + truncated description, takes up all
+   horizontal space between icon and toggle. min-width: 0 is the
+   flex hack that lets the description's text-overflow: ellipsis
+   actually fire — without it the flex item refuses to shrink
+   below its content's intrinsic width.
+   position: relative anchors the hover tooltip below — it has to
+   live HERE rather than on .skills-card-desc because the desc
+   itself uses overflow: hidden for the ellipsis, which would clip
+   the absolutely-positioned pseudo-element tooltip. cursor: help
+   on this whole region (name + desc) hints "hover for more". */
+.skills-card-text {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: help;
+}
+
+.skills-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skills-card-desc {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mouse-tracked tooltip — rendered into document.body via portal
+   (see SkillsPanel.tsx). Pure-CSS pseudo-element approach failed
+   because (a) .skills-card-desc's overflow:hidden clipped the tip
+   when anchored on the desc itself, and (b) anchoring on a parent
+   then meant the tip couldn't avoid viewport edges (top of small
+   windows / left rail). Portal + position:fixed + JS clamp dodges
+   both. Style mirrors the heatmap tooltip (var(--bg-panel) /
+   var(--text-1) / var(--border)) so theme changes cascade. */
+.skills-tooltip {
+  position: fixed;
+  max-width: min(420px, calc(100vw - 24px));
+  width: max-content;
+  padding: 8px 12px;
+  background: var(--bg-panel);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  pointer-events: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20), 0 6px 20px rgba(0, 0, 0, 0.22);
+  z-index: 10000;
+}
+
+/* iOS-style toggle switch — 36×20 track, 16×16 thumb. */
+.skills-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.skills-toggle:disabled {
+  cursor: progress;
+}
+
+/* Busy state — backend toggle in flight (junction creation +
+   per-CLI mirroring). The thumb's solid white fill is swapped for a
+   rotating ring so the click has a clear "I'm working" affordance,
+   the same idiom Codex desktop uses for in-flight switches. The
+   thumb keeps its current position (we don't optimistically move
+   it; the refresh after the backend returns is what shifts the
+   thumb to the new state). */
+.skills-toggle.is-busy .skills-toggle-thumb {
+  background: transparent;
+  box-shadow: none;
+}
+
+.skills-toggle.is-busy .skills-toggle-thumb::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.skills-toggle-track {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  background: var(--border);
+  border-radius: 10px;
+  transition: background-color 0.2s;
+}
+
+.skills-toggle.on .skills-toggle-track {
+  background: var(--accent);
+}
+
+.skills-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+
+.skills-toggle.on .skills-toggle-thumb {
+  transform: translateX(16px);
+}
+
+/* ─── Tool launch-override modal ─────────────────────────────────── */
+/* Theme-driven: reads --bg-panel / --text-1 / --accent / --border-*  */
+/* etc. so dawn (light) and dark themes both work without re-coloring */
+/* anything inline. No descriptive copy — only field labels.          */
+
+.tool-config-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+/* Visual language unified with .remote-form-card (Remote Terminal
+   popup): same 380px width, dedicated header bar with bottom
+   border, padded body, larger inputs (14px / 10×14 padding) so
+   typed values are easy to read. Both modals are config-input
+   forms — keeping their styling identical is the contract. */
+.tool-config-modal {
+  width: 380px;
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-1);
+  font-family: var(--font-primary);
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25), 0 12px 32px rgba(0, 0, 0, 0.30);
+  overflow: hidden;
+}
+
+.tool-config-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.tool-config-close {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.tool-config-close:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.tool-config-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tool-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.tool-config-field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tool-config-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font-family: 'Cascadia Mono', 'Cascadia Code', Consolas, monospace;
+  font-size: 14px;
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.tool-config-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(196, 149, 106, 0.15);
+}
+
+.tool-config-input::placeholder {
+  color: var(--text-2);
+  opacity: 0.5;
+}
+
+.tool-config-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 0 20px 20px;
+}
+
+.tool-config-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-family: inherit;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.tool-config-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tool-config-btn-subtle {
+  background: transparent;
+  color: var(--text-1);
+}
+.tool-config-btn-subtle:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.tool-config-btn-primary {
+  background: var(--accent);
+  color: var(--bg-app);
+  border-color: transparent;
+  font-weight: 600;
+}
+.tool-config-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+/* ─── Terminal Card Subtle Remote Hint ─── */
+
+.remote-link-hint {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  color: var(--text-3);
+  opacity: 0.18;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  transition: opacity 0.15s;
+}
+
+.remote-link-hint:hover {
+  opacity: 0.7;
+}
+
+/* ─── Remote Terminal Connection Form ─── */
+
+.remote-form-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(6px);
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.remote-form-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  /* Soft optical center compensation */
+  margin-top: -4vh; 
+}
+
+.remote-history-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  max-width: 440px;
+}
+
+.remote-pill {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-pill);
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.2s;
+  color: var(--text-2);
+}
+
+.remote-pill:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.remote-pill-proto {
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.7;
+  margin-right: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.remote-pill-close {
+  margin-left: 8px;
+  background: transparent;
+  border: none;
+  color: currentColor;
+  opacity: 0.5;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 50%;
+  transition: all 0.2s;
+}
+
+.remote-pill-close:hover {
+  opacity: 1;
+  background: rgba(255, 85, 85, 0.2);
+  color: #ff5555;
+}
+
+
+.remote-form-card {
+  width: 380px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25), 0 12px 32px rgba(0, 0, 0, 0.30);
+  overflow: hidden;
+}
+
+.remote-form-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* Title span only — exclude the icon span that `inlineSvgIcon`
+   renders as <span aria-hidden>. Without `:not([aria-hidden])`
+   the icon span ALSO got `flex: 1`, which beats its own inline
+   `width: 1em` (flex-basis:0 wins over width on flex items),
+   stretching it to half the header and exposing the inner
+   PowerShell SVG's hardcoded 128×128 dimensions. */
+.remote-form-header > span:not([aria-hidden]) {
+  flex: 1;
+}
+
+.remote-form-close {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.remote-form-close:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.remote-form-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Protocol Toggle */
+.remote-protocol-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  border: 1px solid var(--border);
+}
+
+.remote-proto-btn {
+  flex: 1;
+  padding: 7px 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 0.3px;
+}
+
+.remote-proto-btn.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.remote-proto-btn:not(.active):hover {
+  color: var(--text-1);
+}
+
+.remote-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.remote-form-row label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.remote-form-host-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.remote-input {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: 'Cascadia Mono', 'Cascadia Code', Consolas, monospace;
+  color: var(--text-1);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.remote-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(196, 149, 106, 0.15);
+}
+
+.remote-input::placeholder {
+  color: var(--text-2);
+  opacity: 0.5;
+}
+
+.remote-input-host {
+  flex: 1;
+}
+
+.remote-input-port {
+  width: 70px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.remote-port-sep {
+  color: var(--text-2);
+  font-size: 16px;
+  font-weight: 500;
+  opacity: 0.5;
+}
+
+.remote-connect-btn {
+  width: 100%;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 4px;
+}
+
+.remote-connect-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.remote-connect-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.remote-connect-btn.status-connecting {
+  opacity: 0.8;
+  cursor: wait;
+}
+
+.remote-connect-btn.status-failed {
+  background: #ef4444;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+}

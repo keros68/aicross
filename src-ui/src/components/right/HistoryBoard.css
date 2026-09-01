@@ -1,0 +1,317 @@
+/* ── History Card (Recent Sessions) ──
+   All visible colors come from theme variables — same fix as ChatReader
+   (issue #21). Earlier the cards/search/skeleton used hard-coded white
+   half-transparent layers (rgba(255,255,255,0.03) etc.) which collapsed
+   to "almost invisible" on the light theme since white-on-white has no
+   contrast. */
+
+.history-card {
+  position: relative;
+  padding: 14px 14px;
+  margin-bottom: 8px;
+  cursor: default !important;
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  transition: background 0.2s;
+}
+
+.history-card:hover {
+  background: var(--bg-hover);
+}
+
+.history-card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-card-title {
+  font-size: 13px;
+  color: var(--text-1);
+  font-family: var(--font, system-ui);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Reserve room for the hover pin + delete buttons (right:8/36, 24px each)
+     so a long title ellipsizes instead of painting under them. */
+  padding-right: 64px;
+}
+
+.history-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.history-card-tool-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--text-2);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+/* Pinned (置顶) marker - a static pushpin icon on the right of the meta row,
+   shown only on pinned cards. Non-interactive (pin/unpin lives in the right-
+   click context menu); styled to match the meta row text so it reads as an
+   indicator, not a button. No hover/cursor - pure marker. */
+/* ── Loading Skeleton ──
+   Shimmer driven by --text-3 so the skeleton bars are visible against
+   light AND dark cards. Pure white-rgba was invisible on the light theme. */
+.history-card-skeleton {
+  cursor: default !important;
+  pointer-events: none;
+  background: var(--bg-card);
+  opacity: 0.6;
+}
+
+.skeleton-bar {
+  display: block;
+  border-radius: var(--radius-xs, 4px);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--text-3) 18%, transparent) 0%,
+    color-mix(in srgb, var(--text-3) 35%, transparent) 50%,
+    color-mix(in srgb, var(--text-3) 18%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: history-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-bar-title {
+  width: 70%;
+  height: 13px;
+}
+
+.skeleton-bar-meta {
+  width: 40%;
+  height: 10px;
+}
+
+@keyframes history-skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Search box and the workspace-filter trigger must be the same height so
+   the rail's top edge reads as one line. Both pin a fixed height instead of
+   relying on content box (CJK glyphs lift the default line-height ~2px,
+   which makes the trigger taller than the input in zh-CN). */
+:root {
+  --history-search-h: 34px;
+}
+
+.agent-session-search-wrap {
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.agent-session-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+}
+
+.agent-session-search {
+  width: 100%;
+  box-sizing: border-box;
+  height: var(--history-search-h);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px 8px 32px;
+  color: var(--text-1);
+  font-size: 13px;
+  font-family: var(--font, system-ui);
+  line-height: 1;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.agent-session-search::placeholder {
+  color: var(--text-3);
+}
+
+.agent-session-search:focus {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+/* ─── Agent filter dropdown ─── */
+/* Search row: the input takes the remaining width, the filter trigger hugs
+   the right edge. */
+.agent-session-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.agent-session-search-row .agent-session-search-wrap {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.history-tool-filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: var(--history-search-h);
+  box-sizing: border-box;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 13px;
+  font-family: var(--font, system-ui);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.history-tool-filter-label {
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-tool-filter-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+}
+.history-tool-filter-menu {
+  /* Same opacity fix as Explorer's .ctx-menu — --bg-card is ~3% white in
+     dark themes, so a portaled menu floating over the session list reads
+     as transparent. Layer --bg-panel over --bg-app so Light theme's
+     translucent panel still reads opaque. Glass shape gets its frosted
+     look from the [data-shape="glass"] override in global.css. */
+  background-color: var(--bg-app);
+  background-image: linear-gradient(var(--bg-panel), var(--bg-panel));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20), 0 6px 20px rgba(0, 0, 0, 0.22);
+  padding: 4px;
+  z-index: 1000;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.history-tool-filter-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-family: var(--font, system-ui);
+  text-align: left;
+  cursor: pointer;
+}
+.history-tool-filter-opt:hover {
+  background: var(--bg-hover);
+}
+.history-tool-filter-opt.active {
+  color: var(--accent);
+}
+.history-tool-filter-opt-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-tool-filter-count {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+/* ─── Card pin/delete buttons + inline rename ─── */
+/* One-click pin at the card's top-right. Hidden until hover; always shown
+   (accent, filled) once pinned — it doubles as the pinned marker. The
+   delete button sits just left of it, same hover-reveal pattern — both go
+   through the existing localStorage soft-delete (hideSession), no real
+   removal. The title reserves padding-right so long names ellipsize before
+   reaching the buttons instead of painting under them. */
+.history-card-pin-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.history-card-delete-btn {
+  position: absolute;
+  top: 8px;
+  right: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-3);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.history-card:hover .history-card-pin-btn,
+.history-card-pin-btn.pinned,
+.history-card:hover .history-card-delete-btn {
+  opacity: 1;
+}
+.history-card-pin-btn:hover,
+.history-card-delete-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+.history-card-pin-btn.pinned {
+  color: var(--accent);
+}
+
+/* Inline rename — seamless, no border/background/padding so switching into
+   edit mode causes zero layout shift (same pattern as TaskBoard's
+   .task-title-edit). Sized to match .history-card-title exactly (font-size,
+   weight, line-height, padding-right gutter for the pin/delete buttons);
+   the only tell-tale is the accent caret. */
+.history-card-rename-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0 64px 0 0;
+  margin: 0;
+  color: var(--text-1);
+  font-size: 13px;
+  font-family: var(--font, system-ui);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  outline: none;
+  caret-color: var(--accent);
+}
