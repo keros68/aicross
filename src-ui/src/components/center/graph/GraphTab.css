@@ -14,21 +14,25 @@
 
 .graph-dispatch-toolbar { height: 40px; flex: 0 0 40px; padding: 4px 12px; display: flex; align-items: center; justify-content: flex-end; gap: 12px; border-bottom: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
 .graph-dispatch-toolbar .graph-primary-btn { margin: 0; height: 30px; }
+.graph-resume { margin-right: auto; color: var(--text-2); }
+.graph-resume button { margin-left: 6px; height: 26px; padding: 0 9px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--text-1); }
 
 .dispatch-overlay { position: fixed; inset: 0; z-index: 12000; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,.58); }
-.dispatch-modal { width: min(1120px, 94vw); max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; background: var(--bg-1); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 18px 60px rgba(0,0,0,.35); }
+.dispatch-modal { width: min(1120px, 94vw); max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; background: var(--bg-app); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 18px 60px rgba(0,0,0,.35); }
 .dispatch-head { min-height: 58px; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
 .dispatch-title { color: var(--text-1); font-size: 16px; font-weight: 600; }
 .dispatch-sub { margin-top: 3px; color: var(--text-3); font: 11px var(--font-mono, monospace); }
 .dispatch-close, .dispatch-actions button, .dispatch-card-actions button, .dispatch-running-row button, .dispatch-controls button { height: 30px; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-2); }
 .dispatch-body { overflow: auto; padding: 16px; }
-.dispatch-route-card, .dispatch-result-card { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+.dispatch-route-card, .dispatch-result-card { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); }
 .dispatch-route-card + .dispatch-route-card { margin-top: 10px; }
 .dispatch-route-line, .dispatch-result-lines { font: 12px/1.6 var(--font-mono, monospace); color: var(--text-1); }
 .dispatch-controls { display: flex; gap: 12px; margin-top: 10px; }
 .dispatch-controls > span { display: flex; align-items: center; color: var(--text-3); font-size: 12px; }
 .dispatch-controls label { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12px; }
-.dispatch-controls input, .dispatch-controls select { height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-1); color: var(--text-1); }
+.dispatch-controls input, .dispatch-controls select { height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-app); color: var(--text-1); }
+.dispatch-manual-target { flex-wrap: wrap; }
+.dispatch-manual-target input { width: 130px; }
 .dispatch-materials { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .dispatch-material-title { margin-bottom: 6px; color: var(--text-2); font-size: 12px; }
 .dispatch-material-row { display: grid; gap: 5px; margin: 4px 0; color: var(--text-2); font-size: 12px; }
@@ -39,16 +43,24 @@
 .dispatch-error, .dispatch-warning { margin: 10px 0; color: #e08b79; font-size: 12px; white-space: pre-wrap; }
 .dispatch-running-row { display: grid; grid-template-columns: 1fr 90px auto; align-items: center; gap: 12px; min-height: 46px; border-bottom: 1px solid var(--border); font: 12px var(--font-mono, monospace); }
 .dispatch-result-lines { margin-bottom: 12px; }
-.dispatch-result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.dispatch-result-grid { display: grid; gap: 10px; overflow-x: auto; }
+.dispatch-stage-column { display: grid; align-content: start; gap: 10px; min-width: 260px; }
+.dispatch-stage-heading { color: var(--text-2); font-size: 12px; font-weight: 600; }
 .dispatch-result-card.adopted { border-color: var(--accent); }
 .dispatch-result-head { display: flex; justify-content: space-between; gap: 8px; color: var(--text-2); font: 11px var(--font-mono, monospace); }
 .dispatch-result-text { margin-top: 10px; max-height: 320px; overflow: auto; color: var(--text-1); font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 .dispatch-card-actions { display: flex; gap: 6px; margin-top: 12px; }
 .dispatch-usage { width: 100%; margin-top: 16px; border-collapse: collapse; color: var(--text-2); font: 11px var(--font-mono, monospace); }
 .dispatch-usage th, .dispatch-usage td { padding: 7px; border-bottom: 1px solid var(--border); text-align: left; }
+.dispatch-usage-subtotal { color: var(--text-1); font-weight: 600; background: var(--bg-panel); }
 .dispatch-records { margin-top: 14px; color: var(--text-2); font-size: 12px; }
-.dispatch-records pre { max-height: 260px; overflow: auto; padding: 10px; background: var(--bg-2); border: 1px solid var(--border); white-space: pre-wrap; }
+.dispatch-records pre { max-height: 260px; overflow: auto; padding: 10px; background: var(--bg-panel); border: 1px solid var(--border); white-space: pre-wrap; }
 .dispatch-empty { color: var(--text-3); font-size: 13px; }
+.dispatch-reason { margin-top: 4px; color: var(--text-3); font-size: 11px; }
+.dispatch-collapsed { position: fixed; right: 20px; bottom: 20px; z-index: 12000; height: 36px; padding: 0 14px; border: 1px solid var(--accent); border-radius: 8px; background: var(--bg-app); color: var(--text-1); box-shadow: 0 8px 28px rgba(0,0,0,.3); }
+.dispatch-artifacts { margin-top: 10px; color: var(--text-2); font-size: 12px; }
+.dispatch-artifacts pre, .dispatch-result-card details pre { max-height: 240px; overflow: auto; padding: 8px; background: var(--bg-app); border: 1px solid var(--border); white-space: pre-wrap; }
+.dispatch-worktree { margin: 6px 0; font: 11px var(--font-mono, monospace); overflow-wrap: anywhere; }
 
 /* ── 开始视图 ── */
 

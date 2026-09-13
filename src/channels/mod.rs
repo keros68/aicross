@@ -2,6 +2,8 @@ use crate::process::ProcessResult;
 use regex::Regex;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+
+pub const BLIND_ARTIFACT_NOTICE: &str = "待验材料已在工作目录：REQUEST.md（用户原话）、diff.patch（统一 diff）、changed/（改后文件全文），请先读取再判定";
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
@@ -37,13 +39,21 @@ pub struct ChannelOutput {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChannelParseError {
+    pub kind: ChannelErrorKind,
     pub message: String,
     pub identity: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelErrorKind {
+    Output,
+    IdentityMismatch,
 }
 
 impl ChannelParseError {
     fn new(message: impl Into<String>) -> Self {
         Self {
+            kind: ChannelErrorKind::Output,
             message: message.into(),
             identity: String::new(),
         }
@@ -51,6 +61,15 @@ impl ChannelParseError {
 
     fn with_identity(message: impl Into<String>, identity: impl Into<String>) -> Self {
         Self {
+            kind: ChannelErrorKind::Output,
+            message: message.into(),
+            identity: identity.into(),
+        }
+    }
+
+    fn identity_mismatch(message: impl Into<String>, identity: impl Into<String>) -> Self {
+        Self {
+            kind: ChannelErrorKind::IdentityMismatch,
             message: message.into(),
             identity: identity.into(),
         }
@@ -77,6 +96,7 @@ pub fn build_invocation(
     task_file: Option<&Path>,
     session_dir: Option<&Path>,
     cc_switch_path: Option<&Path>,
+    writable: bool,
 ) -> Result<Invocation, String> {
     let normalized = normalize_agent(agent);
     let spec = build_invocation_spec(
@@ -91,6 +111,7 @@ pub fn build_invocation(
         task_file,
         session_dir,
         cc_switch_path,
+        writable,
     )?;
     let program = resolve_binary(spec.binary, spec.fallback)?;
     if normalized == "kimi" && is_command_script(&program) {
@@ -116,19 +137,23 @@ fn build_invocation_spec(
     task_file: Option<&Path>,
     session_dir: Option<&Path>,
     cc_switch_path: Option<&Path>,
+    writable: bool,
 ) -> Result<InvocationSpec, String> {
     match agent {
         "claude" => {
+            let tools = if blind {
+                ""
+            } else if writable {
+                "Read,Grep,Glob,Write,Edit,Bash"
+            } else {
+                "Read,Grep,Glob"
+            };
             let mut args = vec![
                 "-p".into(),
                 "--model".into(),
                 model.into(),
                 "--tools".into(),
-                if blind {
-                    "".into()
-                } else {
-                    "Read,Grep,Glob".into()
-                },
+                tools.into(),
                 "--output-format".into(),
                 "json".into(),
                 "--effort".into(),
@@ -155,7 +180,11 @@ fn build_invocation_spec(
                 "-c".into(),
                 format!("model_reasoning_effort={}", codex_effort(thinking)),
                 "-s".into(),
-                "read-only".into(),
+                if writable {
+                    "workspace-write".into()
+                } else {
+                    "read-only".into()
+                },
                 "--skip-git-repo-check".into(),
                 "--json".into(),
             ];
@@ -178,15 +207,10 @@ fn build_invocation_spec(
             if !model.contains('/') {
                 return Err("Kimi 模型请使用 config.toml 里的别名".into());
             }
-            if prompt.len() > 30_000 {
-                return Err(format!(
-                    "Kimi prompt 为 {} 个 UTF-8 字节，超过 30000；请改用支持 stdin 的通道",
-                    prompt.len()
-                ));
-            }
+            let prompt = crop_utf8_bytes(prompt, 30_000);
             let mut args = vec![
                 "-p".into(),
-                prompt.into(),
+                prompt,
                 "-m".into(),
                 model.into(),
                 "--output-format".into(),
@@ -214,7 +238,11 @@ fn build_invocation_spec(
                 "-p".into(),
             ];
             if blind {
-                args.push("--no-tools".into());
+                if prompt.contains(BLIND_ARTIFACT_NOTICE) {
+                    args.extend(["--tools".into(), "read,grep,find,ls".into()]);
+                } else {
+                    args.push("--no-tools".into());
+                }
                 args.extend([
                     "--no-skills".into(),
                     "--no-prompt-templates".into(),
@@ -222,7 +250,12 @@ fn build_invocation_spec(
                     "--no-approve".into(),
                 ]);
             } else {
-                args.extend(["--tools".into(), "read,grep,find,ls".into()]);
+                let tools = if writable {
+                    "read,write,edit,bash,grep,find,ls"
+                } else {
+                    "read,grep,find,ls"
+                };
+                args.extend(["--tools".into(), tools.into()]);
             }
             args.extend([
                 "--no-extensions".into(),
@@ -273,6 +306,25 @@ fn build_invocation_spec(
         }
         other => Err(format!("不支持的派发 agent：{other}")),
     }
+}
+
+fn crop_utf8_bytes(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+    const MARKER: &str = "\n...[已裁剪以适配 Kimi 30000 字节上限]...\n";
+    let available = limit.saturating_sub(MARKER.len());
+    let front_budget = available * 3 / 5;
+    let back_budget = available - front_budget;
+    let mut front = front_budget.min(text.len());
+    while !text.is_char_boundary(front) {
+        front -= 1;
+    }
+    let mut back_start = text.len().saturating_sub(back_budget);
+    while back_start < text.len() && !text.is_char_boundary(back_start) {
+        back_start += 1;
+    }
+    format!("{}{}{}", &text[..front], MARKER, &text[back_start..])
 }
 
 fn is_command_script(path: &Path) -> bool {
@@ -533,7 +585,7 @@ fn parse_pi(
         return Err(ChannelParseError::with_identity(error, identity));
     }
     if actual_provider != provider || actual_model != model {
-        return Err(ChannelParseError::with_identity(
+        return Err(ChannelParseError::identity_mismatch(
             format!("真身不符：请求 {provider}/{model}，响应 {identity}"),
             identity,
         ));
@@ -709,19 +761,26 @@ fn parse_cc_switch(result: &ProcessResult) -> Result<ChannelOutput, String> {
     if text.is_empty() {
         return Err(nonempty_error(result, "cc-switch 未返回正文"));
     }
-    static USAGE: OnceLock<Regex> = OnceLock::new();
-    let usage_regex = USAGE.get_or_init(|| {
-        Regex::new(r"(?m)^\[usage\].*?\binput=(\d+).*?\bcache_read=(\d+).*?\boutput=(\d+)")
-            .expect("cc-switch usage regex")
+    static USAGE_FIELD: OnceLock<Regex> = OnceLock::new();
+    let usage_field = USAGE_FIELD.get_or_init(|| {
+        Regex::new(r"\b(input|cache_read|output)=(\d+)").expect("cc-switch usage field regex")
     });
-    let usage = usage_regex
-        .captures(&result.stderr)
-        .map(|capture| Usage {
-            input: capture[1].parse().unwrap_or(0),
-            cache_read: capture[2].parse().unwrap_or(0),
-            output: capture[3].parse().unwrap_or(0),
-        })
-        .unwrap_or_default();
+    let mut usage = Usage::default();
+    if let Some(line) = result
+        .stderr
+        .lines()
+        .find(|line| line.starts_with("[usage]"))
+    {
+        for capture in usage_field.captures_iter(line) {
+            let value = capture[2].parse().unwrap_or(0);
+            match &capture[1] {
+                "input" => usage.input = value,
+                "cache_read" => usage.cache_read = value,
+                "output" => usage.output = value,
+                _ => {}
+            }
+        }
+    }
     Ok(ChannelOutput {
         text,
         usage,
@@ -762,7 +821,7 @@ mod tests {
     #[test]
     fn blind_claude_contains_restricted() {
         let invocation = build_invocation_spec(
-            "claude", "", "sonnet", "低", "低", true, None, "x", None, None, None,
+            "claude", "", "sonnet", "低", "低", true, None, "x", None, None, None, false,
         )
         .unwrap();
         assert!(invocation.args.iter().any(|arg| arg == "--restricted"));
@@ -771,7 +830,7 @@ mod tests {
     #[test]
     fn blind_pi_with_no_context_files_is_fully_isolated() {
         let invocation = build_invocation_spec(
-            "pi", "provider", "model", "低", "低", true, None, "x", None, None, None,
+            "pi", "provider", "model", "低", "低", true, None, "x", None, None, None, false,
         )
         .unwrap();
         assert!(invocation
@@ -782,9 +841,21 @@ mod tests {
     }
 
     #[test]
-    fn kimi_rejects_more_than_30000_utf8_bytes() {
+    fn blind_pi_with_artifacts_keeps_read_only_tools() {
+        let prompt = format!("x\n{BLIND_ARTIFACT_NOTICE}");
+        let invocation = build_invocation_spec(
+            "pi", "provider", "model", "低", "低", true, None, &prompt, None, None, None, false,
+        )
+        .unwrap();
+        let tools = invocation.args.iter().position(|arg| arg == "--tools").unwrap();
+        assert_eq!(invocation.args[tools + 1], "read,grep,find,ls");
+        assert!(!invocation.args.iter().any(|arg| arg == "--no-tools"));
+    }
+
+    #[test]
+    fn kimi_crops_more_than_30000_utf8_bytes() {
         let prompt = "中".repeat(10_001);
-        let error = build_invocation_spec(
+        let invocation = build_invocation_spec(
             "kimi",
             "",
             "kimi-code/k",
@@ -796,9 +867,13 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
-        .unwrap_err();
-        assert!(error.contains("超过 30000"));
+        .unwrap();
+        let sent = &invocation.args[1];
+        assert!(sent.len() <= 30_000);
+        assert!(sent.contains("已裁剪以适配 Kimi"));
+        assert!(sent.is_char_boundary(sent.len()));
     }
 
     #[test]
@@ -815,6 +890,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
         let resume = invocation
@@ -835,9 +911,71 @@ mod tests {
     }
 
     #[test]
+    fn writable_codex_uses_workspace_write_sandbox() {
+        let invocation = build_invocation_spec(
+            "codex", "", "gpt-test", "低", "低", false, None, "x", None, None, None, true,
+        )
+        .unwrap();
+        let sandbox = invocation.args.iter().position(|arg| arg == "-s").unwrap();
+        assert_eq!(invocation.args[sandbox + 1], "workspace-write");
+    }
+
+    #[test]
+    fn writable_claude_enables_write_tools() {
+        let invocation = build_invocation_spec(
+            "claude", "", "sonnet", "低", "低", false, None, "x", None, None, None, true,
+        )
+        .unwrap();
+        let tools = invocation.args.iter().position(|arg| arg == "--tools").unwrap();
+        assert_eq!(invocation.args[tools + 1], "Read,Grep,Glob,Write,Edit,Bash");
+    }
+
+    #[test]
+    fn writable_pi_enables_write_tools() {
+        let invocation = build_invocation_spec(
+            "pi", "provider", "model", "低", "低", false, None, "x", None, None, None, true,
+        )
+        .unwrap();
+        let tools = invocation.args.iter().position(|arg| arg == "--tools").unwrap();
+        assert_eq!(invocation.args[tools + 1], "read,write,edit,bash,grep,find,ls");
+    }
+
+    #[test]
+    fn pi_continuation_preserves_thinking_setting() {
+        let invocation = build_invocation_spec(
+            "pi",
+            "provider",
+            "model",
+            "中",
+            "高",
+            false,
+            Some("session-1"),
+            "x",
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let thinking = invocation
+            .args
+            .iter()
+            .position(|arg| arg == "--thinking")
+            .unwrap();
+        let session = invocation
+            .args
+            .iter()
+            .position(|arg| arg == "--session-id")
+            .unwrap();
+        assert_eq!(invocation.args[thinking + 1], "high");
+        assert_eq!(invocation.args[session + 1], "session-1");
+    }
+
+    #[test]
     fn pi_response_model_mismatch_fails_and_reports_true_identity() {
         let output = include_str!("../../fixtures/channels/pi-response-model-mismatch.jsonl");
         let error = parse_pi(&result(output), "zai-coding-cn", "glm-4.7").unwrap_err();
+        assert_eq!(error.kind, ChannelErrorKind::IdentityMismatch);
         assert!(error.message.contains("真身不符"));
         assert_eq!(error.identity, "zai-coding-cn/glm-5.3-flash");
     }
@@ -878,6 +1016,7 @@ mod tests {
             None,
             Some(directory),
             None,
+            false,
         )
         .unwrap();
         let session = invocation
@@ -908,6 +1047,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap();
         let session = invocation
@@ -932,6 +1072,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap_err();
         assert_eq!(error, "Kimi 模型请使用 config.toml 里的别名");
@@ -980,11 +1121,21 @@ mod tests {
     #[test]
     fn cc_switch_reads_usage_from_stderr() {
         let mut process = result("answer");
-        process.stderr = "[usage] provider=p model=m input=20 fresh=4 cache_create=6 cache_read=10 output=7 duration_ms=100\n".into();
+        process.stderr = "[usage] provider=p model=m input=20 fresh=4 cache_create=6 cache_read=10 output=7 turns=1 ms=100\n".into();
         let parsed = parse_cc_switch(&process).unwrap();
         assert_eq!(parsed.usage.input, 20);
         assert_eq!(parsed.usage.cache_read, 10);
         assert_eq!(parsed.usage.output, 7);
+        process.stderr = "[usage] output=9 cache_read=8 provider=p input=7\n".into();
+        let reordered = parse_cc_switch(&process).unwrap();
+        assert_eq!(
+            (
+                reordered.usage.input,
+                reordered.usage.cache_read,
+                reordered.usage.output
+            ),
+            (7, 8, 9)
+        );
     }
 
     #[test]
@@ -1001,6 +1152,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .unwrap_err();
         assert_eq!(error, "未配置 cc_switch.py 路径");

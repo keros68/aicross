@@ -46,6 +46,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [failedId, setFailedId] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [unfinishedRun, setUnfinishedRun] = useState<{ runId: string; nodeIds: string[] } | null>(null);
 
   // 可派发模型与预设（命令幂等便宜；右栏 OrchestrationPanel 也各自拉取）
   useEffect(() => {
@@ -71,6 +72,15 @@ export function GraphTab({ session }: { session: TerminalSession }) {
       dead = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!graph || !isTauri || !session.folderPath) return;
+    commands.inspectDispatchState(session.folderPath)
+      .then((state) => setUnfinishedRun(state.unfinished
+        ? { runId: state.runId, nodeIds: state.activeNodeIds }
+        : null))
+      .catch(() => setUnfinishedRun(null));
+  }, [graph?.id, session.folderPath]);
 
   // toolData 有图 id 但全局没载入 → 从 ~/.aicross/graphs/ 读
   useEffect(() => {
@@ -123,6 +133,34 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   }
 
   const commit = (g: Graph) => commitGraph(dispatch, g);
+
+  const continueUnfinished = async () => {
+    if (!graph) return;
+    if (unfinishedRun?.runId) {
+      await Promise.all(unfinishedRun.nodeIds.map((nodeId) =>
+        commands.cancelDispatchNode(unfinishedRun.runId, nodeId).catch(() => false)));
+    }
+    const nodes = Object.fromEntries(Object.entries(graph.nodes).map(([id, node]) => [id,
+      node.reply?.status === 'pending'
+        ? { ...node, reply: { ...node.reply, status: 'draft' as const } }
+        : node,
+    ]));
+    commit({ ...graph, nodes });
+    setUnfinishedRun(null);
+    setDispatchOpen(true);
+  };
+
+  const abandonUnfinished = () => {
+    if (!graph) return;
+    const nodes = Object.fromEntries(Object.entries(graph.nodes).map(([id, node]) => [id,
+      node.reply?.status === 'pending'
+        ? { ...node, reply: { ...node.reply, status: 'failed' as const, text: '上次派发已放弃' } }
+        : node,
+    ]));
+    commit({ ...graph, nodes });
+    commands.abandonDispatchState(session.folderPath ?? '').catch(() => {});
+    setUnfinishedRun(null);
+  };
 
   const focusNodeId =
     state.graphFocus?.graphId === graphId ? state.graphFocus.nodeId : null;
@@ -322,9 +360,13 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     const isFocus = id === focusNodeId;
     const hit = node.target ? findModel(models, node.target) : undefined;
     const color = vendorColor(node.target?.agent, hit?.vendor);
-    const status = node.kind === 'material' ? null : ({
-      draft: '待派', pending: '运行中', done: '完成', failed: '失败',
-    } as const)[node.reply?.status ?? 'draft'];
+    const status = node.kind === 'material' ? null : node.reply?.status === 'failed'
+      ? node.reply.error_kind === 'identity_mismatch'
+        ? '真身不符'
+        : node.reply.error_kind === 'validation_failed'
+          ? '验证失败'
+          : '失败'
+      : ({ draft: '待派', pending: '运行中', done: '完成' } as const)[node.reply?.status ?? 'draft'];
     const disconnected = validateNode(graph, id, models).includes('未接入');
     return (
       <div key={id}>
@@ -555,6 +597,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   return (
     <div className="graph-tab">
       <div className="graph-dispatch-toolbar">
+        {unfinishedRun && <span className="graph-resume">上次派发未完成 <button onClick={continueUnfinished}>继续</button><button onClick={abandonUnfinished}>放弃</button></span>}
         <span>可派 {dispatchableNodeIds(graph).length} 路</span>
         <button className="graph-primary-btn" disabled={dispatchableNodeIds(graph).length === 0} onClick={() => setDispatchOpen(true)}>派发</button>
       </div>
