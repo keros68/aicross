@@ -1,8 +1,6 @@
 // SettingsModal.tsx — centered personalization modal opened by the titlebar
-// gear. Consolidates what used to be two overloaded left-panel popovers (the
-// theme menu's color/shape/icon/wallpaper/terminal controls + the language
-// dropdown) into one sectioned surface. Gambit is deliberately NOT here — it's
-// a compose action, not a setting, and keeps its own left-cluster button.
+// gear. Keeps the supported appearance, terminal, task, language and feedback
+// controls in one sectioned surface.
 //
 // Layout: an icon rail (left) + a content column whose header (section title +
 // close) is fixed while the body scrolls, so a long list (language) can never
@@ -13,17 +11,17 @@
 // is unchanged; only the presentation moved.
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { useAppState, useAppDispatch, HOTKEY_SCHEMES, type HotkeyScheme, type TitlebarToggleDisplay, type ThemeColor, type ThemeShape, type IconTheme } from '../../store/app-state';
+import { useAppState, useAppDispatch, type ThemeColor } from '../../store/app-state';
 import { useT } from '../../i18n/useT';
-import { IS_MACOS, IS_WINDOWS } from '../../lib/platform';
+import { IS_WINDOWS } from '../../lib/platform';
 import { TERM_COLOR_SCHEMES } from '../center/TierTerminal';
 import { commands, type FontInfo } from '../../tauri';
 import { FontPicker } from './FontPicker';
-import { THEME_COLORS, THEME_SHAPES, ICON_ART_THEMES, LANGUAGES, TASK_VIEW_MODES, isMaskTintTheme } from '../../lib/personalization';
+import { THEME_COLORS, LANGUAGES, TASK_VIEW_MODES } from '../../lib/personalization';
 import { loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } from '../../graph/dispatch-settings';
 import './SettingsModal.css';
 
-type Section = 'appearance' | 'wallpaper' | 'terminal' | 'dispatch' | 'gambit' | 'tasks' | 'language' | 'feedback';
+type Section = 'appearance' | 'terminal' | 'dispatch' | 'tasks' | 'language' | 'feedback';
 
 // Trailing "opens outside the app" affordance on the feedback cards.
 const ExternalLinkArrow = () => (
@@ -62,11 +60,6 @@ const ICONS: Record<Section, ReactNode> = {
       <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.563-2.512 5.563-5.563C21.5 6.012 17.262 2 12 2z" />
     </svg>
   ),
-  wallpaper: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect width="18" height="18" x="3" y="3" rx="2" ry="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
-    </svg>
-  ),
   terminal: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="m7 11 2-2-2-2" /><path d="M11 13h4" /><rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
@@ -76,12 +69,6 @@ const ICONS: Record<Section, ReactNode> = {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="5" cy="12" r="2" /><circle cx="19" cy="6" r="2" /><circle cx="19" cy="18" r="2" />
       <path d="M7 12h4c3 0 3-6 6-6M11 12c3 0 3 6 6 6" />
-    </svg>
-  ),
-  gambit: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect width="20" height="16" x="2" y="4" rx="2" />
-      <path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10" />
     </svg>
   ),
   tasks: (
@@ -163,35 +150,12 @@ export function SettingsModal() {
 
   // ── Handlers (identical to the former left-panel ThemeMenu/Lang wiring) ──
   const setTheme = (th: ThemeColor) => dispatch({ type: 'SET_THEME', theme: th });
-  const setShape = (s: ThemeShape) => dispatch({ type: 'SET_SHAPE', shape: s });
-  const setIconTheme = (th: IconTheme) => {
-    dispatch({ type: 'SET_ICON_THEME', theme: th });
-    try { localStorage.setItem('cc-icon-theme', th); } catch {}
-  };
   const setLang = (code: string) => {
     dispatch({ type: 'SET_LANG', lang: code });
     try {
       localStorage.setItem('cc-lang', code);
       if (code !== 'en') localStorage.setItem('cc-native-lang', code);
     } catch {}
-  };
-  const pickBg = async () => {
-    try {
-      const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
-      const selected = await openDialog({
-        filters: [{ name: 'Background', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'webm'] }],
-      });
-      if (selected && typeof selected === 'string') {
-        const ext = selected.split('.').pop()?.toLowerCase() || '';
-        const bgType = ['mp4', 'webm'].includes(ext) ? 'video' : 'image';
-        try { localStorage.setItem('cc-bg-path', selected); localStorage.setItem('cc-bg-type', bgType); } catch {}
-        dispatch({ type: 'SET_BG', path: selected, bgType });
-      }
-    } catch (err) { console.error('[Settings] background picker failed:', err); }
-  };
-  const clearBg = () => {
-    try { localStorage.removeItem('cc-bg-path'); localStorage.removeItem('cc-bg-type'); } catch {}
-    dispatch({ type: 'CLEAR_BG' });
   };
   const setScheme = (id: string) => {
     try { id ? localStorage.setItem('cc-term-scheme', id) : localStorage.removeItem('cc-term-scheme'); } catch {}
@@ -208,35 +172,17 @@ export function SettingsModal() {
     try { shell ? localStorage.setItem('cc-default-shell', shell) : localStorage.removeItem('cc-default-shell'); } catch {}
     dispatch({ type: 'SET_DEFAULT_SHELL', shell });
   };
-  const setOpacity = (n: number) => dispatch({ type: 'SET_WALLPAPER_OPACITY', opacity: n });
   const setTaskView = (mode: 'list' | 'note' | 'prompt') => dispatch({ type: 'SET_TASK_VIEW_MODE', mode });
-  const setEnterToSend = (value: boolean) => {
-    dispatch({ type: 'SET_GAMBIT_ENTER_TO_SEND', value });
-    try { localStorage.setItem('cc-gambit-enter-send', String(value)); } catch {}
-  };
-  const setHotkeyScheme = (value: HotkeyScheme) => {
-    dispatch({ type: 'SET_HOTKEY_SCHEME', value });
-    try { localStorage.setItem('cc-hotkey-scheme', value); } catch {}
-  };
-  const setTitlebarToggleDisplay = (value: TitlebarToggleDisplay) => {
-    dispatch({ type: 'SET_TITLEBAR_TOGGLE_DISPLAY', value });
-    try { localStorage.setItem('cc-titlebar-toggle-display', value); } catch {}
-  };
   const setDispatchOption = <K extends keyof UiDispatchSettings>(key: K, value: UiDispatchSettings[K]) => {
     const next = { ...dispatchSettings, [key]: value };
     setDispatchSettings(next);
     saveDispatchSettings(next);
   };
 
-  const hasBg = state.bgType !== 'none' && state.bgPath !== '';
-  const modKey = IS_MACOS ? '⌘' : 'Ctrl';
-
   const SECTIONS: { id: Section; label: string }[] = [
     { id: 'appearance', label: t('settings.appearance' as any) },
-    { id: 'wallpaper',  label: t('settings.wallpaper' as any) },
     { id: 'terminal',   label: t('settings.terminal' as any) },
     { id: 'dispatch',   label: '派发' },
-    { id: 'gambit',     label: t('settings.gambit' as any) },
     { id: 'tasks',      label: t('settings.tasks' as any) },
     { id: 'language',   label: t('settings.language' as any) },
     { id: 'feedback',   label: t('settings.feedback' as any) },
@@ -263,18 +209,7 @@ export function SettingsModal() {
               {s.label}
             </button>
           ))}
-          {version && (
-            <div className="settings-rail-version">
-              <span className="settings-rail-version-num">v{version}</span>
-              <button
-                type="button"
-                className="settings-rail-version-link"
-                onClick={() => commands.openUrl('https://coffeecli.com').catch(() => {})}
-              >
-                CoffeeCLI.com
-              </button>
-            </div>
-          )}
+          {version && <div className="settings-rail-version"><span className="settings-rail-version-num">v{version}</span></div>}
         </aside>
 
         <section className="settings-content">
@@ -316,69 +251,6 @@ export function SettingsModal() {
                   })}
                 </div>
 
-                <div className="settings-section-label">{t('theme.section.shape')}</div>
-                <div className="settings-chip-row">
-                  {THEME_SHAPES.map(s => (
-                    <button
-                      key={s.code}
-                      className={`settings-chip${s.code === state.currentShape ? ' active' : ''}`}
-                      onClick={() => setShape(s.code)}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="settings-section-label">{t('theme.section.icons')}</div>
-                <div className="settings-chip-row settings-icon-row">
-                  {ICON_ART_THEMES.map(({ id, folderSrc }) => (
-                    <button
-                      key={id}
-                      className={`settings-icon-chip${state.iconTheme === id ? ' active' : ''}`}
-                      onClick={() => setIconTheme(id)}
-                    >
-                      {isMaskTintTheme(id) ? (
-                        <span
-                          className="settings-icon-mask"
-                          style={{ WebkitMaskImage: `url("${folderSrc}")`, maskImage: `url("${folderSrc}")` }}
-                          aria-label={id}
-                        />
-                      ) : (
-                        <img src={folderSrc} alt={id} width="24" height="24" />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {section === 'wallpaper' && (
-              <>
-                <div className="settings-section-label">{t('settings.wallpaper' as any)}</div>
-                <div className="settings-wallpaper-actions">
-                  <button className="settings-btn" onClick={pickBg}>{t('settings.wallpaper.pick' as any)}</button>
-                  {hasBg && (
-                    <button className="settings-btn settings-btn-danger" onClick={clearBg}>
-                      {t('settings.wallpaper.clear' as any)}
-                    </button>
-                  )}
-                </div>
-
-                <div className="settings-section-label">{t('settings.wallpaper.opacity' as any)}</div>
-                <div className="settings-slider-row">
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={5}
-                    value={state.wallpaperOpacity}
-                    onChange={e => setOpacity(parseInt(e.target.value, 10))}
-                    className="settings-slider"
-                    disabled={!hasBg}
-                    aria-label="Wallpaper opacity"
-                  />
-                  <span className="settings-slider-value">{state.wallpaperOpacity}%</span>
-                </div>
               </>
             )}
 
@@ -500,65 +372,6 @@ export function SettingsModal() {
               </>
             )}
 
-            {section === 'gambit' && (
-              <>
-                <div className="settings-section-label">{t('settings.send.title' as any)}</div>
-                <div className="settings-key-row">
-                  <button
-                    className={`settings-key-card${state.gambitEnterToSend ? ' active' : ''}`}
-                    onClick={() => setEnterToSend(true)}
-                    aria-pressed={state.gambitEnterToSend}
-                  >
-                    <span className="settings-key-combo"><kbd>Enter</kbd></span>
-                    <span className="settings-key-sub">Shift+Enter {t('settings.send.newline' as any)}</span>
-                  </button>
-                  <button
-                    className={`settings-key-card${!state.gambitEnterToSend ? ' active' : ''}`}
-                    onClick={() => setEnterToSend(false)}
-                    aria-pressed={!state.gambitEnterToSend}
-                  >
-                    <span className="settings-key-combo"><kbd>{modKey}</kbd><span className="settings-key-plus">+</span><kbd>Enter</kbd></span>
-                    <span className="settings-key-sub">Enter {t('settings.send.newline' as any)}</span>
-                  </button>
-                </div>
-
-                <div className="settings-section-label">{t('settings.gambit.hotkey' as any)}</div>
-                <div className="settings-key-row settings-key-row--keys">
-                  {HOTKEY_SCHEMES.map(s => {
-                    const active = state.hotkeyScheme === s.code;
-                    return (
-                      <button
-                        key={s.code}
-                        className={`settings-key-card${active ? ' active' : ''}`}
-                        onClick={() => setHotkeyScheme(s.code)}
-                        aria-pressed={active}
-                      >
-                        {/* Modifier + the three keys (left · Gambit · right, in
-                            that L→R order). Titlebar hints show which is which. */}
-                        <span className="settings-key-combo"><kbd>{s.mod}</kbd><span className="settings-key-plus">+</span><kbd>{s.keys.left.key}</kbd><kbd>{s.keys.gambit.key}</kbd><kbd>{s.keys.right.key}</kbd></span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="settings-section-label">{t('settings.titlebar.toggle' as any)}</div>
-                <div className="settings-key-row">
-                  {([
-                    { code: 'icon-hotkey', labelKey: 'settings.titlebar.toggle.icon-hotkey' },
-                    { code: 'icon', labelKey: 'settings.titlebar.toggle.icon' },
-                    { code: 'hidden', labelKey: 'settings.titlebar.toggle.hidden' },
-                  ] as const).map(m => {
-                    const active = state.titlebarToggleDisplay === m.code;
-                    return (
-                      <button key={m.code} className={`settings-key-card${active ? ' active' : ''}`} onClick={() => setTitlebarToggleDisplay(m.code)} aria-pressed={active}>
-                        <span className="settings-key-combo">{t(m.labelKey as any)}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-
             {section === 'dispatch' && (
               <>
                 <div className="settings-section-label">执行</div>
@@ -673,7 +486,7 @@ export function SettingsModal() {
                   <button
                     type="button"
                     className="settings-feedback-card"
-                    onClick={() => commands.openUrl('https://github.com/edison7009/Coffee-CLI/issues').catch(() => {})}
+                    onClick={() => commands.openUrl('https://github.com/keros68/aicross/issues').catch(() => {})}
                   >
                     <span className="settings-feedback-card-icon">
                       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -683,16 +496,6 @@ export function SettingsModal() {
                     <span className="settings-feedback-card-label">GitHub</span>
                     <ExternalLinkArrow />
                   </button>
-                  {state.currentLang === 'zh-CN' && (
-                    <button
-                      type="button"
-                      className="settings-feedback-card"
-                      onClick={() => commands.openUrl('https://gitcode.com/edison7009/Coffee-CLI/issues').catch(() => {})}
-                    >
-                      <span className="settings-feedback-card-label">国内访问：GitCode</span>
-                      <ExternalLinkArrow />
-                    </button>
-                  )}
                 </div>
               </>
             )}

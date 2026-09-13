@@ -60,9 +60,6 @@ export const vi = {
   'task.section.working': 'Đang tiến hành',
   'task.section.todo': 'Cần làm',
   'task.section.done': 'Hoàn thành',
-  'task.greeting.morning': 'Chào buổi sáng, kế hoạch hôm nay là gì?',
-  'task.greeting.afternoon': 'Chào buổi chiều, còn việc gì cần làm không?',
-  'task.greeting.evening': 'Chào buổi tối. Có kế hoạch gì lớn không?',
   'task.tab.tasks': 'Danh sách',
   'task.tab.changes': 'Lịch sử',
   'changes.empty': 'Chưa có thay đổi.',
@@ -138,17 +135,6 @@ export const vi = {
   'task.prompt.category_placeholder': 'Tên phân loại (chọn sẵn hoặc gõ mới)',
   'task.prompt.body_placeholder': 'Viết prompt, gửi cho AI…',
   'task.note_placeholder': 'Ghi vài dòng rồi gửi cả đoạn cho agent…',
-  'task.welcome_note': `Chào mừng đến với aicross
-
-Đây là một tờ ghi chú dán: viết bất cứ điều gì, rồi bấm ▶ (góc trên bên phải) để gửi cả đoạn cho AI của bạn. Không còn ô nhập liệu chật chội nữa.
-
-Ba bước để bắt đầu:
-1. Chọn một công cụ ở giữa (Claude / Codex / OpenCode…), chọn một thư mục là chạy được ngay
-2. Ba chấm tròn đặt mức ưu tiên (đỏ / vàng / xanh) và tự sắp xếp; kéo mép dưới để thay đổi kích thước ghi chú
-3. "Lịch sử" (góc trên bên phải) cho biết AI đã đụng vào những tệp nào; phần Cài đặt có giao diện, ngôn ngữ và nút chuyển giữa "Danh sách việc cần làm" và "Ghi chú dán"
-
-Xóa tờ ghi chú này khi bạn sẵn sàng và bắt đầu tác vụ đầu tiên.`,
-  'task.show_guide': 'Xem hướng dẫn sử dụng',
 
   // Theme Menu
   'theme.section.color': 'Màu sắc',

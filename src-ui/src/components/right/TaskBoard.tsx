@@ -7,8 +7,8 @@ import './TaskBoard.css';
 import { ChangesBoard } from './ChangesBoard';
 import { TaskNoteView } from './TaskNoteView';
 import { TaskPromptView } from './TaskPromptView';
-import { TaskEmptyState } from './TaskEmptyState';
-import { makeWelcomeNote, makePromptItem, NEXT_STATUS, STATUS_ORDER, type TaskItem, type TaskStatus } from './task-types';
+import { getTaskNewHandler, TaskEmptyState } from './TaskEmptyState';
+import { makePromptItem, NEXT_STATUS, STATUS_ORDER, type TaskItem, type TaskStatus } from './task-types';
 import { useTextContextMenu } from '../../lib/use-text-context-menu';
 
 // ─── Persistence (Rust file backend with localStorage fallback) ──────────────
@@ -72,7 +72,7 @@ const SECTION_LABEL_KEYS: Record<TaskStatus, 'task.section.working' | 'task.sect
 
 export function TaskBoard() {
   const t = useT();
-  const { state, dispatch } = useAppState();
+  const { state } = useAppState();
   // Right-click cut/copy/paste/select menu, shared by the to-do list's title
   // editor and per-card description textarea (same menu Gambit/terminal use).
   const { menu: ctxMenuEl, openMenu: openCtxMenu } = useTextContextMenu();
@@ -138,24 +138,11 @@ export function TaskBoard() {
   const isLoadedRef = useRef(false);
   const pendingEchoesRef = useRef<Set<string>>(new Set());
 
-  // Load tasks from Rust backend on mount. A first-ever launch (no tasks AND
-  // never seeded) drops one roomy welcome/guide note and opens the sticky-note
-  // view so it lands as a proper note; existing users are just flagged seeded
-  // (so they never get it). The seed is allowed to persist (no skip).
+  // Load tasks without seeding product-guide content. An empty board stays
+  // empty and presents a direct New action.
   useEffect(() => {
     loadTasksFromBackend().then(data => {
       isLoadedRef.current = true;
-      let seeded = false;
-      try { seeded = localStorage.getItem('cc-tasks-seeded') === '1'; } catch {}
-
-      if (data.length === 0 && !seeded) {
-        try { localStorage.setItem('cc-tasks-seeded', '1'); } catch {}
-        dispatch({ type: 'SET_TASK_VIEW_MODE', mode: 'note' }); // remembers the view too
-        setTasks([makeWelcomeNote(t('task.welcome_note'))]);
-        return;
-      }
-
-      if (!seeded) { try { localStorage.setItem('cc-tasks-seeded', '1'); } catch {} }
       skipNextSyncRef.current = true; // Prevent saving the initialized data purely due to React effect
       setTasks(data);
     });
@@ -321,17 +308,6 @@ export function TaskBoard() {
   const setHeight = useCallback((id: string, height: number) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, height } : t));
   }, []);
-
-  // Manually (re)add the welcome guide note — wired to the empty-state button.
-  // Switches to the sticky-note view so the long guide reads as a note, not a
-  // long title row. (New users still get it auto-seeded once; this is the
-  // deletable, on-demand way to bring it back.)
-  const handleShowGuide = () => {
-    // Idempotent: only seed onto an empty board, so a fast double-click (or any
-    // future non-empty caller) can't stack duplicate guide notes.
-    setTasks(prev => prev.length > 0 ? prev : [makeWelcomeNote(t('task.welcome_note'))]);
-    if (viewMode !== 'note') dispatch({ type: 'SET_TASK_VIEW_MODE', mode: 'note' });
-  };
 
   const handleRemove = useCallback((id: string) => {
     setRemovingId(id);
@@ -625,6 +601,8 @@ export function TaskBoard() {
     </div>
   );
 
+  const taskNewHandler = getTaskNewHandler(viewMode, handleAdd, handleAddPrompt);
+
   return (
     <div className={`task-board${__IS_LINUX__ ? ' task-board--static' : ''}`}>
       {/* ── Tabs Header ── */}
@@ -652,7 +630,7 @@ export function TaskBoard() {
               onDuplicate={duplicateTask}
               onSend={sendToAgent}
               onReorder={setTasks}
-              onShowGuide={handleShowGuide}
+              onNew={taskNewHandler}
             />
           ) : viewMode === 'prompt' ? (
             <TaskPromptView
@@ -666,6 +644,7 @@ export function TaskBoard() {
               onSend={sendPromptToAgent}
               onReorder={setTasks}
               onSetHeight={setHeight}
+              onNew={taskNewHandler}
             />
           ) : (
           <div ref={listRef} className="task-list" style={{ paddingBottom: tasks.length === 0 ? '0px' : '80px' }}>
@@ -835,7 +814,7 @@ export function TaskBoard() {
           );
         })}
 
-        {tasks.length === 0 && <TaskEmptyState onShowGuide={handleShowGuide} />}
+        {tasks.length === 0 && <TaskEmptyState onNew={taskNewHandler} />}
       </div>
           )}
 
@@ -843,7 +822,7 @@ export function TaskBoard() {
       <div className="task-fab-container">
         <button 
           className="task-fab-simple" 
-          onClick={viewMode === 'prompt' ? handleAddPrompt : handleAdd}
+          onClick={taskNewHandler}
         >
           <div className="task-fab-icon">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

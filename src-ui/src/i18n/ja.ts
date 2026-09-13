@@ -57,9 +57,6 @@ export const ja = {
   'task.section.working': '進行中',
   'task.section.todo': '未着手',
   'task.section.done': '完了',
-  'task.greeting.morning': 'おはようございます。今日の予定は？',
-  'task.greeting.afternoon': 'こんにちは。残りのタスクは？',
-  'task.greeting.evening': 'こんばんは。何か始めますか？',
   'task.tab.tasks': 'タスク一覧',
   'task.tab.changes': '変更履歴',
   'changes.empty': 'まだ変更はありません。',
@@ -135,17 +132,6 @@ export const ja = {
   'task.prompt.category_placeholder': 'カテゴリ名（既存を選ぶか新規入力）',
   'task.prompt.body_placeholder': 'プロンプトを書いてAIに送信…',
   'task.note_placeholder': 'メモを書いて、まとめて送信…',
-  'task.welcome_note': `aicross へようこそ
-
-これは「付箋」です。思いついたことを書いて、右上の ▶ を押せば、まるごと AI に送れます。窮屈な小さな入力欄とはお別れです。
-
-はじめの3ステップ:
-1. 中央でツール（Claude / Codex / OpenCode…）を選び、フォルダを指定すればすぐ動きます
-2. 左上の3つの丸は優先度（赤 / 黄 / 緑）で、自動で並び替わります。下端をドラッグすると付箋の大きさを変えられます
-3. 右上の「変更履歴」で AI が触れたファイルを確認。設定からテーマ・言語・「To-Do リスト / 付箋」の切り替えができます
-
-読み終わったらこの付箋を削除して、最初のタスクを始めましょう。`,
-  'task.show_guide': '使い方ガイドを見る',
 
   // Theme Menu
   'theme.section.color': 'カラー',

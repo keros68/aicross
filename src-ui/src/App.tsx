@@ -1,7 +1,7 @@
 // App.tsx — 3-panel IDE layout (frameless window)
 
 import { useEffect, useRef, useState } from 'react';
-import { useAppState, useAppDispatch } from './store/app-state';
+import { useAppState, useAppDispatch, matchHotkeyScheme } from './store/app-state';
 import { retryInvoke } from './tauri';
 import { subscribeAgentStatus } from './lib/agent-status-bus';
 import { routeFileDrop } from './lib/file-drop';
@@ -11,7 +11,6 @@ import { ResizeEdges } from './components/common/ResizeEdges';
 import { SettingsModal } from './components/common/SettingsModal';
 import { Explorer } from './components/left/Explorer';
 import { CenterPanel } from './components/center/CenterPanel';
-import { ActiveGambit } from './components/center/ActiveGambit';
 import { RightPanel } from './components/right/Compiler';
 import { GitStatusProvider } from './lib/git-status';
 import './styles/global.css';
@@ -96,6 +95,22 @@ export function App() {
 
   const leftPanel = useSlidingPanel(state.leftPanelHidden);
   const rightPanel = useSlidingPanel(state.rightPanelHidden);
+
+  // Keep the documented side-panel shortcuts without mounting the retired
+  // merged-input overlay. Matching events are captured before xterm can
+  // consume them; held keys are suppressed but do not toggle repeatedly.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const action = matchHotkeyScheme(event, state.hotkeyScheme);
+      if (action !== 'left' && action !== 'right') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.repeat) return;
+      dispatch({ type: action === 'left' ? 'TOGGLE_LEFT_PANEL' : 'TOGGLE_RIGHT_PANEL' });
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [state.hotkeyScheme, dispatch]);
 
   // Subscribe to hook-driven agent status events from each AI CLI.
   // The Rust hook server emits these as they arrive from the per-tool
@@ -261,15 +276,9 @@ export function App() {
         </div>
       </GitStatusProvider>
 
-      {/* App-level overlay — the floating compose window. Rendered here so
-          it's isolated from TierTerminal re-renders (xterm output, agent
-          status events, etc.) and can be dragged freely across the whole
-          app window. Internally reads the active tab's gambit state. */}
-      <ActiveGambit />
-
       {/* Personalization settings — centered modal opened by the titlebar
           gear. App-level overlay (gated on state.settingsOpen) so it floats
-          above the whole workspace, like ActiveGambit. */}
+          above the whole workspace. */}
       <SettingsModal />
 
       {/* 8 transparent resize-edge strips (window chrome). Three-platform

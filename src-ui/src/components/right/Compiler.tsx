@@ -12,19 +12,18 @@ import './Compiler.css';
 type RightTab = 'tasks' | 'orchestration';
 
 export function RightPanel() {
-  // 外层 tab 存 localStorage（照 TaskBoard 的 'cc-right-tab' 模式，新 key）。
-  // 默认仍「任务」。
+  // 使用 aicross 自己的 key，避免旧版保存的任务板默认值覆盖本期新默认。
   const [tab, setTab] = useState<RightTab>(() => {
     try {
-      const saved = localStorage.getItem('cc-right-panel-tab');
+      const saved = localStorage.getItem('aicross-right-panel-tab');
       if (saved === 'tasks' || saved === 'orchestration') return saved;
     } catch {
       /* localStorage 不可用则用默认值 */
     }
-    return 'tasks';
+    return 'orchestration';
   });
   useEffect(() => {
-    try { localStorage.setItem('cc-right-panel-tab', tab); } catch {
+    try { localStorage.setItem('aicross-right-panel-tab', tab); } catch {
       /* 存储失败不阻断 */
     }
   }, [tab]);
@@ -40,16 +39,16 @@ export function RightPanel() {
     <div className="compiler-top">
       <div className="right-tabs right-shell-tabs">
         <button
-          className={`right-tab ${tab === 'tasks' ? 'active' : ''}`}
-          onClick={() => setTab('tasks')}
-        >
-          任务
-        </button>
-        <button
           className={`right-tab ${tab === 'orchestration' ? 'active' : ''}`}
           onClick={() => setTab('orchestration')}
         >
           方案与编排
+        </button>
+        <button
+          className={`right-tab ${tab === 'tasks' ? 'active' : ''}`}
+          onClick={() => setTab('tasks')}
+        >
+          任务
         </button>
       </div>
       {tab === 'tasks' ? <TaskBoard /> : <OrchestrationPanel />}

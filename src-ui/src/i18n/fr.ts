@@ -57,9 +57,6 @@ export const fr = {
   'task.section.working': 'En cours',
   'task.section.todo': 'À faire',
   'task.section.done': 'Terminé',
-  'task.greeting.morning': 'Bonjour, quel est le programme ?',
-  'task.greeting.afternoon': 'Bon après-midi, encore des choses à faire ?',
-  'task.greeting.evening': 'Bonsoir. Un projet ambitieux ?',
   'task.tab.tasks': 'Liste des tâches',
   'task.tab.changes': 'Historique',
   'changes.empty': 'Aucune modification pour le moment.',
@@ -135,17 +132,6 @@ export const fr = {
   'task.prompt.category_placeholder': 'Nom de catégorie (choisir ou saisir)',
   'task.prompt.body_placeholder': 'Écrivez un prompt, envoyez-le à l’IA…',
   'task.note_placeholder': 'Notez quelque chose et envoyez le tout à votre agent…',
-  'task.welcome_note': `Bienvenue sur aicross
-
-Ceci est une note autocollante : écrivez ce que vous voulez, puis appuyez sur ▶ (en haut à droite) pour tout envoyer à votre IA. Fini la petite zone de saisie à l'étroit.
-
-Trois étapes pour démarrer :
-1. Choisissez un outil au centre (Claude / Codex / OpenCode…), choisissez un dossier, et c'est parti
-2. Les trois points définissent la priorité (rouge / ambre / vert) et se trient automatiquement ; tirez le bord inférieur pour redimensionner la note
-3. « Historique » (en haut à droite) montre les fichiers touchés par l'IA ; les Réglages contiennent les thèmes, la langue et le choix entre « Liste de tâches » et « Notes autocollantes »
-
-Supprimez cette note quand vous voulez et commencez votre première tâche.`,
-  'task.show_guide': "Voir le guide d'utilisation",
 
   // Theme Menu
   'theme.section.color': 'Couleurs',

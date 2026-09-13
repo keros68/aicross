@@ -57,9 +57,6 @@ export const ko = {
   'task.section.working': '진행 중',
   'task.section.todo': '할 일',
   'task.section.done': '완료',
-  'task.greeting.morning': '좋은 아침, 오늘 계획은?',
-  'task.greeting.afternoon': '안녕하세요, 남은 할 일이 있나요?',
-  'task.greeting.evening': '좋은 저녁, 뭔가 시작해볼까요?',
   'task.tab.tasks': '작업 목록',
   'task.tab.changes': '변경 기록',
   'changes.empty': '아직 변경 사항이 없습니다.',
@@ -135,17 +132,6 @@ export const ko = {
   'task.prompt.category_placeholder': '분류명 (기존 선택 또는 새로 입력)',
   'task.prompt.body_placeholder': '프롬프트를 적어 AI에게 전송…',
   'task.note_placeholder': '메모를 적어 에이전트로 한 번에 보내기…',
-  'task.welcome_note': `aicross에 오신 것을 환영합니다
-
-이건 '메모지'예요. 아무거나 적고 오른쪽 위 ▶ 를 누르면 전체를 AI에게 보냅니다. 더 이상 비좁은 입력창은 필요 없어요.
-
-시작하는 세 단계:
-1. 가운데에서 도구(Claude / Codex / OpenCode…)를 고르고 폴더를 선택하면 바로 실행됩니다
-2. 왼쪽 위 세 개의 점은 우선순위(빨강 / 노랑 / 초록)이며 자동으로 정렬됩니다. 아래 가장자리를 끌어 메모 크기를 조절하세요
-3. 오른쪽 위 '변경 기록'에서 AI가 건드린 파일을 볼 수 있고, 설정에서 테마·언어·'할 일 목록 / 메모지' 전환을 할 수 있어요
-
-다 읽었으면 이 메모를 지우고 첫 작업을 시작하세요.`,
-  'task.show_guide': '사용 가이드 보기',
 
   // Theme Menu
   'theme.section.color': '색상',
