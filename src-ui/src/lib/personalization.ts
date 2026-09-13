@@ -9,25 +9,8 @@ import type { ThemeColor, ThemeShape, IconTheme } from '../store/app-state';
 
 // ─── Theme colours (swatch grid) ─────────────────────────────────────────────
 export const THEME_COLORS: { code: ThemeColor; labelKey: string; swatch: string; ring: string }[] = [
-  { code: 'light',      labelKey: 'theme.color.light',      swatch: '#FAFAF7', ring: '#c4956a' },
-  { code: 'dark',       labelKey: 'theme.color.dark',       swatch: '#1a1917', ring: '#c4956a' },
-  { code: 'cappuccino', labelKey: 'theme.color.cappuccino', swatch: '#1a1a1a', ring: '#4a4a4a' },
-  { code: 'sakura',     labelKey: 'theme.color.sakura',     swatch: '#221b28', ring: '#f8b4c8' },
-  { code: 'lavender',   labelKey: 'theme.color.lavender',   swatch: '#221f2e', ring: '#c8b6ff' },
-  { code: 'mint',       labelKey: 'theme.color.mint',       swatch: '#142623', ring: '#7ae8c8' },
-  // Natural-material palette — independent of shape and terminal font color.
-  // Near-black with a faint hue, not "colored theme".
-  { code: 'obsidian',   labelKey: 'theme.color.obsidian',   swatch: '#0a0a0a', ring: '#5a5a5a' },
-  { code: 'cobalt',     labelKey: 'theme.color.cobalt',     swatch: '#0a1020', ring: '#5a85b8' },
-  { code: 'moss',       labelKey: 'theme.color.moss',       swatch: '#0b1612', ring: '#6a9878' },
-  // Spider-Man hero (pairs with the carbon shape).
-  { code: 'crimson',    labelKey: 'theme.color.crimson',    swatch: '#2a0d10', ring: '#e23b42' },
-  { code: 'sunset',     labelKey: 'theme.color.sunset',     swatch: '#241408', ring: '#f5803b' },
-  { code: 'amber',      labelKey: 'theme.color.amber',      swatch: '#20180a', ring: '#e8a72c' },
-  { code: 'emerald',    labelKey: 'theme.color.emerald',    swatch: '#0a1c12', ring: '#24c281' },
-  { code: 'teal',       labelKey: 'theme.color.teal',       swatch: '#0a2125', ring: '#2bc4c4' },
-  { code: 'indigo',     labelKey: 'theme.color.indigo',     swatch: '#12142e', ring: '#6172f0' },
-  { code: 'fuchsia',    labelKey: 'theme.color.fuchsia',    swatch: '#210f1d', ring: '#d94aa0' },
+  { code: 'dark',  labelKey: 'theme.color.dark',  swatch: '#181818', ring: '#c4956a' },
+  { code: 'light', labelKey: 'theme.color.light', swatch: '#f5f5f4', ring: '#9a6740' },
 ];
 
 // ─── Theme shapes (corner/surface treatment) ─────────────────────────────────

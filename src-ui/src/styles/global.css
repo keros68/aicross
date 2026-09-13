@@ -1,7 +1,4 @@
-/* ═══════════════════════════════════════════════════════
-   Coffee CLI — 3-Panel IDE App Styling
-   Theme: Claude (Warm Dark) & Codex (Light Glass)
-   ═══════════════════════════════════════════════════════ */
+/* aicross — three-panel desktop shell */
 
 /* ─── Web Fonts ───
    NOTE: Google Fonts @import REMOVED — it is render-blocking and causes
@@ -115,25 +112,23 @@ textarea,
 }
 
 :root {
-    /* Local Inter font for English, premium system fallbacks for CJK */
-    /* Per-glyph cascade covering the 11 UI languages (de/en/es/fr/pt/vi/ru
-       handled by Inter; zh-CN/zh-TW/ja/ko by OS faces below). Mac faces
+    /* Local-first Sans stack with system fallbacks for every UI language. */
+    /* Per-glyph cascade covers zh-CN/zh-TW/ja/ko with OS faces below. Mac faces
        come before Windows faces because Mac users hit them first; Windows
        installs don't have the Mac names so the cascade keeps walking. */
-    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    --font: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
         'PingFang SC', 'PingFang TC', 'Hiragino Sans', 'Hiragino Sans GB', 'Apple SD Gothic Neo',
         'Microsoft YaHei', 'Microsoft JhengHei', 'Yu Gothic UI', 'Malgun Gothic',
         Helvetica, Arial, sans-serif,
         'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
-    --font-serif: 'Lora', ui-serif, Georgia, Cambria, "Times New Roman",
-        'PingFang SC', 'PingFang TC', 'Hiragino Mincho ProN', 'Apple SD Gothic Neo',
-        'Microsoft YaHei', 'Microsoft JhengHei', 'Yu Mincho', 'Malgun Gothic',
-        sans-serif;
-    --mono: 'Cascadia Code', 'Cascadia Mono', 'SF Mono', Menlo, Monaco, Consolas, 'Courier New', monospace;
+    --font-sans: var(--font);
+    --font-serif: var(--font);
+    --mono: "IBM Plex Mono", ui-monospace, 'Cascadia Code', 'Cascadia Mono', 'SF Mono', Menlo, Monaco, Consolas, monospace;
+    --font-mono: var(--mono);
     --radius-xs: 4px;
     --radius-sm: 8px;
-    --radius-md: 16px;
-    --radius-lg: 24px;
+    --radius-md: 8px;
+    --radius-lg: 8px;
     --radius-pill: 9999px;
     --transition: 0.2s ease;
 
@@ -155,7 +150,7 @@ textarea,
     --gap: 16px;
 
     /* ─── Shape form defaults (overridden by [data-shape]) ──────── */
-    --shape-radius-tab: 10px 10px 0 0;
+    --shape-radius-tab: 8px 8px 0 0;
     --shape-radius-panel: var(--radius-md);
     --shape-radius-btn: var(--radius-sm);
     --shape-radius-pill: var(--radius-pill);
@@ -175,11 +170,11 @@ textarea,
 [data-shape="soft"] {
     --radius-xs: 4px;
     --radius-sm: 8px;
-    --radius-md: 16px;
-    --radius-lg: 24px;
+    --radius-md: 8px;
+    --radius-lg: 8px;
     --radius-pill: 9999px;
-    --shape-radius-tab: 10px 10px 0 0;
-    --shape-radius-panel: 16px;
+    --shape-radius-tab: 8px 8px 0 0;
+    --shape-radius-panel: 8px;
     --shape-radius-btn: 8px;
     --shape-radius-pill: 9999px;
 }
@@ -276,23 +271,23 @@ textarea,
     --carbon-mesh-opacity: 0.38;
 }
 
-/* ─── Dark Theme (Claude-inspired & Espresso) ──────────── */
+/* ─── Dark theme: neutral gray with one muted accent ───── */
 [data-theme="dark"] {
-    --bg-app: #1a1917; /* Deep Espresso */
-    --bg-panel: #22201e; /* Minimal contrast */
+    --bg-app: #181818;
+    --bg-panel: #202020;
     --bg-card: rgba(255, 255, 255, 0.03);
-    --bg-input: #292624;
-    --bg-input-focus: #312e2b;
+    --bg-input: #262626;
+    --bg-input-focus: #2c2c2c;
     --bg-hover: rgba(255, 255, 255, 0.05);
     --bg-active: rgba(255, 255, 255, 0.08);
 
-    --border: rgba(255, 255, 255, 0.04);
-    --border-input: rgba(255, 255, 255, 0.06);
-    --border-focus: rgba(255, 255, 255, 0.15);
+    --border: rgba(255, 255, 255, 0.08);
+    --border-input: rgba(255, 255, 255, 0.1);
+    --border-focus: rgba(255, 255, 255, 0.2);
 
-    --text-1: #e4e1db;
-    --text-2: #aca79e;
-    --text-3: #807b74;
+    --text-1: #e7e5e4;
+    --text-2: #b3b0ad;
+    --text-3: #85817d;
 
     --accent: #c4956a;
     --accent-hover: #d4a57a;
@@ -311,10 +306,10 @@ textarea,
        triplet keeps the shadow readable while still feeling on-palette. */
     --shadow-rgb: 196, 149, 106;
 
-    --bg-terminal: #1a1917; /* Match bg-app — unified surface rule across themes */
+    --bg-terminal: #181818;
 }
 
-/* ─── Light Theme (Latte / Warm Ivory Parchment) ──────── */
+/* ─── Light theme: neutral gray with one muted accent ─── */
 /* Contrast tightened to match Claude desktop's light theme: near-black
    primary, dark-gray secondary, mid-gray tertiary. The previous palette
    (text-2 #6b6965, text-3 #9e9c98) hit ~5:1 / ~3:1 against the ivory
@@ -322,26 +317,26 @@ textarea,
    subtitle layered an extra opacity: 0.6 on top of text-3, dropping
    that line to ~2:1 (effectively invisible). */
 [data-theme="light"] {
-    --bg-app: #FAFAF7; /* Clean ivory */
-    --bg-panel: rgba(255, 255, 255, 0.7); /* Breathable transparency */
+    --bg-app: #f5f5f4;
+    --bg-panel: #fafaf9;
     --bg-card: #ffffff;
     --bg-input: #ffffff;
     --bg-input-focus: #ffffff;
-    --bg-hover: rgba(0, 0, 0, 0.04);
-    --bg-active: rgba(0, 0, 0, 0.08);
+    --bg-hover: rgba(0, 0, 0, 0.045);
+    --bg-active: rgba(0, 0, 0, 0.075);
 
-    --border: rgba(0, 0, 0, 0.1); /* Was 0.06 — too faint to delineate cards */
+    --border: rgba(0, 0, 0, 0.1);
     --border-input: rgba(0, 0, 0, 0.14);
     --border-focus: rgba(196, 149, 106, 0.45);
 
-    --text-1: #1a1816; /* Near-black, matches Claude's primary */
-    --text-2: #4a4844; /* Darker secondary — sidebar nav level */
-    --text-3: #737170; /* Mid-gray — survives the .cwd opacity 0.6 multiplier */
+    --text-1: #1c1917;
+    --text-2: #57534e;
+    --text-3: #78716c;
 
-    --accent: #a87246; /* Darker tan — original #c4956a was 3:1 on white */
-    --accent-hover: #976237;
-    --accent-active: #855228;
-    --accent-bg: rgba(168, 114, 70, 0.1);
+    --accent: #9a6740;
+    --accent-hover: #875735;
+    --accent-active: #75472b;
+    --accent-bg: rgba(154, 103, 64, 0.1);
 
     --green: #34c759;
     --red: #ff3b30;
@@ -354,9 +349,7 @@ textarea,
        coloured shadow that the dark themes use. */
     --shadow-rgb: 0, 0, 0;
 
-    --bg-terminal: #eeebe2; /* Soft cream — slightly darker than ivory body
-                               so terminal reads as a recessed workspace
-                               between the two brighter side panels. */
+    --bg-terminal: #f0f0ee;
 }
 
 /* ─── Code Dark (代码夜) — Cursor IDE faithful palette ──────── */
@@ -870,6 +863,7 @@ body {
     margin: 0;
     font-family: var(--font);
     font-size: 14px;
+    font-variant-numeric: tabular-nums;
     /* No bg here — moved to #root so the rounded clip on #root
        fully owns where the app's surface paints. Body with both
        a bg AND clip-path was leaking square corners in non-Glass
@@ -894,8 +888,8 @@ body {
 #root {
     height: 100%;
     background: var(--bg-app);
-    border-radius: 10px;
-    clip-path: inset(0 round 10px);
+    border-radius: 8px;
+    clip-path: inset(0 round 8px);
     display: flex;
     flex-direction: column;
     overflow: hidden;

@@ -59,9 +59,6 @@ export const en = {
   'task.section.working': 'In Progress',
   'task.section.todo': 'To-do',
   'task.section.done': 'Done',
-  'task.greeting.morning': 'Morning, what\u2019s the plan?',
-  'task.greeting.afternoon': 'Afternoon, anything left to do?',
-  'task.greeting.evening': 'Evening. Feeling ambitious?',
   'task.tab.tasks': 'Tasks',
   'task.tab.changes': 'Changes',
   'launchpad.open_folder': 'Open Folder',
@@ -138,18 +135,6 @@ export const en = {
   'task.prompt.category_placeholder': 'Category (pick existing or type new)',
   'task.prompt.body_placeholder': 'Write a prompt, send it to AI…',
   'task.note_placeholder': 'Jot something down, send it all to your agent…',
-  // Seeded once for brand-new users as a roomy welcome note (sticky-note view).
-  'task.welcome_note': `Welcome to aicross
-
-This is a sticky note — jot anything down, then hit ▶ (top-right) to send the whole thing to your AI. No more cramped little input box.
-
-Three steps to start:
-1. Pick a tool in the middle (Claude / Codex / OpenCode…), choose a folder, and you're off
-2. The three dots set priority (red / amber / green) and auto-sort; drag the bottom edge to resize the note
-3. "Changes" (top-right) shows which files the AI touched; Settings has themes, language, and the To-do / Sticky-note switch
-
-Delete this note whenever you're ready, and start your first task.`,
-  'task.show_guide': 'View the usage guide',
 
   // Theme Menu
   'theme.section.color': 'Colors',
@@ -172,8 +157,7 @@ Delete this note whenever you're ready, and start your first task.`,
   'theme.color.indigo': 'Indigo',
   'theme.color.fuchsia': 'Fuchsia',
 
-  // Merged input — send one keyboard input to multiple terminals.
-  'gambit.title': 'Merged input',
+  'gambit.title': 'Input',
   'gambit.placeholder': 'Type a message... ({send} to send, {newline} for newline, paste images, Alt+↑↓ for history)',
   'gambit.send_failed_hint': 'Open an active session first',
   'gambit.send_empty_hint': 'Type a message or paste an image first (Ctrl+V)',

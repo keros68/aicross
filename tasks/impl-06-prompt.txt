@@ -1,0 +1,3 @@
+先读仓库根目录的 AGENTS.md，再读 tasks/TASK-06-identity.md，按任务书做界面身份第一刀。任务书的「不做」与「验收」是硬要求：只改前端、不改 Rust、不加依赖、不引 CDN；不动 src-ui/src/graph/、components/center/graph/、components/right/orchestration/ 里的逻辑文件（另一分支正在给它们接派发引擎），只允许改它们的 CSS 里的颜色与字体 token。验收命令（cd src-ui && npx vitest run、cd src-ui && npm run build）必须实际跑过并把命令与输出原文贴进 tasks/REPORT-06.md，跑不了的写「未验证」。不起窗口（截图项写「未验证」即可）。不要 commit，不要 push。
+
+报告里单独一节列出改动文件清单，以及凡是改了 app-state.tsx、CenterPanel.tsx、tauri.ts 的地方改了哪几行、为什么——之后要与第 3 期的分支合并。

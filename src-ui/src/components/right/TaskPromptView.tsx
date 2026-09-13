@@ -73,11 +73,12 @@ interface TaskPromptViewProps {
   // Persist a bottom-edge-resized body height (called once on drop). Reuses
   // the same `height` field the sticky-note view uses.
   onSetHeight: (id: string, height: number) => void;
+  onNew: () => void;
 }
 
 export function TaskPromptView({
   tasks, addingId, removingId, canSend,
-  onRenameCategory, onUpdateDesc, onRemove, onSend, onReorder, onSetHeight,
+  onRenameCategory, onUpdateDesc, onRemove, onSend, onReorder, onSetHeight, onNew,
 }: TaskPromptViewProps) {
   const t = useT();
   // Right-click cut/copy/paste/select menu for the category-title input.
@@ -357,7 +358,7 @@ export function TaskPromptView({
   if (tasks.length === 0) {
     return (
       <div className="task-prompt-list task-prompt-list--empty">
-        <TaskEmptyState />
+        <TaskEmptyState onNew={onNew} />
       </div>
     );
   }

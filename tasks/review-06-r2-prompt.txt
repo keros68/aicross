@@ -1,0 +1,13 @@
+你是代码审查者，本次是复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/）。先读 tasks/review-06-glm.md（上一轮审查）、tasks/fix-06-r1.md（修正单）、tasks/REPORT-06.md 的「修正轮 R1」一节（实现方对每条的处理），再读 tasks/diff-06.patch（当前全部改动相对 HEAD 的 git diff，含新增测试文件），需要上下文时打开对应源文件。不读 node_modules、target、dist、port。
+
+逐条核对修正单的 11 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- 第 1 条背景图：getInitialState 是否清掉旧值且 CenterPanel 不再渲染背景层；
+- 第 2 条死键：11 个语言文件是否都删干净，makeWelcomeNote 是否删除，有无残留引用导致运行期取不到键；
+- 第 4 条收敛：isEmptyGraphSession 与 createDefaultGraphSession 是否真的替换了全部三处同义表达式；
+- 第 5 条下拉：受控开合的监听器是否在卸载时清理，打开设置弹窗时是否关闭；
+- 第 10 条测试：两个新测试是否真的断言了规则（不是只渲染不断言）；vite.config.ts 改用 import.meta.url 是否影响 tauri dev 与 build 的路径解析。
+- 修正是否引入新缺陷（回归、破坏终端 tab、任务板、工作区）。
+- 「不采纳」的理由是否成立。
+编排者已在沙箱外复跑：`npx vitest run` 56 passed（7 个文件）、`npm run build` 通过。
+
+最后单独回答：修正轮 R1 之后 ui/identity 分支是否可以并回 main？一句话 + 仍未闭合的项列表。

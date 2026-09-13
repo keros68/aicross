@@ -58,9 +58,6 @@ export const de = {
   'task.section.working': 'In Bearbeitung',
   'task.section.todo': 'Offen',
   'task.section.done': 'Erledigt',
-  'task.greeting.morning': 'Guten Morgen, was steht an?',
-  'task.greeting.afternoon': 'Guten Tag, noch etwas zu tun?',
-  'task.greeting.evening': 'Guten Abend. Etwas Großes geplant?',
   'task.tab.tasks': 'Aufgabenliste',
   'task.tab.changes': 'Änderungsverlauf',
   'changes.empty': 'Noch keine Änderungen.',
@@ -136,17 +133,6 @@ export const de = {
   'task.prompt.category_placeholder': 'Kategoriename (vorhanden wählen oder neu eingeben)',
   'task.prompt.body_placeholder': 'Prompt schreiben, an KI senden…',
   'task.note_placeholder': 'Schreib etwas auf und sende alles an deinen Agenten…',
-  'task.welcome_note': `Willkommen bei aicross
-
-Das ist ein Notizzettel: Schreib einfach drauflos und tippe oben rechts auf ▶, um alles an deine KI zu schicken. Schluss mit dem engen kleinen Eingabefeld.
-
-In drei Schritten loslegen:
-1. Wähl in der Mitte ein Werkzeug (Claude / Codex / OpenCode…), wähl einen Ordner – und schon läuft es
-2. Die drei Punkte setzen die Priorität (rot / gelb / grün) und sortieren automatisch; zieh an der Unterkante, um den Zettel größer oder kleiner zu machen
-3. „Änderungsverlauf" (oben rechts) zeigt, welche Dateien die KI angefasst hat; in den Einstellungen gibt es Designs, Sprache und den Wechsel zwischen „To-do-Liste" und „Notizzettel"
-
-Lösch diesen Zettel, wann du willst, und starte deine erste Aufgabe.`,
-  'task.show_guide': 'Anleitung ansehen',
 
   // Theme Menu
   'theme.section.color': 'Farben',

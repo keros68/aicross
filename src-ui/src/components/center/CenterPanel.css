@@ -36,7 +36,7 @@
   font-weight: 500;
   color: var(--text-2);
   background: transparent;
-  /* --shape-radius-tab is ALREADY a top-only radius (e.g. `10px 10px 0 0`, or 0
+  /* --shape-radius-tab is ALREADY a top-only radius (e.g. `8px 8px 0 0`, or 0
      in sharp/slab) — so the tab is rounded on top, square at the bottom. It
      fills the bar to its bottom edge, and the active tab's fill meets the
      content directly below (Windows-Terminal seam). Do NOT re-wrap this in
@@ -244,6 +244,119 @@
 .terminal-wrapper {
   position: relative;
   flex-direction: column;
+}
+
+/* Secondary terminal entry on the graph start view. The graph implementation
+   stays untouched; this wrapper adds one compact launcher at the shell level. */
+.graph-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.graph-terminal-entry {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  z-index: 4;
+  width: 240px;
+  transform: translateX(-50%);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.graph-terminal-entry > summary {
+  width: max-content;
+  margin: 0 auto;
+  padding: 4px 8px;
+  border-radius: var(--radius-xs);
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.graph-terminal-entry > summary::-webkit-details-marker {
+  display: none;
+}
+
+.graph-terminal-entry > summary::after {
+  content: '⌄';
+  display: inline-block;
+  margin-left: 6px;
+  font-family: var(--mono);
+}
+
+.graph-terminal-entry[open] > summary,
+.graph-terminal-entry > summary:hover {
+  color: var(--text-1);
+  background: var(--bg-hover);
+}
+
+.graph-terminal-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-panel);
+}
+
+.graph-terminal-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-xs);
+}
+
+.graph-terminal-row:hover {
+  background: var(--bg-hover);
+}
+
+.graph-terminal-tool,
+.graph-terminal-folder {
+  display: flex;
+  align-items: center;
+  border: 0;
+  color: var(--text-1);
+  background: transparent;
+}
+
+.graph-terminal-tool {
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+}
+
+.graph-terminal-icon,
+.graph-terminal-icon svg,
+.graph-terminal-icon img {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.graph-terminal-folder {
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-xs);
+  color: var(--text-2);
+}
+
+.graph-terminal-folder:hover {
+  color: var(--text-1);
+}
+
+.graph-terminal-folder svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* ─── Launchpad Grid Overlay ─── */

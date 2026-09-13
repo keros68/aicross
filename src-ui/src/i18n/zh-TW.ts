@@ -57,9 +57,6 @@ export const zhTW = {
   'task.section.working': '進行中',
   'task.section.todo': '待辦',
   'task.section.done': '已完成',
-  'task.greeting.morning': '早安，今天想做些什麼？',
-  'task.greeting.afternoon': '午安，還有什麼要做的？',
-  'task.greeting.evening': '晚安，想來點大事嗎？',
   'task.tab.tasks': '任務列表',
   'task.tab.changes': '修改記錄',
   'changes.empty': '暫無修改。',
@@ -136,17 +133,6 @@ export const zhTW = {
   'task.prompt.category_placeholder': '分類名（選已有或輸入新的）',
   'task.prompt.body_placeholder': '寫提示詞，整段發給 AI…',
   'task.note_placeholder': '寫點什麼，整段發給 AI…',
-  'task.welcome_note': `歡迎來到 aicross
-
-這張就是「便籤」——隨手寫，寫完點右上角 ▶ 整段發給 AI，不用再擠小輸入框。
-
-上手三步：
-1. 中間挑個工具（Claude / Codex / OpenCode…），選好資料夾就開跑
-2. 左上三個圓點切優先級（紅 / 黃 / 綠），自動排序；拖底邊能把便籤拉大拉小
-3. 右上「修改記錄」看 AI 改了哪些檔案；設定裡換主題、語言，或在「待辦式 / 便籤式」之間切換
-
-看完刪掉這張，開始你的第一個任務吧。`,
-  'task.show_guide': '查看使用攻略',
 
   // Theme Menu
   'theme.section.color': '配色',

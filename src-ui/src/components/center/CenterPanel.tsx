@@ -10,7 +10,12 @@ import { ToolConfigModal } from './ToolConfigModal';
 import { ContributionHeatmap } from './ContributionHeatmap';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { DiffPanel } from '../right/DiffPanel';
-import { useAppState, type ToolType } from '../../store/app-state';
+import {
+  createDefaultGraphSession,
+  isEmptyGraphSession,
+  useAppState,
+  type ToolType,
+} from '../../store/app-state';
 
 // Dropdown shown when a tool card's folder icon is clicked: the globally
 // recent project folders (any tool that used one) + "Open folder…" last.
@@ -594,12 +599,12 @@ export function CenterPanel() {
       requiresCwd: !CWD_AGNOSTIC_AI_CLI.has(item.key),
     }));
 
-    // "Agent Tools" grid on the Library page: Terminal + Coffee 101, then
+    // "Agent Tools" grid on the Library page: Terminal + usage help, then
     // the independent split tools descending 4→3→2.
     const utilities = [
       // Terminal is an AI-CLI-like tool (needs cwd) rather than a 'utility'.
       { key: 'terminal' as ToolType, label: t('tool.terminal'), icon: <TerminalIcon />, type: 'ai-cli' as const, requiresCwd: true },
-      { key: 'installer' as ToolType, label: 'Coffee 101', icon: <SvgInstaller />, type: 'utility' as const, requiresCwd: false },
+      { key: 'installer' as ToolType, label: '使用说明', icon: <SvgInstaller />, type: 'utility' as const, requiresCwd: false },
       // ─── Independent split (descending 4→3→2): N side-by-side PTYs ──
       {
         key: 'four-split' as ToolType,
@@ -702,6 +707,8 @@ export function CenterPanel() {
     try { const r = localStorage.getItem('coffee:recent-folders'); return r ? JSON.parse(r) : []; } catch { return []; }
   });
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; tool: ToolType } | null>(null);
+  const [graphTerminalMenuOpen, setGraphTerminalMenuOpen] = useState(false);
+  const graphTerminalMenuRef = useRef<HTMLDetailsElement>(null);
   const pushRecentFolder = (folder: string) => {
     setRecentFolders(prev => {
       const next = [folder, ...prev.filter(f => f !== folder)].slice(0, 8);
@@ -772,10 +779,33 @@ export function CenterPanel() {
   // Derived state — must be before hooks that depend on it
   const activeSession = terminals.find(t => t.id === activeTerminalId);
   const isLaunchpadMode = activeSession && activeSession.tool === null;
+  const isToolPickerMode = Boolean(isLaunchpadMode || isEmptyGraphSession(activeSession));
+
+  useEffect(() => {
+    if (!graphTerminalMenuOpen) return;
+    if (state.settingsOpen || !isEmptyGraphSession(activeSession)) {
+      setGraphTerminalMenuOpen(false);
+      return;
+    }
+    const onDown = (event: MouseEvent) => {
+      if (graphTerminalMenuRef.current && !graphTerminalMenuRef.current.contains(event.target as Node)) {
+        setGraphTerminalMenuOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setGraphTerminalMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [activeSession, graphTerminalMenuOpen, state.settingsOpen]);
   // Mirrored into a ref so the window-foreground rescan (which has [] deps and
   // can't see the latest value otherwise) can skip work while in a terminal tab.
-  const isLaunchpadModeRef = useRef(isLaunchpadMode);
-  useEffect(() => { isLaunchpadModeRef.current = isLaunchpadMode; }, [isLaunchpadMode]);
+  const isToolPickerModeRef = useRef(isToolPickerMode);
+  useEffect(() => { isToolPickerModeRef.current = isToolPickerMode; }, [isToolPickerMode]);
 
 
 
@@ -787,7 +817,7 @@ export function CenterPanel() {
   //   - User returns from Library to Desktop (back arrow) — picks up new pins' install state
   // Never on pinnedItems changes → pin click stays instant.
   useEffect(() => {
-    if (!isTauri || !isLaunchpadMode) return;
+    if (!isTauri || !isToolPickerMode) return;
     if (showLibrary) return; // Library open: stay silent
     // Debounce: rapid 9-dot ↔ back toggles would otherwise stack up
     // checkToolsInstalled() IPCs (PATH scan for 7 CLIs, ~200ms-1s each
@@ -813,7 +843,7 @@ export function CenterPanel() {
       } catch {}
     }, 300);
     return () => clearTimeout(handle);
-  }, [isLaunchpadMode, showLibrary]);
+  }, [isToolPickerMode, showLibrary]);
 
   // Window-focus rescan — picks up CLIs the user just installed in an
   // external terminal without forcing them to restart Coffee CLI. The
@@ -840,7 +870,7 @@ export function CenterPanel() {
         // user is inside a terminal tab is wasted work whose setState reflows
         // the whole CenterPanel, making the next tab switch stutter (#43 #5).
         // Re-entering the launchpad runs its own (TTL-gated) rescan anyway.
-        if (!isLaunchpadModeRef.current) return;
+        if (!isToolPickerModeRef.current) return;
         commands.checkToolsInstalled()
           .then(applyToolsInstalled)
           .catch(() => {});
@@ -866,7 +896,7 @@ export function CenterPanel() {
   const handleAddTab = () => {
     dispatch({
       type: 'ADD_TERMINAL',
-      session: { id: crypto.randomUUID(), tool: null, folderPath: null }
+      session: createDefaultGraphSession(),
     });
   };
 
@@ -883,16 +913,16 @@ export function CenterPanel() {
     const { terminals: terms, activeTerminalId: activeId } = launchCtxRef.current;
     const current = terms.find(t => t.id === activeId);
     let id: string;
-    if (current && current.tool === null) {
+    if (current && (current.tool === null || isEmptyGraphSession(current))) {
       id = current.id;
     } else {
-      const idle = terms.find(t => t.tool === null);
+      const idle = terms.find(t => t.tool === null || isEmptyGraphSession(t));
       if (idle) {
         id = idle.id;
         dispatch({ type: 'SET_ACTIVE_TERMINAL', id });
       } else {
         id = crypto.randomUUID();
-        dispatch({ type: 'ADD_TERMINAL', session: { id, tool: null, folderPath: cwd ?? null } });
+        dispatch({ type: 'ADD_TERMINAL', session: { id, tool, folderPath: cwd ?? null } });
       }
     }
     if (cwd) {
@@ -1230,40 +1260,17 @@ export function CenterPanel() {
     }
   };
 
-  // ── Custom background (image/video) ──────────────────────────────────────
-  // Background state lives in global AppState (set via theme menu in Explorer)
-  const bgPath = state.bgPath;
-  const bgType = state.bgType;
+  // Background personalization is retired. Keep terminal props stable without
+  // reading or rendering legacy background state.
+  const bgType = 'none' as const;
   // Glass AND Carbon shapes force terminal-as-transparent even without an
   // in-app wallpaper, so the backdrop bleeds through (body bg is dropped /
   // replaced by the carbon mesh in those [data-shape] overrides). Without
   // this, the xterm canvas renders its solid `bgOpaque` and covers the
   // backdrop exactly where it matters most — the largest surface.
   const isBackdropShape = state.currentShape === 'glass' || state.currentShape === 'carbon';
-  const hasBg = (bgType !== 'none' && bgPath !== '') || isBackdropShape;
-
-  // Convert wallpaper path to a displayable URL. User-picked local
-  // files go through Tauri's convertFileSrc (asset protocol) for
-  // zero-copy streaming, with a file:// fallback for non-Tauri
-  // (e.g. browser dev) contexts.
-  const [bgUrl, setBgUrl] = useState('');
-  useEffect(() => {
-    // Two reasons to keep bgUrl empty:
-    //   1. hasBg is false — wallpaper layer is off entirely.
-    //   2. hasBg is true but bgPath is empty — happens when Glass shape
-    //      forces hasBg=true to pull the terminal canvas transparent,
-    //      but the user has no wallpaper picked. Without this second
-    //      guard, the fall-through below would call convertFileSrc('')
-    //      → Tauri returns a stub asset URL → <img> renders the
-    //      broken-image icon over a black backdrop. Users perceived this
-    //      as "切到 Glass 后左上角出现裂开图标 + 整个区域变黑".
-    if (!hasBg || !bgPath) { setBgUrl(''); return; }
-    import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
-      setBgUrl(convertFileSrc(bgPath));
-    }).catch(() => {
-      setBgUrl('file:///' + bgPath.replace(/\\/g, '/'));
-    });
-  }, [hasBg, bgPath]);
+  const hasBg = isBackdropShape;
+  const bgUrl = '';
 
   return (
     <>
@@ -1476,9 +1483,58 @@ export function CenterPanel() {
             ) : t.tool === 'graph' ? (
               // 对话图 tab：不是 PTY，不走 TierTerminal；整个包 ErrorBoundary，
               // 图数据异常时只坏这一个 tab。
-              <ErrorBoundary key={`graph-${t.id}`} fallbackLabel="对话图渲染出错">
-                <GraphTab session={t} />
-              </ErrorBoundary>
+              <div className="graph-shell">
+                <ErrorBoundary key={`graph-${t.id}`} fallbackLabel="对话图渲染出错">
+                  <GraphTab session={t} />
+                </ErrorBoundary>
+                {t.id === activeTerminalId && isEmptyGraphSession(t) && (
+                  <details
+                    ref={graphTerminalMenuRef}
+                    className="graph-terminal-entry"
+                    open={graphTerminalMenuOpen}
+                    onToggle={event => setGraphTerminalMenuOpen(event.currentTarget.open)}
+                  >
+                    <summary>打开终端</summary>
+                    <div className="graph-terminal-menu">
+                      {AGENT_CATALOG
+                        .filter(tool => tool.key === 'terminal' || (
+                          tool.type === 'ai-cli' && toolsInstalled[tool.key ?? ''] === true
+                        ))
+                        .map(tool => (
+                          <div className="graph-terminal-row" key={tool.key}>
+                            <button
+                              type="button"
+                              className="graph-terminal-tool"
+                              onClick={() => {
+                                setGraphTerminalMenuOpen(false);
+                                selectTool(tool.key, undefined, lastCwdByTool[tool.key ?? '']);
+                              }}
+                            >
+                              <span className="graph-terminal-icon">{tool.icon}</span>
+                              <span>{tool.key === 'terminal' ? '系统终端' : tool.label}</span>
+                            </button>
+                            {tool.requiresCwd && (
+                              <button
+                                type="button"
+                                className="graph-terminal-folder"
+                                onClick={() => {
+                                  setGraphTerminalMenuOpen(false);
+                                  handlePickFolder(tool.key);
+                                }}
+                                aria-label={`为${tool.key === 'terminal' ? '系统终端' : tool.label}选择文件夹`}
+                                title="选择文件夹"
+                              >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                    </div>
+                  </details>
+                )}
+              </div>
             ) : (
               <ErrorBoundary key={`err-${t.id}-${t.restartKey || 0}`} fallbackLabel="Tier Terminal Error">
                 <TierTerminal
@@ -1524,14 +1580,7 @@ export function CenterPanel() {
         )}
 
         {isLaunchpadMode && activeTerminalId && !diffTabActive && (
-          <div className={`launchpad-container${hasBg && bgUrl ? ' launchpad-has-bg' : ''}`} style={{ position: 'relative' }}>
-            {hasBg && bgUrl && (
-              <div className="launchpad-bg">
-                {bgType === 'video'
-                  ? <video src={bgUrl} autoPlay loop muted playsInline onError={() => { setBgUrl(''); }} />
-                  : <img src={bgUrl} alt="" onError={() => { setBgUrl(''); }} />}
-              </div>
-            )}
+          <div className="launchpad-container" style={{ position: 'relative' }}>
             {/* Close button removed: handles via Tab bar */}
             <div className="launchpad-slider-viewport">
               <div className={`launchpad-slider-track ${showLibrary ? 'slide-to-library' : ''}`}>
@@ -1591,11 +1640,11 @@ export function CenterPanel() {
                                     // python + each AI CLI is intractable
                                     // and failure modes leave users worse off
                                     // than self-serve. The card now opens the
-                                    // Claude Code course on coffeecli.com,
-                                    // which is the upstream of all our
-                                    // install/usage knowledge.
+                                    // project usage page, which keeps the
+                                    // legacy card useful without restoring it
+                                    // to the default path.
                                     if (tool.key === 'installer') {
-                                      commands.openUrl('https://coffeecli.com/courses/claude-code').catch(() => {});
+                                      commands.openUrl('https://github.com/keros68/aicross').catch(() => {});
                                       return;
                                     }
                                     selectTool(tool.key, undefined, lastCwdByTool[tool.key!]);

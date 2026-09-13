@@ -1,0 +1,10 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/）。本期是 TASK-06「界面身份第一刀」：把壳子从 coffee 的「选 CLI 开终端」改成 aicross 的「进对话图、按需开终端」，收窄主题，去掉 coffee 特有入口与文案。先读 tasks/TASK-06-identity.md（需求）、AGENTS.md（约定，尤其「与 coffeecli 的关系」四条义务与「纪律」里的文案规范）、docs/PRODUCT.md「形态」「视觉纪律」「不做」、tasks/REPORT-06.md（实现方报告），再读 tasks/diff-06.patch（本期全部改动的 git diff，工作区相对 HEAD），需要上下文时打开对应源文件。不读 node_modules、target、dist、port。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照 TASK-06 A–E 各节，缺什么、偏差什么。尤其：默认页是否真是对话图起始视图且新 tab 默认 graph；终端入口是否降级而功能未丢；右栏默认 tab；标题栏是否去掉合并输入与多 agent 布局；主题是否只剩深浅且旧值迁移；形状/图标/背景图是否不再露出；文案是否全部中性说明体（搜 问候语、emoji、感叹号、「大事」「攻略」「Hyper」「Gambit」「Coffee」「哨兵」）。
+2. 逻辑正确性：主题迁移在 index.html 与 app-state 两处是否一致、有无闪烁或写回覆盖用户选择；关闭最后一个 tab 的兜底 session 改为 graph 后，终端相关代码路径（PTY、focus、diff tab）是否还假设 tool 非 graph；右栏新存储键与旧键的兼容；快捷键监听改动是否漏掉清理；更新检查改读 aicross GitHub release 的失败处理。
+3. 合规：AGPL/商标四条义务是否仍满足（不删版权头、不改 NOTICE、不用 coffee 商标当本产品名、README 仍写明 fork 来源）；指向上游 coffeecli.com 的链接怎么处理的、是否合理。
+4. 视觉纪律：global.css 的 token 是否符合 PRODUCT.md 表（单一强调色、发丝边框、8px/4px 圆角、字体分工、tabular-nums、胶囊只给异常状态）；有无遗留高饱和色或阴影分块。
+5. 范围：是否碰了 src-ui/src/graph/、components/center/graph/、components/right/orchestration/ 的逻辑；是否改了 Rust 或依赖。列出与 app-state.tsx、CenterPanel.tsx 相关的改动，评估与另一分支（正在给 graph 接派发引擎）合并的冲突风险。
+6. 测试与验证：报告里 vitest 标「未验证」（沙箱 spawn EPERM），编排者已在沙箱外复跑 51 passed、build 通过；本期改动本身该不该补测试，最该补的 2 个。
+最后单独回答：对照 TASK-06 原始需求是否完整实现？一句话 + 缺项列表。

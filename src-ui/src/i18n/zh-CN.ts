@@ -57,9 +57,6 @@ export const zhCN = {
   'task.section.working': '进行中',
   'task.section.todo': '待办',
   'task.section.done': '已完成',
-  'task.greeting.morning': '早，今天想做点什么',
-  'task.greeting.afternoon': '下午好，还有什么要做的？',
-  'task.greeting.evening': '晚上好，想干点什么大事？',
   'task.tab.tasks': '任务列表',
   'task.tab.changes': '修改记录',
   'changes.empty': '暂无修改。',
@@ -136,17 +133,6 @@ export const zhCN = {
   'task.prompt.category_placeholder': '分类名（选已有或输入新的）',
   'task.prompt.body_placeholder': '写提示词，整段发给 AI…',
   'task.note_placeholder': '写点什么，整段发给 AI…',
-  'task.welcome_note': `欢迎来到 aicross
-
-这张就是「便签」——随手写，写完点右上角 ▶ 整段发给 AI，不用再挤小输入框。
-
-上手三步：
-1. 中间挑个工具（Claude / Codex / OpenCode…），选好文件夹就开跑
-2. 左上三个圆点切优先级（红 / 黄 / 绿），自动排序；拖底边能把便签拉大拉小
-3. 右上「修改记录」看 AI 改了哪些文件；设置里换主题、语言，或切回「待办式」
-
-看完删掉这张，开始你的第一个任务吧。`,
-  'task.show_guide': '查看使用攻略',
 
   // Theme Menu
   'theme.section.color': '配色',

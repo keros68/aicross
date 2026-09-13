@@ -1,4 +1,4 @@
-// Coffee CLI — Global App State (React Context)
+// aicross — Global App State (React Context)
 
 import { createContext, useContext, useReducer } from 'react';
 import type { ReactNode } from 'react';
@@ -154,6 +154,17 @@ export interface TerminalSession {
   multiAgent?: MultiAgentState;
 }
 
+export function createDefaultGraphSession(
+  folderPath: string | null = null,
+  id = crypto.randomUUID(),
+): TerminalSession {
+  return { id, tool: 'graph', toolData: '', folderPath };
+}
+
+export function isEmptyGraphSession(session: TerminalSession | null | undefined): boolean {
+  return session?.tool === 'graph' && (session.toolData ?? '') === '';
+}
+
 // ─── State Shape ─────────────────────────────────────────────────────────────
 
 export interface AppState {
@@ -202,7 +213,7 @@ export interface AppState {
 
   // Unified hotkey scheme (settings → 妙手): one of HOTKEY_SCHEMES, driving the
   // three chrome toggles — left panel / Gambit / right panel — via a global
-  // capture-phase listener in ActiveGambit.
+  // capture-phase listener in App.
   hotkeyScheme: HotkeyScheme;
   // How the titlebar's three panel toggles render (icon+hotkey / icon / hidden).
   titlebarToggleDisplay: TitlebarToggleDisplay;
@@ -399,7 +410,7 @@ function reducer(state: AppState, action: Action): AppState {
       if (newTerminals.length === 0) {
         const defaultId = crypto.randomUUID();
         const folderPath = state.terminals.length > 0 ? state.terminals[0].folderPath : null;
-        newTerminals = [{ id: defaultId, tool: null, folderPath }];
+        newTerminals = [createDefaultGraphSession(folderPath, defaultId)];
         newActiveId = defaultId;
       } else if (state.activeTerminalId === action.id) {
          newActiveId = newTerminals[newTerminals.length - 1].id;
@@ -608,46 +619,31 @@ function reducer(state: AppState, action: Action): AppState {
 
 // ─── Initial State ────────────────────────────────────────────────────────────
 
-const VALID_THEMES: ThemeColor[] = [
-  'dark', 'light', 'cappuccino', 'sakura', 'lavender', 'mint',
-  'obsidian', 'cobalt', 'moss',
-  'crimson', 'sunset', 'amber', 'emerald', 'teal', 'indigo', 'fuchsia',
-];
-const VALID_SHAPES: ThemeShape[] = ['soft', 'slab', 'sharp', 'glass', 'panel', 'carbon'];
-const VALID_ICON_THEMES: IconTheme[] = [
-  'outline', 'material', 'vscode-icons', 'catppuccin-mocha',
-  'devicon', 'fluent', 'symbols', 'coffee',
-];
+const VALID_THEMES: ThemeColor[] = ['dark', 'light'];
 
-function getInitialState(): AppState {
-  // Default 'obsidian' + 'panel' — the "严谨高级简约" out-of-box. Carbon's
-  // hex-mesh + translucent chrome is polarizing (love-it-or-hate-it); obsidian
-  // (#0a0a0a near-black, neutral, no hue tint) + panel (sharp 0-radius corners,
-  // strong 2px borders) reads as a flat, restrained developer-tool aesthetic
-  // that a broader 70% find acceptable vs carbon's 50/50 split. Panel is also
-  // simpler than carbon (no mask/backdrop-filter/:not() nuclear rule), so less
-  // to render-break across edge cases. KEEP index.html's pre-paint default in
-  // sync with these two values or first paint flashes (obsidian/panel → React
-  // hydrate). Existing users keep their saved theme/shape (localStorage wins).
-  let theme: ThemeColor = 'obsidian';
-  let shape: ThemeShape = 'panel';
-  let iconTheme: IconTheme = 'devicon';
+export function getInitialState(): AppState {
+  // aicross exposes one neutral dark theme and one neutral light theme. Keep
+  // index.html's pre-paint defaults in sync to avoid a first-frame flash.
+  let theme: ThemeColor = 'dark';
+  const shape: ThemeShape = 'soft';
+  const iconTheme: IconTheme = 'outline';
   let lang = 'zh-CN';
   let folderPath: string | null = null;
 
   try {
     const savedTheme = localStorage.getItem('cc-theme') as ThemeColor | null;
-    if (savedTheme && VALID_THEMES.includes(savedTheme)) theme = savedTheme;
+    if (savedTheme && VALID_THEMES.includes(savedTheme)) {
+      theme = savedTheme;
+    } else if (savedTheme) {
+      // All retired palettes were dark variants. Migrate them to the supported
+      // neutral dark theme instead of leaving an unselectable value active.
+      localStorage.setItem('cc-theme', 'dark');
+    }
   } catch {}
 
   try {
-    const savedShape = localStorage.getItem('cc-shape') as ThemeShape | null;
-    if (savedShape && VALID_SHAPES.includes(savedShape)) shape = savedShape;
-  } catch {}
-
-  try {
-    const savedIconTheme = localStorage.getItem('cc-icon-theme') as IconTheme | null;
-    if (savedIconTheme && VALID_ICON_THEMES.includes(savedIconTheme)) iconTheme = savedIconTheme;
+    if (localStorage.getItem('cc-shape') !== shape) localStorage.setItem('cc-shape', shape);
+    if (localStorage.getItem('cc-icon-theme') !== iconTheme) localStorage.setItem('cc-icon-theme', iconTheme);
   } catch {}
 
   try { folderPath = localStorage.getItem('cc-folder'); } catch {}
@@ -657,14 +653,11 @@ function getInitialState(): AppState {
     if (savedLang) lang = savedLang;
   } catch {}
 
-  // No factory-default wallpaper — the bundled /wallpapers/default.png
-  // didn't load reliably across platforms (Linux WebKit asset URL
-  // resolution diverges from Windows/macOS WebView2/WKWebView), so a
-  // chunk of new users saw a black panel and assumed wallpaper was
-  // broken. Default is now an empty wallpaper; users who want one pick
-  // their own via the theme menu.
-  let bgPath = '';
-  let bgType: 'image' | 'video' | 'none' = 'none';
+  // Background personalization is retired. Clear legacy values so old
+  // installs cannot keep rendering a background that the UI can no longer
+  // remove.
+  const bgPath = '';
+  const bgType: 'image' | 'video' | 'none' = 'none';
   let termColorScheme = '';
   let termFont = '';
   let defaultShell = '';
@@ -679,24 +672,8 @@ function getInitialState(): AppState {
   let hotkeyScheme: HotkeyScheme = 'alt-qwe';
   let titlebarToggleDisplay: TitlebarToggleDisplay = 'icon-hotkey';
   try {
-    const storedPath = localStorage.getItem('cc-bg-path');
-    const storedType = localStorage.getItem('cc-bg-type') as 'image' | 'video' | 'none' | null;
-
-    // Migration: clear legacy seeded /wallpapers/default.png from
-    // existing installs so they don't keep trying to load a file we
-    // no longer ship. Anything else (user-picked) is preserved.
-    if (storedPath && storedPath.startsWith('/wallpapers/')) {
-      bgPath = '';
-      bgType = 'none';
-      try {
-        localStorage.removeItem('cc-bg-path');
-        localStorage.removeItem('cc-bg-type');
-        localStorage.removeItem('cc-bg-init');
-      } catch {}
-    } else {
-      bgPath = storedPath || '';
-      bgType = storedType || 'none';
-    }
+    localStorage.removeItem('cc-bg-path');
+    localStorage.removeItem('cc-bg-type');
 
     termColorScheme = localStorage.getItem('cc-term-scheme') || '';
     termFont = localStorage.getItem('cc-term-font') || '';
@@ -767,7 +744,7 @@ function getInitialState(): AppState {
     termColorScheme,
     termFont,
     defaultShell,
-    terminals: [{ id: defaultTerminalId, tool: null, folderPath }],
+    terminals: [createDefaultGraphSession(folderPath, defaultTerminalId)],
     activeTerminalId: defaultTerminalId,
     gambitOpen: false,
     settingsOpen: false,

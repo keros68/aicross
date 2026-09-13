@@ -1,13 +1,11 @@
 // TitleBar.tsx — Custom draggable titlebar (replaces native OS window chrome)
 // Tauri requires this for frameless windows with decorations: false
 //
-// Layout: [drag-area with layout toggles on the left] … [min / max / close on the right]
+// Layout: [drag-area with panel toggles] … [min / max / close on the right]
 //
 // Left-side controls mirror VS Code's Activity Bar / Ctrl+B affordance:
 //   1. Left panel toggle  (Explorer / directory listing)
 //   2. Right panel toggle (TaskBoard / chat history)
-//   3. Multi-agent layout mode — only visible when the active tab is a
-//      multi-agent quadrant. Two modes: grid (2×2) and columns (1×4).
 
 import { commands, isTauri } from '../../tauri';
 import { useAppState, useAppDispatch, schemeLabels } from '../../store/app-state';
@@ -20,9 +18,7 @@ export function TitleBar() {
   const dispatch = useAppDispatch();
   const t = useT();
 
-  // The active scheme's three combos, shown as persistent hints on the left /
-  // Gambit / right buttons — a deliberate memory hook for the product's
-  // signature one-hand shortcuts (left=Q · Gambit=W · right=E by default).
+  // Shortcut labels are available on hover through native title tooltips.
   const hk = schemeLabels(state.hotkeyScheme);
 
   const minimize = () => isTauri && commands.windowMinimize().catch(() => {});
@@ -39,12 +35,6 @@ export function TitleBar() {
   // collapsed window" effect for zero flicker — the right call.
   const toggleLeft  = () => dispatch({ type: 'TOGGLE_LEFT_PANEL' });
   const toggleRight = () => dispatch({ type: 'TOGGLE_RIGHT_PANEL' });
-  const setGrid    = () => dispatch({ type: 'SET_MULTI_AGENT_LAYOUT', layout: 'grid' });
-  const setColumns = () => dispatch({ type: 'SET_MULTI_AGENT_LAYOUT', layout: 'columns' });
-
-  // Show the 2×2 / 1×4 layout picker only for the independent four-split view.
-  const activeTab = state.terminals.find(t => t.id === state.activeTerminalId);
-  const showMaLayout = activeTab?.tool === 'four-split';
 
   // Drag is wired as a single JS path: mousedown anywhere on the bar (except
   // on a child <button>) calls `startDragging()`, double-click toggles
@@ -104,87 +94,31 @@ export function TitleBar() {
           the outer border instead of crossing through it — avoids the
           "crossed-lines" look the user flagged. Active signal still travels
           via .is-active background only. */}
-      <div className="titlebar-layout-toggles" data-toggle-display={state.titlebarToggleDisplay}>
-        {/* Left panel · Gambit · right panel — the three hinted chrome toggles,
-            adjacent with Gambit in the MIDDLE so the row mirrors the screen
-            (left panel on the left, right on the right) and the default Alt+QWE
-            keys read left-to-right. */}
+      <div className="titlebar-layout-toggles">
         <button
-          className={`titlebar-btn titlebar-btn--layout titlebar-btn--hinted${state.leftPanelHidden ? '' : ' is-active'}`}
+          className={`titlebar-btn titlebar-btn--layout${state.leftPanelHidden ? '' : ' is-active'}`}
           onClick={toggleLeft}
-          aria-label={`Toggle left panel (${hk.left})`}
+          aria-label="切换左栏"
+          title={`切换左栏（${hk.left}）`}
           aria-pressed={!state.leftPanelHidden}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" strokeLinejoin="miter">
             <rect x="3" y="3" width="18" height="18" />
             <line x1="9" y1="4" x2="9" y2="20" />
           </svg>
-          <span className="titlebar-hotkey-hint">{hk.left}</span>
-        </button>
-        {/* Gambit compose (middle) — always visible even when the left panel is
-            hidden. Keyboard glyph; open state reads from the .is-active bg, so
-            no need to swap the icon to an X. */}
-        <button
-          className={`titlebar-btn titlebar-btn--layout titlebar-btn--hinted${state.gambitOpen ? ' is-active' : ''}`}
-          onClick={() => dispatch({ type: 'TOGGLE_GAMBIT' })}
-          aria-label={`Merged input (${hk.gambit})`}
-          aria-pressed={state.gambitOpen}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="4" width="20" height="16" rx="2" />
-            <path d="M6 8h.001" />
-            <path d="M10 8h.001" />
-            <path d="M14 8h.001" />
-            <path d="M18 8h.001" />
-            <path d="M8 12h.001" />
-            <path d="M12 12h.001" />
-            <path d="M16 12h.001" />
-            <path d="M7 16h10" />
-          </svg>
-          <span className="titlebar-hotkey-hint">{hk.gambit}</span>
         </button>
         <button
-          className={`titlebar-btn titlebar-btn--layout titlebar-btn--hinted${state.rightPanelHidden ? '' : ' is-active'}`}
+          className={`titlebar-btn titlebar-btn--layout${state.rightPanelHidden ? '' : ' is-active'}`}
           onClick={toggleRight}
-          aria-label={`Toggle right panel (${hk.right})`}
+          aria-label="切换右栏"
+          title={`切换右栏（${hk.right}）`}
           aria-pressed={!state.rightPanelHidden}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" strokeLinejoin="miter">
             <rect x="3" y="3" width="18" height="18" />
             <line x1="15" y1="4" x2="15" y2="20" />
           </svg>
-          <span className="titlebar-hotkey-hint">{hk.right}</span>
         </button>
-        {/* Multi-agent layout mode — only when the active tab is a quadrant.
-            After the panel trio so the trio stays anchored when it toggles. */}
-        {showMaLayout && (
-          <>
-            <button
-              className={`titlebar-btn titlebar-btn--layout${state.multiAgentLayout === 'grid' ? ' is-active' : ''}`}
-              onClick={setGrid}
-              aria-label="Multi-agent 2x2 grid"
-              aria-pressed={state.multiAgentLayout === 'grid'}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" strokeLinejoin="miter">
-                <rect x="3"  y="3"  width="7" height="7" />
-                <rect x="14" y="3"  width="7" height="7" />
-                <rect x="3"  y="14" width="7" height="7" />
-                <rect x="14" y="14" width="7" height="7" />
-              </svg>
-            </button>
-            <button
-              className={`titlebar-btn titlebar-btn--layout${state.multiAgentLayout === 'columns' ? ' is-active' : ''}`}
-              onClick={setColumns}
-              aria-label="Multi-agent vertical columns"
-              aria-pressed={state.multiAgentLayout === 'columns'}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" strokeLinejoin="miter">
-                <rect x="3" y="3" width="18" height="18" />
-                <line x1="12" y1="4" x2="12" y2="20" />
-              </svg>
-            </button>
-          </>
-        )}
 
         {/* Personalization settings — gear opens the consolidated modal that
             replaced the old left-panel theme/language popovers. The `title`
