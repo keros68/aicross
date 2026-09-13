@@ -11,7 +11,7 @@
 ```bash
 cd src-ui && npm install && npm run build
 cargo check
-npm run tauri dev --prefix src-ui
+npm exec @tauri-apps/cli@2 -- tauri dev
 ```
 
 状态：fork 基座就位，改造进行中。进度见 `tasks/README.md`。

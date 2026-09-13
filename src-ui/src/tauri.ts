@@ -83,6 +83,13 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   return _invoke(cmd, args) as Promise<T>;
 }
 
+// 对话图契约类型的正式来源是 graph/types.ts（与 Rust orchestration.rs 镜像）。
+import type {
+  DispatchableModel,
+  Graph as ConversationGraph,
+  Preset as GraphPreset,
+} from './graph/types';
+
 // ─── Type Definitions ────────────────────────────────────────────────────────
 
 export interface SavedSession {
@@ -308,7 +315,29 @@ export const commands = {
     invoke<Record<string, ToolConfigEntry>>('get_all_tool_configs'),
   setToolConfig: (tool: string, entry: ToolConfigEntry) =>
     invoke<void>('set_tool_config', { tool, entry }),
+
+  // ── 对话图（第 2 期，镜像 src/orchestration.rs）────────────────────
+  // status == "已接入" 的可派发模型；文件缺失/解析失败时 models 为空、
+  // error 带一条中文说明，不抛异常。
+  listDispatchableModels: () =>
+    invoke<{ models: DispatchableModel[]; error: string | null }>('list_dispatchable_models'),
+  // 内置三个预设（builtin=true）+ ~/.aicross/presets.json 的用户预设。
+  listPresets: () => invoke<{ version: 1; presets: GraphPreset[] }>('list_presets'),
+  saveUserPresets: (presets: GraphPreset[]) =>
+    invoke<void>('save_user_presets', { presets }),
+  saveGraph: (graph: ConversationGraph) => invoke<void>('save_graph', { graph }),
+  loadGraph: (id: string) => invoke<ConversationGraph | null>('load_graph', { id }),
+  listGraphs: () => invoke<GraphMeta[]>('list_graphs'),
 };
+
+// ── 对话图契约类型：Graph / GraphNode / Target / Preset / Stage /
+//    DispatchableModel 统一从 graph/types.ts 引入（见文件顶部 import）。
+//    GraphMeta 只有 Rust 侧 list_graphs 返回用，留在本文件。─────────────
+export interface GraphMeta {
+  id: string;
+  title: string;
+  updated_at: string;
+}
 
 // Codex-compatible plugin marketplace (a cloned git repo) + its plugins.
 export interface MarketplacePlugin {

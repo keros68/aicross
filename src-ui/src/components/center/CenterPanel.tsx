@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { focusTerminal } from '../../lib/focus-registry';
 import { onWindowForeground } from '../../lib/window-focus-filter';
 import { TierTerminal } from './TierTerminal';
+import { GraphTab } from './graph/GraphTab';
 import { SkillsPanel } from './SkillsPanel';
 import { FourSplitGrid } from './FourSplitGrid';
 import { ToolConfigModal } from './ToolConfigModal';
@@ -376,6 +377,28 @@ const SvgFourSplit = () => (
     <rect x="12.5" y="4"    width="7.5" height="7.5" />
     <rect x="4"    y="12.5" width="7.5" height="7.5" />
     <rect x="12.5" y="12.5" width="7.5" height="7.5" />
+  </svg>
+);
+
+// 对话图 tab / launchpad 卡图标 —— 线框小图：一根分叉成两根的节点连线，
+// 与 split 图标同族（currentColor + accent，1.5px 描边，无填充）。
+const SvgGraph = () => (
+  <svg
+    width="1em"
+    height="1em"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    style={{ flexShrink: 0, color: 'var(--accent)', verticalAlign: '-0.125em' }}
+  >
+    <circle cx="5" cy="12" r="2.4" />
+    <circle cx="18.6" cy="6" r="2.4" />
+    <circle cx="18.6" cy="18" r="2.4" />
+    <path d="M7.4 11.2c4.5-1.4 5-3.6 8.9-4.5" />
+    <path d="M7.4 12.8c4.5 1.4 5 3.6 8.9 4.5" />
   </svg>
 );
 
@@ -1201,6 +1224,8 @@ export function CenterPanel() {
       case 'two-split': return { icon: <SvgTwoSplit />, title: cwd ?? t('tool.two_split' as any), tooltip: pathTip };
       case 'three-split': return { icon: <SvgThreeSplit />, title: cwd ?? t('tool.three_split' as any), tooltip: pathTip };
       case 'four-split': return { icon: <SvgFourSplit />, title: cwd ?? t('tool.four_split' as any), tooltip: pathTip };
+      // 对话图 tab（第 2 期）：toolData 存 graph id；标题取图标题，未打开图时显示「对话图」。
+      case 'graph': return { icon: <SvgGraph />, title: state.graphs[session.toolData ?? '']?.title || '对话图', tooltip: undefined };
       default: return { icon: <SvgPlus active={isActive} />, title: t('tab.new'), tooltip: undefined };
     }
   };
@@ -1448,6 +1473,12 @@ export function CenterPanel() {
                 bgType={bgType}
                 paneCount={4}
               />
+            ) : t.tool === 'graph' ? (
+              // 对话图 tab：不是 PTY，不走 TierTerminal；整个包 ErrorBoundary，
+              // 图数据异常时只坏这一个 tab。
+              <ErrorBoundary key={`graph-${t.id}`} fallbackLabel="对话图渲染出错">
+                <GraphTab session={t} />
+              </ErrorBoundary>
             ) : (
               <ErrorBoundary key={`err-${t.id}-${t.restartKey || 0}`} fallbackLabel="Tier Terminal Error">
                 <TierTerminal
@@ -1508,6 +1539,22 @@ export function CenterPanel() {
                 {/* ─── Page 1: Desktop (pinned items) ─── */}
                 <div className="launchpad-page">
                   <div className="launchpad-inner">
+                    {/* 对话图入口（第 2 期）：固定卡，不占 pin 位、不可 pin，
+                        样式跟随 agent 卡。点击 = 当前 tab 变成对话图
+                        （toolData 为空 → GraphTab 显示开始视图）。 */}
+                    <div className="launchpad-grid launchpad-grid--graph">
+                      <div className="launchpad-card-group">
+                        <div
+                          className="launchpad-card"
+                          onClick={() => selectTool('graph', '')}
+                        >
+                          <div className="launchpad-icon"><SvgGraph /></div>
+                          <div className="launchpad-card-info">
+                            <span>对话图</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                     {(() => {
                       const pinnedAgents = AGENT_CATALOG.filter(a => pinnedItems.includes(`agent:${a.key}`));
 

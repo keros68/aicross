@@ -2,10 +2,11 @@
 
 import { createContext, useContext, useReducer } from 'react';
 import type { ReactNode } from 'react';
+import type { Graph } from '../graph/types';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type ToolType = 'claude' | 'qwen' | 'installer' | 'hermes' | 'opencode' | 'mimocode' | 'openclaw' | 'codex' | 'grok' | 'antigravity' | 'pi' | 'crush' | 'aider' | 'kimicode' | 'goose' | 'copilot' | 'terminal' | 'remote' | 'two-split' | 'three-split' | 'four-split' | null;
+export type ToolType = 'claude' | 'qwen' | 'installer' | 'hermes' | 'opencode' | 'mimocode' | 'openclaw' | 'codex' | 'grok' | 'antigravity' | 'pi' | 'crush' | 'aider' | 'kimicode' | 'goose' | 'copilot' | 'terminal' | 'remote' | 'two-split' | 'three-split' | 'four-split' | 'graph' | null;
 
 /**
  * Tab status shown as an animated 9-dot glyph. Three states only —
@@ -244,6 +245,14 @@ export interface AppState {
   /// switch back to, without diffMode flipping (mode = which surface the diff
   /// renders on; this = which tab is focused right now).
   diffTabActive: boolean;
+
+  // ── 对话图（第 2 期）──────────────────────────────────────────────────
+  // 已载入的对话图，按 graph.id 索引。不进 localStorage —— 持久化走 Rust
+  // 命令 save_graph / load_graph（~/.aicross/graphs/<id>.json），每次图变更
+  // 由调用侧 commitGraph()（src/graph/persist.ts）fire-and-forget 落盘。
+  graphs: Record<string, Graph>;
+  // 高亮节点 = 右栏「方案与编排」与图上命令（分叉/盖预设）的作用对象。
+  graphFocus: { graphId: string; nodeId: string } | null;
 }
 
 /// Snapshot of the file the user clicked in ChangesBoard, plus the folderPath
@@ -340,7 +349,9 @@ type Action =
   | { type: 'SET_DIFF_SELECTION'; selection: DiffSelection }
   | { type: 'CLEAR_DIFF' }
   | { type: 'SET_DIFF_MODE'; mode: 'overlay' | 'tab' }
-  | { type: 'SET_DIFF_TAB_ACTIVE'; active: boolean };
+  | { type: 'SET_DIFF_TAB_ACTIVE'; active: boolean }
+  | { type: 'SET_GRAPH'; graph: Graph }
+  | { type: 'SET_GRAPH_FOCUS'; focus: { graphId: string; nodeId: string } | null };
 
 // ─── Reducer ─────────────────────────────────────────────────────────────────
 
@@ -586,6 +597,10 @@ function reducer(state: AppState, action: Action): AppState {
     }
     case 'SET_DIFF_TAB_ACTIVE':
       return { ...state, diffTabActive: action.active };
+    case 'SET_GRAPH':
+      return { ...state, graphs: { ...state.graphs, [action.graph.id]: action.graph } };
+    case 'SET_GRAPH_FOCUS':
+      return { ...state, graphFocus: action.focus };
     default:
       return state;
   }
@@ -766,6 +781,8 @@ function getInitialState(): AppState {
     diffSelection: null,
     diffMode,
     diffTabActive: false,
+    graphs: {},
+    graphFocus: null,
   };
 }
 

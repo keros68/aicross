@@ -44,3 +44,12 @@
 1. 四项自动验证进 `tasks/REPORT-04.md`。
 2. 测试：阶段输入组装（三种 visibility 各一例，断言盲节点收不到方案文本）；写锁互斥；验收结论解析 PASS/NEEDS_FIX/未知；小任务与链式启发式。
 3. 本机真跑一次经济流水线（≤ 8 次请求）：fixture 任务「给 `fixtures/pipeline/roman.py` 补一个把整数转罗马数字的函数并写 3 个测试」；出方案 `pi/zai-coding-cn/glm-5.2`（thinking 高）→ 执行 `codex/gpt-5.6-luna`（单写者，在临时拷贝的项目目录里）→ 验收 `kimi/k3`。断言：产物 diff 非空、验收节点盲目录里只有 `REQUEST.md`/`diff.patch`/`changed/`、`.dispatch/` 三份 + `STATE.md`、验证命令（`python -m pytest`）通过后才送审。
+
+## 参考实现：AutoResearch（备忘，不进本期验收）
+
+github.com/EvoMap/AutoResearch（事实与出处已记入 `D:\work\agentteam\COMPETITIVE-LANDSCAPE.md` 2026-09-03 节）。它是产物交付与验收证据链的公开参考实现：
+
+- **产物清单 + 哈希记账**：全部产物带 SHA256 记账进引擎，`verify-close` 只接受引擎记录能支持的终态；执行者角色报「完成」不生效。B 节的产物交付若后续加哈希核对，参考此条。
+- **成功标准派发前冻结**：成功标准写进计划再派发，闸门核对证据不核对执行者的结论声明。C 节的固定验收维度清单是最小形态；后续若把出方案节点的「任务契约」升级为派发前登记的验收标准，参考此条。
+- **停止是合法终态**：预实验判负、指标平台期都允许停止，留下证据和后续选项。本任务「3 轮仍 NEEDS_FIX → 各轮意见并列交用户」属此类；后续流水线终态可显式加「停止（附证据）」。
+- **每轮只推进一个工作单元，状态可恢复**：`workflow_queue.json` + `state.md` + append-only `decisions.log`，中断后同目录继续。对应本任务 D 节 `STATE.md` 与重启续跑。

@@ -1,0 +1,10 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/，Cargo.toml 在根目录；React + TypeScript 前端在 src-ui/）。本期是第 2 期「对话图与编排」。先读 tasks/TASK-02-orchestration.md（需求）、AGENTS.md（约定）、docs/PRODUCT.md 的「形态」「自定义工作流」两节（设计依据）、tasks/REPORT-02.md（实现方报告），再读本期改动的文件：REPORT-02 里列出的文件，以及 src-ui/src/components/center/、src-ui/src/components/right/、src-ui/src/store/、src/ 下本期新增或修改的文件。不读 node_modules、target、dist、port。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照 TASK-02 A（数据模型 8 条规则）、B（一行记法）、C1（中栏对话图与聊天面板）、C2（右栏方案与编排）与验收清单，缺什么、偏差什么。尤其：contextOf 的四种可见性规则是否与 A3 一致；stamp 展开规则是否与 A5 一致（第 k 阶段以第 k-1 阶段全部节点为父，≥2 父即 accept）；模型来源是否只读 ~/.aicross/resources.json 且不手抄模型 ID；持久化是否原子写；内置预设是否不可删。
+2. 逻辑正确性：图结构（环、孤儿节点、根唯一、accept 父节点不足）在分叉、删除、stamp 后是否保持不变量；三列面板"同一分支只保留一个面板"的判定；一行记法 parser 对空格、中文角色、重复后缀、未知模型的处理；状态 reducer 的不可变更新。
+3. 边界：resources.json 缺失/空/坏；graphs 目录不存在；预设文件版本号不符；节点很多时图的布局与滚动；Windows 路径。
+4. 安全：持久化文件里是否可能写入 token、环境变量值或绝对路径之外的敏感信息；是否读了 auth.json 或 cc-switch.db；是否有 shell 拼接。
+5. 代码质量：重复、可简化、是否破坏了终端 tab / 任务板既有行为、界面文案是否符合 AGENTS.md 规范（中性短语、状态与动作成对、无 emoji）。
+6. 测试：验收第 2 条要求的各组测试是否都存在且真的断言了规则；最该补的 3 个。
+最后单独回答：对照 TASK-02 原始需求是否完整实现？一句话 + 缺项列表。

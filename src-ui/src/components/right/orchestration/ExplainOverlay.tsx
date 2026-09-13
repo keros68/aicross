@@ -1,0 +1,60 @@
+// 讲解（TASK-02 C2.6）：全屏覆盖层，说明体中文，内容抽自 docs/PRODUCT.md。
+
+import { createPortal } from 'react-dom';
+import './OrchestrationPanel.css';
+
+export function ExplainOverlay({ onClose }: { onClose: () => void }) {
+  return createPortal(
+    <div className="explain-backdrop">
+      <div className="explain-page">
+        <button className="explain-close" onClick={onClose}>
+          关闭
+        </button>
+        <h1>对话图与编排</h1>
+
+        <section>
+          <h2>什么是节点与分叉</h2>
+          <p>
+            节点是一轮对话：一条用户消息，加一个模型的回复。节点上带模型、角色、可见性与写权限。
+          </p>
+          <p>
+            分叉就是在任意节点上 @ 一个模型，从那里长出一条新分支；分支的上下文是根到分叉点的路径，不用再配。同一节点
+            @ 多家，就是扇出比对。
+          </p>
+          <p>
+            扇入只有一种节点：验收。它有多个父节点，收「用户原话 + 各父分支的产物」。没有自由连线，节点只能从已有节点分叉，或盖预设展开。
+          </p>
+        </section>
+
+        <section>
+          <h2>上下文怎么算</h2>
+          <p>共享：祖先链上的用户消息与模型回复全部带上。</p>
+          <p>盲：只留用户消息与附件，祖先链上的模型回复全部剔除。</p>
+          <p>指定上游：用户消息全留，模型回复只留你点名的那些上游节点。</p>
+          <p>上下文取全部祖先（沿所有父链回溯）加自身；验收节点的直接父节点回复始终保留——验收要看产物。</p>
+        </section>
+
+        <section>
+          <h2>内置预设</h2>
+          <p>
+            <strong>共享模式</strong>：一段一节点，角色执行，上下文共享。默认的对话方式——在图上接着聊，大家都看得见。
+          </p>
+          <p>
+            <strong>经济模式</strong>：出方案（高档、thinking 高）→ 执行（低档、thinking 低）→ 验收（盲，建议换厂商）。三段各一节点，模型留空由你填。
+          </p>
+          <p>
+            <strong>盲审模式</strong>：一段三个验证节点，盲、只读。同一份材料隔离核验，三份结果并排看。
+          </p>
+        </section>
+
+        <section>
+          <h2>预设是图章</h2>
+          <p>
+            预设不是固定流程，而是盖在高亮节点上的一个子图。盖完每个节点都是普通节点：可以单独改模型与开关，也可以再往下分叉、再盖预设。
+          </p>
+        </section>
+      </div>
+    </div>,
+    document.body,
+  );
+}

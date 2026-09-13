@@ -9,7 +9,7 @@ aicross：多厂商 agent 的桌面派发控制台。用户在一个窗口里接
 ## 技术栈
 
 - Tauri 2（Rust 后端）+ React 19 + TypeScript + Vite 前端；终端用 `@xterm/xterm`，pty 用 `portable-pty`。
-- 目录：`src-tauri/`（Rust）、`src-ui/`（前端）、`tasks/`（任务书与完成报告）、`docs/`。
+- 目录（fork 之后）：`src/`（Rust，`Cargo.toml` 在根目录）、`src-ui/`（前端）、`tasks/`（任务书与完成报告）、`docs/`、`port/`（第 0/1 期的旧代码，不参与编译，第 3 期并回）。
 - Windows 优先（开发机是 Windows 11），macOS/Linux 不能破坏但不强求验证。
 - 现有 Python 脚本（`D:\work\agentteam\dist\ai-cross\references\cc_switch.py` / `verify_model.py` / `usage_probe.py`）当子进程调用，不重写。
 
@@ -41,8 +41,8 @@ aicross：多厂商 agent 的桌面派发控制台。用户在一个窗口里接
 
 ```bash
 cd src-ui && npm install && npm run build     # 前端
-cargo check --manifest-path src-tauri/Cargo.toml   # 后端
-npm run tauri dev                             # 开发窗口
+cargo check && cargo test                     # 后端（根目录）
+npm exec @tauri-apps/cli@2 -- tauri dev      # 开发窗口（根目录；tauri CLI 未装为本地依赖）
 ```
 
 ## 交付流程

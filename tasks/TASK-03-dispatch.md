@@ -110,3 +110,12 @@ error: ""
 2. 测试：frontmatter 序列化/反序列化往返；脱敏六类正则各一条用例（含「脱敏后不得再命中」）；`truncated` 在超上限时置位；盲节点 argv 断言含 `--restricted`；盲节点运行目录只含勾选附件（用临时项目目录含 `CLAUDE.md`、`.dispatch/` 断言未拷入）；kimi >30000 字节拒绝；codex 续聊命令选项顺序（构造 argv 断言 `resume` 在父级选项之后）；pi 真身不符判失败；归类 JSON 解析容错。
 3. **本机真跑一次盲审**（发模型请求 ≤ 4 次）：跑完人工确认 Windows 下全程无黑窗闪现；fixture 任务（`fixtures/blind-task/` 放一份 300 字的方案 + 一个 20 行 CSV），三路 `pi/zai-coding-cn/glm-4.7`、`codex/gpt-5.6-luna`、`kimi/kimi-for-coding-highspeed`；断言三份 `.dispatch/*.md` 生成且 frontmatter 完整、`STATE.md` 存在、用量表有数。沙箱开不了就在 REPORT 写明，由编排者在沙箱外补跑。
 4. 共享对话续聊真跑一次（≤ 2 次请求）：@ 同一目标两轮，第二轮能引用第一轮内容。
+
+## 参考实现：AutoResearch（备忘，不进本期验收）
+
+github.com/EvoMap/AutoResearch（Apache-2.0，事实与出处已记入 `D:\work\agentteam\COMPETITIVE-LANDSCAPE.md` 2026-09-03 节）。它是自治研究流水线，与本任务同源的是盲审与独立性机制：
+
+- **独立性按模型身份计数**：`ar-critic-contract.ts` 里 `MIN_INDEPENDENT_CRITICS=2`，按 `modelIdentity` 去重；同一端点挂多个模型时按底层身份计数。本契约的 `identity` 字段（响应体报的真身）是同一口径，后续若加「至少 N 个独立验证者」规则，照此计数。
+- **评审报告绑定工作单元并记账**：critic 报告绑定 unit+cycle，连同报告 SHA256 提交给工作流引擎，引擎不认账则整轮失败。后续若扩展同一 run 多工作单元的验收，参考这条绑定。
+- **冒烟测两轮工具调用**：`preflight --live` 能发现单轮能通、多 agent 消息就挂的端点。后续加强接入冒烟时可补这项。
+- **失败记录不被后续成功覆盖**：每次 attempt 单独留 manifest。对应本契约 `status` 各态与 `STATE.md` 的只追加保留。

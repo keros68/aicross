@@ -13,6 +13,7 @@ mod tools;
 mod skills;
 mod marketplace;
 mod git;
+mod orchestration;
 mod paths;
 mod shell_probe;
 #[cfg(target_os = "windows")]

@@ -3833,6 +3833,12 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::git::git_init,
             crate::git::git_capture_baseline,
             crate::git::git_commit_files,
+            crate::orchestration::list_dispatchable_models,
+            crate::orchestration::list_presets,
+            crate::orchestration::save_user_presets,
+            crate::orchestration::save_graph,
+            crate::orchestration::load_graph,
+            crate::orchestration::list_graphs,
         ])
         .setup(|app| {
             // Seed bundled skills (screenshot, vibeid) into
