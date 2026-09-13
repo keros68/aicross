@@ -3851,6 +3851,10 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::resources::add_manual_agent,
             crate::resources::smoke_resource_model,
             crate::resources::smoke_agent_models,
+            crate::orchestration::load_roles,
+            crate::orchestration::save_roles,
+            crate::dispatch::inspect_dispatch_state,
+            crate::dispatch::abandon_dispatch_state,
         ])
         .setup(|app| {
             // Seed bundled skills (screenshot, vibeid) into

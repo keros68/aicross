@@ -1,0 +1,10 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/）。本期是第 4 期「经济流水线」：阶段自动推进、执行产物交付、盲验收目录、G4 闭环、角色配置与经济规则，外加第 3 期遗留 9 条。先读 tasks/TASK-04-pipeline.md（需求，第 0 节「与对话图和第 3 期的衔接」优先于后文旧说法，「第 3 期遗留」一节也在范围内）、AGENTS.md（约定）、tasks/REPORT-04.md（实现方报告），再读本期改动：src/dispatch.rs、src/channels/mod.rs、src/orchestration.rs、src/server.rs、src-ui/src/graph/（context.ts、dispatch.ts、dispatch-settings.ts、types.ts、__tests__）、src-ui/src/components/center/graph/DispatchOverlay.tsx 与 GraphTab.tsx、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/tauri.ts、fixtures/pipeline/。不读 node_modules、target、dist、port。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照 TASK-04 的 0、A、B、C、D、E 各节、「第 3 期遗留」9 条与验收清单，缺什么、偏差什么。尤其：阶段推进是否按图层、G4 修正轮是否长在图上且最多 3 轮；产物结构是否只追加 Reply.artifacts；盲验收目录只含 REQUEST.md / diff.patch / changed/；小体量文本材料内联规则；角色配置落 ~/.aicross/roles.json；三类 prompt 模板；小任务与链式启发式；验证命令失败不送审。
+2. 逻辑正确性：写锁互斥与排队；快照 diff 的正确性（新增/删除/二进制/>200KB）；worktree 失败回退；G4 循环终止条件；STATE.md 未完成 run 的恢复；stage 计算；类型化错误 kind；running 收起后后台继续与结果回图；串行推进时并发上限仍生效。
+3. 安全：产物与 REQUEST.md 落盘前是否过脱敏；不读凭据文件；单写者在项目目录运行时 `--tools`/`-s` 的写权限边界是否只开给执行节点；验收节点不能写。
+4. 代码质量：与第 2/3 期代码的重复；契约字段是否只追加 Reply.artifacts；界面文案规范；第 2/3 期图与派发行为是否被破坏。
+5. 测试：验收第 2 条要求的各组测试（三种 visibility 组装、写锁互斥、结论解析、小任务与链式启发式）是否存在且真的断言；最该补的 3 个。
+6. 真跑：ignored 的经济流水线测试与 cc-switch 路测试是否构造正确（模型按第 0 节第 4 条、请求上限 ≤ 8、断言产物非空与盲目录内容），编排者会在沙箱外跑，指出会导致误判的断言。
+最后单独回答：对照 TASK-04 原始需求是否完整实现？一句话 + 缺项列表。

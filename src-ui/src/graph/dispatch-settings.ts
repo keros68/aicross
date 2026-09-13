@@ -7,10 +7,12 @@ export interface UiDispatchSettings extends DispatchSettings {
 export const DEFAULT_DISPATCH_SETTINGS: UiDispatchSettings = {
   timeoutSecs: 600,
   concurrency: 3,
+  maxRequests: 8,
   classificationModel: '',
   redact: true,
   writeProjectDispatch: true,
   ccSwitchPath: '',
+  validationCommand: '',
 };
 
 const KEY = 'aicross-dispatch-settings';
@@ -27,10 +29,14 @@ export function loadDispatchSettings(): UiDispatchSettings {
       concurrency: Number.isFinite(parsed.concurrency)
         ? Math.max(1, Math.min(3, Number(parsed.concurrency)))
         : 3,
+      maxRequests: Number.isFinite(parsed.maxRequests)
+        ? Math.max(1, Math.min(100, Number(parsed.maxRequests)))
+        : 8,
       classificationModel: typeof parsed.classificationModel === 'string' ? parsed.classificationModel : '',
       redact: parsed.redact !== false,
       writeProjectDispatch: parsed.writeProjectDispatch !== false,
       ccSwitchPath: typeof parsed.ccSwitchPath === 'string' ? parsed.ccSwitchPath : '',
+      validationCommand: typeof parsed.validationCommand === 'string' ? parsed.validationCommand : '',
     };
   } catch {
     return { ...DEFAULT_DISPATCH_SETTINGS };

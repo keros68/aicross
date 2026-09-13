@@ -1,0 +1,1 @@
+先读仓库根目录的 AGENTS.md，再读 tasks/fix-04-r1.md，按它逐条处理 TASK-04 修正轮 R1（先读「编排者真跑」一节，把结果写进 REPORT 的验收 3 与遗留 2）。验证命令实际跑过并把命令与输出原文贴进 tasks/REPORT-04.md 的「修正轮 R1」一节。不起窗口。不要 commit，不要 push。

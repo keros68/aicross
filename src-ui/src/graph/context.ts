@@ -1,5 +1,6 @@
-import type { Graph, GraphNode, Message } from './types.ts';
+import type { Graph, GraphNode, Message, ReplyArtifacts } from './types.ts';
 import { childrenOf } from './stamp.ts';
+import blindPromptPrefix from '../../../fixtures/prompts/blind-prefix.txt?raw';
 
 export interface ContextPart {
   key: string;
@@ -7,6 +8,7 @@ export interface ContextPart {
   source: 'user' | 'reply';
   label: string;
   message: Message;
+  defaultSelected?: boolean;
 }
 
 export interface ContextSelection {
@@ -14,8 +16,7 @@ export interface ContextSelection {
   attachments: string[];
 }
 
-export const BLIND_PROMPT_PREFIX =
-  '以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。';
+export const BLIND_PROMPT_PREFIX = blindPromptPrefix.trim();
 
 export function serializeCurrentMessage(message: Message): string {
   const blocks: string[] = [];
@@ -61,7 +62,14 @@ function replyMessage(node: GraphNode): Message | undefined {
   if (!reply) return undefined;
   if (reply.status !== 'done') return undefined;
   if (reply.text === '') return undefined;
-  return { text: reply.text, attachments: [] };
+  const artifact = reply.artifacts ? artifactSummary(reply.artifacts) : '';
+  return { text: [reply.text, artifact].filter(Boolean).join('\n\n'), attachments: [] };
+}
+
+export function artifactSummary(artifacts: ReplyArtifacts): string {
+  const files = artifacts.changed_files.map((file) => file.path).join('、') || '无改后全文';
+  const worktree = artifacts.worktree ? `\nworktree: ${artifacts.worktree}` : '';
+  return `[执行产物]\n改动文件：${files}${worktree}\nstdout 摘要：${artifacts.stdout_summary || '—'}\n\n${artifacts.diff}`;
 }
 
 function hasUserContent(node: GraphNode): boolean {
@@ -69,9 +77,10 @@ function hasUserContent(node: GraphNode): boolean {
 }
 
 // 上下文 = 该节点的全部祖先闭包（沿所有 parents 递归）+ 自身，祖先按从根出发
-// DFS 保序去重、自身附加在末尾，按该节点 target.visibility 过滤。accept 节点
-// 不再特殊算并集（闭包天然覆盖），但 accept 节点的直接父节点回复始终保留
-// （验收要看产物）。节点没有 target（如根节点）时按共享处理。
+// DFS 保序去重、自身附加在末尾，按该节点 target.visibility 过滤。
+// 盲节点把被隔离的上游回复作为默认不勾选候选项产出；直接父回复有
+// artifacts 时由目录交付、不进 prompt，无 artifacts 时则回退到 prompt。
+// 节点没有 target（如根节点）时按共享处理。
 export function contextPartsOf(graph: Graph, nodeId: string): ContextPart[] {
   const node = graph.nodes[nodeId];
   if (!node) return [];
@@ -81,7 +90,6 @@ export function contextPartsOf(graph: Graph, nodeId: string): ContextPart[] {
   const pathIds = orderByDfs(graph, closure);
   pathIds.push(nodeId);
 
-  const isAccept = node.kind === 'accept';
   const visibility = node.target?.visibility ?? '共享';
   const upstreams = new Set(node.target?.upstreams ?? []);
   const parents = new Set(node.parents);
@@ -101,13 +109,18 @@ export function contextPartsOf(graph: Graph, nodeId: string): ContextPart[] {
     }
     const reply = replyMessage(n);
     if (!reply) continue;
+    if (visibility === '盲' && parents.has(id) && n.reply?.artifacts) {
+      continue; // 盲验收的结构化产物走目录，不把执行正文或 diff 塞进 prompt。
+    }
     let keep: boolean;
-    if (isAccept && parents.has(id)) {
-      keep = true; // 父节点自身的回复始终保留（验收要看产物）
+    let defaultSelected = true;
+    if (visibility === '盲' && parents.has(id)) {
+      keep = true; // 无 artifacts 时的直接父回复是唯一可验材料。
     } else if (visibility === '共享') {
       keep = true;
     } else if (visibility === '盲') {
-      keep = false;
+      keep = true;
+      defaultSelected = false;
     } else {
       keep = upstreams.has(id);
     }
@@ -122,6 +135,7 @@ export function contextPartsOf(graph: Graph, nodeId: string): ContextPart[] {
         source: 'reply',
         label: `模型回复 ${route}`,
         message: reply,
+        defaultSelected,
       });
     }
   }
@@ -129,10 +143,36 @@ export function contextPartsOf(graph: Graph, nodeId: string): ContextPart[] {
 }
 
 export function contextOf(graph: Graph, nodeId: string): Message[] {
-  return contextPartsOf(graph, nodeId).map((part) => ({
+  return contextPartsOf(graph, nodeId).filter((part) => part.defaultSelected !== false).map((part) => ({
     text: part.message.text,
     attachments: [...part.message.attachments],
   }));
+}
+
+export function originalRequestOf(graph: Graph): string {
+  return graph.nodes[graph.root]?.user.text ?? '';
+}
+
+export function upstreamArtifactsOf(graph: Graph, nodeId: string): ReplyArtifacts[] {
+  const node = graph.nodes[nodeId];
+  if (!node) return [];
+  const visibility = node.target?.visibility ?? '共享';
+  const allowed = visibility === '盲'
+    ? new Set(node.parents)
+    : visibility === '指定上游'
+      ? new Set(node.target?.upstreams ?? [])
+      : ancestorClosure(graph, nodeId);
+  const out: ReplyArtifacts[] = [];
+  for (const id of orderByDfs(graph, allowed)) {
+    const artifacts = graph.nodes[id]?.reply?.artifacts;
+    if (artifacts) out.push(artifacts);
+  }
+  // Direct parents may not be reachable from graph.root in a damaged/recovered graph.
+  for (const id of allowed) {
+    const artifacts = graph.nodes[id]?.reply?.artifacts;
+    if (artifacts && !out.includes(artifacts)) out.push(artifacts);
+  }
+  return out;
 }
 
 // contextOf 的稳定文本形式。组件只负责勾选，不自行拼 prompt；共享节点按
@@ -149,7 +189,9 @@ export function serializeContext(
     .map((part) => ({
       ...part,
       message: {
-        text: selectedMessages === null || selectedMessages.has(part.key) ? part.message.text : '',
+        text: (selectedMessages === null ? part.defaultSelected !== false : selectedMessages.has(part.key))
+          ? part.message.text
+          : '',
         attachments: part.message.attachments.filter(
           (path) => selectedAttachments === null || selectedAttachments.has(path),
         ),

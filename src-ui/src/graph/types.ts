@@ -20,6 +20,20 @@ export interface Reply {
   ms?: number;
   session_id?: string;
   adopted?: boolean;
+  artifacts?: ReplyArtifacts;
+  error_kind?: string;
+}
+
+export interface ChangedFile {
+  path: string;
+  content: string;
+}
+
+export interface ReplyArtifacts {
+  diff: string;
+  changed_files: ChangedFile[];
+  worktree?: string;
+  stdout_summary: string;
 }
 
 export interface Target {

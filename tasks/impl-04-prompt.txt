@@ -1,0 +1,10 @@
+先读仓库根目录的 AGENTS.md，再读 tasks/TASK-04-pipeline.md，按任务书实现第 4 期。任务书第 0 节「与对话图和第 3 期的衔接」优先于后文旧说法；「第 3 期遗留」一节的条目也在本期范围内。动手前读 tasks/REPORT-03.md（含修正轮 R1 与编排者补记）了解派发引擎的落点，读 src/dispatch.rs、src/channels/mod.rs、src-ui/src/graph/dispatch.ts、context.ts。
+
+硬要求：
+1. 任务书「不做」与「验收」两节是硬要求。验收命令（cargo check / cargo test / cd src-ui && npx vitest run / cd src-ui && npm run build）必须实际跑过，命令与输出原文贴进报告；沙箱里 vitest 起不来就用 `npx vitest run --configLoader native --pool threads` 并注明；跑不了的写「未验证」，不写「已验证」。
+2. 真机经济流水线（验收 3，≤ 8 次请求）做成 ignored 测试；沙箱里发不出请求就如实写「未验证」留给编排者在沙箱外跑，不伪造。模型按第 0 节第 4 条。
+3. 密钥只按子进程环境变量传，不回显、不落盘、不进日志；不读 ~/.pi/auth.json 与 ~/.cc-switch。
+4. 不起窗口、不跑 tauri dev。不 commit，不 push。
+5. 完成后写 tasks/REPORT-04.md：改了什么、每条验收怎么验的、没做什么、不确定处；单独一节列出对第 2/3 期契约的字段追加（应只有 Reply.artifacts）。
+
+第 2、3 期已有的图、面板、派发引擎不要重做，在其上加阶段推进、产物交付、G4 与角色配置。

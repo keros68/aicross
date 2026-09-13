@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BLIND_PROMPT_PREFIX, contextOf, serializeContext, serializeCurrentMessage } from '../context.ts';
+import { BLIND_PROMPT_PREFIX, contextOf, contextPartsOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../context.ts';
 import { stamp } from '../stamp.ts';
 import type { Graph, GraphNode, NodeKind, Reply, Target, VisibilityKind } from '../types.ts';
 
@@ -71,7 +71,7 @@ describe('contextOf', () => {
     ]);
   });
 
-  it('盲：只留用户消息与附件，模型回复全部剔除', () => {
+  it('盲：用户消息全留，无 artifacts 的直接父回复作为待验材料', () => {
     const g = mkGraph([
       mkNode('root', 'material', [], '根消息'),
       mkNode('A', 'turn', ['root'], '问A', { reply: done('答A') }),
@@ -84,6 +84,7 @@ describe('contextOf', () => {
     expect(ctx).toEqual([
       { text: '根消息', attachments: [] },
       { text: '问A', attachments: [] },
+      { text: '答A', attachments: [] },
       { text: '问B', attachments: [] },
     ]);
   });
@@ -249,7 +250,7 @@ describe('contextOf', () => {
     expect(selected.prompt).toBe('[附件]\nC:\\data\\a.csv\n\n[用户]\n再问');
   });
 
-  it('盲序列化套冻结模板且不含上游模型回复', () => {
+  it('盲序列化套冻结模板且回退保留无 artifacts 的直接父回复', () => {
     const g = mkGraph([
       mkNode('root', 'material', [], '材料', { attachments: ['C:\\data\\raw.csv'] }),
       mkNode('A', 'turn', ['root'], '问题', { reply: done('旧结论') }),
@@ -257,9 +258,65 @@ describe('contextOf', () => {
     ]);
     const out = serializeContext(g, 'B');
     expect(out.prompt.startsWith(BLIND_PROMPT_PREFIX)).toBe(true);
-    expect(out.prompt).not.toContain('旧结论');
+    expect(out.prompt).toContain('旧结论');
     expect(out.prompt).toContain('[用户]\n独立判断');
     expect(out.prompt).toContain('[附件]\nraw.csv');
     expect(out.prompt).not.toContain('C:\\data\\raw.csv');
+  });
+
+  it('阶段输入：共享收方案和产物摘要，指定上游只收指定产物', () => {
+    const artifacts = { diff: 'DIFF_EXEC', changed_files: [{ path: 'a.py', content: 'x' }], stdout_summary: 'done' };
+    const g = mkGraph([
+      mkNode('root', 'material', [], '原始需求'),
+      mkNode('plan', 'turn', ['root'], '', { reply: done('PLAN_TEXT'), target: mkTarget('共享') }),
+      mkNode('exec', 'turn', ['plan'], '', { reply: { status: 'done', text: 'EXEC_TEXT', artifacts }, target: mkTarget('共享') }),
+      mkNode('shared', 'turn', ['exec'], '', { target: mkTarget('共享') }),
+      mkNode('picked', 'turn', ['exec'], '', { target: mkTarget('指定上游', ['exec']) }),
+    ]);
+    expect(serializeContext(g, 'shared').prompt).toContain('PLAN_TEXT');
+    expect(serializeContext(g, 'shared').prompt).toContain('DIFF_EXEC');
+    expect(upstreamArtifactsOf(g, 'picked')).toEqual([artifacts]);
+  });
+
+  it('阶段输入：盲验收收结构化产物但 prompt 不含方案或 diff', () => {
+    const artifacts = { diff: 'DIFF_EXEC', changed_files: [{ path: 'a.py', content: 'x' }], stdout_summary: 'done' };
+    const g = mkGraph([
+      mkNode('root', 'material', [], '原始需求'),
+      mkNode('plan', 'turn', ['root'], '', { reply: done('PLAN_TEXT'), target: mkTarget('共享') }),
+      mkNode('exec', 'turn', ['plan'], '', { reply: { status: 'done', text: 'EXEC_TEXT', artifacts }, target: mkTarget('共享') }),
+      mkNode('accept', 'turn', ['exec'], '', { target: { ...mkTarget('盲'), role: '验收' } }),
+    ]);
+    const serialized = serializeContext(g, 'accept');
+    expect(serialized.prompt).toContain('原始需求');
+    expect(serialized.prompt).not.toContain('PLAN_TEXT');
+    expect(serialized.prompt).not.toContain('EXEC_TEXT');
+    expect(serialized.prompt).not.toContain('DIFF_EXEC');
+    expect(upstreamArtifactsOf(g, 'accept')).toEqual([artifacts]);
+  });
+
+  it('盲验收可在 G1 额外勾选方案回复', () => {
+    const artifacts = { diff: 'DIFF_EXEC', changed_files: [], stdout_summary: 'done' };
+    const g = mkGraph([
+      mkNode('root', 'material', [], '原始需求'),
+      mkNode('plan', 'turn', ['root'], '', { reply: done('PLAN_TEXT'), target: mkTarget('共享') }),
+      mkNode('exec', 'turn', ['plan'], '', { reply: { status: 'done', text: 'EXEC_TEXT', artifacts }, target: mkTarget('共享') }),
+      mkNode('review', 'turn', ['exec'], '', { target: mkTarget('盲') }),
+    ]);
+    const candidate = contextPartsOf(g, 'review').find((part) => part.nodeId === 'plan' && part.source === 'reply');
+    expect(candidate?.defaultSelected).toBe(false);
+    expect(serializeContext(g, 'review').prompt).not.toContain('PLAN_TEXT');
+    expect(serializeContext(g, 'review', {
+      messageKeys: ['root:user', candidate!.key],
+      attachments: [],
+    }).prompt).toContain('PLAN_TEXT');
+  });
+
+  it('单父 turn 盲验收在父回复无 artifacts 时回退进 prompt', () => {
+    const g = mkGraph([
+      mkNode('root', 'material', [], '原始需求'),
+      mkNode('exec', 'turn', ['root'], '', { reply: done('ONLY_DELIVERY'), target: mkTarget('共享') }),
+      mkNode('review', 'turn', ['exec'], '', { target: mkTarget('盲') }),
+    ]);
+    expect(serializeContext(g, 'review').prompt).toContain('ONLY_DELIVERY');
   });
 });

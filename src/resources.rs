@@ -1117,6 +1117,7 @@ fn run_smoke(model: &ResourceModel) -> Result<SmokeSuccess, String> {
         None,
         session_dir.as_deref(),
         None,
+        false, // 冒烟只读，不给写工具（第 4 期新增 writable 参数）
     )?;
     let temp = std::env::temp_dir();
     let result = run_process(

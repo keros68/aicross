@@ -87,6 +87,32 @@ pub struct Reply {
     /// 结果屏「采纳」标记，随图持久化（前端 Reply.adopted）
     #[serde(default)]
     pub adopted: Option<bool>,
+    /// 执行节点交给后续共享/盲验收节点的结构化产物。
+    #[serde(default)]
+    pub artifacts: Option<ReplyArtifacts>,
+    /// 失败类型；用于让真身不符等状态在图持久化后仍可区分。
+    #[serde(default)]
+    pub error_kind: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ReplyArtifacts {
+    #[serde(default)]
+    pub diff: String,
+    #[serde(default)]
+    pub changed_files: Vec<ReplyChangedFile>,
+    #[serde(default)]
+    pub worktree: Option<String>,
+    #[serde(default)]
+    pub stdout_summary: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ReplyChangedFile {
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub content: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -157,6 +183,44 @@ pub struct DispatchableModels {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleProfile {
+    #[serde(default)]
+    pub agent: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub tier: String,
+    #[serde(default)]
+    pub thinking: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleSettings {
+    pub version: u32,
+    #[serde(default)]
+    pub planning: RoleProfile,
+    #[serde(default)]
+    pub execution: RoleProfile,
+    #[serde(default)]
+    pub acceptance: RoleProfile,
+}
+
+impl Default for RoleSettings {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            planning: RoleProfile::default(),
+            execution: RoleProfile::default(),
+            acceptance: RoleProfile::default(),
+        }
+    }
+}
+
 // ── 内置预设（不落盘；builtin=true 不可删不可改） ─────────────────────────
 
 fn blank_target() -> Target {
@@ -199,7 +263,7 @@ fn builtin_presets() -> Vec<Preset> {
                     tier: Some("低".into()),
                     thinking: "低".into(),
                     visibility: "共享".into(),
-                    write: "只读".into(),
+                    write: "单写者".into(),
                     ..blank_target()
                 }],
             },
@@ -247,12 +311,69 @@ fn graphs_dir(root: &Path) -> PathBuf {
     root.join("graphs")
 }
 
+fn roles_path(root: &Path) -> PathBuf {
+    root.join("roles.json")
+}
+
+fn roles_from(root: &Path) -> RoleSettings {
+    fs::read_to_string(roles_path(root))
+        .ok()
+        .and_then(|text| serde_json::from_str::<RoleSettings>(&text).ok())
+        .filter(|settings| settings.version == 1)
+        .unwrap_or_default()
+}
+
+fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), String> {
+    if settings.version != 1 {
+        return Err(format!(
+            "角色配置 version 只支持 1，收到 {}",
+            settings.version
+        ));
+    }
+    write_json_atomic(&roles_path(root), settings)
+}
+
+fn fill_role_defaults(
+    presets: &mut [Preset],
+    roles: &RoleSettings,
+    _models: &[ResourceModel],
+) {
+    for preset in presets {
+        for target in preset
+            .stages
+            .iter_mut()
+            .flat_map(|stage| stage.nodes.iter_mut())
+        {
+            if !target.model.is_empty() {
+                continue;
+            }
+            let profile = match target.role.as_str() {
+                "出方案" => roles.planning.clone(),
+                "执行" => roles.execution.clone(),
+                "验收" => roles.acceptance.clone(),
+                _ => continue,
+            };
+            if profile.model.is_empty() {
+                continue;
+            }
+            target.agent.clone_from(&profile.agent);
+            target.provider = (!profile.provider.is_empty()).then(|| profile.provider.clone());
+            target.model.clone_from(&profile.model);
+            target.tier = (!profile.tier.is_empty()).then(|| profile.tier.clone());
+            if !profile.thinking.is_empty() {
+                target.thinking.clone_from(&profile.thinking);
+            }
+        }
+    }
+}
+
 /// 原子写：先写同目录临时文件（flush + sync）再 rename。Windows 上
 /// `std::fs::rename` 走 MoveFileExW(MOVEFILE_REPLACE_EXISTING)，可以覆盖
 /// 已存在的目标；失败时删目标重试一次只是锁占用等偶发情形的兜底。
 /// 做法参考 port/src-tauri-old/src/config.rs 的 write_json_in（我们自己的 fork）。
 /// 注意：resources.rs 里有这份函数的整份复制（write_json_atomic），两边
 /// 改动要互相同步；收敛成共享 util 留第 5 期。
+/// 派发 Markdown/STATE 的同类实现见 `dispatch::write_atomic`；统一收敛留待第 5 期。
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let directory = path
         .parent()
@@ -320,8 +441,8 @@ fn dispatchable_from(root: &Path) -> DispatchableModels {
             }
         }
         Err(error) => DispatchableModels {
-                models: Vec::new(),
-                error: Some(error),
+            models: Vec::new(),
+            error: Some(error),
         },
     }
 }
@@ -338,6 +459,8 @@ fn presets_from(root: &Path) -> PresetFile {
             }
         }
     }
+    let models = connected_resources(&resources_path(root)).unwrap_or_default();
+    fill_role_defaults(&mut presets, &roles_from(root), &models);
     PresetFile {
         version: 1,
         presets,
@@ -371,10 +494,13 @@ fn load_graph_in(root: &Path, id: &str) -> Result<Option<Graph>, String> {
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("读取 {} 失败：{e}", path.display())),
     };
-    let graph: Graph =
-        serde_json::from_str(&contents).map_err(|e| format!("解析 {} 失败：{e}", path.display()))?;
+    let graph: Graph = serde_json::from_str(&contents)
+        .map_err(|e| format!("解析 {} 失败：{e}", path.display()))?;
     if graph.version != 1 {
-        return Err(format!("图 {} version 只支持 1，收到 {}", id, graph.version));
+        return Err(format!(
+            "图 {} version 只支持 1，收到 {}",
+            id, graph.version
+        ));
     }
     Ok(Some(graph))
 }
@@ -454,6 +580,18 @@ pub fn list_graphs() -> Vec<GraphMeta> {
         Ok(root) => list_graphs_in(&root),
         Err(_) => Vec::new(),
     }
+}
+
+#[tauri::command]
+pub fn load_roles() -> RoleSettings {
+    aicross_root()
+        .map(|root| roles_from(&root))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn save_roles(settings: RoleSettings) -> Result<(), String> {
+    save_roles_in(&aicross_root()?, &settings)
 }
 
 // ── 单元测试 ──────────────────────────────────────────────────────────────
@@ -619,6 +757,77 @@ mod tests {
         .unwrap();
         let merged = presets_from(&root);
         assert_eq!(merged.presets.len(), 4);
+    }
+
+    #[test]
+    fn roles_roundtrip_and_fill_economy_nodes() {
+        let root = temp_root("roles");
+        let roles = RoleSettings {
+            version: 1,
+            planning: RoleProfile {
+                agent: "pi".into(),
+                provider: "zai-coding-cn".into(),
+                model: "glm-5.3-flash".into(),
+                tier: "高".into(),
+                thinking: "高".into(),
+            },
+            execution: RoleProfile {
+                agent: "codex".into(),
+                provider: String::new(),
+                model: "gpt-5.6-luna".into(),
+                tier: "低".into(),
+                thinking: "低".into(),
+            },
+            acceptance: RoleProfile {
+                agent: "kimi".into(),
+                provider: "kimi".into(),
+                model: "kimi-code/k3-256k".into(),
+                tier: "中".into(),
+                thinking: "中".into(),
+            },
+        };
+        save_roles_in(&root, &roles).unwrap();
+        assert_eq!(roles_from(&root), roles);
+        let presets = presets_from(&root);
+        let economy = presets
+            .presets
+            .iter()
+            .find(|preset| preset.id == "builtin-economy")
+            .unwrap();
+        assert_eq!(economy.stages[0].nodes[0].model, "glm-5.3-flash");
+        assert_eq!(economy.stages[1].nodes[0].write, "单写者");
+        assert_eq!(economy.stages[2].nodes[0].model, "kimi-code/k3-256k");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn single_writer_role_uses_configured_writable_agent() {
+        let mut presets = builtin_presets();
+        let roles = RoleSettings {
+            version: 1,
+            execution: RoleProfile {
+                agent: "pi".into(),
+                model: "configured-model".into(),
+                thinking: "低".into(),
+                ..RoleProfile::default()
+            },
+            ..RoleSettings::default()
+        };
+        let models = vec![ResourceModel {
+            agent: "codex".into(),
+            id: "writable-model".into(),
+            tier: "低".into(),
+            ..ResourceModel::default()
+        }];
+        fill_role_defaults(&mut presets, &roles, &models);
+        let execution = &presets
+            .iter()
+            .find(|preset| preset.id == "builtin-economy")
+            .unwrap()
+            .stages[1]
+            .nodes[0];
+        assert_eq!(execution.agent, "pi");
+        assert_eq!(execution.model, "configured-model");
     }
 
     #[test]

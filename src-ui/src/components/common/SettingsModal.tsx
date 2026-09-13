@@ -15,13 +15,15 @@ import { useAppState, useAppDispatch, type ThemeColor } from '../../store/app-st
 import { useT } from '../../i18n/useT';
 import { IS_WINDOWS } from '../../lib/platform';
 import { TERM_COLOR_SCHEMES } from '../center/TierTerminal';
-import { commands, type FontInfo } from '../../tauri';
+import { commands, type FontInfo, type RoleProfile, type RoleSettings } from '../../tauri';
+import type { DispatchableModel } from '../../graph/types';
 import { FontPicker } from './FontPicker';
 import { THEME_COLORS, LANGUAGES, TASK_VIEW_MODES } from '../../lib/personalization';
 import { loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } from '../../graph/dispatch-settings';
+import { ROLE_PROMPT_TEMPLATES } from '../../graph/dispatch';
 import './SettingsModal.css';
 
-type Section = 'appearance' | 'terminal' | 'dispatch' | 'tasks' | 'language' | 'feedback';
+type Section = 'appearance' | 'terminal' | 'roles' | 'dispatch' | 'tasks' | 'language' | 'feedback';
 
 // Trailing "opens outside the app" affordance on the feedback cards.
 const ExternalLinkArrow = () => (
@@ -71,6 +73,11 @@ const ICONS: Record<Section, ReactNode> = {
       <path d="M7 12h4c3 0 3-6 6-6M11 12c3 0 3 6 6 6" />
     </svg>
   ),
+  roles: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="8" r="3" /><circle cx="17" cy="9" r="2.5" /><path d="M3 20c0-4 2-6 5-6s5 2 5 6M14 20c.2-2.7 1.5-4.2 3.5-4.2S21 17.3 21 20" />
+    </svg>
+  ),
   tasks: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M11 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6" />
@@ -100,6 +107,13 @@ export function SettingsModal() {
   const [section, setSection] = useState<Section>('appearance');
   const [version, setVersion] = useState('');
   const [dispatchSettings, setDispatchSettings] = useState<UiDispatchSettings>(loadDispatchSettings);
+  const [roleSettings, setRoleSettings] = useState<RoleSettings>({
+    version: 1,
+    planning: { agent: '', provider: '', model: '', tier: '', thinking: '高' },
+    execution: { agent: '', provider: '', model: '', tier: '', thinking: '低' },
+    acceptance: { agent: '', provider: '', model: '', tier: '', thinking: '中' },
+  });
+  const [roleModels, setRoleModels] = useState<DispatchableModel[]>([]);
   // Installed fonts for the terminal font picker — loaded lazily (Rust scan)
   // the first time the Terminal section is opened. null = not loaded yet.
   const [fonts, setFonts] = useState<FontInfo[] | null>(null);
@@ -146,6 +160,12 @@ export function SettingsModal() {
     if (shellCaps === null) commands.detectShells().then(setShellCaps).catch(() => {});
   }, [open, section, fonts, shellCaps]);
 
+  useEffect(() => {
+    if (!open || section !== 'roles') return;
+    commands.loadRoles().then(setRoleSettings).catch(() => {});
+    commands.listDispatchableModels().then((result) => setRoleModels(result.models)).catch(() => setRoleModels([]));
+  }, [open, section]);
+
   if (!open) return null;
 
   // ── Handlers (identical to the former left-panel ThemeMenu/Lang wiring) ──
@@ -178,10 +198,16 @@ export function SettingsModal() {
     setDispatchSettings(next);
     saveDispatchSettings(next);
   };
+  const setRole = (key: 'planning' | 'execution' | 'acceptance', profile: RoleProfile) => {
+    const next = { ...roleSettings, [key]: profile };
+    setRoleSettings(next);
+    commands.saveRoles(next).catch(() => {});
+  };
 
   const SECTIONS: { id: Section; label: string }[] = [
     { id: 'appearance', label: t('settings.appearance' as any) },
     { id: 'terminal',   label: t('settings.terminal' as any) },
+    { id: 'roles',      label: '角色' },
     { id: 'dispatch',   label: '派发' },
     { id: 'tasks',      label: t('settings.tasks' as any) },
     { id: 'language',   label: t('settings.language' as any) },
@@ -372,6 +398,59 @@ export function SettingsModal() {
               </>
             )}
 
+            {section === 'roles' && (
+              <>
+                <div className="settings-section-label">经济模式默认角色</div>
+                <div className="settings-dispatch-grid">
+                  {([
+                    ['planning', '出方案'],
+                    ['execution', '执行'],
+                    ['acceptance', '验收'],
+                  ] as const).map(([key, label]) => {
+                    const profile = roleSettings[key];
+                    const availableModels = roleModels;
+                    const configured = availableModels.some((model) =>
+                      model.agent === profile.agent && model.provider === profile.provider && model.id === profile.model);
+                    const value = configured
+                      ? JSON.stringify([profile.agent, profile.provider, profile.model])
+                      : JSON.stringify(['', '', '']);
+                    return (
+                      <div key={key} className="settings-dispatch-field settings-dispatch-wide">
+                        <span>{label}</span>
+                        <select value={value} onChange={(event) => {
+                          const [agent, provider, model] = JSON.parse(event.target.value) as string[];
+                          const hit = roleModels.find((item) => item.agent === agent && item.provider === provider && item.id === model);
+                          setRole(key, { ...profile, agent, provider, model, tier: hit?.tier ?? profile.tier });
+                        }}>
+                          <option value={JSON.stringify(['', '', ''])}>未指定</option>
+                          {availableModels.map((model) => (
+                            <option key={JSON.stringify([model.agent, model.provider, model.id])} value={JSON.stringify([model.agent, model.provider, model.id])}>
+                              {model.agent}/{model.provider ? `${model.provider}/` : ''}{model.id}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="settings-key-row">
+                          <input value={profile.tier} placeholder="档位" onChange={(event) => setRole(key, { ...profile, tier: event.target.value })} />
+                          <select value={profile.thinking} onChange={(event) => setRole(key, { ...profile, thinking: event.target.value })}>
+                            <option>关</option><option>低</option><option>中</option><option>高</option>
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="settings-section-label">固定 prompt 模板（只读）</div>
+                <div className="settings-role-templates">
+                  {(['出方案', '执行', '验收'] as const).map((role) => (
+                    <div key={role} className="settings-role-template">
+                      <span>{role}</span>
+                      <pre>{ROLE_PROMPT_TEMPLATES[role]}</pre>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
             {section === 'dispatch' && (
               <>
                 <div className="settings-section-label">执行</div>
@@ -395,13 +474,25 @@ export function SettingsModal() {
                       <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
                     </select>
                   </label>
+                  <label className="settings-dispatch-field">
+                    <span>总请求上限</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={dispatchSettings.maxRequests}
+                      onChange={(e) => setDispatchOption('maxRequests', Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
+                    />
+                  </label>
                   <label className="settings-dispatch-field settings-dispatch-wide">
                     <span>归类模型</span>
                     <input
                       value={dispatchSettings.classificationModel}
                       placeholder="默认取已接入的低档模型"
-                      onChange={(e) => setDispatchOption('classificationModel', e.target.value)}
+                      disabled
+                      title="归类动作尚未接入"
                     />
+                    <span>尚未接入，当前不可用</span>
                   </label>
                   <label className="settings-dispatch-field settings-dispatch-wide">
                     <span>cc_switch.py 路径</span>
@@ -409,6 +500,14 @@ export function SettingsModal() {
                       value={dispatchSettings.ccSwitchPath}
                       placeholder="未配置"
                       onChange={(e) => setDispatchOption('ccSwitchPath', e.target.value)}
+                    />
+                  </label>
+                  <label className="settings-dispatch-field settings-dispatch-wide">
+                    <span>验证命令</span>
+                    <input
+                      value={dispatchSettings.validationCommand}
+                      placeholder="可空，例如 python -m pytest"
+                      onChange={(e) => setDispatchOption('validationCommand', e.target.value)}
                     />
                   </label>
                 </div>

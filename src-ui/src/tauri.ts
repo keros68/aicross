@@ -337,6 +337,8 @@ export const commands = {
   saveGraph: (graph: ConversationGraph) => invoke<void>('save_graph', { graph }),
   loadGraph: (id: string) => invoke<ConversationGraph | null>('load_graph', { id }),
   listGraphs: () => invoke<GraphMeta[]>('list_graphs'),
+  loadRoles: () => invoke<RoleSettings>('load_roles'),
+  saveRoles: (settings: RoleSettings) => invoke<void>('save_roles', { settings }),
   previewDispatch: (request: DispatchStageRequest) =>
     invoke<DispatchPreview>('preview_dispatch', { request }),
   dispatchGraphStage: (request: DispatchStageRequest) =>
@@ -366,6 +368,10 @@ export const commands = {
     invoke<ResourceStore>('smoke_resource_model', { request }),
   smokeAgentModels: (agentId: string) =>
     invoke<ResourceOperation>('smoke_agent_models', { agentId }),
+  inspectDispatchState: (projectDir: string) =>
+    invoke<{ exists: boolean; unfinished: boolean; content: string; runId: string; activeNodeIds: string[] }>('inspect_dispatch_state', { projectDir }),
+  abandonDispatchState: (projectDir: string) =>
+    invoke<void>('abandon_dispatch_state', { projectDir }),
 };
 
 // ── 对话图契约类型：Graph / GraphNode / Target / Preset / Stage /
@@ -380,13 +386,31 @@ export interface GraphMeta {
 export interface DispatchSettings {
   timeoutSecs: number;
   concurrency: number;
+  maxRequests: number;
   redact: boolean;
   writeProjectDispatch: boolean;
   ccSwitchPath: string;
+  validationCommand: string;
+}
+
+export interface RoleProfile {
+  agent: string;
+  provider: string;
+  model: string;
+  tier: string;
+  thinking: string;
+}
+
+export interface RoleSettings {
+  version: 1;
+  planning: RoleProfile;
+  execution: RoleProfile;
+  acceptance: RoleProfile;
 }
 
 export interface DispatchNodeRequest {
   nodeId: string;
+  stage: number;
   agent: string;
   provider: string;
   model: string;
@@ -400,6 +424,9 @@ export interface DispatchNodeRequest {
   currentMessage: string;
   materials: string[];
   sessionId: string;
+  write: string;
+  originalRequest: string;
+  upstreamArtifacts: import('./graph/types').ReplyArtifacts[];
 }
 
 export interface DispatchStageRequest {
@@ -412,11 +439,13 @@ export interface DispatchStageRequest {
 
 export interface DispatchPreview {
   totalRedacted: number;
+  broadRedacted: number;
   nodes: { nodeId: string; redacted: number; isolation: string }[];
 }
 
 export interface DispatchNodeResult {
   nodeId: string;
+  stage: number;
   status: string;
   text: string;
   rawStdout: string;
@@ -437,6 +466,8 @@ export interface DispatchNodeResult {
   frontmatter: string;
   outputPreview: string;
   error: string;
+  artifacts: import('./graph/types').ReplyArtifacts | null;
+  validationOutput: string;
 }
 
 export interface DispatchStageResult {
