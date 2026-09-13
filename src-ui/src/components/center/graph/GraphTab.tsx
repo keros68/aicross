@@ -23,7 +23,8 @@ import './GraphTab.css';
 const NODE_W = 168;
 const NODE_H = 56;
 const GAP_X = 64;
-const GAP_Y = 12;
+const GAP_Y = 40; // 留出高亮节点下方「分叉」「盖预设」按钮的位置，不压下一行
+const ACTIONS_H = 32; // 节点下方按钮行高度，加进画布高度，末行按钮不被底边裁掉
 
 export function GraphTab({ session }: { session: TerminalSession }) {
   const { state, dispatch } = useAppState();
@@ -123,13 +124,15 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const focusNodeId =
     state.graphFocus?.graphId === graphId ? state.graphFocus.nodeId : null;
 
-  // 高亮节点变化时把节点卡滚入视野
+  // 高亮节点变化时把节点卡连同它下方的「分叉」「盖预设」按钮一起滚入视野；
+  // 只滚节点卡的话，末行节点的按钮会留在图区底边之外
   const canvasRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!focusNodeId) return;
-    canvasRef.current
-      ?.querySelector('.graph-node.focused')
-      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.querySelector('.graph-node.focused')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    canvas.querySelector('.graph-node-actions')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [focusNodeId]);
 
   const openGraph = (id: string) => {
@@ -544,7 +547,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
       <div className="graph-canvas" ref={canvasRef}>
         <div
           className="graph-canvas-inner"
-          style={{ width: layout.width, height: layout.height }}
+          style={{ width: layout.width, height: layout.height + ACTIONS_H }}
         >
           <svg className="graph-edges" width={layout.width} height={layout.height}>
             {edges}

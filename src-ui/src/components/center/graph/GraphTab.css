@@ -509,7 +509,8 @@
   align-self: flex-start;
   padding: 8px 16px;
   font-size: 13px;
-  color: var(--accent);
+  font-weight: 600;
+  color: var(--text-1); /* 同 .orch-btn-primary：不按 accent 上色，单色主题下才看得出可用 */
   background: var(--accent-bg);
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
@@ -518,5 +519,4 @@
 
 .graph-primary-btn:hover {
   border-color: var(--accent-hover);
-  color: var(--accent-hover);
 }

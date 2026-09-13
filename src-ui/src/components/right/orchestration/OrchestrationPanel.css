@@ -61,13 +61,14 @@
 }
 
 .orch-btn-primary {
-  color: var(--accent);
+  /* 文字用 text-1 不用 accent：单色主题的 accent 接近边框色，按 accent 上色会像禁用态 */
+  color: var(--text-1);
+  font-weight: 600;
   border-color: var(--accent);
   background: var(--accent-bg);
 }
 
 .orch-btn-primary:hover:not(:disabled) {
-  color: var(--accent-hover);
   border-color: var(--accent-hover);
 }
 
