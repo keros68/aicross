@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::paths::aicross_root;
+use crate::resources::{connected as connected_resources, ResourceModel};
 
 // ── 对话图数据模型（A 节契约） ─────────────────────────────────────────────
 
@@ -81,6 +82,11 @@ pub struct Reply {
     pub tokens_out: Option<u64>,
     #[serde(default)]
     pub ms: Option<u64>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// 结果屏「采纳」标记，随图持久化（前端 Reply.adopted）
+    #[serde(default)]
+    pub adopted: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -143,59 +149,6 @@ pub struct GraphMeta {
     pub title: String,
     #[serde(default)]
     pub updated_at: String,
-}
-
-// ── resources.json 只读镜像（shape 见 port/src-tauri-old/src/models.rs） ───
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct ResourceStore {
-    #[serde(default)]
-    #[allow(dead_code)]
-    version: u32,
-    #[serde(default)]
-    agents: Vec<ResourceAgent>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct ResourceAgent {
-    #[serde(default)]
-    #[allow(dead_code)]
-    id: String,
-    #[serde(default)]
-    models: Vec<ResourceModel>,
-}
-
-/// 与 resources.json 的 ResourceModel 逐字段对应；全部加 default 容忍缺字段。
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct ResourceModel {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub agent: String,
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub vendor: String,
-    #[serde(default)]
-    pub billing_source: String,
-    #[serde(default)]
-    pub tier: String,
-    #[serde(default)]
-    pub thinking: String,
-    #[serde(default)]
-    pub status: String,
-    #[serde(default)]
-    pub source: String,
-    #[serde(default)]
-    pub smoked_at: String,
-    #[serde(default)]
-    pub smoke_model: String,
-    #[serde(default)]
-    pub smoke_failure: String,
-    #[serde(default)]
-    pub meta: String,
-    #[serde(default)]
-    pub note: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -353,34 +306,20 @@ fn validate_graph_id(id: &str) -> Result<(), String> {
 
 fn dispatchable_from(root: &Path) -> DispatchableModels {
     let path = resources_path(root);
-    let contents = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
+    match connected_resources(&path) {
+        Ok(models) => DispatchableModels {
+            models,
+            error: None,
+        },
+        Err(_) if !path.exists() => {
             return DispatchableModels {
                 models: Vec::new(),
                 error: Some("未找到 resources.json，尚未接入资源".to_string()),
             }
         }
-        Err(e) => {
-            return DispatchableModels {
+        Err(error) => DispatchableModels {
                 models: Vec::new(),
-                error: Some(format!("读取 resources.json 失败：{e}")),
-            }
-        }
-    };
-    match serde_json::from_str::<ResourceStore>(&contents) {
-        Ok(store) => DispatchableModels {
-            models: store
-                .agents
-                .into_iter()
-                .flat_map(|agent| agent.models)
-                .filter(|model| model.status == "已接入")
-                .collect(),
-            error: None,
-        },
-        Err(e) => DispatchableModels {
-            models: Vec::new(),
-            error: Some(format!("resources.json 解析失败：{e}")),
+                error: Some(error),
         },
     }
 }
@@ -567,6 +506,7 @@ mod tests {
             },
             reply: Some(Reply {
                 status: "draft".into(),
+                adopted: Some(true),
                 ..Reply::default()
             }),
             target: Some(Target {

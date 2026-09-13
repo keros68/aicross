@@ -1,5 +1,5 @@
 // 右栏「方案与编排」（TASK-02 C2）：预设下拉 + 子图预览 + 节点面板 +
-// 构建器 + 讲解。本期不做派发执行；图变更统一走 commitGraph。
+// 构建器 + 讲解。派发执行由中栏 DispatchOverlay 承担；图变更统一走 commitGraph。
 // 文案直接中文硬编码（同 GraphTab 的选择，见 REPORT-02）。
 
 import { useEffect, useMemo, useState } from 'react';

@@ -1,0 +1,13 @@
+你是代码审查者，本次是复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/）。先读 tasks/review-03-glm.md 与 tasks/review-03-qwen.md（上一轮两家审查）、tasks/fix-03-r1.md（修正单）、tasks/REPORT-03.md 的「修正轮 R1」与「编排者补记」两节（实现方与编排者对每条的处理与真跑结果），再读涉及的文件：src/channels/mod.rs、src/dispatch.rs、src/process.rs、src/resources.rs、src-ui/src/graph/（context.ts、dispatch.ts、dispatch-settings.ts、types.ts 及 __tests__）、src-ui/src/components/center/graph/DispatchOverlay.tsx 与 GraphTab.tsx、src-ui/src/tauri.ts。不读 node_modules、target、dist、port。
+
+逐条核对修正单的 23 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- 第 1 条 pi 真身是否优先 responseModel 且不符判 identity_mismatch，fixture 是否用真实事件；
+- 第 4 条 kimi：别名校验、`-S` 发送、提示行锚定解析；以及编排者补记第 3 条改的 parse_kimi（纯字符串 content、跳过 tool 事件、session.resume_hint）是否正确且有测试；
+- 第 5 条脱敏的 JSON 形态与失败路径占位；stderr/error 落盘前脱敏；
+- 第 15 条 argv 测试是否真的不再依赖本机 CLI；
+- 第 16 条 cc_switch 路径设置项是否贯通到界面与 Rust；
+- 修正是否引入新缺陷（并发、超时、留痕契约字段、第 2 期图与面板行为）。
+- 「不采纳」三条理由是否成立。
+编排者已在沙箱外复跑：cargo test 120 passed、vitest 61 passed、build 通过；真机盲审三路 ok、续聊 ok（见「编排者补记」）。
+
+最后单独回答：修正轮 R1 加编排者补记之后，第 3 期是否可以提交并进入第 4 期？一句话 + 仍未闭合的项列表。

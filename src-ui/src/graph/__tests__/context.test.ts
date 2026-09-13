@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contextOf } from '../context.ts';
+import { BLIND_PROMPT_PREFIX, contextOf, serializeContext, serializeCurrentMessage } from '../context.ts';
 import { stamp } from '../stamp.ts';
 import type { Graph, GraphNode, NodeKind, Reply, Target, VisibilityKind } from '../types.ts';
 
@@ -52,6 +52,10 @@ function mkGraph(nodes: GraphNode[], root = 'root'): Graph {
 }
 
 describe('contextOf', () => {
+  it('续接本条消息保留用户角色和附件名', () => {
+    expect(serializeCurrentMessage({ text: '继续检查', attachments: ['C:\\tmp\\data.csv'] }))
+      .toBe('[用户]\n继续检查\n\n[附件]\nC:\\tmp\\data.csv');
+  });
   it('共享：路径上全部用户消息与模型回复', () => {
     const g = mkGraph([
       mkNode('root', 'material', [], '根消息', { attachments: ['a.txt'] }),
@@ -139,19 +143,21 @@ describe('contextOf', () => {
     ]);
   });
 
-  it('draft/pending/空文本的回复不进上下文', () => {
+  it('draft/pending/failed/空文本的回复不进上下文', () => {
     const g = mkGraph([
       mkNode('root', 'material', [], '根消息'),
       mkNode('A', 'turn', ['root'], '问A', { reply: { status: 'pending', text: '半截' } }),
       mkNode('B', 'turn', ['A'], '问B', { reply: { status: 'done', text: '' } }),
-      mkNode('C', 'turn', ['B'], '问C', { target: mkTarget('共享') }),
+      mkNode('C', 'turn', ['B'], '问C', { reply: { status: 'failed', text: '调用失败' } }),
+      mkNode('D', 'turn', ['C'], '问D', { target: mkTarget('共享') }),
     ]);
-    const ctx = contextOf(g, 'C');
+    const ctx = contextOf(g, 'D');
     expect(ctx).toEqual([
       { text: '根消息', attachments: [] },
       { text: '问A', attachments: [] },
       { text: '问B', attachments: [] },
       { text: '问C', attachments: [] },
+      { text: '问D', attachments: [] },
     ]);
   });
 
@@ -224,5 +230,36 @@ describe('contextOf', () => {
       { text: '答E2', attachments: [] },
       { text: '答E3', attachments: [] },
     ]);
+  });
+
+  it('共享序列化标记用户与模型角色，并可只保留勾选项', () => {
+    const g = mkGraph([
+      mkNode('root', 'material', [], '原始问题', { attachments: ['C:\\data\\a.csv'] }),
+      mkNode('A', 'turn', ['root'], '继续', { reply: done('第一轮'), target: mkTarget('共享') }),
+      mkNode('B', 'turn', ['A'], '再问', { target: mkTarget('共享') }),
+    ]);
+    const full = serializeContext(g, 'B');
+    expect(full.prompt).toContain('[用户]\n原始问题');
+    expect(full.prompt).toContain('[模型回复 claude/m1]\n第一轮');
+    expect(full.prompt).toContain('[附件]\nC:\\data\\a.csv');
+    const selected = serializeContext(g, 'B', {
+      messageKeys: ['B:user'],
+      attachments: ['C:\\data\\a.csv'],
+    });
+    expect(selected.prompt).toBe('[附件]\nC:\\data\\a.csv\n\n[用户]\n再问');
+  });
+
+  it('盲序列化套冻结模板且不含上游模型回复', () => {
+    const g = mkGraph([
+      mkNode('root', 'material', [], '材料', { attachments: ['C:\\data\\raw.csv'] }),
+      mkNode('A', 'turn', ['root'], '问题', { reply: done('旧结论') }),
+      mkNode('B', 'turn', ['A'], '独立判断', { target: mkTarget('盲') }),
+    ]);
+    const out = serializeContext(g, 'B');
+    expect(out.prompt.startsWith(BLIND_PROMPT_PREFIX)).toBe(true);
+    expect(out.prompt).not.toContain('旧结论');
+    expect(out.prompt).toContain('[用户]\n独立判断');
+    expect(out.prompt).toContain('[附件]\nraw.csv');
+    expect(out.prompt).not.toContain('C:\\data\\raw.csv');
   });
 });

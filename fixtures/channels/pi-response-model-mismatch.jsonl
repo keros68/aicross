@@ -1,0 +1,2 @@
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"青松-731"}],"api":"openai-completions","provider":"zai-coding-cn","model":"glm-4.7","usage":{"input":115,"output":41,"cacheRead":1472,"cacheWrite":0,"reasoning":33,"totalTokens":1628},"stopReason":"stop","timestamp":1789299639490,"responseId":"202609131940409144a8881786403d","responseModel":"glm-5.3-flash","rawStopReason":"stop"}}
+{"type":"agent_settled"}

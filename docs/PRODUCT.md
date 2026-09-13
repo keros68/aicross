@@ -46,6 +46,13 @@
 
 派发目标永远是模型，agent 只是通道（壳 ≠ 模型）；资源按 agent 分级是为了接入和探测方便，路由与独立性仍按厂商算。
 
+**通道架构定案（09-13）：pi 是所有非原生订阅模型的默认通道，cc-switch 降级为发现提示。** 依据是当日实测（skill `references/evidence.md`「pi 的固定足迹与宿主隔离实测」）：pi 无工具 405 token、只读工具 1.5k、`--system-prompt ""` 时 21，对比 claude -p 12k 起、codex 20k；`--no-context-files` 实测挡住用户级 `~/.pi/agent/AGENTS.md`，盲验隔离可标「完整」；三个 provider（DeepSeek 官方、qwen token plan、智谱 coding plan）共 31 个模型；密钥归 `pi auth` 管，控制台进程里不出现 key，密钥六铁律变成设计上不碰。落点：
+- claude / codex / kimi 三个 CLI 只承接各自的 OAuth 订阅；其余模型一律经 pi。接入页读 `models-store.json` + `pi --list-models`，冒烟真发一次请求（`--list-models` 有 ≠ 有权限，qwen plan 下 deepseek-v4-flash 实测 403）。
+- 盲审、仲裁、前提抽查默认走 pi `--no-tools --no-context-files`；真身核对比对事件里的 `responseModel`（zai 端点实测把 glm-4.7 静默换成 glm-5.3-flash）。
+- TASK-01 的 cc-switch.db 读取降为「发现提示」（发现已配 provider 时建议加进 pi），不再作为派发通道；`cc_switch.py` 路径不进源码。
+- 第 4 期：走 pi 的节点用 pi 会话文件续接（`--session-id`），上下文跟随分支对 pi 节点近似无损；跨 CLI 才走有损序列化。
+- 风险如实记：pi 是第三方项目，模型清单会漂；开工具时它有自己的 agent 系统提示（约 1.2k）；landscape 记过的 issue 4187（SDK 方式打 GLM coding plan 端点的封号风险）在接入页标一句。
+
 **各 agent 的探测事实源**（调查记录 `docs/proto/resources-research.md`，2026-08-30）：
 
 | agent | 存在检测 | 模型清单 |

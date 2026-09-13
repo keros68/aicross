@@ -1,6 +1,9 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
+
+const configDir = dirname(fileURLToPath(import.meta.url));
 
 // xterm.js's WebGL addon (RectangleRenderer.updateBackgrounds) decides
 // "draw a bg rect for this cell?" by `cell.bg !== 0`. But cell.bg is a
@@ -79,7 +82,7 @@ export default defineConfig({
     outDir: 'dist',
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html'),
+        main: resolve(configDir, 'index.html'),
       },
     },
   },

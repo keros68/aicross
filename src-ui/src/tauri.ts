@@ -128,13 +128,13 @@ export const commands = {
   // Tier Terminal API
   tierTerminalStart: (sessionId: string, tool: string | null, cols: number, rows: number, themeMode: string, locale?: string, toolData?: string, cwd?: string, resumeToken?: string, shell?: string) =>
     invoke<void>('tier_terminal_start', { sessionId, tool, toolData: toolData ?? null, cols, rows, themeMode, locale: locale ?? null, cwd: cwd ?? null, resumeToken: resumeToken ?? null, shell: shell ?? null }),
-  tierTerminalInput: (sessionId: string, data: string) => 
+  tierTerminalInput: (sessionId: string, data: string) =>
     invoke<void>('tier_terminal_input', { sessionId, data }),
   /** Raw write to PTY — does NOT trigger agent-status detection.
    *  Used for system-generated input (auto-skip prompts, etc.). */
   tierTerminalRawWrite: (sessionId: string, data: string) =>
     invoke<void>('tier_terminal_raw_write', { sessionId, data }),
-  tierTerminalKill: (sessionId: string) => 
+  tierTerminalKill: (sessionId: string) =>
     invoke<void>('tier_terminal_kill', { sessionId }),
   tierTerminalResize: (sessionId: string, cols: number, rows: number) =>
     invoke<void>('tier_terminal_resize', { sessionId, cols, rows }),
@@ -328,6 +328,12 @@ export const commands = {
   saveGraph: (graph: ConversationGraph) => invoke<void>('save_graph', { graph }),
   loadGraph: (id: string) => invoke<ConversationGraph | null>('load_graph', { id }),
   listGraphs: () => invoke<GraphMeta[]>('list_graphs'),
+  previewDispatch: (request: DispatchStageRequest) =>
+    invoke<DispatchPreview>('preview_dispatch', { request }),
+  dispatchGraphStage: (request: DispatchStageRequest) =>
+    invoke<DispatchStageResult>('dispatch_graph_stage', { request }),
+  cancelDispatchNode: (runId: string, nodeId: string) =>
+    invoke<boolean>('cancel_dispatch_node', { runId, nodeId }),
 };
 
 // ── 对话图契约类型：Graph / GraphNode / Target / Preset / Stage /
@@ -337,6 +343,74 @@ export interface GraphMeta {
   id: string;
   title: string;
   updated_at: string;
+}
+
+export interface DispatchSettings {
+  timeoutSecs: number;
+  concurrency: number;
+  redact: boolean;
+  writeProjectDispatch: boolean;
+  ccSwitchPath: string;
+}
+
+export interface DispatchNodeRequest {
+  nodeId: string;
+  agent: string;
+  provider: string;
+  model: string;
+  vendor: string;
+  billingSource: string;
+  role: string;
+  tier: string;
+  thinking: string;
+  visibility: string;
+  prompt: string;
+  currentMessage: string;
+  materials: string[];
+  sessionId: string;
+}
+
+export interface DispatchStageRequest {
+  runId: string;
+  stage: number;
+  projectDir: string;
+  nodes: DispatchNodeRequest[];
+  settings: DispatchSettings;
+}
+
+export interface DispatchPreview {
+  totalRedacted: number;
+  nodes: { nodeId: string; redacted: number; isolation: string }[];
+}
+
+export interface DispatchNodeResult {
+  nodeId: string;
+  status: string;
+  text: string;
+  rawStdout: string;
+  rawStderr: string;
+  modelReported: string;
+  sessionId: string;
+  tokensIn: number;
+  tokensOut: number;
+  cacheRead: number;
+  durationMs: number;
+  exitCode: number | null;
+  timedOut: boolean;
+  truncated: boolean;
+  redacted: number;
+  isolation: string;
+  workdir: string;
+  dispatchFile: string;
+  frontmatter: string;
+  outputPreview: string;
+  error: string;
+}
+
+export interface DispatchStageResult {
+  runId: string;
+  results: DispatchNodeResult[];
+  stateFile: string;
 }
 
 // Codex-compatible plugin marketplace (a cloned git repo) + its plugins.

@@ -18,6 +18,8 @@ export interface Reply {
   tokens_in?: number;
   tokens_out?: number;
   ms?: number;
+  session_id?: string;
+  adopted?: boolean;
 }
 
 export interface Target {

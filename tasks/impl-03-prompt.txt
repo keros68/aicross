@@ -1,0 +1,10 @@
+先读仓库根目录的 AGENTS.md，再读 tasks/TASK-03-dispatch.md，按任务书实现第 3 期。任务书第 0 节「与对话图的衔接」优先于后文的旧说法，先把它读懂：派发单位是图上的 draft 节点，prompt 来自 src-ui/src/graph/context.ts 的 contextOf，结果写回 node.reply 并持久化。动手前读 tasks/REPORT-02.md 了解第 2 期落点，读 D:\work\agentteam\dist\ai-cross\references\channels.md（末尾「.dispatch/ 留痕契约」与开头的盲验模板）和 SKILL.md「验证的框架隔离」「执行闭环规则」。
+
+硬要求：
+1. 任务书「不做」与「验收」两节是硬要求。验收命令（cargo check / cargo test / cd src-ui && npx vitest run / cd src-ui && npm run build）必须实际跑过，命令与输出原文贴进报告；跑不了的写「未验证」，不写「已验证」。
+2. 真机盲审与续聊各跑一次（模型请求总数 ≤ 6 次）。用 fixtures/blind-task/ 的材料（自己造：一份 300 字方案 + 一个 20 行 CSV）。三路用 pi/zai-coding-cn/glm-4.7、codex/gpt-5.6-luna、kimi/kimi-for-coding-highspeed；哪路跑不通就如实记录原因并换 pi/qwen-token-plan-cn 下的 deepseek-v4-flash，不要伪造输出。
+3. 密钥只按子进程环境变量传，不回显、不落盘、不进日志；不读 ~/.pi/auth.json 与 ~/.cc-switch。
+4. 不起窗口、不跑 tauri dev。不 commit，不 push。
+5. 完成后写 tasks/REPORT-03.md：改了什么、每条验收怎么验的、真跑的 .dispatch/ 文件路径与 frontmatter 摘录、没做什么、不确定处。
+
+第 2 期已经做过的东西（图、面板、预设、构建器）不要重做，只在其上接派发；graph/ 下的纯函数改动要补测试。

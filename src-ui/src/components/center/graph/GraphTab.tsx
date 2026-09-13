@@ -1,6 +1,6 @@
 // 中栏「对话图」tab（TASK-02 C1）：上半会话图（按深度分层、左→右生长），
-// 下半 1–3 列聊天面板。本期不做派发执行：发送只产生 draft 节点；
-// 图变更统一走 commitGraph（全局状态 + save_graph 落盘）。
+// 下半 1–3 列聊天面板。draft 节点经 G1/G2/G3 派发，结果先写回 Reply，
+// 再由 commitGraph 持久化。
 // 文案直接中文硬编码（见 REPORT-02：接入 11 语言 i18n 字典成本过高）。
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -17,6 +17,8 @@ import { commitGraph, presetNameOf, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
 import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
+import { dispatchableNodeIds } from '../../../graph/dispatch';
+import { DispatchOverlay } from './DispatchOverlay';
 import './GraphTab.css';
 
 // 节点卡固定尺寸，图区横向滚动；不做缩放、不做拖拽（任务书硬约束）。
@@ -43,6 +45,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const [ctxOpen, setCtxOpen] = useState<Record<number, boolean>>({});
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [failedId, setFailedId] = useState<string | null>(null);
+  const [dispatchOpen, setDispatchOpen] = useState(false);
 
   // 可派发模型与预设（命令幂等便宜；右栏 OrchestrationPanel 也各自拉取）
   useEffect(() => {
@@ -319,8 +322,9 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     const isFocus = id === focusNodeId;
     const hit = node.target ? findModel(models, node.target) : undefined;
     const color = vendorColor(node.target?.agent, hit?.vendor);
-    const status =
-      node.kind !== 'material' && node.reply?.status === 'draft' ? '待派' : null;
+    const status = node.kind === 'material' ? null : ({
+      draft: '待派', pending: '运行中', done: '完成', failed: '失败',
+    } as const)[node.reply?.status ?? 'draft'];
     const disconnected = validateNode(graph, id, models).includes('未接入');
     return (
       <div key={id}>
@@ -412,11 +416,17 @@ export function GraphTab({ session }: { session: TerminalSession }) {
         )}
         {showReplySlot && (
           <div className="graph-msg graph-msg-reply">
-            <div className="graph-msg-meta">{nodeLabel(node)}</div>
+            <div className="graph-msg-meta">
+              {nodeLabel(node)}
+              {(node.reply?.tokens_in !== undefined || node.reply?.tokens_out !== undefined) && (
+                <span> · in {node.reply?.tokens_in ?? '—'} / out {node.reply?.tokens_out ?? '—'}</span>
+              )}
+              {node.reply?.adopted && <span> · 已采纳</span>}
+            </div>
             {node.reply && node.reply.status !== 'draft' && node.reply.status !== 'pending' ? (
               <div className="graph-msg-text">{node.reply.text}</div>
             ) : (
-              <div className="graph-msg-pending">待派</div>
+              <div className="graph-msg-pending">{node.reply?.status === 'pending' ? '运行中' : '待派'}</div>
             )}
           </div>
         )}
@@ -544,6 +554,10 @@ export function GraphTab({ session }: { session: TerminalSession }) {
 
   return (
     <div className="graph-tab">
+      <div className="graph-dispatch-toolbar">
+        <span>可派 {dispatchableNodeIds(graph).length} 路</span>
+        <button className="graph-primary-btn" disabled={dispatchableNodeIds(graph).length === 0} onClick={() => setDispatchOpen(true)}>派发</button>
+      </div>
       <div className="graph-canvas" ref={canvasRef}>
         <div
           className="graph-canvas-inner"
@@ -564,6 +578,15 @@ export function GraphTab({ session }: { session: TerminalSession }) {
           models={models}
           onCommit={commit}
           onClose={() => setPanelNode(null)}
+        />
+      )}
+      {dispatchOpen && (
+        <DispatchOverlay
+          graph={graph}
+          models={models}
+          projectDir={session.folderPath ?? ''}
+          onCommit={commit}
+          onClose={() => setDispatchOpen(false)}
         />
       )}
     </div>

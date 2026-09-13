@@ -8,8 +8,8 @@
 | F1 | `TASK-F1-rebrand.md` | fork Coffee CLI 后改名换标，履行 AGPL 与商标义务 | 已提交（a73c3e8），未盲审 |
 | F2 | `TASK-F2-decouple.md` | 切断与上游的运行时冲突：不自动写外部 CLI 配置，状态迁到 `~/.aicross` | 已提交（a73c3e8），未盲审 |
 | 2 | `TASK-02-orchestration.md` | 对话图（节点 / 分叉 / 扇入 / 三列面板）、上下文计算、预设图章、一行记法、构建器、讲解页。09-13 按「对话即图」重写 | 代码验收完成（kimi 实现 → GLM-5.3-Flash 盲审 → kimi 修 R1 → GLM 复审 12 条全核实），编排者复跑 cargo 93 / vitest 51 / build 全绿，窗口手测 10 项全过（REPORT-02 末节）。未提交 |
-| 3 | `TASK-03-dispatch.md` | 通道执行器、盲审真跑、`.dispatch/` 契约、G1/G2/G3、共享对话续聊 | 待派 |
-| 4 | `TASK-04-pipeline.md` | 阶段传递、执行产物交付验收、经济规则、闭环 G4 | 待派 |
+| 3 | `TASK-03-dispatch.md` | 通道执行器、盲审真跑、`.dispatch/` 契约、G1/G2/G3、共享对话续聊。09-13 加 0 节对接对话图 | 代码验收完成（codex 实现 → GLM + qwen 双盲审 → codex 修 R1 23 条 → 编排者补修 kimi 解析/adopted/正文脱敏 → GLM + qwen 复审放行）。真机：三路盲审 ok、续聊 ok、kimi `-S` 续聊 ok。提交 09-13 |
+| 4 | `TASK-04-pipeline.md` | 阶段传递、执行产物交付验收、经济规则、闭环 G4。09-13 加 0 节衔接与第 3 期遗留 | 待派 |
 | 5 | `TASK-05-acp-and-polish.md` | ACP 长驻、第 2 期预设、打包与手册 | 后置 |
 
 ## 每期流程

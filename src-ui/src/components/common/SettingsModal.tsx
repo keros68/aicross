@@ -20,9 +20,10 @@ import { TERM_COLOR_SCHEMES } from '../center/TierTerminal';
 import { commands, type FontInfo } from '../../tauri';
 import { FontPicker } from './FontPicker';
 import { THEME_COLORS, THEME_SHAPES, ICON_ART_THEMES, LANGUAGES, TASK_VIEW_MODES, isMaskTintTheme } from '../../lib/personalization';
+import { loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } from '../../graph/dispatch-settings';
 import './SettingsModal.css';
 
-type Section = 'appearance' | 'wallpaper' | 'terminal' | 'gambit' | 'tasks' | 'language' | 'feedback';
+type Section = 'appearance' | 'wallpaper' | 'terminal' | 'dispatch' | 'gambit' | 'tasks' | 'language' | 'feedback';
 
 // Trailing "opens outside the app" affordance on the feedback cards.
 const ExternalLinkArrow = () => (
@@ -71,6 +72,12 @@ const ICONS: Record<Section, ReactNode> = {
       <path d="m7 11 2-2-2-2" /><path d="M11 13h4" /><rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
     </svg>
   ),
+  dispatch: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="5" cy="12" r="2" /><circle cx="19" cy="6" r="2" /><circle cx="19" cy="18" r="2" />
+      <path d="M7 12h4c3 0 3-6 6-6M11 12c3 0 3 6 6 6" />
+    </svg>
+  ),
   gambit: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <rect width="20" height="16" x="2" y="4" rx="2" />
@@ -105,6 +112,7 @@ export function SettingsModal() {
   const t = useT();
   const [section, setSection] = useState<Section>('appearance');
   const [version, setVersion] = useState('');
+  const [dispatchSettings, setDispatchSettings] = useState<UiDispatchSettings>(loadDispatchSettings);
   // Installed fonts for the terminal font picker — loaded lazily (Rust scan)
   // the first time the Terminal section is opened. null = not loaded yet.
   const [fonts, setFonts] = useState<FontInfo[] | null>(null);
@@ -214,6 +222,11 @@ export function SettingsModal() {
     dispatch({ type: 'SET_TITLEBAR_TOGGLE_DISPLAY', value });
     try { localStorage.setItem('cc-titlebar-toggle-display', value); } catch {}
   };
+  const setDispatchOption = <K extends keyof UiDispatchSettings>(key: K, value: UiDispatchSettings[K]) => {
+    const next = { ...dispatchSettings, [key]: value };
+    setDispatchSettings(next);
+    saveDispatchSettings(next);
+  };
 
   const hasBg = state.bgType !== 'none' && state.bgPath !== '';
   const modKey = IS_MACOS ? '⌘' : 'Ctrl';
@@ -222,6 +235,7 @@ export function SettingsModal() {
     { id: 'appearance', label: t('settings.appearance' as any) },
     { id: 'wallpaper',  label: t('settings.wallpaper' as any) },
     { id: 'terminal',   label: t('settings.terminal' as any) },
+    { id: 'dispatch',   label: '派发' },
     { id: 'gambit',     label: t('settings.gambit' as any) },
     { id: 'tasks',      label: t('settings.tasks' as any) },
     { id: 'language',   label: t('settings.language' as any) },
@@ -541,6 +555,68 @@ export function SettingsModal() {
                       </button>
                     );
                   })}
+                </div>
+              </>
+            )}
+
+            {section === 'dispatch' && (
+              <>
+                <div className="settings-section-label">执行</div>
+                <div className="settings-dispatch-grid">
+                  <label className="settings-dispatch-field">
+                    <span>默认超时（秒）</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={3600}
+                      value={dispatchSettings.timeoutSecs}
+                      onChange={(e) => setDispatchOption('timeoutSecs', Math.max(1, Math.min(3600, Number(e.target.value) || 1)))}
+                    />
+                  </label>
+                  <label className="settings-dispatch-field">
+                    <span>并发上限</span>
+                    <select
+                      value={dispatchSettings.concurrency}
+                      onChange={(e) => setDispatchOption('concurrency', Number(e.target.value))}
+                    >
+                      <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
+                    </select>
+                  </label>
+                  <label className="settings-dispatch-field settings-dispatch-wide">
+                    <span>归类模型</span>
+                    <input
+                      value={dispatchSettings.classificationModel}
+                      placeholder="默认取已接入的低档模型"
+                      onChange={(e) => setDispatchOption('classificationModel', e.target.value)}
+                    />
+                  </label>
+                  <label className="settings-dispatch-field settings-dispatch-wide">
+                    <span>cc_switch.py 路径</span>
+                    <input
+                      value={dispatchSettings.ccSwitchPath}
+                      placeholder="未配置"
+                      onChange={(e) => setDispatchOption('ccSwitchPath', e.target.value)}
+                    />
+                  </label>
+                </div>
+                <div className="settings-section-label">外发与留痕</div>
+                <div className="settings-key-row">
+                  <button
+                    className={`settings-key-card${dispatchSettings.redact ? ' active' : ''}`}
+                    onClick={() => setDispatchOption('redact', !dispatchSettings.redact)}
+                    aria-pressed={dispatchSettings.redact}
+                  >
+                    <span className="settings-key-combo">外发脱敏</span>
+                    <span className="settings-key-sub">{dispatchSettings.redact ? '已开启' : '已关闭'}</span>
+                  </button>
+                  <button
+                    className={`settings-key-card${dispatchSettings.writeProjectDispatch ? ' active' : ''}`}
+                    onClick={() => setDispatchOption('writeProjectDispatch', !dispatchSettings.writeProjectDispatch)}
+                    aria-pressed={dispatchSettings.writeProjectDispatch}
+                  >
+                    <span className="settings-key-combo">项目留痕</span>
+                    <span className="settings-key-sub">{dispatchSettings.writeProjectDispatch ? '写入 .dispatch/' : '只写运行目录'}</span>
+                  </button>
                 </div>
               </>
             )}

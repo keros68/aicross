@@ -1247,7 +1247,7 @@ fn parse_agent_jsonl(
             }
         }
     }
-    
+
     // Fallback: JSONL had no embedded cwd (older session, or a line we didn't
     // recognize). Claude Code's own `~/.claude.json` projects registry is the
     // only reliable source at that point — see load_claude_project_map for why
@@ -3520,9 +3520,9 @@ fn delete_password(host: String, username: String) -> Result<(), String> {
 async fn check_network_port(host: String, port: u16) -> Result<bool, String> {
     use std::time::Duration;
     use std::net::ToSocketAddrs;
-    
+
     let target = format!("{}:{}", host, port);
-    
+
     // Run blocking network check in a dedicated blocking task to avoid stalling the async runtime
     let reachable = tauri::async_runtime::spawn_blocking(move || {
         match target.to_socket_addrs() {
@@ -3839,6 +3839,9 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::orchestration::save_graph,
             crate::orchestration::load_graph,
             crate::orchestration::list_graphs,
+            crate::dispatch::preview_dispatch,
+            crate::dispatch::dispatch_graph_stage,
+            crate::dispatch::cancel_dispatch_node,
         ])
         .setup(|app| {
             // Seed bundled skills (screenshot, vibeid) into

@@ -1,0 +1,2 @@
+{"type":"message_end","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"qwen-token-plan-cn","model":"deepseek-v4-flash","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"stopReason":"error","timestamp":1789299623852,"errorMessage":"403: {\"message\":\"Access to model denied. Please make sure you are eligible for using the model.\",\"type\":\"AccessDenied.Unpurchased\",\"code\":\"AccessDenied.Unpurchased\"}"}}
+{"type":"agent_settled"}

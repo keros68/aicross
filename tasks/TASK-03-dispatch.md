@@ -2,6 +2,18 @@
 
 先读 `AGENTS.md`、`docs/PRODUCT.md`（「形态」「闸门」「与 ai-cross skill 的关系」）、`tasks/TASK-02-orchestration.md` 的数据模型、`tasks/REPORT-01.md`（冒烟命令与 `process.rs`）。还要读 skill 的 `D:\work\agentteam\dist\ai-cross\references\channels.md`（各通道命令模板与坑）和 `SKILL.md`「验证的框架隔离」「执行闭环规则」两节——本期把它们变成代码。再读 `D:\work\agentteam\COMPETITIVE-LANDSCAPE.md` 的 2026-09-01 节（NyaTerm）：A0、A、B 三节里标「来自 NyaTerm 核对」的条目出自那次核对，它是 MIT，逐字复用要保留其版权声明。
 
+## 0. 与对话图的衔接（2026-09-13，TASK-02 已按「对话即图」落地，本节优先于下文的旧说法）
+
+TASK-02 的数据模型不再是「阶段条」，是一张 DAG：`Graph { root, nodes }`，`Node { kind: material|turn|accept, parents, user, reply, target }`，纯函数 `contextOf(graph, nodeId)` 给出该节点按可见性过滤后的上下文，`stamp` 把预设展开成子图。契约在 `src-ui/src/graph/types.ts`，第 2 期报告 `tasks/REPORT-02.md`。本期的派发引擎对接这张图：
+
+1. **派发单位 = 图上的 draft 节点**。用户在中栏 `@` 或盖预设后，节点 `reply.status === 'draft'`。「派发」= 把当前图里所有父节点已完成（或父节点是 material）的 draft 节点作为一个 run 的一个阶段跑起来；同阶段并行，上限见 B 节。accept 节点等全部父节点 `done` 后才可派。本期只跑一个阶段（第 4 期做逐阶段推进）。
+2. **prompt = `contextOf` 的结果**。共享节点：路径上的用户消息与模型回复按角色标记拼成文本。盲节点：`contextOf` 已剔除模型回复，只剩用户消息与附件；再套 B 节的冻结模板。「材料勾选」不再是弹窗里的复选框，而是 G1 里按 `contextOf` 列出将外发的每条消息与附件，用户可取消勾选（取消只影响本次外发，不改图）。
+3. **结果回图**。每路跑完把 `text` 写进 `node.reply.text`，`status` 置 `done | failed`，`model_reported / tokens_in / tokens_out / ms` 填进 `Reply`（TASK-02 契约已预留这些字段）。中栏面板里原来显示「待派」的段就变成回复。G3 的结果屏是同一阶段各路回复的并排视图（复用三列面板或独立结果 tab，实现者定，但节点回复必须先落进图并持久化）。
+4. **续聊**。同一 `agent/model` 目标、共享可见性、且父节点有 `session_id` 时，走各 CLI 的续聊参数并只发本条消息；否则把路径序列化成 prompt（有损，丢 thinking）。`session_id` 存进 `Reply`（新增可选字段 `session_id`），这是本期对 TASK-02 契约唯一的字段追加。
+5. **G1 的路由决策行按节点出**：`[aicross] <任务摘要> → <agent/model> ｜ <档位> · thinking=<x> ｜ 可见性=<共享/盲> ｜ 隔离=<完整/部分>`。
+6. 下文 B 节「材料 = 用户勾选的附件 + 勾选的对话消息」、D 节「盲预设显示材料勾选」、E 节「共享对话执行」按本节的口径理解；其余（A0、A、C、F、验收）不变。`.dispatch/` 契约已同步进 skill `references/channels.md`「留痕契约」，两边字段一致。
+7. 图相关的纯逻辑改动（新增 `Reply.session_id`、`contextOf` 的序列化格式）要补进 `src-ui/src/graph/__tests__/`，不要把序列化逻辑散在组件里。
+
 ## 目标
 中栏输入一段任务 + 附件，选「盲审」预设，@ 三家 → G1 确认 → 三路在各自空目录里真跑 → 结果屏并排 → 每路留痕到 `.dispatch/`。「共享对话」预设则单节点带上下文执行并延续会话。
 

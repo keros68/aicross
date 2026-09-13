@@ -44,7 +44,9 @@ tauri-plugin-clipboard-manager = "2"
 # Utilities
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 anyhow = "1"
+chrono = { version = "0.4", features = ["clock"] }
 
 log = "0.4"
 dirs = "5"
