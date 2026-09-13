@@ -1,0 +1,539 @@
+/* 资源接入（TASK-07）：左栏「资源」tab + 全屏接入页。
+   主题变量沿用 global.css（--bg-panel/--bg-card/--text-1..3/--accent/--green/--red）。 */
+
+/* ── 左栏 tab ─────────────────────────────────────────────────────────── */
+
+.resources-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.resources-error {
+  margin: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  color: var(--red);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.resource-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px;
+}
+
+.resources-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 8px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.resources-empty-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.resources-empty-link:hover {
+  color: var(--accent-hover);
+}
+
+.resource-agent-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 6px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-1);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.resource-agent-summary:hover {
+  background: var(--bg-hover);
+}
+
+.resource-caret {
+  width: 10px;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.resource-agent-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-agent-version {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+.resource-model-list {
+  padding: 0 4px 4px 16px;
+}
+
+.resource-model-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 4px 6px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.resource-model-row:hover {
+  background: var(--bg-hover);
+}
+
+.resource-model-row:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.resource-model-row:disabled:hover {
+  background: none;
+}
+
+.resource-model-id {
+  color: var(--text-1);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.resource-model-source {
+  color: var(--text-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.resource-manage-link {
+  flex-shrink: 0;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.resource-manage-link:hover {
+  color: var(--accent);
+}
+
+/* ── 接入页（全屏覆盖层，形态对齐 ExplainOverlay） ─────────────────────── */
+
+.resources-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: var(--bg-app);
+}
+
+.resources-page {
+  position: relative;
+  height: 100%;
+  overflow-y: auto;
+  padding: 40px 48px 64px;
+  color: var(--text-1);
+}
+
+.resources-page h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.resources-lead {
+  margin: 0 0 16px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.resources-detect-all {
+  margin-left: 12px;
+  vertical-align: middle;
+}
+
+.resources-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  padding: 6px 14px;
+  background: none;
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.resources-close:hover {
+  border-color: var(--border-focus);
+  color: var(--text-1);
+}
+
+.resources-hints {
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.resources-hint {
+  padding: 8px 10px;
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  background: var(--accent-bg);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* ── agent 卡片网格 ───────────────────────────────────────────────────── */
+
+.agent-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.agent-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-card-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.agent-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detection {
+  margin-left: auto;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.detection.detected {
+  color: var(--green);
+}
+
+.detection.missing {
+  color: var(--text-3);
+}
+
+.agent-card-version {
+  color: var(--text-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-card-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.agent-empty {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.agent-card-group {
+  margin: 4px 0 2px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.agent-card-model {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.agent-card-model-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-card-model-id {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-status {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.resource-status.connected {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+
+.resource-status.pending {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.resource-status.failed {
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+
+.resource-status.disconnected {
+  color: var(--text-3);
+  background: var(--bg-hover);
+}
+
+.agent-card-model-detail {
+  margin-top: 4px;
+}
+
+.agent-card-model-detail summary {
+  color: var(--text-3);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-card-model-fields {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.agent-card-model-fields label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.agent-card-model-fields select {
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: 4px;
+  color: var(--text-1);
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.agent-card-model-meta {
+  color: var(--text-3);
+  font-size: 11px;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.agent-card-model-meta.failure {
+  color: var(--red);
+}
+
+.agent-card-model-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.row-action {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.row-action:hover {
+  color: var(--accent-hover);
+}
+
+.row-action.danger {
+  color: var(--red);
+}
+
+.row-action:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+
+.agent-card-model-saving {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.agent-card-note {
+  min-height: 14px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.agent-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+/* ── 按钮与对话框 ─────────────────────────────────────────────────────── */
+
+.res-btn {
+  padding: 5px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  color: var(--text-1);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.res-btn:hover:not(:disabled) {
+  border-color: var(--border-focus);
+}
+
+.res-btn.primary {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.res-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.resources-footer {
+  margin-top: 16px;
+}
+
+.res-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.res-dialog {
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  padding: 16px;
+  border: 1px solid var(--border-input);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.res-dialog h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.res-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.res-field input,
+.res-field select {
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  color: var(--text-1);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.res-field input:focus,
+.res-field select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.res-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}

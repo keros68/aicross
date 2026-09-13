@@ -7,16 +7,27 @@
 //   1. Left panel toggle  (Explorer / directory listing)
 //   2. Right panel toggle (TaskBoard / chat history)
 
+import { useEffect, useState } from 'react';
 import { commands, isTauri } from '../../tauri';
 import { useAppState, useAppDispatch, schemeLabels } from '../../store/app-state';
 import { IS_MACOS } from '../../lib/platform';
 import { useT } from '../../i18n/useT';
+import { ResourcesOverlay } from '../resources/ResourcesOverlay';
+import { OPEN_RESOURCES_EVENT } from '../../resources/mention';
 import './TitleBar.css';
 
 export function TitleBar() {
   const { state } = useAppState();
   const dispatch = useAppDispatch();
   const t = useT();
+
+  // 接入页（TASK-07）：本地开关 + 全局事件（左栏「管理 →」也走这个事件）。
+  const [resourcesOpen, setResourcesOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setResourcesOpen(true);
+    window.addEventListener(OPEN_RESOURCES_EVENT, open);
+    return () => window.removeEventListener(OPEN_RESOURCES_EVENT, open);
+  }, []);
 
   // Shortcut labels are available on hover through native title tooltips.
   const hk = schemeLabels(state.hotkeyScheme);
@@ -120,6 +131,22 @@ export function TitleBar() {
           </svg>
         </button>
 
+        {/* 资源接入页（TASK-07）：插头图标，打开全屏覆盖层做探测/冒烟。 */}
+        <button
+          className={`titlebar-btn titlebar-btn--layout${resourcesOpen ? ' is-active' : ''}`}
+          onClick={() => setResourcesOpen(true)}
+          aria-label={t('resources.open')}
+          title={t('resources.open')}
+          aria-pressed={resourcesOpen}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 2v6" />
+            <path d="M15 2v6" />
+            <path d="M6 8h12v3a6 6 0 0 1-12 0V8z" />
+            <path d="M12 17v5" />
+          </svg>
+        </button>
+
         {/* Personalization settings — gear opens the consolidated modal that
             replaced the old left-panel theme/language popovers. The `title`
             tooltip matters here: new users reported not finding settings
@@ -163,6 +190,7 @@ export function TitleBar() {
           </button>
         </div>
       )}
+      {resourcesOpen && <ResourcesOverlay onClose={() => setResourcesOpen(false)} />}
     </div>
   );
 }

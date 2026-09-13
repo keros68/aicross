@@ -90,6 +90,15 @@ import type {
   Preset as GraphPreset,
 } from './graph/types';
 
+// 资源接入契约类型的正式来源是 resources/types.ts（与 Rust resources.rs 镜像）。
+import type {
+  AddManualAgentRequest,
+  ResourceModelKey,
+  ResourceModelRequest,
+  ResourceOperation,
+  ResourceStore,
+} from './resources/types';
+
 // ─── Type Definitions ────────────────────────────────────────────────────────
 
 export interface SavedSession {
@@ -334,6 +343,29 @@ export const commands = {
     invoke<DispatchStageResult>('dispatch_graph_stage', { request }),
   cancelDispatchNode: (runId: string, nodeId: string) =>
     invoke<boolean>('cancel_dispatch_node', { runId, nodeId }),
+
+  // ── 资源接入（TASK-07，镜像 src/resources.rs）────────────────────────
+  // 契约类型统一从 resources/types.ts 引入（snake_case，与 Rust 一致）。
+  getResources: () => invoke<ResourceStore>('get_resources'),
+  detectResourceAgent: (agentId: string, ccSwitchPath?: string) =>
+    invoke<ResourceOperation>('detect_resource_agent', {
+      agentId,
+      ccSwitchPath: ccSwitchPath ?? null,
+    }),
+  detectAllResources: (ccSwitchPath?: string) =>
+    invoke<ResourceOperation>('detect_all_resources', { ccSwitchPath: ccSwitchPath ?? null }),
+  addResourceModel: (request: ResourceModelRequest) =>
+    invoke<ResourceStore>('add_resource_model', { request }),
+  updateResourceModel: (request: ResourceModelRequest) =>
+    invoke<ResourceStore>('update_resource_model', { request }),
+  removeResourceModel: (request: ResourceModelKey) =>
+    invoke<ResourceStore>('remove_resource_model', { request }),
+  addManualAgent: (request: AddManualAgentRequest) =>
+    invoke<ResourceOperation>('add_manual_agent', { request }),
+  smokeResourceModel: (request: ResourceModelKey) =>
+    invoke<ResourceStore>('smoke_resource_model', { request }),
+  smokeAgentModels: (agentId: string) =>
+    invoke<ResourceOperation>('smoke_agent_models', { agentId }),
 };
 
 // ── 对话图契约类型：Graph / GraphNode / Target / Preset / Stage /

@@ -1,6 +1,8 @@
 export const zhCN = {
   'app.title': 'aicross',
   'explorer.tab.workspace': '工作区',
+  'explorer.tab.resources': '资源',
+  'resources.open': '接入资源',
   'explorer.tab.history': '会话记录',
   'explorer.workspace.select-dir': '点击选择工作目录',
 

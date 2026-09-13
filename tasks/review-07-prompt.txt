@@ -1,0 +1,10 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/）。本期是 TASK-07「资源接入并回」：把第 1 期的接入页与左栏「资源」tab 从 port/ 旧代码移进 fork，复用第 3 期的 process.rs 与 channels/。先读 tasks/TASK-07-resources-return.md（需求）、AGENTS.md（约定）、docs/PRODUCT.md「形态」表的左栏与接入页两段、tasks/REPORT-07.md（实现方报告），再读 tasks/diff-07.patch（全部改动的 git diff，含新增文件），需要上下文时打开对应源文件（src/resources.rs、src/channels/mod.rs、src/process.rs、src-ui/src/components/resources/、src-ui/src/resources/、Explorer.tsx、TitleBar.tsx、tauri.ts）。不读 node_modules、target、dist、port。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照 TASK-07 A/B 各条与验收清单，缺什么、偏差什么。尤其：kimi 模型 id 是否保留完整别名；pi 三个 provider 的解析与 auth check；cc-switch 是否真的只产生发现提示、不进可派发列表、不再作为通道；冒烟是否复用 channels/process 而非复制进程代码；左栏只列已接入、点模型插 @；接入页卡片形态与文案（状态与动作成对）。
+2. 逻辑正确性：合并规则（保留用户字段、新条目待冒烟、消失标未在事实源、申报条目不标）；load/load_or_default 对损坏文件的处理不覆盖；原子写；并发探测/冒烟对 resources.json 的读改写是否会丢更新（第 1 期审查抓过 CAS 问题，看是否退化）；冒烟真身判定（pi responseModel、claude 第三方端点 model 比对）；resolve_cli 与 channels 私有 resolve_binary 的重复与漂移。
+3. 安全：只按子进程环境变量传密钥；不读 auth.json / cc-switch.db 之外的凭据文件；smoke_failure / note / fixture 里不会出现 key、token、带凭据 URL、环境变量值；shell 拼接；cc_switch.py 路径来自设置项而非硬编码。
+4. 代码质量：与第 3 期代码的重复、GraphTab.tsx 追加的监听是否只加不改、i18n 键回退、样式是否用主题 token、是否引入新依赖（toml crate 是否必要）。
+5. 测试：验收第 2 条要求的各组测试是否存在且真的断言了规则；第 1 期测试是否全部并回；最该补的 3 个。
+6. 真跑证据：REPORT-07 的探测与冒烟记录是否可信（不写盘的说法是否与代码一致）。
+最后单独回答：对照 TASK-07 原始需求是否完整实现？一句话 + 缺项列表。

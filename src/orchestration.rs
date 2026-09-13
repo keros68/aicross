@@ -251,6 +251,8 @@ fn graphs_dir(root: &Path) -> PathBuf {
 /// `std::fs::rename` 走 MoveFileExW(MOVEFILE_REPLACE_EXISTING)，可以覆盖
 /// 已存在的目标；失败时删目标重试一次只是锁占用等偶发情形的兜底。
 /// 做法参考 port/src-tauri-old/src/config.rs 的 write_json_in（我们自己的 fork）。
+/// 注意：resources.rs 里有这份函数的整份复制（write_json_atomic），两边
+/// 改动要互相同步；收敛成共享 util 留第 5 期。
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let directory = path
         .parent()
