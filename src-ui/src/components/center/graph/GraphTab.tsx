@@ -19,6 +19,7 @@ import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
 import { dispatchableNodeIds } from '../../../graph/dispatch';
 import { DispatchOverlay } from './DispatchOverlay';
+import { appendMention, INSERT_MENTION_EVENT, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import './GraphTab.css';
 
 // 节点卡固定尺寸，图区横向滚动；不做缩放、不做拖拽（任务书硬约束）。
@@ -46,6 +47,42 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [failedId, setFailedId] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
+
+  // 左栏「资源」tab 点模型时往主面板（列 0）输入框插入 @agent/模型（TASK-07）。
+  // 纯追加监听：既有 drafts/发送逻辑不变。
+  useEffect(() => {
+    const onInsert = (event: Event) => {
+      const text = (event as CustomEvent<{ text?: string }>).detail?.text;
+      if (!text) return;
+      setDrafts((d) => ({ ...d, 0: appendMention(d[0] ?? '', text) }));
+    };
+    window.addEventListener(INSERT_MENTION_EVENT, onInsert);
+    return () => window.removeEventListener(INSERT_MENTION_EVENT, onInsert);
+  }, []);
+
+  // 接入页写盘后重拉可派发模型（TASK-07 修正轮 R1）：@ 弹层与节点面板
+  // 下拉都吃这份 models state。纯追加监听，不改既有加载逻辑。
+  useEffect(() => {
+    if (!isTauri) return;
+    let dead = false;
+    const reload = () => {
+      commands
+        .listDispatchableModels()
+        .then((r) => {
+          if (dead) return;
+          setModels(r.models);
+          setModelsError(r.error);
+        })
+        .catch(() => {
+          if (!dead) setModelsError('读取资源失败');
+        });
+    };
+    window.addEventListener(RESOURCES_CHANGED_EVENT, reload);
+    return () => {
+      dead = true;
+      window.removeEventListener(RESOURCES_CHANGED_EVENT, reload);
+    };
+  }, []);
 
   // 可派发模型与预设（命令幂等便宜；右栏 OrchestrationPanel 也各自拉取）
   useEffect(() => {

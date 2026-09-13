@@ -1,0 +1,18 @@
+{
+  "zai-coding-cn": {
+    "models": [
+      {
+        "id": "glm-4.7",
+        "provider": "zai-coding-cn",
+        "reasoning": true,
+        "contextWindow": 204800
+      },
+      {
+        "id": "glm-not-listed",
+        "provider": "zai-coding-cn",
+        "reasoning": true,
+        "contextWindow": 204800
+      }
+    ]
+  }
+}

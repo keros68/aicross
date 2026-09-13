@@ -1,0 +1,38 @@
+{
+  "deepseek": {
+    "models": [
+      {
+        "id": "deepseek-chat",
+        "provider": "deepseek",
+        "reasoning": false,
+        "contextWindow": 128000
+      }
+    ]
+  },
+  "qwen-token-plan-cn": {
+    "models": [
+      {
+        "id": "deepseek-v4-flash",
+        "provider": "qwen-token-plan-cn",
+        "reasoning": true,
+        "contextWindow": 131072
+      },
+      {
+        "id": "qwen3-coder-plus",
+        "provider": "qwen-token-plan-cn",
+        "reasoning": true,
+        "contextWindow": 262144
+      }
+    ]
+  },
+  "zai-coding-cn": {
+    "models": [
+      {
+        "id": "glm-4.7",
+        "provider": "zai-coding-cn",
+        "reasoning": true,
+        "contextWindow": 204800
+      }
+    ]
+  }
+}

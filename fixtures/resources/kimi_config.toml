@@ -1,0 +1,10 @@
+[models."kimi-code/k3"]
+model = "k3"
+max_context_size = 1048576
+capabilities = ["thinking", "tool_use"]
+support_efforts = ["low", "high", "max"]
+default_effort = "high"
+
+[models."kimi-code/highspeed"]
+model = "kimi-for-coding-highspeed"
+capabilities = ["tool_use"]

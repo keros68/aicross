@@ -3842,6 +3842,15 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::dispatch::preview_dispatch,
             crate::dispatch::dispatch_graph_stage,
             crate::dispatch::cancel_dispatch_node,
+            crate::resources::get_resources,
+            crate::resources::detect_resource_agent,
+            crate::resources::detect_all_resources,
+            crate::resources::add_resource_model,
+            crate::resources::update_resource_model,
+            crate::resources::remove_resource_model,
+            crate::resources::add_manual_agent,
+            crate::resources::smoke_resource_model,
+            crate::resources::smoke_agent_models,
         ])
         .setup(|app| {
             // Seed bundled skills (screenshot, vibeid) into

@@ -15,6 +15,7 @@ import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from './NodePanel';
 import { PresetBuilder } from './PresetBuilder';
 import { ExplainOverlay } from './ExplainOverlay';
+import { RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import './OrchestrationPanel.css';
 
 // 后置期次的模式：下拉里置灰 + 标期次，不实现（TASK-02 A8）。
@@ -74,6 +75,30 @@ export function OrchestrationPanel() {
       .catch(() => {});
     return () => {
       dead = true;
+    };
+  }, []);
+
+  // 接入页写盘后重拉可派发模型（TASK-07 修正轮 R1：纯追加监听，不改既有
+  // 加载逻辑）——「尚未接入资源」提示与节点面板模型下拉都吃这份 state。
+  useEffect(() => {
+    if (!isTauri) return;
+    let dead = false;
+    const reload = () => {
+      commands
+        .listDispatchableModels()
+        .then((r) => {
+          if (dead) return;
+          setModels(r.models);
+          setModelsError(r.error);
+        })
+        .catch(() => {
+          if (!dead) setModelsError('读取资源失败');
+        });
+    };
+    window.addEventListener(RESOURCES_CHANGED_EVENT, reload);
+    return () => {
+      dead = true;
+      window.removeEventListener(RESOURCES_CHANGED_EVENT, reload);
     };
   }, []);
 

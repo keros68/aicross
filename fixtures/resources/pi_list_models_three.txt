@@ -1,0 +1,5 @@
+provider             model              context
+deepseek             deepseek-chat      128000
+qwen-token-plan-cn   deepseek-v4-flash  131072
+qwen-token-plan-cn   qwen3-coder-plus   262144
+zai-coding-cn        glm-4.7            204800

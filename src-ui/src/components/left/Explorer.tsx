@@ -14,6 +14,7 @@ import { refreshHistory } from '../../lib/history-cache';
 import { commands } from '../../tauri';
 import type { DirEntryInfo } from '../../tauri';
 import { HistoryBoard } from '../right/HistoryBoard';
+import { ResourcesTab } from '../resources/ResourcesTab';
 import './Explorer.css';
 
 // Snapshot lifecycle and the `+N -M` map live in lib/file-stats.tsx so the
@@ -629,12 +630,14 @@ export function Explorer() {
   }, []);
 
   // Persist last-selected left tab, same pattern as TaskBoard's right tab.
-  const [activeTab, setActiveTab] = useState<'workspace' | 'history'>(() => {
+  // Default is the resources tab (TASK-07): the dispatch console opens on
+  // the model roster, not the file tree.
+  const [activeTab, setActiveTab] = useState<'workspace' | 'history' | 'resources'>(() => {
     try {
       const saved = localStorage.getItem('cc-left-tab');
-      if (saved === 'workspace' || saved === 'history') return saved;
+      if (saved === 'workspace' || saved === 'history' || saved === 'resources') return saved;
     } catch {}
-    return 'workspace';
+    return 'resources';
   });
   useEffect(() => {
     try { localStorage.setItem('cc-left-tab', activeTab); } catch {}
@@ -738,6 +741,12 @@ export function Explorer() {
 
       <div className="explorer-tabs">
         <button
+          className={`explorer-tab ${activeTab === 'resources' ? 'active' : ''}`}
+          onClick={() => setActiveTab('resources')}
+        >
+          {t('explorer.tab.resources')}
+        </button>
+        <button
           className={`explorer-tab ${activeTab === 'workspace' ? 'active' : ''}`}
           onClick={() => setActiveTab('workspace')}
         >
@@ -769,7 +778,9 @@ export function Explorer() {
 
       {/* File list Content */}
       <div className="panel-content explorer-content">
-        {activeTab === 'history' ? (
+        {activeTab === 'resources' ? (
+          <ResourcesTab />
+        ) : activeTab === 'history' ? (
           // HistoryBoard returns a fragment and was originally hosted inside
           // .task-board which provided the 16px gutter. In Explorer's flex
           // shell that padding doesn't exist, so we wrap to restore it.

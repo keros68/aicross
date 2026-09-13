@@ -1,0 +1,17 @@
+[
+  {
+    "name": "Zhipu GLM",
+    "app_type": "claude",
+    "tier_models": {
+      "haiku": "glm-4.7",
+      "sonnet": "glm-4.7"
+    },
+    "has_token": true
+  },
+  {
+    "name": "Official",
+    "app_type": "codex",
+    "tier_models": {},
+    "has_token": false
+  }
+]

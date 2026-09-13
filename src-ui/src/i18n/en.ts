@@ -2,6 +2,8 @@ export const en = {
   'app.title': 'aicross',
   // Explorer
   'explorer.tab.workspace': 'Workspace',
+  'explorer.tab.resources': 'Resources',
+  'resources.open': 'Connect resources',
   'explorer.tab.history': 'Sessions',
   'explorer.workspace.select-dir': 'Click to select working directory',
 
