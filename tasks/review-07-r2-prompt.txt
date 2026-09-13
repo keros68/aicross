@@ -1,0 +1,5 @@
+你是代码审查者，本次是复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/）。先读 tasks/review-07-glm.md（上一轮审查）、tasks/fix-07-r1.md（修正单）、tasks/REPORT-07.md 的「修正轮 R1」一节，再读 tasks/diff-07.patch（本分支相对 main 的全部改动），需要上下文时打开对应源文件。不读 node_modules、target、dist、port。
+
+逐条核对修正单的 14 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：第 1 条 pi 以 --list-models 为主且 store 只补元数据、坏 store 不拦截；第 2 条两处监听是否纯追加、是否会重复请求或泄漏；第 3 条锁是否覆盖全部写命令、smoke_agent_models 是否逐条写盘；第 5 条 settings.json 读取失败时的处理；第 7 条三个测试是否真断言。修正是否引入新缺陷（回归、破坏第 2/3 期图与派发行为、与 main 的合并冲突面）。「不采纳」两条理由是否成立。编排者已在沙箱外复跑：cargo test 136 passed、vitest 75 passed、build 通过；真机探测 pi 31 个模型。
+
+最后单独回答：修正轮 R1 之后 ui/resources 分支是否可以并回 main？一句话 + 仍未闭合的项列表。
