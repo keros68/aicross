@@ -1,0 +1,13 @@
+你是代码审查者，本次是 TASK-05B（第 2 期预设：擂台、评审团、仲裁、前提抽查、主备/熔断、顾问）修正轮 R1 的复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/5b 分支。先读 tasks/fix-05b-r1.md（19 条修正单，来自 tasks/review-05b-ds.md 与 tasks/review-05b-glm.md 两家盲审），再读 tasks/REPORT-05B.md 的「修正轮 R1」一节（实现方逐条自报），再读涉及的文件：src-ui/src/graph/（stamp.ts、dispatch.ts、validate.ts、types.ts、premise.ts、__tests__/presets-05b.test.ts 及其它 __tests__）、src-ui/src/components/center/graph/DispatchOverlay.tsx 与 GraphTab.tsx、src-ui/src/components/right/orchestration/（NodePanel.tsx、TargetEditor.tsx、OrchestrationPanel.tsx）、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/tauri.ts、src/orchestration.rs、src/dispatch.rs、src/server.rs、fixtures/prompts/。不读 node_modules、target、dist、port、src/channels/。
+
+逐条核对 19 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- 第 1 条：可写节点是否真的不触发备选重跑；盲/只读节点备选重跑是否走隔离目录、不重复写项目；
+- 第 2、14 条：pickOne 是否只清同父同角色同 kind 的候选；「选它」只在同父结果 ≥2 时出现；
+- 第 3 条：builtin-arena 盖章是否留空三路；draft 节点删除是否只允许无子节点；
+- 第 7、13 条：仲裁节点是否 visibility=盲、parents 指向共同材料祖先、kind 按 parents 数定；中性描述是否只有甲方/乙方标签、不含 agent/model 名与立场词；
+- 第 8、15 条：前提结论回写是否按 last_graph_id、last_checked_at 只在回写时写、比较 slice(0,500)；
+- 第 11、16、19 条：新测试是否真实存在且断言目标行为，live_arena_and_arbitration 是否走 appendArbitration 建节点、按 node_id 取正文、不跳过仲裁段；
+- 修正是否引入新缺陷：第 2/3/4 期图与派发路径（dispatchableNodeIds、reducePipelineStep、applyDispatchResults、验收 PASS/NEEDS_FIX）的回归；Target 只追加 fallback、Rust/TS 镜像 #[serde(default)]；留痕契约 aicross-dispatch/1 只追加。
+编排者会在沙箱外复跑 cargo test / vitest / build；指出会导致误判的断言或会在真机上炸的路径。
+
+最后单独回答：R1 之后 TASK-05B 是否达到可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

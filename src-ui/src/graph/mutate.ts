@@ -64,6 +64,35 @@ export function updateNodeTarget(graph: Graph, nodeId: string, target: Target): 
   };
 }
 
+// 只写回节点的备选（G1 备选下拉用，R2-12）：不把本地改过但未确认的主目标
+// 一起落盘；fallback 传 undefined 表示清空备选。
+export function updateNodeFallback(graph: Graph, nodeId: string, fallback: Target['fallback']): Graph {
+  const node = graph.nodes[nodeId];
+  if (!node?.target) return graph;
+  return updateNodeTarget(graph, nodeId, { ...node.target, fallback });
+}
+
+// 写回节点用户消息文本（节点面板编辑框；draft 可编辑、非 draft 只读由界面控制）。
+export function updateNodeUserText(graph: Graph, nodeId: string, text: string): Graph {
+  const node = graph.nodes[nodeId];
+  if (!node) return graph;
+  return {
+    ...graph,
+    nodes: { ...graph.nodes, [nodeId]: { ...node, user: { ...node.user, text } } },
+  };
+}
+
+// 删除一个没有子节点的 draft 节点（擂台调路数用）。守卫：节点存在、是 draft、
+// 没有任何节点以它为父；不满足返回原图。
+export function removeDraftNode(graph: Graph, nodeId: string): Graph {
+  const node = graph.nodes[nodeId];
+  if (!node || node.reply?.status !== 'draft') return graph;
+  if (Object.values(graph.nodes).some((other) => other.parents.includes(nodeId))) return graph;
+  const nodes = { ...graph.nodes };
+  delete nodes[nodeId];
+  return { ...graph, nodes };
+}
+
 // 解析聊天输入框的发送内容：第一个 `@agent/模型`（或 `@模型`）提出来作为
 // Target（唯一匹配不到就按原文手填，标不标「未接入」由 validateNode 决定），
 // 其余文本是用户消息。

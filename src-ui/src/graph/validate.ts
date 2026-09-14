@@ -23,8 +23,8 @@ export function validateNode(
   const hints: string[] = [];
   const target = node.target;
 
-  if (target && (target.role === '验收' || target.role === '验证') && target.write !== '只读') {
-    hints.push('验收/验证节点只能只读');
+  if (target && (target.role === '验收' || target.role === '验证' || target.role === '仲裁') && target.write !== '只读') {
+    hints.push(target.role === '仲裁' ? '仲裁节点只能只读' : '验收/验证节点只能只读');
   }
   if (target && target.visibility === '盲' && target.write !== '只读') {
     hints.push('盲节点只能只读');
@@ -52,4 +52,23 @@ export function validateNode(
   }
 
   return hints;
+}
+
+// 仲裁目标是否与分歧任一方同厂商（TASK-05B：仲裁必须发第三家）。
+// 厂商查不到（未接入）时不拦，由「未接入」提示负责。
+export function arbitrationVendorConflict(
+  graph: Graph,
+  aId: string,
+  bId: string,
+  target: Target,
+  models: DispatchableModel[],
+): boolean {
+  const own = findModel(models, target);
+  if (!own) return false;
+  return [aId, bId].some((id) => {
+    const side = graph.nodes[id]?.target;
+    if (!side) return false;
+    const hit = findModel(models, side);
+    return hit !== undefined && hit.vendor !== '' && hit.vendor === own.vendor;
+  });
 }

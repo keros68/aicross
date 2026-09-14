@@ -2,16 +2,20 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { commands, type DispatchNodeResult, type DispatchStageRequest } from '../../../tauri';
 import { contextPartsOf, originalRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../../../graph/context';
 import {
+  appendArbitration,
   appendDecision,
   applyDispatchResults,
   clearTargetSession,
   continuationSession,
   dispatchableNodeIds,
+  fallbackSpecOf,
   markPending,
   graphStage,
   groupResultsByStage,
   isSmallEconomyTask,
   needsChainThinking,
+  neutralDisputeSummary,
+  pickOne,
   promptForRole,
   reducePipelineStep,
   failedNodesWithoutResults,
@@ -19,11 +23,15 @@ import {
   redraftNode,
   routeLine,
   routeReason,
+  sameParentsResultCount,
   setReplyAdopted,
 } from '../../../graph/dispatch';
+import { updateNodeFallback } from '../../../graph/mutate';
+import { FallbackSkippedLine, PickOneButton, WritableFallbackHint } from './DispatchBits';
 import { presetNameOf } from '../../../graph/persist';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
-import type { DispatchableModel, Graph, Thinking } from '../../../graph/types';
+import type { DispatchableModel, Graph, Target, Thinking } from '../../../graph/types';
+import { findModel } from '../../../graph/validate';
 import { modelStatusSuffix } from '../../../resources/model-picker';
 
 type Phase = 'confirm' | 'running' | 'results';
@@ -34,12 +42,14 @@ interface Props {
   projectDir: string;
   onCommit: (graph: Graph) => Graph;
   onClose: () => void;
+  // 擂台「选它」与仲裁建节点后，把焦点/主列对齐到该节点（GraphTab 提供）
+  onFocusNode?: (nodeId: string) => void;
 }
 
 const resultStatus = (status: string) =>
   status === 'ok' ? '完成' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证失败' : '失败';
 
-export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }: Props) {
+export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, onFocusNode }: Props) {
   const initialIds = useMemo(() => dispatchableNodeIds(graph), [graph]);
   const [nodeIds, setNodeIds] = useState(initialIds);
   const [phase, setPhase] = useState<Phase>('confirm');
@@ -70,6 +80,8 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
   const [collapsed, setCollapsed] = useState(false);
   const [currentNodes, setCurrentNodes] = useState<DispatchStageRequest['nodes']>([]);
   const [userEdited, setUserEdited] = useState<Set<string>>(new Set());
+  // 仲裁编排（按结果阶段行）：双方选择 + 中性描述（可改）+ 第三家目标
+  const [arbRows, setArbRows] = useState<Record<number, { aId: string; bId: string; text: string; targetKey: string; error: string }>>({});
 
   const graphWithTargets = useMemo(() => {
     const nodes = { ...graph.nodes };
@@ -123,6 +135,8 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
         write: target.write,
         originalRequest: originalRequestOf(sourceGraph),
         upstreamArtifacts: upstreamArtifactsOf(sourceGraph, id),
+        // TASK-05B 主备/熔断：备选随请求下发（带真实 vendor），通道层主目标失败时重跑一次
+        fallback: fallbackSpecOf(target, models),
       };
     }),
   });
@@ -214,7 +228,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
       const message = String(error);
       setRunError(message);
       const failed: DispatchNodeResult[] = failedNodesWithoutResults(activeNodes, collected, message)
-        .map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null }));
+        .map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null, fallbackFrom: '', fallbackTo: '', fallbackSkipped: '' }));
       if (failed.length > 0) working = onCommit(applyDispatchResults(working, failed));
       setResults([...collected, ...failed]);
       setPhase('results');
@@ -251,6 +265,48 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
   const startNewSession = (nodeId: string) => {
     onCommit(clearTargetSession(graphWithTargets, nodeId));
     setRestartNodes((current) => new Set(current).add(nodeId));
+  };
+
+  // ── 仲裁（TASK-05B）：同阶段 ≥2 路成功结果时，可选双方、改中性描述、
+  // 选一个与两边都不同厂商的第三家，建盲仲裁节点（parents=共同材料祖先） ──
+  const arbFor = (stage: number, okRows: DispatchNodeResult[]) => {
+    const existing = arbRows[stage];
+    if (existing) return existing;
+    const aId = okRows[0]?.nodeId ?? '';
+    const bId = okRows[1]?.nodeId ?? '';
+    return {
+      aId,
+      bId,
+      text: aId && bId ? neutralDisputeSummary(graph, aId, bId) : '',
+      targetKey: '',
+      error: '',
+    };
+  };
+  const setArbRow = (stage: number, row: { aId: string; bId: string; text: string; targetKey: string; error: string }) =>
+    setArbRows((current) => ({ ...current, [stage]: row }));
+  const createArbitration = (stage: number, row: { aId: string; bId: string; text: string; targetKey: string; error: string }) => {
+    if (!row.targetKey) {
+      setArbRow(stage, { ...row, error: '请选择仲裁目标' });
+      return;
+    }
+    const [agent, provider, modelId] = JSON.parse(row.targetKey) as string[];
+    const target: Target = {
+      agent,
+      provider: provider || undefined,
+      model: modelId,
+      role: '仲裁',
+      thinking: '中',
+      visibility: '盲',
+      write: '只读',
+    };
+    const outcome = appendArbitration(graph, row.aId, row.bId, row.text, target, models);
+    if (outcome.error || !outcome.nodeId) {
+      setArbRow(stage, { ...row, error: outcome.error ?? '建仲裁节点失败' });
+      return;
+    }
+    onCommit(outcome.graph);
+    onFocusNode?.(outcome.nodeId);
+    onClose();
   };
 
   const plannedRoles = new Set(initialIds.map((id) => graph.nodes[id]?.target?.role));
@@ -328,6 +384,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
                   )}
                   {sameVendorReview && <div className="dispatch-warning">复核，非独立验证</div>}
                   {unsmoked && <div className="dispatch-warning">该模型{picked?.status}，尚未核对真身；派发时通道会核对。</div>}
+                  <WritableFallbackHint target={target} />
                   <div className="dispatch-controls">
                     {models.length > 0 ? <label>目标<select
                       value={JSON.stringify([target.agent, target.provider ?? '', target.model])}
@@ -359,6 +416,33 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
                     <label>thinking<select value={target.thinking} onChange={(event) => { setUserEdited((current) => new Set(current).add(id)); setTargets((current) => ({ ...current, [id]: { ...target, thinking: event.target.value as Thinking } })); }}>
                       <option>关</option><option>低</option><option>中</option><option>高</option>
                     </select></label>
+                    {models.length > 0 && <label>备选<select
+                      value={JSON.stringify(target.fallback ? [target.fallback.agent, target.fallback.provider ?? '', target.fallback.model] : ['', '', ''])}
+                      onChange={(event) => {
+                        const [agent, provider, modelId] = JSON.parse(event.target.value) as string[];
+                        const fallback = modelId === '' ? undefined : { agent, provider, model: modelId };
+                        setUserEdited((current) => new Set(current).add(id));
+                        setTargets((current) => ({
+                          ...current,
+                          [id]: { ...target, fallback },
+                        }));
+                        // 即时写回图节点：不点「确认派发」直接关弹窗也不丢。
+                        // R2-12：只写回备选字段，本地改过但未确认的主目标不落盘。
+                        onCommit(updateNodeFallback(graph, id, fallback));
+                      }}
+                    >
+                      <option value={JSON.stringify(['', '', ''])}>无</option>
+                      {target.fallback && !models.some((item) => item.agent === target.fallback!.agent && item.provider === (target.fallback!.provider ?? '') && item.id === target.fallback!.model) && (
+                        <option value={JSON.stringify([target.fallback.agent, target.fallback.provider ?? '', target.fallback.model])}>
+                          {target.fallback.agent}/{target.fallback.model}
+                        </option>
+                      )}
+                      {models.map((item) => (
+                        <option key={JSON.stringify([item.agent, item.provider, item.id])} value={JSON.stringify([item.agent, item.provider, item.id])}>
+                          {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}{modelStatusSuffix(item)}
+                        </option>
+                      ))}
+                    </select></label>}
                     {canRestart && <button onClick={() => startNewSession(id)}>新开会话</button>}
                     {target.agent === 'cc-switch' && <span>单轮</span>}
                   </div>
@@ -422,6 +506,8 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
                   </div>
                   {result.truncated && <div className="dispatch-warning">输出已截断</div>}
                   {result.tokensIn > 50_000 && <div className="dispatch-warning">输入超过 50k tokens</div>}
+                  {result.fallbackFrom && <div className="dispatch-warning">已切备选：主 {result.fallbackFrom} → 备 {result.fallbackTo}</div>}
+                  <FallbackSkippedLine result={result} />
                   <div className="dispatch-result-text">{result.text || result.error}</div>
                   {result.artifacts && (
                     <details className="dispatch-artifacts">
@@ -433,6 +519,14 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
                   )}
                   {result.validationOutput && <details><summary>验证结果</summary><pre>{result.validationOutput}</pre></details>}
                   <div className="dispatch-card-actions">
+                    <PickOneButton
+                      visible={sameParentsResultCount(graph, group.rows, result.nodeId) >= 2}
+                      adopted={adopted}
+                      onPick={() => {
+                        onCommit(pickOne(graph, result.nodeId));
+                        onFocusNode?.(result.nodeId);
+                      }}
+                    />
                     <button onClick={() => onCommit(setReplyAdopted(graph, result.nodeId, !adopted))}>{adopted ? '取消采纳' : '采纳'}</button>
                     <button onClick={() => retry(result.nodeId, false)}>重派</button>
                     <button onClick={() => retry(result.nodeId, true)}>升级</button>
@@ -442,6 +536,63 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
                 </div>
               ))}
             </div>
+            {resultStages.map((group) => {
+              const okRows = group.rows.filter((row) => row.status === 'ok');
+              if (okRows.length < 2) return null;
+              const row = arbFor(group.stage, okRows);
+              const sideVendors = new Set(
+                [row.aId, row.bId]
+                  .map((nid) => {
+                    const side = graph.nodes[nid]?.target;
+                    return side ? findModel(models, side)?.vendor : undefined;
+                  })
+                  .filter((vendor): vendor is string => !!vendor),
+              );
+              const arbModels = models.filter((item) => !sideVendors.has(item.vendor));
+              const routeOf = (nodeId: string) => {
+                const target = graph.nodes[nodeId]?.target;
+                return target ? `${target.agent}/${target.model}` : nodeId;
+              };
+              const pickSide = (side: 'aId' | 'bId', value: string) => {
+                const nextIds = { ...row, [side]: value };
+                const text = nextIds.aId && nextIds.bId && nextIds.aId !== nextIds.bId
+                  ? neutralDisputeSummary(graph, nextIds.aId, nextIds.bId)
+                  : row.text;
+                setArbRow(group.stage, { ...row, [side]: value, text, error: '' });
+              };
+              return (
+                <section key={`arb-${group.stage}`} className="dispatch-route-card">
+                  <div className="dispatch-stage-heading">第三方仲裁 · 第 {group.stage} 阶段</div>
+                  <div className="dispatch-reason">系统不判定分歧，双方由用户选</div>
+                  <div className="dispatch-controls">
+                    <label>甲方<select value={row.aId} onChange={(event) => pickSide('aId', event.target.value)}>
+                      {okRows.map((result) => <option key={result.nodeId} value={result.nodeId}>{routeOf(result.nodeId)}</option>)}
+                    </select></label>
+                    <label>乙方<select value={row.bId} onChange={(event) => pickSide('bId', event.target.value)}>
+                      {okRows.map((result) => <option key={result.nodeId} value={result.nodeId}>{routeOf(result.nodeId)}</option>)}
+                    </select></label>
+                    <label>目标<select value={row.targetKey} onChange={(event) => setArbRow(group.stage, { ...row, targetKey: event.target.value, error: '' })}>
+                      <option value="">选择第三家（与双方不同厂商）</option>
+                      {arbModels.map((item) => (
+                        <option key={JSON.stringify([item.agent, item.provider, item.id])} value={JSON.stringify([item.agent, item.provider, item.id])}>
+                          {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}{modelStatusSuffix(item)}
+                        </option>
+                      ))}
+                    </select></label>
+                  </div>
+                  <textarea
+                    className="dispatch-arb-text"
+                    rows={3}
+                    value={row.text}
+                    onChange={(event) => setArbRow(group.stage, { ...row, text: event.target.value })}
+                  />
+                  {row.error && <div className="dispatch-error">{row.error}</div>}
+                  <div className="dispatch-actions">
+                    <button onClick={() => createArbitration(group.stage, row)}>仲裁</button>
+                  </div>
+                </section>
+              );
+            })}
             <table className="dispatch-usage"><thead><tr><th>阶段</th><th>agent/模型</th><th>in / out tokens</th><th>cache_read</th><th>耗时</th><th>结果</th></tr></thead>
               <tbody>{usageGroups.map((group) => <Fragment key={group.stage}>
                 {group.rows.map((result) => { const target = graph.nodes[result.nodeId]?.target; return <tr key={result.nodeId}><td>{result.stage}</td><td>{target?.agent}/{target?.model}{target?.agent === 'cc-switch' ? ' · 单轮' : ''}</td><td>{result.tokensIn || '—'} / {result.tokensOut || '—'}</td><td>{result.cacheRead || '—'}</td><td>{result.durationMs} ms</td><td>{resultStatus(result.status)}</td></tr>; })}

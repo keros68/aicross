@@ -37,17 +37,26 @@ export interface ReplyArtifacts {
   stdout_summary: string;
 }
 
+// 备选目标（TASK-05B 主备/熔断）：主目标 error/timeout/identity_mismatch 时
+// 由通道层用备选重跑一次。图契约本期唯一的字段追加。
+export interface FallbackTarget {
+  agent: string;
+  provider?: string;
+  model: string;
+}
+
 export interface Target {
   agent: string; // agent id，如 'claude'/'codex'/'kimi'/'pi'；未填为 ''
   provider?: string;
   model: string; // 模型 id；未填为 ''
-  role: string; // '出方案' | '执行' | '验收' | '验证' | 自定义文本
+  role: string; // '出方案' | '执行' | '验收' | '验证' | '顾问' | '仲裁' | 自定义文本
   tier?: string; // 档位
   thinking: Thinking;
   visibility: VisibilityKind;
   upstreams?: string[]; // 仅 visibility='指定上游' 时有意义，上游节点 id 列表
   write: WriteMode;
   validation_command?: string;
+  fallback?: FallbackTarget; // 备选；不设则主目标失败即终态
 }
 
 export interface GraphNode {
@@ -100,7 +109,7 @@ export interface DispatchableModel {
 }
 
 export function roleDefaults(role: string): { visibility: VisibilityKind; write: WriteMode } {
-  if (role === '验收' || role === '验证') {
+  if (role === '验收' || role === '验证' || role === '顾问' || role === '仲裁') {
     return { visibility: '盲', write: '只读' };
   }
   return { visibility: '共享', write: '只读' };
@@ -115,7 +124,11 @@ export function newNodeId(): string {
 }
 
 export function cloneTarget(target: Target): Target {
-  return { ...target, upstreams: target.upstreams ? [...target.upstreams] : undefined };
+  return {
+    ...target,
+    upstreams: target.upstreams ? [...target.upstreams] : undefined,
+    fallback: target.fallback ? { ...target.fallback } : undefined,
+  };
 }
 
 // 标题置空：默认名「对话图」由展示层兜底（tab 标题 / 已有图列表），

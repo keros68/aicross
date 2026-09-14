@@ -3853,6 +3853,8 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::resources::smoke_agent_models,
             crate::orchestration::load_roles,
             crate::orchestration::save_roles,
+            crate::orchestration::load_premises,
+            crate::orchestration::save_premises,
             crate::dispatch::inspect_dispatch_state,
             crate::dispatch::abandon_dispatch_state,
         ])

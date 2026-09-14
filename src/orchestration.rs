@@ -118,6 +118,18 @@ pub struct ReplyChangedFile {
     pub content: String,
 }
 
+/// TASK-05B 主备/熔断：主目标失败（error/timeout/identity_mismatch）时的备选。
+/// 本期对图契约唯一的字段追加；镜像前端 graph/types.ts 的 FallbackTarget。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct FallbackTarget {
+    #[serde(default)]
+    pub agent: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Target {
     #[serde(default)]
@@ -126,7 +138,7 @@ pub struct Target {
     pub provider: Option<String>,
     #[serde(default)]
     pub model: String,
-    /// 出方案 | 执行 | 验收 | 验证 | 自定义文本
+    /// 出方案 | 执行 | 验收 | 验证 | 顾问 | 仲裁 | 自定义文本
     #[serde(default)]
     pub role: String,
     #[serde(default)]
@@ -143,6 +155,9 @@ pub struct Target {
     /// 只读 | 单写者 | worktree
     #[serde(default)]
     pub write: String,
+    /// 备选目标；不设则主目标失败即终态
+    #[serde(default)]
+    pub fallback: Option<FallbackTarget>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -224,6 +239,42 @@ impl Default for RoleSettings {
     }
 }
 
+// ── 前提台账（TASK-05B 前提抽查；`~/.aicross/premises.json`，不动图契约） ──
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Premise {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub recorded_at: String,
+    #[serde(default)]
+    pub last_checked_at: Option<String>,
+    #[serde(default)]
+    pub last_result: Option<String>,
+    #[serde(default)]
+    pub attachments: Vec<String>,
+    #[serde(default)]
+    pub last_graph_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PremiseFile {
+    pub version: u32,
+    #[serde(default)]
+    pub premises: Vec<Premise>,
+}
+
+impl Default for PremiseFile {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            premises: Vec::new(),
+        }
+    }
+}
+
 // ── 内置预设（不落盘；builtin=true 不可删不可改） ─────────────────────────
 
 fn blank_target() -> Target {
@@ -297,7 +348,44 @@ fn builtin_presets() -> Vec<Preset> {
                 .collect(),
         }],
     };
-    vec![shared, economy, blind]
+    // TASK-05B 第 2 期预设（图章形态；仲裁/顾问/前提抽查是动作不是图章，见 TASK-05 0.1）。
+    // 擂台：同一父节点盖出 3 个共享执行节点，目标由用户在 G1 确认屏逐家选（2–4 家，
+    // 删增节点在图界面进行）。结果屏每张卡有「选它」= adopted + 设为后续列末端。
+    let arena = Preset {
+        id: "builtin-arena".into(),
+        name: "擂台".into(),
+        builtin: true,
+        stages: vec![Stage {
+            nodes: (0..3)
+                .map(|_| Target {
+                    role: "执行".into(),
+                    thinking: "中".into(),
+                    visibility: "共享".into(),
+                    write: "只读".into(),
+                    ..blank_target()
+                })
+                .collect(),
+        }],
+    };
+    // 评审团：3 个盲验证节点，视角文本（安全/性能/需求覆盖）由前端 stamp 时
+    // 写进各节点 user.text（PRESET_NODE_TEXTS，不加 Target 字段）。
+    let jury = Preset {
+        id: "builtin-jury".into(),
+        name: "评审团".into(),
+        builtin: true,
+        stages: vec![Stage {
+            nodes: (0..3)
+                .map(|_| Target {
+                    role: "验证".into(),
+                    thinking: "中".into(),
+                    visibility: "盲".into(),
+                    write: "只读".into(),
+                    ..blank_target()
+                })
+                .collect(),
+        }],
+    };
+    vec![shared, economy, blind, arena, jury]
 }
 
 // ── 内部读写函数（接受 root 路径，命令函数只包一层 aicross_root()） ────────
@@ -316,6 +404,37 @@ fn graphs_dir(root: &Path) -> PathBuf {
 
 fn roles_path(root: &Path) -> PathBuf {
     root.join("roles.json")
+}
+
+fn premises_path(root: &Path) -> PathBuf {
+    root.join("premises.json")
+}
+
+/// 缺失、解析失败或 version != 1 都返回空台账，绝不改文件本身
+/// （损坏文件由 save 侧拒写保护，见 save_premises_in）。
+fn premises_from(root: &Path) -> PremiseFile {
+    fs::read_to_string(premises_path(root))
+        .ok()
+        .and_then(|text| serde_json::from_str::<PremiseFile>(&text).ok())
+        .filter(|file| file.version == 1)
+        .unwrap_or_default()
+}
+
+fn save_premises_in(root: &Path, file: &PremiseFile) -> Result<(), String> {
+    if file.version != 1 {
+        return Err(format!("前提台账 version 只支持 1，收到 {}", file.version));
+    }
+    let path = premises_path(root);
+    // 损坏文件不覆盖：存在但解析失败 → 拒写，让用户先手动处理，避免静默丢数据。
+    if let Ok(contents) = fs::read_to_string(&path) {
+        if serde_json::from_str::<PremiseFile>(&contents).is_err() {
+            return Err(format!(
+                "{} 解析失败，为避免覆盖请先手动处理该文件",
+                path.display()
+            ));
+        }
+    }
+    write_json_atomic(&path, file)
 }
 
 fn roles_from(root: &Path) -> RoleSettings {
@@ -341,6 +460,9 @@ fn fill_role_defaults(
     roles: &RoleSettings,
 ) {
     for preset in presets {
+        if preset.id == "builtin-arena" {
+            continue;
+        }
         for target in preset
             .stages
             .iter_mut()
@@ -598,6 +720,18 @@ pub fn save_roles(settings: RoleSettings) -> Result<(), String> {
     save_roles_in(&aicross_root()?, &settings)
 }
 
+#[tauri::command]
+pub fn load_premises() -> PremiseFile {
+    aicross_root()
+        .map(|root| premises_from(&root))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn save_premises(file: PremiseFile) -> Result<(), String> {
+    save_premises_in(&aicross_root()?, &file)
+}
+
 // ── 单元测试 ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -704,8 +838,8 @@ mod tests {
         save_user_presets_in(&root, vec![user_preset("u1"), user_preset("u2")]).unwrap();
         let file = presets_from(&root);
         assert_eq!(file.version, 1);
-        // 3 个内置 + 2 个用户
-        assert_eq!(file.presets.len(), 5);
+        // 5 个内置 + 2 个用户
+        assert_eq!(file.presets.len(), 7);
         let user: Vec<&Preset> = file.presets.iter().filter(|p| !p.builtin).collect();
         assert_eq!(user.len(), 2);
         assert_eq!(*user[0], user_preset("u1"));
@@ -716,14 +850,145 @@ mod tests {
     fn presets_missing_file_returns_builtins() {
         let root = temp_root("presets-missing");
         let file = presets_from(&root);
-        assert_eq!(file.presets.len(), 3);
+        assert_eq!(file.presets.len(), 5);
         assert!(file.presets.iter().all(|p| p.builtin));
         assert_eq!(file.presets[0].id, "builtin-shared");
         assert_eq!(file.presets[1].id, "builtin-economy");
         assert_eq!(file.presets[2].id, "builtin-blind");
+        assert_eq!(file.presets[3].id, "builtin-arena");
+        assert_eq!(file.presets[4].id, "builtin-jury");
         assert_eq!(file.presets[0].name, "共享模式");
         assert_eq!(file.presets[1].stages.len(), 3);
         assert_eq!(file.presets[2].stages[0].nodes.len(), 3);
+    }
+
+    #[test]
+    fn builtin_arena_and_jury_shapes() {
+        let presets = builtin_presets();
+        let arena = presets.iter().find(|p| p.id == "builtin-arena").unwrap();
+        // 擂台：一层 3 个共享执行节点，目标留空由用户在 G1 选 2–4 家
+        assert_eq!(arena.stages.len(), 1);
+        assert_eq!(arena.stages[0].nodes.len(), 3);
+        for target in &arena.stages[0].nodes {
+            assert_eq!(target.role, "执行");
+            assert_eq!(target.visibility, "共享");
+            assert_eq!(target.write, "只读");
+            assert!(target.model.is_empty());
+        }
+        let jury = presets.iter().find(|p| p.id == "builtin-jury").unwrap();
+        // 评审团：一层 3 个盲验证节点，视角文本由前端 stamp 时写进 user.text
+        assert_eq!(jury.stages.len(), 1);
+        assert_eq!(jury.stages[0].nodes.len(), 3);
+        for target in &jury.stages[0].nodes {
+            assert_eq!(target.role, "验证");
+            assert_eq!(target.visibility, "盲");
+            assert_eq!(target.write, "只读");
+        }
+    }
+
+    #[test]
+    fn target_fallback_json_roundtrip() {
+        // Rust/TS 往返：前端 graph/types.ts 的 fallback 形状（snake_case 契约内
+        // 唯一追加字段）必须原样过 Rust serde。
+        let json = serde_json::json!({
+            "agent": "codex",
+            "model": "gpt-5.6-luna",
+            "role": "执行",
+            "thinking": "中",
+            "visibility": "共享",
+            "write": "单写者",
+            "fallback": { "agent": "pi", "provider": "deepseek", "model": "deepseek-v4-flash" }
+        });
+        let target: Target = serde_json::from_value(json.clone()).unwrap();
+        let fallback = target.fallback.clone().unwrap();
+        assert_eq!(fallback.agent, "pi");
+        assert_eq!(fallback.provider.as_deref(), Some("deepseek"));
+        assert_eq!(fallback.model, "deepseek-v4-flash");
+        // 往返：序列化再解析不丢字段（Option 字段序列化为 null，与 TS undefined 等价）
+        let restored: Target = serde_json::from_value(serde_json::to_value(&target).unwrap()).unwrap();
+        assert_eq!(restored, target);
+        assert_eq!(serde_json::to_value(&target).unwrap()["fallback"], json["fallback"]);
+        // 不带 fallback 的旧图照常解析
+        let mut without = json.clone();
+        without.as_object_mut().unwrap().remove("fallback");
+        let target: Target = serde_json::from_value(without).unwrap();
+        assert_eq!(target.fallback, None);
+    }
+
+    #[test]
+    fn premises_roundtrip() {
+        let root = temp_root("premises-rt");
+        assert_eq!(premises_from(&root), PremiseFile::default());
+        let file = PremiseFile {
+            version: 1,
+            premises: vec![Premise {
+                id: "p1".into(),
+                text: "上游 API 保持 v2 兼容".into(),
+                recorded_at: "2026-09-14T10:00:00Z".into(),
+                last_checked_at: None,
+                last_result: None,
+                attachments: Vec::new(),
+                last_graph_id: None,
+            }],
+        };
+        save_premises_in(&root, &file).unwrap();
+        assert_eq!(premises_from(&root), file);
+        let mut checked = file.clone();
+        checked.premises[0].last_checked_at = Some("2026-09-14T12:00:00Z".into());
+        checked.premises[0].last_result = Some("仍成立".into());
+        save_premises_in(&root, &checked).unwrap();
+        assert_eq!(premises_from(&root), checked);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn premises_attachments_and_last_graph_id_roundtrip() {
+        let root = temp_root("premises-attachments");
+        let file = PremiseFile {
+            version: 1,
+            premises: vec![Premise {
+                id: "p1".into(),
+                text: "上游 API 保持 v2 兼容".into(),
+                recorded_at: "2026-09-14T10:00:00Z".into(),
+                last_checked_at: Some("2026-09-14T12:00:00Z".into()),
+                last_result: Some("仍成立".into()),
+                attachments: vec!["docs/spec.pdf".into(), "notes.md".into()],
+                last_graph_id: Some("graph-123".into()),
+            }],
+        };
+        save_premises_in(&root, &file).unwrap();
+        assert_eq!(premises_from(&root), file);
+        let raw = fs::read_to_string(root.join("premises.json")).unwrap();
+        assert!(raw.contains("\"attachments\""));
+        assert!(raw.contains("\"last_graph_id\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn premises_legacy_format_without_new_fields_parses_empty() {
+        let json = r#"{"version":1,"premises":[{"id":"p1","text":"旧台账","recorded_at":"2026-09-01T00:00:00Z","last_checked_at":null,"last_result":null}]}"#;
+        let file: PremiseFile = serde_json::from_str(json).unwrap();
+        assert_eq!(file.premises.len(), 1);
+        assert!(file.premises[0].attachments.is_empty());
+        assert_eq!(file.premises[0].last_graph_id, None);
+        // 旧格式台账文件照常经读写管道解析
+        let root = temp_root("premises-legacy");
+        fs::write(root.join("premises.json"), json).unwrap();
+        assert_eq!(premises_from(&root), file);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn premises_broken_file_loads_empty_and_save_refuses_to_overwrite() {
+        let root = temp_root("premises-broken");
+        fs::write(root.join("premises.json"), "{ not json").unwrap();
+        // 读取侧：损坏 → 空台账，不动文件
+        assert_eq!(premises_from(&root), PremiseFile::default());
+        // 写入侧：损坏 → 拒写，文件原文还在
+        let err = save_premises_in(&root, &PremiseFile::default()).unwrap_err();
+        assert!(err.contains("解析失败"));
+        assert_eq!(fs::read_to_string(root.join("premises.json")).unwrap(), "{ not json");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -731,7 +996,7 @@ mod tests {
         let root = temp_root("presets-broken");
         fs::write(root.join("presets.json"), "{ not json").unwrap();
         let file = presets_from(&root);
-        assert_eq!(file.presets.len(), 3);
+        assert_eq!(file.presets.len(), 5);
     }
 
     #[test]
@@ -748,7 +1013,7 @@ mod tests {
         )
         .unwrap();
         let merged = presets_from(&root);
-        assert_eq!(merged.presets.len(), 3);
+        assert_eq!(merged.presets.len(), 5);
         assert!(merged.presets.iter().all(|p| p.builtin));
         // version 合法的同内容文件正常合并
         let file = PresetFile {
@@ -761,7 +1026,7 @@ mod tests {
         )
         .unwrap();
         let merged = presets_from(&root);
-        assert_eq!(merged.presets.len(), 4);
+        assert_eq!(merged.presets.len(), 6);
     }
 
     #[test]
@@ -830,6 +1095,32 @@ mod tests {
     }
 
     #[test]
+    fn arena_role_defaults_stay_empty() {
+        let mut presets = builtin_presets();
+        let roles = RoleSettings {
+            version: 1,
+            execution: RoleProfile {
+                agent: "pi".into(),
+                model: "configured-model".into(),
+                thinking: "低".into(),
+                ..RoleProfile::default()
+            },
+            ..RoleSettings::default()
+        };
+        fill_role_defaults(&mut presets, &roles);
+        let arena = presets
+            .iter()
+            .find(|preset| preset.id == "builtin-arena")
+            .unwrap();
+        for stage in &arena.stages {
+            for node in &stage.nodes {
+                assert_eq!(node.model, "");
+                assert_eq!(node.agent, "");
+            }
+        }
+    }
+
+    #[test]
     fn save_strips_builtin_entries() {
         let root = temp_root("presets-strip");
         let mut forged = user_preset("forged");
@@ -840,9 +1131,9 @@ mod tests {
         let file: PresetFile = serde_json::from_str(&contents).unwrap();
         assert_eq!(file.presets.len(), 1);
         assert_eq!(file.presets[0].id, "u1");
-        // 读回来仍是 3 内置 + 1 用户，伪造的内置没进去
+        // 读回来仍是 5 内置 + 1 用户，伪造的内置没进去
         let merged = presets_from(&root);
-        assert_eq!(merged.presets.iter().filter(|p| p.builtin).count(), 3);
+        assert_eq!(merged.presets.iter().filter(|p| p.builtin).count(), 5);
     }
 
     #[test]

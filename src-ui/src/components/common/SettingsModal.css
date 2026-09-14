@@ -532,3 +532,15 @@
   border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
   border-radius: var(--radius-sm, 10px);
 }
+
+/* ── 前提台账（TASK-05B）── */
+.settings-premise-add { display: flex; gap: 8px; margin-bottom: 4px; }
+.settings-premise-add input { flex: 1; height: 30px; padding: 0 10px; border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: var(--radius-sm, 8px); background: var(--bg-app, #1b1917); color: var(--text-1, #fff); font-size: 13px; }
+.settings-premise-add button, .settings-premise-actions button { display: inline-flex; align-items: center; min-height: 28px; padding: 0 12px; border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: var(--radius-sm, 8px); background: transparent; color: var(--text-2, rgba(255,255,255,.55)); font-size: 12px; cursor: pointer; }
+.settings-premise-add button:hover, .settings-premise-actions button:hover { color: var(--text-1, #fff); border-color: var(--accent, #c4956a); }
+.settings-premise-row { padding: 10px 12px; margin-bottom: 8px; border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: var(--radius-sm, 8px); background: var(--bg-panel, rgba(255,255,255,.03)); }
+.settings-premise-text { font-size: 13px; color: var(--text-1, #fff); line-height: 1.6; }
+.settings-premise-meta { margin-top: 4px; font-size: 11px; color: var(--text-3, rgba(255,255,255,.45)); }
+.settings-premise-result { margin-top: 8px; padding: 8px; max-height: 200px; overflow: auto; background: var(--bg-app, #1b1917); border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: var(--radius-sm, 8px); color: var(--text-2, rgba(255,255,255,.75)); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
+.settings-premise-actions { display: flex; gap: 8px; margin-top: 8px; }
+.settings-premise-attach { display: block; width: 100%; box-sizing: border-box; margin-top: 8px; height: 28px; padding: 0 10px; border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: var(--radius-sm, 8px); background: var(--bg-app, #1b1917); color: var(--text-2, rgba(255,255,255,.75)); font-size: 12px; }

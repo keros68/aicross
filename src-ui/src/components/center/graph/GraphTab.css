@@ -590,3 +590,4 @@
 .graph-primary-btn:hover {
   border-color: var(--accent-hover);
 }
+.dispatch-arb-text { width: 100%; margin-top: 12px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-app); color: var(--text-1); font-size: 12px; line-height: 1.6; resize: vertical; }
