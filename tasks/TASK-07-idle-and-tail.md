@@ -9,7 +9,7 @@
 
 ## A. 引擎（Rust）— codex
 
-1. **进度心跳**：`run_one` 期间每 15s `emit_progress(status="running")` 带 `elapsedMs`/`idleMs`；ACP 节点从 `session/update` 的 `tool_call` 通知累计 `toolCalls`，按 `title` 连续相同计 `repeatedToolCalls`，`lastTool` 记标题；一次性节点 `idleMs` 按子进程最后一次 stdout/stderr 输出计（`process.rs` 的读线程记时间戳）。心跳线程在节点结束/取消后停止。补测试：假 ACP server 连发 3 次同名 tool_call → 事件里 `repeatedToolCalls == 3`；一次性 stub 静默 2s → `idleMs ≥ 2000`。不动 `src/channels/acp.rs` 的协议部分之外的行为（只加计数）。
+1. **进度心跳**：`run_one` 期间每 15s `emit_progress(status="running")` 带 `elapsedMs`/`idleMs`；ACP 节点从当前 session 的 `session/update` `tool_call` 通知与 `session/request_permission` 的 `toolCall` 累计 `toolCalls`（R1 起两者都计，无 title 也计），按 `title` 连续相同计 `repeatedToolCalls`，`lastTool` 记标题；一次性节点 `idleMs` 按子进程最后一次 stdout/stderr 输出计（`process.rs` 的读线程记时间戳）。心跳线程在节点结束/取消后停止。补测试：假 ACP server 连发 3 次同名 tool_call → 事件里 `repeatedToolCalls == 3`；一次性 stub 静默 2s → `idleMs ≥ 2000`。不动 `src/channels/acp.rs` 的协议部分之外的行为（只加计数）。
 2. **before 快照写前保留旧目录**（06A-R1 复审 GLM 1）：`persist_before_snapshot` 先把旧 `.before` 改名 `.before.prev`（覆盖上一个 `.prev`），写成功后再删 `.prev`；写失败时把 `.prev` 改回。补测试。
 3. **进通道但零改动的重派不覆盖非空快照**（DS 06A-R1 3）：after == before 时不写空快照、不动旧目录。补测试。
 4. **`latest_before_dir` 的 workdir 过滤 fail-closed**（DS 06A-R1 2）：canonicalize 失败即不匹配。补测试。
