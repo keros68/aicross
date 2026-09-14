@@ -1,0 +1,1 @@
+先读仓库根目录的 AGENTS.md、docs/PRODUCT.md 的「重派与崩溃恢复的一致性」一节，再读 tasks/TASK-06-consistency.md，只做「契约」与「B. 界面（TS）」两节，按 1→7 顺序。每条补具名测试。报告写 tasks/REPORT-06B.md：逐条「已做：怎么做的（文件:行）／已补：测试名」或「没做：原因」，验证命令与输出原文贴进报告（vitest 用 --configLoader native --pool threads）。不动 src/ 目录（Rust 由另一工作树做）；tauri.ts 的新命令签名按契约先写，后端未接通时前端要能编译并走回退分支。保持文件原有换行。不起窗口，不发真机请求，不 commit，不 push。
