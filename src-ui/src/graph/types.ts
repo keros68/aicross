@@ -17,6 +17,9 @@ export interface Reply {
   model_reported?: string;
   tokens_in?: number;
   tokens_out?: number;
+  // TASK-07 契约：缓存命中的输入 token。派发结果与对账都写它，结果屏的
+  // cache_read 列优先读这个字段。旧图没有，按缺失处理。
+  tokens_cache_read?: number;
   ms?: number;
   session_id?: string;
   runner?: 'acp' | 'oneshot' | 'unknown';

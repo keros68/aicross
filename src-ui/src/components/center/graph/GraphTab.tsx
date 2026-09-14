@@ -18,7 +18,7 @@ import { commitGraph, presetNameOf, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
 import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
-import { applyReconcile, applyRoleDefaults, dispatchableNodeIds, EMPTY_RECONCILE_UI, fallbackNoticeOf, nodeStatusLabel, parseAdvise, presetWithRoleDefaults, RECONCILE_UNKNOWN_TEXT, reconcileUiAfter, reconcileUiFor, redraftNode, resetPendingToDraft, type ReconcileSummary, type ReconcileUi } from '../../../graph/dispatch';
+import { applyReconcile, applyRoleDefaults, dispatchableNodeIds, EMPTY_RECONCILE_UI, fallbackNoticeOf, nodeStatusLabel, parseAdvise, presetWithRoleDefaults, RECONCILE_UNKNOWN_TEXT, reconcileUiAfter, reconcileUiConverged, reconcileUiFor, redraftNode, resetPendingToDraft, type ReconcileSummary, type ReconcileUi } from '../../../graph/dispatch';
 import { DispatchOverlay } from './DispatchOverlay';
 import { appendMention, INSERT_MENTION_EVENT, openResourcesPage, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { groupPickableModels, modelKey, modelOptionLabel } from '../../../resources/model-picker';
@@ -829,7 +829,13 @@ export function GraphTab({ session }: { session: TerminalSession }) {
           projectDir={session.folderPath ?? ''}
           needsReview={reconcileUi.needsReview}
           retryNodes={retryNodes}
-          onCommit={commit}
+          // 每次写回图之后收敛一次对账说明（TASK-07-2）：已跑完/已判失败的
+          // 节点从「待核对」里剔除，一个不剩时工具条那句说明也一起清掉。
+          onCommit={(next) => {
+            const saved = commit(next);
+            setReconcile((current) => reconcileUiConverged(current, saved));
+            return saved;
+          }}
           onClose={() => { setDispatchOpen(false); setRetryNodes([]); }}
           onFocusNode={(nodeId) => {
             dispatch({ type: 'SET_GRAPH_FOCUS', focus: { graphId: graph.id, nodeId } });

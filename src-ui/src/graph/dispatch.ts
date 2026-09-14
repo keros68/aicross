@@ -5,7 +5,7 @@ import { defaultTurnTarget, parseSend } from './mutate.ts';
 import { arbitrationVendorConflict } from './validate.ts';
 // TASK-06 R1：请求体与 git 状态的契约形状住在 tauri.ts，这里 type-only 引用
 // （运行时擦除，不构成与 tauri.ts 的值依赖环）。
-import type { DispatchNodeRequest, GitChanges } from '../tauri';
+import type { DispatchNodeRequest, DispatchProgress, GitChanges } from '../tauri';
 import acceptancePrompt from '../../../fixtures/prompts/acceptance.txt?raw';
 import executionPrompt from '../../../fixtures/prompts/execution.txt?raw';
 import planningPrompt from '../../../fixtures/prompts/planning.txt?raw';
@@ -20,6 +20,8 @@ export interface BackendNodeResult {
   sessionId: string;
   tokensIn: number;
   tokensOut: number;
+  // TASK-07-3：缓存命中的输入 token，旧结果没有这个字段时按 0 处理。
+  cacheRead?: number;
   durationMs: number;
   error: string;
   runner?: 'acp' | 'oneshot' | 'unknown';
@@ -261,6 +263,8 @@ export function applyDispatchResults(graph: Graph, results: BackendNodeResult[])
       model_reported: result.modelReported || undefined,
       tokens_in: result.tokensIn || undefined,
       tokens_out: result.tokensOut || undefined,
+      // TASK-07-3：cache_read 进图，结果屏与下次打开都读得到
+      tokens_cache_read: result.cacheRead || undefined,
       ms: result.durationMs,
       session_id: result.sessionId || undefined,
       ...(result.runner ? { runner: result.runner } : {}),
@@ -808,7 +812,9 @@ function reconcileRunner(runner?: string): Reply['runner'] | undefined {
 // incomplete 回 draft 重跑；unknown 回 draft 并写一句说明，由 G1 的「待核对」
 // 区决定派不派。
 // 前置条件（R1-4）：只覆写 pending / draft 的节点。崩溃后已经重派成功的节点
-// （done）、已判失败的节点不能被一条更旧的留痕抹掉。
+// （done）、已判失败的节点不能被一条更旧的留痕抹掉。没有 reply 的节点（材料节点
+// 和刚建出来还没写过 reply 的节点）状态取不到，按「非 pending / draft」一起跳过
+// ——留痕本来也不会点到它们（07-5）。
 // 会话（R1-9）：incomplete / unknown 不保留上一条 reply 的 session_id / runner
 // ——重跑即新会话，半途或结果未知的会话不能被子节点当作可续父会话。
 export function applyReconcile(graph: Graph, summary: ReconcileSummary | null | undefined): Graph {
@@ -832,6 +838,8 @@ export function applyReconcile(graph: Graph, summary: ReconcileSummary | null | 
             ...(runner ? { runner } : {}),
             ...(row.usage?.input ? { tokens_in: row.usage.input } : {}),
             ...(row.usage?.output ? { tokens_out: row.usage.output } : {}),
+            // TASK-07-3：R1 收不回的 cacheRead 现在有图字段了
+            ...(row.usage?.cacheRead ? { tokens_cache_read: row.usage.cacheRead } : {}),
             ...adopted,
           }
         : row.verdict === 'incomplete'
@@ -1019,4 +1027,227 @@ export function markBatchProcessed(
 ): { seen: Set<string>; fresh: boolean } {
   if (seen.has(key)) return { seen: new Set(seen), fresh: false };
   return { seen: new Set(seen).add(key), fresh: true };
+}
+
+// ── TASK-07 疑似空转提示与 06B 收尾 ──────────────────────────────────────
+
+// G2 运行中状态（TASK-07-1）：一条 dispatch-progress 落到界面上的快照。
+// 引擎不发的字段按 0 / 空串补齐（旧引擎只发 status）。receivedAt 是本机收到
+// 这条心跳的时刻——引擎整个卡死时不会再有新心跳，idle 要用它加上墙上时间
+// 才会继续长，否则界面永远停在最后一条心跳的读数上。
+// hasHeartbeat 区分「带心跳元数据」与「只有一个状态词」（R1-1）：缺字段补 0
+// 在显示上安全，在判定上不安全——只发 status 的旧引擎事件如果也累计墙上时间，
+// 任何跑满 3 分钟的节点都会被误判成空转，而且再没有新事件能纠正它。
+// runId 用于渲染时过滤上一轮留下的快照（R1-2）。
+export interface ProgressSnapshot {
+  runId: string;
+  status: string;
+  elapsedMs: number;
+  idleMs: number;
+  toolCalls: number;
+  repeatedToolCalls: number;
+  lastTool: string;
+  receivedAt: number;
+  hasHeartbeat: boolean;
+}
+
+// 无输出多久算「疑似空转」，以及同名工具连续多少次算「疑似空转」。
+// 重复工具还要配一个较小的空闲门槛（R1-3）：连续读 3 个文件几秒内就会命中
+// 计数，只有「重复且这段时间没有产出」才值得提示。
+export const IDLE_HINT_MS = 3 * 60 * 1000;
+export const REPEATED_TOOL_LIMIT = 3;
+export const REPEATED_TOOL_IDLE_MS = 30 * 1000;
+
+export function progressSnapshot(payload: DispatchProgress, receivedAt: number): ProgressSnapshot {
+  return {
+    runId: payload.runId,
+    status: payload.status,
+    elapsedMs: payload.elapsedMs ?? 0,
+    idleMs: payload.idleMs ?? 0,
+    toolCalls: payload.toolCalls ?? 0,
+    repeatedToolCalls: payload.repeatedToolCalls ?? 0,
+    lastTool: payload.lastTool ?? '',
+    receivedAt,
+    hasHeartbeat: payload.elapsedMs !== undefined || payload.idleMs !== undefined,
+  };
+}
+
+// 进度 state 的更新（R1-2）：整段逻辑放纯函数里，组件只负责 setState。
+// 别轮次的事件直接丢掉——retry() 复用同一个 nodeId，不过滤的话上一轮的读数
+// 会落到新一轮的行上。
+export function nextProgress(
+  current: Record<string, ProgressSnapshot>,
+  payload: DispatchProgress,
+  now: number,
+  runId: string,
+): Record<string, ProgressSnapshot> {
+  if (payload.runId !== runId) return current;
+  return { ...current, [payload.nodeId]: progressSnapshot(payload, now) };
+}
+
+// 渲染时取快照（R1-2）：state 以 nodeId 为键、跨轮存活，上一轮没收到终态的
+// 快照（叫停、抛错、丢事件）不能直接拿来渲染新一轮的行。
+export function progressOf(
+  progress: Record<string, ProgressSnapshot>,
+  nodeId: string,
+  runId: string,
+): ProgressSnapshot | undefined {
+  const snapshot = progress[nodeId];
+  return snapshot && snapshot.runId === runId ? snapshot : undefined;
+}
+
+// 心跳的 status 是 "running"，界面上还是既有的那个词；别的状态原样显示。
+export function progressStatusLabel(status: string): string {
+  return status === 'running' ? '运行中' : status;
+}
+
+// 节点还在跑（心跳或「运行中」）才算得上空转；排队、等待写锁与终态不算。
+function progressRunning(progress: ProgressSnapshot): boolean {
+  return progress.status === 'running' || progress.status === '运行中';
+}
+
+function idleMsOf(progress: ProgressSnapshot, now: number): number {
+  return progress.idleMs + Math.max(0, now - progress.receivedAt);
+}
+
+// G2「疑似空转」判定（TASK-07-1）：只提示不阻止，也不下结论说它坏了。
+// 同名工具连续 3 次且 30 秒无输出，或 3 分钟没有任何输出/通知，就在节点旁挂一句。
+// 没有心跳元数据的快照（旧引擎只发状态词）一律不判——那样的事件永远不会被
+// 下一条心跳纠正，累计墙上时间就是必然误报（R1-1）。
+export function idleHint(progress: ProgressSnapshot | undefined, now: number): string | null {
+  if (!progress || !progressRunning(progress) || !progress.hasHeartbeat) return null;
+  const idle = idleMsOf(progress, now);
+  if (progress.repeatedToolCalls >= REPEATED_TOOL_LIMIT && idle >= REPEATED_TOOL_IDLE_MS) {
+    return `疑似空转：同一工具连续 ${progress.repeatedToolCalls} 次`;
+  }
+  if (idle >= IDLE_HINT_MS) return `疑似空转：${Math.floor(idle / 60_000)} 分钟无输出`;
+  return null;
+}
+
+function elapsedLabel(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  return minutes > 0 ? `${minutes} 分 ${total % 60} 秒` : `${total} 秒`;
+}
+
+// G2 运行中那一行的细节：已运行多久、最后一次调的什么工具。心跳没到之前
+// （只有「排队」）返回空串，界面就只显示状态词。节点已经收尾（终态）的行还
+// 挂在本层列表里，读数按最后一条心跳冻结，不再跟着墙上时间涨（R1-4）。
+export function runningDetailOf(progress: ProgressSnapshot | undefined, now: number): string {
+  if (!progress || progress.elapsedMs === 0) return '';
+  const wall = progressRunning(progress) ? Math.max(0, now - progress.receivedAt) : 0;
+  const elapsed = elapsedLabel(progress.elapsedMs + wall);
+  return progress.lastTool ? `已运行 ${elapsed} · 工具 ${progress.lastTool}` : `已运行 ${elapsed}`;
+}
+
+// 对账说明随派发收敛（TASK-07-2）：一轮派发之后，已经跑完或已判失败的节点
+// 不在待派集合里了，把它们从「待核对」剔除；一个不剩时连工具条那句说明一起
+// 清掉——否则说明会一直挂着上一次对账的陈旧计数。换图后同样清空（口径与
+// reconcileUiFor 一致）。
+// 判据是节点自己的终态，不是「这一刻可不可派」（R1-5）：父节点还没跑完、
+// 目标没选、正在飞的节点都暂时不可派，但它仍然没核对过。按可派集合剔除会让
+// 工具条的计数与节点卡的「待核对」标签对不上，还会让这些节点在父节点跑完后
+// 被 initialDispatchSelection 默认勾上派出去。口径与节点卡一致：只留仍是
+// draft 且正文还是 RECONCILE_UNKNOWN_TEXT 的那些。
+export function reconcileUiConverged(state: ReconcileUi, graph: Graph): ReconcileUi {
+  const current = reconcileUiFor(state, graph.id);
+  if (current.needsReview.length === 0) return current;
+  const needsReview = current.needsReview.filter((id) => {
+    const reply = graph.nodes[id]?.reply;
+    return reply?.status === 'draft' && reply.text === RECONCILE_UNKNOWN_TEXT;
+  });
+  if (needsReview.length === current.needsReview.length) return current;
+  if (needsReview.length === 0) return EMPTY_RECONCILE_UI;
+  return { ...current, needsReview, note: `还有 ${needsReview.length} 个节点待核对` };
+}
+
+// 结果屏 cache_read 列（TASK-07-3）：优先读图上的 tokens_cache_read——对账
+// 收回来的那一路只有图字段，没有本次派发的结果行。
+export function cacheReadOf(
+  reply: Reply | undefined,
+  result: Pick<BackendNodeResult, 'cacheRead'>,
+): number {
+  return reply?.tokens_cache_read ?? result.cacheRead ?? 0;
+}
+
+// ── 派发推进循环（TASK-07-4） ────────────────────────────────────────────
+// 原来整段写在 DispatchOverlay.start() 里，重复批次那条停止分支只能靠纯函数
+// 间接验证。这里把循环体原样搬出来，预览/派发/提交都由调用方注入，整链
+// （本层复位 draft + 提示 + 不再推进下一层）才测得到。
+// 状态对象由调用方持有并就地更新：派发抛错时组件的 catch 分支还要读
+// graph / collected / activeNodes，返回新副本的话那半边就拿不到了。
+
+export interface StageLoopState<R extends BackendNodeResult> {
+  graph: Graph;
+  collected: R[];
+  activeNodes: { nodeId: string }[];
+}
+
+export interface StageRequestShape {
+  stage: number;
+  nodes: { nodeId: string }[];
+}
+
+export interface StageLoopDeps<R extends BackendNodeResult, Req extends StageRequestShape, P> {
+  runId: string;
+  buildRequest: (graph: Graph, nodeIds: string[]) => Req;
+  preview: (request: Req) => Promise<P>;
+  dispatch: (request: Req) => Promise<{ runId: string; results: R[] }>;
+  commit: (graph: Graph) => Graph;
+  onPreview: (preview: P) => void;
+  onStage: (request: Req, nodeIds: string[]) => void;
+  onResults: (collected: R[]) => void;
+}
+
+export type StageLoopOutcome =
+  | { kind: 'done' }
+  | { kind: 'stopped'; error: string }
+  | { kind: 'missing-target'; nodeIds: string[]; error: string };
+
+export const DUPLICATE_BATCH_TEXT = '同一批结果重复送达，已停止推进；这一层的节点已放回待派。';
+export const MISSING_TARGET_TEXT = '下一阶段有节点未指定模型，请先选择目标。';
+
+export async function runStageLoop<R extends BackendNodeResult, Req extends StageRequestShape, P>(
+  state: StageLoopState<R>,
+  settings: { maxRequests: number },
+  skip: ReadonlySet<string>,
+  deps: StageLoopDeps<R, Req, P>,
+): Promise<StageLoopOutcome> {
+  let validationRetries: Record<string, number> = {};
+  let processedBatches: Set<string> = new Set();
+  for (;;) {
+    const next = nextStageStep(state.graph, state.collected, settings, skip);
+    if (next.kind === 'done') return { kind: 'done' };
+    if (next.kind === 'missing-target') {
+      return { kind: 'missing-target', nodeIds: next.nodeIds, error: MISSING_TARGET_TEXT };
+    }
+    if (next.kind === 'limit') {
+      return { kind: 'stopped', error: `已达总请求上限 ${settings.maxRequests}，继续派发需重新确认。` };
+    }
+    const ids = next.nodeIds;
+    const stageRequest = deps.buildRequest(state.graph, ids);
+    deps.onPreview(await deps.preview(stageRequest));
+    state.activeNodes = stageRequest.nodes;
+    deps.onStage(stageRequest, ids);
+    state.graph = deps.commit(markPending(state.graph, ids));
+    const output = await deps.dispatch(stageRequest);
+    const batch = markBatchProcessed(
+      processedBatches,
+      dispatchBatchKey(output.runId || deps.runId, stageRequest.stage, output.results),
+    );
+    processedBatches = batch.seen;
+    if (!batch.fresh) {
+      // 同一批结果重复送达：本层节点刚 markPending 过，停下前放回 draft，
+      // 不能悬挂在 pending 上（06B R1-3）。
+      state.graph = deps.commit(resetNodesToDraft(state.graph, ids));
+      return { kind: 'stopped', error: DUPLICATE_BATCH_TEXT };
+    }
+    state.collected.push(...output.results);
+    deps.onResults([...state.collected]);
+    state.graph = deps.commit(applyDispatchResults(state.graph, output.results));
+    const step = reducePipelineStep(state.graph, output.results, validationRetries);
+    validationRetries = step.validationRetries;
+    if (step.graph !== state.graph) state.graph = deps.commit(step.graph);
+    if (!step.continueRunning) return { kind: 'done' };
+  }
 }

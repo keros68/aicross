@@ -1,0 +1,9 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/7b 分支。本期是 TASK-07 的 B 节「界面：G2 疑似空转提示（进度心跳 → idleHint 胶囊 + 叫停）、对账说明随派发收敛、Reply.tokens_cache_read、start() 循环体抽成可测的 runStageLoop、小质量项」。先读 tasks/TASK-07-idle-and-tail.md（契约 + B 节）、AGENTS.md、tasks/REPORT-07B.md（实现方报告），再读本期改动：src-ui/src/graph/dispatch.ts、types.ts、__tests__/idle-and-tail-07b.test.tsx、__tests__/consistency-06b.test.tsx、src-ui/src/components/center/graph/（DispatchOverlay.tsx、DispatchBits.tsx、GraphTab.tsx、GraphTab.css）、src-ui/src/tauri.ts、src-ui/src/global.d.ts。不读 node_modules、target、dist、port、src/。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照 B 节 5 条与契约逐条核对；心跳字段缺失时是否按 0 处理；叫停是否走现有 cancelDispatchNode。
+2. 逻辑正确性：idleHint 的阈值（同名工具连续 ≥3、3 分钟无输出）与「心跳后墙上时间」叠加是否会误报（心跳 15s 一次 + 5s 时钟）；节点到终态后提示是否清除；runStageLoop 抽出后与原 start() 行为是否等价（推进、限额、catch 标 failed、幂等停止复位 draft）；reconcileUiConverged 不会误删仍待核对的 id；tokens_cache_read 与结果屏小计的口径。
+3. 安全：心跳事件里不会把正文/密钥渲染到界面；无新增外发路径。
+4. 代码质量与契约：类型只追加；tauri.ts 命名与契约一致；第 2–6 期路径（dispatchableNodeIds、reducePipelineStep、applyDispatchResults、pickOne、擂台/仲裁、对账、回滚标志）无回归；global.d.ts 改法与 shiki.test.ts 一致。
+5. 测试：报告里的测试是否真实存在且断言目标行为；时钟相关测试是否用假时间（不会 flake）；最该补的 3 个。
+最后单独回答：对照 B 节原始需求是否完整实现？一句话 + 缺项列表（按严重度排序）。

@@ -1,7 +1,7 @@
 // DispatchOverlay 的三处小组件（TASK-05B R2-5）：抽出来是为了能用
 // react-dom/server 做组件级断言，不只停在纯函数层。
 
-import { fallbackSkippedLineOf, rollbackHintOf, writableFallbackHintOf, type BackendNodeResult } from '../../../graph/dispatch';
+import { fallbackSkippedLineOf, idleHint, rollbackHintOf, writableFallbackHintOf, type BackendNodeResult, type ProgressSnapshot } from '../../../graph/dispatch';
 import type { Target } from '../../../graph/types';
 
 // G1 确认屏：可写节点（write != 只读）配了备选时的提示。
@@ -44,6 +44,14 @@ export function ReviewPendingRow(
       <ReviewPendingTag visible />
     </label>
   );
+}
+
+// G2 运行中：疑似空转的胶囊提示（TASK-07-1）。只提示不阻止，不用红字；
+// 用户要停就按旁边的「叫停」。
+export function IdleHint({ progress, now }: { progress?: ProgressSnapshot; now: number }) {
+  const hint = idleHint(progress, now);
+  if (!hint) return null;
+  return <span className="hint-capsule">{hint}</span>;
 }
 
 // 结果卡：擂台「选它」。visible 由调用方按 sameParentsResultCount >= 2 决定。

@@ -523,6 +523,26 @@ export interface DispatchStageResult {
   stateFile: string;
 }
 
+// TASK-07 契约：`dispatch-progress` 事件的载荷。status 除既有的中文状态词
+// （排队 / 等待写锁 / 运行中 / 终态）外新增 "running"——节点跑着时每 15s 一条
+// 的心跳，节点结束时最后一条仍是原有终态。后面五个字段是心跳才带的，
+// 旧引擎不发；前端按 0 / 空串处理（graph/dispatch.ts 的 progressSnapshot）。
+export interface DispatchProgress {
+  runId: string;
+  nodeId: string;
+  status: string;
+  /** 节点开跑到这条心跳的毫秒数 */
+  elapsedMs?: number;
+  /** 距上一条输出/通知的毫秒数 */
+  idleMs?: number;
+  /** 本轮工具调用次数，ACP 才有，一次性节点为 0 */
+  toolCalls?: number;
+  /** 连续同名工具调用次数 */
+  repeatedToolCalls?: number;
+  /** 最后一次工具调用的标题 */
+  lastTool?: string;
+}
+
 // Codex-compatible plugin marketplace (a cloned git repo) + its plugins.
 export interface MarketplacePlugin {
   key: string;

@@ -21,7 +21,7 @@
 
 ## B. 界面（TS）— Claude 子代理
 
-1. **G2「疑似空转」提示**：监听 `dispatch-progress`（`tauri.ts` 类型按契约追加，缺字段按 0 处理），结果屏/节点卡的运行中状态显示 `elapsed`、`lastTool`；纯函数 `idleHint(progress, now)`：`repeatedToolCalls ≥ 3` 或 `idleMs ≥ 180000` → 返回「疑似空转：同一工具连续 N 次」/「3 分钟无输出」，UI 在该节点旁显示胶囊提示 + 现有「取消」按钮（文案「叫停」）。不用红色。测试：三种输入（正常/重复工具/长时间无输出）。
+1. **G2「疑似空转」提示**：监听 `dispatch-progress`（`tauri.ts` 类型按契约追加，缺字段按 0 处理），结果屏/节点卡的运行中状态显示 `elapsed`、`lastTool`（R1 收窄：本期只覆盖 G2 运行行；**节点卡的 elapsed/lastTool 下期做**，需把 `dispatch-progress` 订阅从 `DispatchOverlay` 提到 `GraphTab`）；纯函数 `idleHint(progress, now)`：**同名工具连续 ≥3 且 30 秒无输出**，或 `idleMs ≥ 180000` → 返回「疑似空转：同一工具连续 N 次」/「3 分钟无输出」（R1 修订：重复工具计数单独用会误报连续读文件；缺心跳元数据的事件一律不判），UI 在该节点旁显示胶囊提示 + 现有「取消」按钮（文案「叫停」）。不用红色。测试：三种输入（正常/重复工具/长时间无输出）。
 2. **对账说明随派发收敛**（DS 06B-R1 3）：派发成功后从 `needsReview` 剔除已不在 `dispatchableNodeIds` 的 id，`reconcileNote` 一并清；测试。
 3. **`Reply.tokens_cache_read`**：类型追加，`applyDispatchResults` 与 `applyReconcile` 写入，结果屏 cache_read 列优先读它；测试。
 4. **`start()` 幂等停止分支整链测试**（GLM 06B-R1 3 / DS 5）：把 `start()` 的循环体抽成可注入 `dispatch` 函数的纯异步函数并测「重复批次 → 本层复位 draft + 提示」。

@@ -48,6 +48,10 @@
 .dispatch-actions .dispatch-primary { border-color: var(--accent); color: var(--text-1); font-weight: 600; }
 .dispatch-error, .dispatch-warning { margin: 12px 0; color: var(--red); font-size: 12px; white-space: pre-wrap; }
 .dispatch-running-row { display: grid; grid-template-columns: 1fr 90px auto; align-items: center; gap: 12px; min-height: 48px; border-bottom: 1px solid var(--border); font: 12px var(--font-mono, monospace); }
+/* 运行中一行：左列是路由 + 「已运行 / 工具」，右列是疑似空转胶囊 + 叫停（TASK-07-1） */
+.dispatch-running-main { display: grid; gap: 4px; min-width: 0; }
+.dispatch-running-detail { color: var(--text-3); font-size: 11px; }
+.dispatch-running-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .dispatch-result-lines { margin-bottom: 12px; }
 .dispatch-result-grid { display: grid; gap: 12px; overflow-x: auto; }
 .dispatch-stage-column { display: grid; align-content: start; gap: 12px; min-width: 260px; }
@@ -368,7 +372,7 @@
   padding: 8px 12px 0;
 }
 
-/* 校验提示：黄色小胶囊，只标注不阻止 */
+/* 提示胶囊：黄色小胶囊，只标注不阻止（校验提示与疑似空转共用） */
 .hint-capsule {
   font-size: 11px;
   color: #d9a13b;

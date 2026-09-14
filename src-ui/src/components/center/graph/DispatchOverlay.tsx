@@ -1,22 +1,24 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { commands, type DispatchNodeResult, type DispatchStageRequest, type GitChanges } from '../../../tauri';
+import { commands, type DispatchNodeResult, type DispatchProgress, type DispatchStageRequest, type GitChanges } from '../../../tauri';
 import { contextPartsOf, originalRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../../../graph/context';
 import {
   appendArbitration,
   appendDecision,
   applyDispatchResults,
   buildNodeRequest,
+  cacheReadOf,
   clearTargetSession,
   continuationSession,
   continuationRunner,
   dispatchableNodeIds,
   dirtyWorktreeHintOf,
-  dispatchBatchKey,
   initialDispatchSelection,
-  markBatchProcessed,
-  markPending,
-  resetNodesToDraft,
+  nextProgress,
+  progressOf,
+  progressStatusLabel,
   rollbackBeforeOf,
+  runningDetailOf,
+  runStageLoop,
   toggleRollbackOnReview,
   graphStage,
   groupResultsByStage,
@@ -24,17 +26,17 @@ import {
   needsChainThinking,
   neutralDisputeSummary,
   pickOne,
-  reducePipelineStep,
   failedNodesWithoutResults,
-  nextStageStep,
   redraftNode,
   routeLine,
   routeReason,
   sameParentsResultCount,
   setReplyAdopted,
+  type ProgressSnapshot,
+  type StageLoopState,
 } from '../../../graph/dispatch';
 import { updateNodeFallback } from '../../../graph/mutate';
-import { FallbackSkippedLine, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, WritableFallbackHint } from './DispatchBits';
+import { FallbackSkippedLine, IdleHint, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, WritableFallbackHint } from './DispatchBits';
 import { presetNameOf } from '../../../graph/persist';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import type { DispatchableModel, Graph, Target, Thinking } from '../../../graph/types';
@@ -85,6 +87,10 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   const [preview, setPreview] = useState<{ totalRedacted: number; broadRedacted: number; nodes: { nodeId: string; redacted: number; isolation: string }[] }>({ totalRedacted: 0, broadRedacted: 0, nodes: [] });
   const [previewError, setPreviewError] = useState('');
   const [statuses, setStatuses] = useState<Record<string, string>>({});
+  // G2 疑似空转（TASK-07-1）：每个节点最后一条心跳的快照 + 一个每 5s 走一格的
+  // 时钟。引擎整个卡死时不会再有心跳，只有这个时钟能让「无输出多久」继续长。
+  const [progress, setProgress] = useState<Record<string, ProgressSnapshot>>({});
+  const [now, setNow] = useState(() => Date.now());
   const [results, setResults] = useState<DispatchNodeResult[]>([]);
   const [runError, setRunError] = useState('');
   const [restartNodes, setRestartNodes] = useState<Set<string>>(new Set());
@@ -181,15 +187,25 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   useEffect(() => {
     if (phase !== 'running') return;
     let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event').then(({ listen }) => listen<{ runId: string; nodeId: string; status: string }>(
+    import('@tauri-apps/api/event').then(({ listen }) => listen<DispatchProgress>(
       'dispatch-progress',
       (event) => {
         if (event.payload.runId !== runId) return;
-        setStatuses((current) => ({ ...current, [event.payload.nodeId]: event.payload.status }));
+        setStatuses((current) => ({ ...current, [event.payload.nodeId]: progressStatusLabel(event.payload.status) }));
+        setProgress((current) => nextProgress(current, event.payload, Date.now(), runId));
       },
     )).then((stop) => { unlisten = stop; }).catch(() => {});
     return () => { unlisten?.(); };
   }, [phase, runId]);
+
+  // 心跳每 15s 一条；这个时钟只为让「已运行」和「无输出」在两条心跳之间
+  // （以及引擎不再发心跳之后）继续走。只在运行屏开着时跑。
+  useEffect(() => {
+    if (phase !== 'running') return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(timer);
+  }, [phase]);
 
   // 待核对节点：对账判 unknown 且这一屏本来就可派的那些。勾选后加回派发队列，
   // 顺序按 initialIds（与路由卡顺序一致）。
@@ -222,66 +238,51 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     if (request.nodes.length === 0 || hasMissingTargets) return;
     setPhase('running');
     setRunError('');
-    let working = graphWithTargets;
-    const collected: DispatchNodeResult[] = [];
-    let activeNodes: DispatchStageRequest['nodes'] = [];
-    let validationRetries: Record<string, number> = {};
-    // 推进幂等（TASK-06-7）：同一 run 的同一批结果送达两次，只推进一层。
-    let processedBatches: Set<string> = new Set();
+    // 新一轮先清进度（R1-2）：这三份 state 以 nodeId 为键、跨轮存活，上一轮
+    // 没收到终态的快照（叫停、抛错、丢事件）会让新一行一出现就显示上一轮的
+    // 耗时、甚至立刻挂空转胶囊。
+    setProgress({});
+    setStatuses({});
+    setCurrentNodes([]);
+    // 推进循环搬进 graph/dispatch.ts 的 runStageLoop（TASK-07-4）；这个对象由
+    // 循环就地更新，抛错时下面的 catch 还要读它的 graph / collected / activeNodes。
+    const loop: StageLoopState<DispatchNodeResult> = {
+      graph: graphWithTargets,
+      collected: [],
+      activeNodes: [],
+    };
     // R1-7：确认屏取消勾选的「待核对」节点不进实际派发集合——这一层不派，
     // 后续层重算时也不再捡起来。
     const skipIds = new Set([...reviewIds].filter((id) => !nodeIds.includes(id)));
     try {
-      while (true) {
-        const next = nextStageStep(working, collected, settings, skipIds);
-        if (next.kind === 'done') break;
-        if (next.kind === 'missing-target') {
-          setNodeIds(next.nodeIds);
-          setTargets((current) => ({ ...current, ...Object.fromEntries(next.nodeIds.map((id) => [id, { ...working.nodes[id].target! }])) }));
-          setRunError('下一阶段有节点未指定模型，请先选择目标。');
-          setPhase('confirm');
-          return;
-        }
-        if (next.kind === 'limit') {
-          setRunError(`已达总请求上限 ${settings.maxRequests}，继续派发需重新确认。`);
-          break;
-        }
-        const ids = next.nodeIds;
-        const stageRequest = buildRequest(working, ids);
-        const stagePreview = await commands.previewDispatch(stageRequest);
-        setPreview(stagePreview);
-        setPreviewError('');
-        activeNodes = stageRequest.nodes;
-        setCurrentNodes(stageRequest.nodes);
-        setStatuses((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, '排队'])) }));
-        const pending = markPending(working, ids);
-        working = onCommit(pending);
-        const output = await commands.dispatchGraphStage(stageRequest);
-        const batch = markBatchProcessed(
-          processedBatches,
-          dispatchBatchKey(output.runId || runId, stageRequest.stage, output.results),
-        );
-        processedBatches = batch.seen;
-        if (!batch.fresh) {
-          // 同一批结果重复送达：不再推进下一层。本层节点刚 markPending 过，
-          // 停下前要放回 draft，不能悬挂在 pending 上（R1-3）。
-          working = onCommit(resetNodesToDraft(working, ids));
-          setRunError('同一批结果重复送达，已停止推进；这一层的节点已放回待派。');
-          break;
-        }
-        collected.push(...output.results);
-        setResults([...collected]);
-        working = onCommit(applyDispatchResults(working, output.results));
-        const step = reducePipelineStep(working, output.results, validationRetries);
-        validationRetries = step.validationRetries;
-        if (step.graph !== working) working = onCommit(step.graph);
-        if (!step.continueRunning) break;
+      const outcome = await runStageLoop(loop, settings, skipIds, {
+        runId,
+        buildRequest,
+        preview: (stageRequest: DispatchStageRequest) => commands.previewDispatch(stageRequest),
+        dispatch: (stageRequest: DispatchStageRequest) => commands.dispatchGraphStage(stageRequest),
+        commit: onCommit,
+        onPreview: (stagePreview) => { setPreview(stagePreview); setPreviewError(''); },
+        onStage: (stageRequest, ids) => {
+          setCurrentNodes(stageRequest.nodes);
+          setStatuses((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, '排队'])) }));
+        },
+        onResults: (collected) => setResults([...collected]),
+      });
+      if (outcome.kind === 'missing-target') {
+        setNodeIds(outcome.nodeIds);
+        setTargets((current) => ({ ...current, ...Object.fromEntries(outcome.nodeIds.map((id) => [id, { ...loop.graph.nodes[id].target! }])) }));
+        setRunError(outcome.error);
+        setPhase('confirm');
+        return;
       }
+      if (outcome.kind === 'stopped') setRunError(outcome.error);
       setPhase('results');
     } catch (error) {
       const message = String(error);
       setRunError(message);
-      const failed: DispatchNodeResult[] = failedNodesWithoutResults(activeNodes, collected, message)
+      let working = loop.graph;
+      const collected = loop.collected;
+      const failed: DispatchNodeResult[] = failedNodesWithoutResults(loop.activeNodes, collected, message)
         .map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', runner: 'unknown' as const, workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null, fallbackFrom: '', fallbackTo: '', fallbackSkipped: '' }));
       if (failed.length > 0) working = onCommit(applyDispatchResults(working, failed));
       setResults([...collected, ...failed]);
@@ -302,6 +303,10 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     } });
     setRunId(crypto.randomUUID());
     setRestartNodes(new Set());
+    // 重派复用同一个 nodeId：上一轮的进度快照与状态词不能留到这一轮（R1-2）。
+    setProgress({});
+    setStatuses({});
+    setCurrentNodes([]);
     // 单写者节点重派/升级：这一路带 rollbackBefore（TASK-06-2）。
     setRollbackNodes(rollbackBeforeOf(node.target, true) ? new Set([nodeId]) : new Set());
     setResults([]);
@@ -383,7 +388,9 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         rows,
         tokensIn: rows.reduce((sum, result) => sum + result.tokensIn, 0),
         tokensOut: rows.reduce((sum, result) => sum + result.tokensOut, 0),
-        cacheRead: rows.reduce((sum, result) => sum + result.cacheRead, 0),
+        // TASK-07-3：cache_read 优先读图上的 tokens_cache_read（对账收回来的
+        // 那一路只有图字段），小计与逐行同一个口径。
+        cacheRead: rows.reduce((sum, result) => sum + cacheReadOf(graph.nodes[result.nodeId]?.reply, result), 0),
         durationMs: rows.reduce((sum, result) => sum + result.durationMs, 0),
       };
     });
@@ -407,7 +414,8 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
 
         {phase === 'confirm' && (
           <div className="dispatch-body">
-            {smallTask && <div className="dispatch-warning">单步小任务，外派固定足迹不划算，建议直接 @ 一个执行者</div>}
+            {/* 常规提示走 dispatch-reason，红字只留给异常（TASK-07-5） */}
+            {smallTask && <div className="dispatch-reason">单步小任务，外派固定足迹不划算，建议直接 @ 一个执行者</div>}
             {nodeIds.length === 0 && <div className="dispatch-empty">当前没有父节点已完成的待派节点。</div>}
             {exceedsRequestLimit && <div className="dispatch-warning">本层有 {nodeIds.length} 路，超过总请求上限 {settings.maxRequests}，不能确认派发。</div>}
             {dirtyHint && <div className="dispatch-reason">{dirtyHint}</div>}
@@ -455,7 +463,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   {target.role === '执行' && ['关', '低'].includes(graph.nodes[id].target?.thinking ?? '') && target.thinking === '中' && (
                     <div className="dispatch-warning">任务含数字或链式关键词，thinking 已调为中；可修改。</div>
                   )}
-                  {sameVendorReview && <div className="dispatch-warning">复核，非独立验证</div>}
+                  {sameVendorReview && <div className="dispatch-reason">复核，非独立验证</div>}
                   {unsmoked && <div className="dispatch-warning">该模型{picked?.status}，尚未核对真身；派发时通道会核对。</div>}
                   <WritableFallbackHint target={target} />
                   <div className="dispatch-controls">
@@ -548,12 +556,24 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
 
         {phase === 'running' && (
           <div className="dispatch-body">
-            {currentNodes.map((node) => (
-              <div key={node.nodeId} className="dispatch-running-row">
-                <span>{node.role || node.nodeId} · {node.agent}/{node.model}</span><span>{statuses[node.nodeId] ?? '排队'}</span>
-                <button onClick={() => commands.cancelDispatchNode(runId, node.nodeId).catch(() => false)}>取消</button>
-              </div>
-            ))}
+            {currentNodes.map((node) => {
+              // 只认本轮的快照（R1-2）：上一轮残留的读数与胶囊都不渲染。
+              const snapshot = progressOf(progress, node.nodeId, runId);
+              const detail = runningDetailOf(snapshot, now);
+              return (
+                <div key={node.nodeId} className="dispatch-running-row">
+                  <div className="dispatch-running-main">
+                    <span>{node.role || node.nodeId} · {node.agent}/{node.model}</span>
+                    {detail !== '' && <span className="dispatch-running-detail">{detail}</span>}
+                  </div>
+                  <span>{statuses[node.nodeId] ?? '排队'}</span>
+                  <span className="dispatch-running-actions">
+                    <IdleHint progress={snapshot} now={now} />
+                    <button onClick={() => commands.cancelDispatchNode(runId, node.nodeId).catch(() => false)}>叫停</button>
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -579,7 +599,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   </div>
                   {result.truncated && <div className="dispatch-warning">输出已截断</div>}
                   {result.tokensIn > 50_000 && <div className="dispatch-warning">输入超过 50k tokens</div>}
-                  {result.fallbackFrom && <div className="dispatch-warning">已切备选：主 {result.fallbackFrom} → 备 {result.fallbackTo}</div>}
+                  {result.fallbackFrom && <div className="dispatch-reason">已切备选：主 {result.fallbackFrom} → 备 {result.fallbackTo}</div>}
                   <FallbackSkippedLine result={result} />
                   <div className="dispatch-result-text">{result.text || result.error}</div>
                   {result.artifacts && (
@@ -668,7 +688,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
             })}
             <table className="dispatch-usage"><thead><tr><th>阶段</th><th>agent/模型</th><th>in / out tokens</th><th>cache_read</th><th>耗时</th><th>结果</th></tr></thead>
               <tbody>{usageGroups.map((group) => <Fragment key={group.stage}>
-                {group.rows.map((result) => { const target = graph.nodes[result.nodeId]?.target; return <tr key={result.nodeId}><td>{result.stage}</td><td>{target?.agent}/{target?.model}{target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</td><td>{result.tokensIn || '—'} / {result.tokensOut || '—'}</td><td>{result.cacheRead || '—'}</td><td>{result.durationMs} ms</td><td>{resultStatus(result.status)}</td></tr>; })}
+                {group.rows.map((result) => { const target = graph.nodes[result.nodeId]?.target; return <tr key={result.nodeId}><td>{result.stage}</td><td>{target?.agent}/{target?.model}{target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</td><td>{result.tokensIn || '—'} / {result.tokensOut || '—'}</td><td>{cacheReadOf(graph.nodes[result.nodeId]?.reply, result) || '—'}</td><td>{result.durationMs} ms</td><td>{resultStatus(result.status)}</td></tr>; })}
                 <tr className="dispatch-usage-subtotal"><td>{group.stage} 小计</td><td>{group.rows.length} 路</td><td>{group.tokensIn} / {group.tokensOut}</td><td>{group.cacheRead}</td><td>{group.durationMs} ms</td><td>—</td></tr>
               </Fragment>)}</tbody>
             </table>
