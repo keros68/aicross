@@ -18,10 +18,11 @@ import { commitGraph, presetNameOf, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
 import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
-import { applyRoleDefaults, dispatchableNodeIds, redraftNode } from '../../../graph/dispatch';
+import { applyRoleDefaults, dispatchableNodeIds, nodeStatusLabel, redraftNode } from '../../../graph/dispatch';
 import { DispatchOverlay } from './DispatchOverlay';
 import { appendMention, INSERT_MENTION_EVENT, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { groupPickableModels, modelKey, modelOptionLabel } from '../../../resources/model-picker';
+import { stampMenuShouldClose } from '../../../graph/stamp-menu';
 import './GraphTab.css';
 
 // 节点卡固定尺寸，图区横向滚动；不做缩放、不做拖拽（任务书硬约束）。
@@ -257,6 +258,19 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     };
   }, [stampFor]);
 
+  useEffect(() => {
+    if (stampFor === null) return;
+    const close = () => closeStamp();
+    const onKey = (event: KeyboardEvent) => { if (stampMenuShouldClose(event)) close(); };
+    const onPointer = (event: MouseEvent) => { if (stampMenuShouldClose(event)) close(); };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('mousedown', onPointer, true);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onPointer, true);
+    };
+  }, [stampFor]);
+
   const openGraph = (id: string) => {
     if (!isTauri) return;
     commands
@@ -301,10 +315,10 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     setPanelNode(child); // 弹出节点面板填 Target
   };
 
-  const closeStamp = () => {
+  function closeStamp() {
     setStampFor(null);
     setStampAt(null);
-  };
+  }
 
   const applyStamp = (nodeId: string, preset: Preset) => {
     if (!graph) return;
@@ -336,7 +350,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
       return;
     }
     // 没写 @ 沿用列末端 Target；根节点没有 Target 时用「执行」默认值
-    const finalTarget = target ?? endNode.target ?? defaultTurnTarget();
+    const finalTarget = target ?? endNode.target ?? (roles ? applyRoleDefaults(defaultTurnTarget(), roles) : defaultTurnTarget());
     const { graph: g2, nodeId } = appendTurn(graph, endId, text, finalTarget);
     commit(g2);
     setColumns((cols) => cols.map((c, i) => (i === colIdx ? nodeId : c)));
@@ -447,13 +461,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     const isFocus = id === focusNodeId;
     const hit = node.target ? findModel(models, node.target) : undefined;
     const color = vendorColor(node.target?.agent, hit?.vendor);
-    const status = node.kind === 'material' ? null : node.reply?.status === 'failed'
-      ? node.reply.error_kind === 'identity_mismatch'
-        ? '真身不符'
-        : node.reply.error_kind === 'validation_failed'
-          ? '验证失败'
-          : '失败'
-      : ({ draft: '待派', pending: '运行中', done: '完成' } as const)[node.reply?.status ?? 'draft'];
+    const status = nodeStatusLabel(node);
     const disconnected = validateNode(graph, id, models).includes('未接入');
     return (
       <div key={id}>
@@ -488,7 +496,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               </button>
             )}
             <button
-              className="graph-mini-btn"
+              className="graph-mini-btn graph-stamp-trigger"
               onClick={(e) => {
                 e.stopPropagation();
                 forkFrom(id);
@@ -576,7 +584,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
             {node.reply && node.reply.status !== 'draft' && node.reply.status !== 'pending' ? (
               <div className="graph-msg-text">{node.reply.text}</div>
             ) : (
-              <div className="graph-msg-pending">{node.reply?.status === 'pending' ? '运行中' : '待派'}</div>
+              <div className="graph-msg-pending">{node.reply?.skipped_reason ? `已跳过：${node.reply.skipped_reason}` : node.reply?.status === 'pending' ? '运行中' : '待派'}</div>
             )}
           </div>
         )}

@@ -93,6 +93,9 @@ pub struct Reply {
     /// 失败类型；用于让真身不符等状态在图持久化后仍可区分。
     #[serde(default)]
     pub error_kind: Option<String>,
+    /// R5：验证重试到顶后未派出的验收节点标「已跳过」的原因（前端 Reply.skipped_reason）。
+    #[serde(default)]
+    pub skipped_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -648,6 +651,7 @@ mod tests {
             reply: Some(Reply {
                 status: "draft".into(),
                 adopted: Some(true),
+                skipped_reason: Some("上游验证未通过".into()),
                 ..Reply::default()
             }),
             target: Some(Target {
@@ -848,6 +852,9 @@ mod tests {
         save_graph_in(&root, &graph).unwrap();
         let loaded = load_graph_in(&root, "g-1").unwrap().unwrap();
         assert_eq!(loaded, graph);
+        // R5：skipped_reason 是前端追加的可选字段，Rust 镜像必须原样保住。
+        let kept = loaded.nodes.values().find_map(|n| n.reply.as_ref().and_then(|r| r.skipped_reason.clone()));
+        assert_eq!(kept.as_deref(), Some("上游验证未通过"));
     }
 
     #[test]

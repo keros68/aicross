@@ -234,13 +234,30 @@ export function routeLine(node: GraphNode, models: DispatchableModel[], isolatio
       item.id === target.model &&
       (item.provider ?? '') === (target.provider ?? ''),
   );
-  const summary = node.user.text.replace(/\s+/g, ' ').trim().slice(0, 24) || target.role || '任务';
+  const correction = node.user.text.match(/^\[修正 (\d+)\/3\]\s*/);
+  const summary = correction ? `执行（修正 ${correction[1]}/3）` : node.user.text.replace(/\s+/g, ' ').trim().slice(0, 24) || target.role || '任务';
   const route = target.agent.trim() && target.model.trim()
     ? `${target.agent}/${target.model}`
     : '未指定模型';
   const validation = (target as Target & { validation_command?: string }).validation_command?.trim() ? ` ｜ 验证=${(target as Target & { validation_command?: string }).validation_command?.trim()}` : '';
   const warning = target.agent === 'cc-switch' && ['单写者', 'worktree'].includes(target.write) ? ' ｜ cc-switch 单轮无工具，产物将为空' : target.agent === 'kimi' && target.visibility === '盲' ? ' ｜ kimi 无只读档，隔离=部分' : '';
-  return `[aicross] ${summary} → ${route} ｜ ${target.tier || model?.tier || '未分档'} · thinking=${target.thinking} ｜ 可见性=${target.visibility} ｜ 写=${target.write} ｜ 隔离=${isolation}${validation}${warning}`;
+  return `[aicross] ${summary}${correction ? '→ ' : ' → '}${route} ｜ ${target.tier || model?.tier || '未分档'} · thinking=${target.thinking} ｜ 可见性=${target.visibility} ｜ 写=${target.write} ｜ 隔离=${isolation}${validation}${warning}`;
+}
+
+export function routeReason(node: GraphNode): string | undefined {
+  const text = node.user.text.replace(/^\[修正 \d+\/3\]\s*/, '').trim();
+  return text.startsWith('验证命令未通过') ? text : undefined;
+}
+
+export function nodeStatusLabel(node: GraphNode): string | null {
+  if (node.kind === 'material') return null;
+  if (node.reply?.skipped_reason) return '已跳过';
+  if (node.reply?.status === 'failed') {
+    if (node.reply.error_kind === 'identity_mismatch') return '真身不符';
+    if (node.reply.error_kind === 'validation_failed') return '验证失败';
+    return '失败';
+  }
+  return ({ draft: '待派', pending: '运行中', done: '完成' } as const)[node.reply?.status ?? 'draft'];
 }
 
 export type AcceptanceVerdict = 'PASS' | 'NEEDS_FIX' | 'UNKNOWN';
@@ -334,6 +351,7 @@ export function appendValidationRetry(
   graph: Graph,
   executionId: string,
   detail: string,
+  retryRound = 1,
 ): { graph: Graph; executionId?: string; acceptanceId?: string } {
   const execution = graph.nodes[executionId];
   if (!execution?.target) return { graph };
@@ -354,7 +372,7 @@ export function appendValidationRetry(
         id: nextExecutionId,
         kind: execution.parents.length > 1 ? 'accept' : 'turn',
         parents: [...execution.parents],
-        user: { text: `验证命令未通过，请修正后重新运行。\n\n${detail}`, attachments: [] },
+        user: { text: `[修正 ${retryRound}/3] 验证命令未通过，请修正后重新运行。\n\n${detail}`, attachments: [] },
         reply: { status: 'draft', text: '' },
         target: { ...execution.target },
         created_at: new Date(now).toISOString(),
@@ -386,7 +404,7 @@ function closeWaitingAcceptance(graph: Graph, executionId: string): Graph {
       ...graph.nodes,
       [waitingAccept.id]: {
         ...waitingAccept,
-        reply: { status: 'failed', text: '验证重试已达上限，未送审' },
+        reply: { status: 'draft', text: '', skipped_reason: '上游验证未通过' },
       },
     },
   };
@@ -435,6 +453,7 @@ export function reducePipelineStep(
         next,
         failure.nodeId,
         failure.validationOutput || failure.error,
+        count + 1,
       );
       next = appended.graph;
       if (appended.executionId) {

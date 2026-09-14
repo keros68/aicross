@@ -1022,7 +1022,10 @@ fn artifact_diff_for_project_with_git(
 fn normalize_git_diff(raw: &str) -> String {
     raw.lines().map(|line| {
         if line.starts_with("diff --git ") || line.starts_with("--- ") || line.starts_with("+++ ") {
-            line.replace("a/before/", "a/").replace("b/after/", "b/")
+            line.replace("a/before/", "a/")
+                .replace("b/after/", "b/")
+                .replace("\"before/", "\"a/")
+                .replace("\"after/", "\"b/")
         } else { line.to_string() }
     }).collect::<Vec<_>>().join("\n")
 }
@@ -1071,11 +1074,12 @@ fn run_validation(command: &str, cwd: &Path, timeout: Duration) -> Result<String
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
+    let output = strip_ansi(&output);
     if result.timed_out {
         return Err(format!("验证命令超时\n{output}"));
     }
     if result.code != Some(0) {
-        return Err(format!("验证命令失败（exit={:?}）\n{output}", result.code));
+        return Err(validation_failure(result.code, &output));
     }
     Ok(output)
 }
@@ -1343,6 +1347,8 @@ fn run_one(
         }
     }
 
+    annotate_kimi_metadata(&node.agent, &mut channel_output, &mut error);
+
     // CLI 输出可能回显请求头或配置片段。无论外发脱敏开关如何，留痕与
     // 返回给前端的错误文本都先做安全过滤。
     let raw_stdout = safe_trace(&raw_stdout);
@@ -1574,7 +1580,29 @@ fn redact_text(text: &str, enabled: bool) -> (String, usize) {
 }
 
 fn safe_trace(text: &str) -> String {
-    redact_text(text, true).0
+    redact_text(&strip_ansi(text), true).0
+}
+
+fn validation_failure(code: Option<i32>, output: &str) -> String {
+    let exit = code.map_or_else(|| "未知".into(), |value| value.to_string());
+    format!("验证命令失败（exit={exit}）\n{}", strip_ansi(output))
+}
+
+fn annotate_kimi_metadata(agent: &str, output: &mut ChannelOutput, error: &mut String) {
+    if agent != "kimi" { return; }
+    if output.identity.is_empty() {
+        output.identity = "kimi 不报真身".into();
+    }
+    if output.usage.input == 0 && output.usage.output == 0 && output.usage.cache_read == 0 {
+        *error = if error.is_empty() { "kimi 不报用量".into() } else { format!("{error}\nkimi 不报用量") };
+    }
+}
+
+fn strip_ansi(text: &str) -> String {
+    static ANSI: OnceLock<Regex> = OnceLock::new();
+    ANSI.get_or_init(|| Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").expect("ansi regex"))
+        .replace_all(text, "")
+        .into_owned()
 }
 
 fn broad_redaction_count(text: &str) -> usize {
@@ -2048,6 +2076,29 @@ mod tests {
         assert!(marker.exists());
         std::env::remove_var("AICROSS_TEST_RUN_ROOT");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r5_3_validation_error_strips_ansi_and_formats_exit_code() {
+        assert_eq!(validation_failure(Some(1), "\x1b[33mfailed\x1b[0m"), "验证命令失败（exit=1）\nfailed");
+    }
+
+    #[test]
+    fn r5_8_quoted_new_file_diff_headers_are_normalized() {
+        let raw = "diff --git \"before/新 文件.txt\" \"after/新 文件.txt\"\n--- \"before/新 文件.txt\"\n+++ \"after/新 文件.txt\"";
+        let normalized = normalize_git_diff(raw);
+        assert!(normalized.contains("--- \"a/新 文件.txt\""));
+        assert!(normalized.contains("+++ \"b/新 文件.txt\""));
+        assert!(!normalized.contains("\"after/"));
+    }
+
+    #[test]
+    fn r5_9_kimi_missing_identity_and_usage_are_explicit_in_trace_fields() {
+        let mut output = ChannelOutput::default();
+        let mut error = String::new();
+        annotate_kimi_metadata("kimi", &mut output, &mut error);
+        assert_eq!(output.identity, "kimi 不报真身");
+        assert_eq!(error, "kimi 不报用量");
     }
 
     #[test]

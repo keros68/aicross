@@ -18,6 +18,7 @@ import {
   nextStageStep,
   redraftNode,
   routeLine,
+  routeReason,
   setReplyAdopted,
 } from '../../../graph/dispatch';
 import { presetNameOf } from '../../../graph/persist';
@@ -257,6 +258,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
     || (plannedRoles.has('出方案') && plannedRoles.has('执行') && plannedRoles.has('验收'));
   const smallTask = economy && isSmallEconomyTask(originalRequestOf(graph), graph.nodes[graph.root]?.user.attachments ?? []);
   const resultStages = groupResultsByStage(graph, results);
+  const skippedNodes = Object.values(graph.nodes).filter((node) => !!node.reply?.skipped_reason);
   const vendorNames = [...new Set(request.nodes
     .map((node) => (node.vendor || node.agent).trim())
     .filter(Boolean))];
@@ -318,6 +320,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
               return (
                 <section key={id} className="dispatch-route-card">
                   <div className="dispatch-route-line">{routeLine(node, models, isolation)}</div>
+                  {routeReason(node) && <div className="dispatch-reason">{routeReason(node)}</div>}
                   <div className="dispatch-reason">理由：{userEdited.has(id) ? '用户指定' : '角色默认'}</div>
                   {missingTarget && <div className="dispatch-warning">未指定模型，不能确认派发。</div>}
                   {target.role === '执行' && ['关', '低'].includes(graph.nodes[id].target?.thinking ?? '') && target.thinking === '中' && (
@@ -401,7 +404,8 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
           <div className="dispatch-body">
             {runError && <div className="dispatch-error">{runError}</div>}
             <div className="dispatch-result-lines">
-              {results.map((result) => <div key={result.nodeId}>{routeLine(graph.nodes[result.nodeId], models, result.isolation)}</div>)}
+              {results.map((result) => <div key={result.nodeId}>{routeLine(graph.nodes[result.nodeId], models, result.isolation)}{routeReason(graph.nodes[result.nodeId]) && <div className="dispatch-reason">{routeReason(graph.nodes[result.nodeId])}</div>}</div>)}
+              {skippedNodes.map((node) => <div key={node.id}>{node.target?.role || node.id} · 已跳过：{node.reply?.skipped_reason}</div>)}
             </div>
             <div className="dispatch-result-grid" style={{ gridTemplateColumns: `repeat(${Math.max(1, resultStages.length)}, minmax(260px, 1fr))` }}>
               {resultStages.map((group) => (

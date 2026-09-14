@@ -894,9 +894,10 @@ export function CenterPanel() {
 
 
   const handleAddTab = () => {
+    const folderPath = terminals.find(t => t.id === activeTerminalId)?.folderPath ?? null;
     dispatch({
       type: 'ADD_TERMINAL',
-      session: createDefaultGraphSession(),
+      session: createDefaultGraphSession(folderPath),
     });
   };
 

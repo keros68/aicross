@@ -398,12 +398,20 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, iconTheme: action.theme };
     case 'SET_LANG':
       return { ...state, currentLang: action.lang };
-    case 'ADD_TERMINAL':
-      return { 
-        ...state, 
-        terminals: [...state.terminals, action.session],
-        activeTerminalId: action.session.id 
+    case 'ADD_TERMINAL': {
+      const activeFolder = state.terminals.find(t => t.id === state.activeTerminalId)?.folderPath
+        ?? state.terminals.find(t => !!t.folderPath)?.folderPath
+        ?? (() => { try { return localStorage.getItem('cc-folder'); } catch { return null; } })();
+      const session = action.session.folderPath == null
+        ? { ...action.session, folderPath: activeFolder ?? null }
+        : action.session;
+      return {
+        ...state,
+        terminals: [...state.terminals, session],
+        activeTerminalId: session.id,
+        graphFocus: session.tool === 'graph' && session.toolData === state.graphFocus?.graphId ? state.graphFocus : null,
       };
+    }
     case 'REMOVE_TERMINAL':
     case 'CLOSE_TERMINAL': {
       let newTerminals = state.terminals.filter(t => t.id !== action.id);
@@ -447,7 +455,13 @@ export function reducer(state: AppState, action: Action): AppState {
       // Activating a terminal tab blurs the diff tab (they're peer tabs in
       // the strip; only one is focused at a time). diffMode is untouched —
       // the diff still renders in its chosen surface, just not focused.
-      return { ...state, activeTerminalId: action.id, diffTabActive: false };
+      const active = state.terminals.find(t => t.id === action.id);
+      return {
+        ...state,
+        activeTerminalId: action.id,
+        diffTabActive: false,
+        graphFocus: active?.tool === 'graph' && active.toolData === state.graphFocus?.graphId ? state.graphFocus : null,
+      };
     case 'SET_TERMINAL_TOOL':
       return {
         ...state,

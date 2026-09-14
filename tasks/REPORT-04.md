@@ -2116,6 +2116,101 @@ cd src-ui && npx vitest run --configLoader native --pool threads
 
 未启动窗口，未发真机请求，未 commit，未 push。
 
+## 修正轮 R5 验证记录
+
+1. 已修：验证重试到顶时，未派验收节点保持 `draft`，追加可选 `Reply.skipped_reason`，图卡、聊天结果位、右栏节点链和结果屏统一显示“已跳过／上游验证未通过”（`src-ui/src/graph/dispatch.ts:252,407`；`src-ui/src/components/center/graph/GraphTab.tsx:464,587`；`src-ui/src/components/right/orchestration/OrchestrationPanel.tsx:189`；`src-ui/src/components/center/graph/DispatchOverlay.tsx:261,408`）／已补：测试名 `R5-1 验证重试到顶把未派验收标为已跳过`。
+2. 已修：重试节点路由改为“执行（修正 n/3）→ agent/model”，验证失败原因由 `routeReason` 独立显示（`src-ui/src/graph/dispatch.ts:228-250,375`；`src-ui/src/components/center/graph/DispatchOverlay.tsx:323,407`）／已补：测试名 `R5-2 验证重试路由显示修正轮且理由独立`。
+3. 已修：验证输出与所有安全留痕统一剥除 ANSI，失败码格式改为 `exit=1`，无退出码时为 `exit=未知`（`src/dispatch.rs:1057-1083,1582-1603`）／已补：测试名 `r5_3_validation_error_strips_ansi_and_formats_exit_code`。
+4. 已修：盖预设 portal 增加 Escape 和捕获阶段外点关闭，菜单与触发按钮内点击不误关（`src-ui/src/components/center/graph/GraphTab.tsx:260-274`；`src-ui/src/graph/stamp-menu.ts:1-6`）／已补：测试名 `R5-4 盖预设菜单响应 Escape 与外点`。
+5. 已修：`+` 新 tab 显式继承活动 tab 的 `folderPath`；reducer 同时以活动目录、已有目录和 `cc-folder` 作兼容兜底（`src-ui/src/components/center/CenterPanel.tsx:896-902`；`src-ui/src/store/app-state.tsx:401-414`）／已补：测试名 `R5-5 新开 tab 继承活动 tab 工作目录`。
+6. 已修：切换 tab 时仅在目标 tab 正是当前聚焦图时保留 `graphFocus`，否则清空；新增 tab 也执行同一隔离（`src-ui/src/store/app-state.tsx:401-414,454-464`）／已补：测试名 `R5-6 切到没有当前图的 tab 清除 graphFocus`。
+7. 已修：根列直接发消息且未写 `@` 时，把 `roles.json` 的执行角色默认应用到新节点，不再生成空 agent/model（`src-ui/src/components/center/graph/GraphTab.tsx:355`）／已补：测试名 `R5-7 根列默认执行目标采用 roles.json 的执行角色`。
+8. 已修：`normalize_git_diff` 同时改写带引号的 `before/`、`after/` 新文件头为 `a/`、`b/`（`src/dispatch.rs:1022-1030`）／已补：测试名 `r5_8_quoted_new_file_diff_headers_are_normalized`。
+9. 已修：kimi 返回空真身、空用量时，在既有留痕字段中分别写明“kimi 不报真身”“kimi 不报用量”，不向 `aicross-dispatch/1` 增加字段（`src/dispatch.rs:1350,1591-1603`）／已补：测试名 `r5_9_kimi_missing_identity_and_usage_are_explicit_in_trace_fields`。
+
+契约边界：`aicross-dispatch/1` 字段未改；既有 Reply 字段未改名或删除，只追加可选字段 `skipped_reason?: string`。
+
+### R5 验证原文
+
+`cargo check`（exit=0，零 warning）
+
+```text
+   Compiling aicross v0.1.0 (D:\work\aicross-p4)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.15s
+```
+
+`cargo test`（exit=0）
+
+```text
+   Compiling aicross v0.1.0 (D:\work\aicross-p4)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.91s
+     Running unittests src\main.rs (target\debug\deps\aicross-3605bca6cf2a3148.exe)
+
+running 184 tests
+test dispatch::tests::r5_3_validation_error_strips_ansi_and_formats_exit_code ... ok
+test dispatch::tests::r5_8_quoted_new_file_diff_headers_are_normalized ... ok
+test dispatch::tests::r5_9_kimi_missing_identity_and_usage_are_explicit_in_trace_fields ... ok
+
+test result: ok. 175 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 5.25s
+```
+
+`cd src-ui && npx vitest run --configLoader native --pool threads`（exit=0）
+
+```text
+ RUN  v5.0.0 D:/work/aicross-p4/src-ui
+
+ Test Files  11 passed (11)
+      Tests  124 passed (124)
+   Start at  10:50:00
+   Duration  334ms (transform 74%, import 14%, tests 9%, worker 3%)
+```
+
+`cd src-ui && npm run build`（exit=0）
+
+```text
+> aicross-ui@0.0.0 build
+> tsc -b && vite build
+
+vite v8.0.7 building client environment for production...
+✓ 582 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                      2.65 kB │ gzip:   1.16 kB
+dist/assets/main-DvPqrfUN.css                      153.01 kB │ gzip:  26.40 kB
+dist/assets/main-DVQ5G2Md.js                     1,253.06 kB │ gzip: 447.19 kB
+
+[PLUGIN_TIMINGS] Warning: Your build spent significant time in plugins. Here is a breakdown:
+  - vite:esbuild-transpile (49%)
+  - vite:css-post (20%)
+  - coffee-cli:patch-xterm-webgl-bg-flags (13%)
+  - vite:asset (9%)
+
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 3.69s
+```
+
+未启动窗口，未发真机请求，未 commit，未 push。
+
+## 修正轮 R5 汇总
+
+1. 已修：封顶未派验收保持 draft，以可选 `skipped_reason` 在图卡、右栏、聊天位与结果屏显示“已跳过：上游验证未通过”（`src-ui/src/graph/dispatch.ts:252,407`；`src-ui/src/components/center/graph/GraphTab.tsx:464,587`；`src-ui/src/components/right/orchestration/OrchestrationPanel.tsx:189`；`src-ui/src/components/center/graph/DispatchOverlay.tsx:261,408`）／已补：测试名 `R5-1 验证重试到顶把未派验收标为已跳过`。
+2. 已修：重试路由显示“执行（修正 n/3）→ agent/model”，失败理由独立成行（`src-ui/src/graph/dispatch.ts:228-250,375`；`src-ui/src/components/center/graph/DispatchOverlay.tsx:323,407`）／已补：测试名 `R5-2 验证重试路由显示修正轮且理由独立`。
+3. 已修：验证错误与 Reply/留痕剥除 ANSI，退出码写为 `exit=1`（`src/dispatch.rs:1057-1083,1582-1603`）／已补：测试名 `r5_3_validation_error_strips_ansi_and_formats_exit_code`。
+4. 已修：盖预设 portal 支持 Escape 与外点关闭（`src-ui/src/components/center/graph/GraphTab.tsx:260-274`；`src-ui/src/graph/stamp-menu.ts:1-6`）／已补：测试名 `R5-4 盖预设菜单响应 Escape 与外点`。
+5. 已修：新 tab 继承活动 tab 工作目录，并以已有目录、`cc-folder` 兜底（`src-ui/src/components/center/CenterPanel.tsx:896-902`；`src-ui/src/store/app-state.tsx:401-414`）／已补：测试名 `R5-5 新开 tab 继承活动 tab 工作目录`。
+6. 已修：切 tab 时清除不属于目标 tab 图的 `graphFocus`（`src-ui/src/store/app-state.tsx:401-414,454-464`）／已补：测试名 `R5-6 切到没有当前图的 tab 清除 graphFocus`。
+7. 已修：根列无 `@` 发送时应用 `roles.json` 的执行默认（`src-ui/src/components/center/graph/GraphTab.tsx:355`）／已补：测试名 `R5-7 根列默认执行目标采用 roles.json 的执行角色`。
+8. 已修：带引号的新增文件 diff 头由 `before/after` 归一为 `a/b`（`src/dispatch.rs:1022-1030`）／已补：测试名 `r5_8_quoted_new_file_diff_headers_are_normalized`。
+9. 已修：kimi 空真身、空用量在既有留痕字段明确写为“kimi 不报真身／用量”（`src/dispatch.rs:1350,1591-1603`）／已补：测试名 `r5_9_kimi_missing_identity_and_usage_are_explicit_in_trace_fields`。
+
+契约边界：`aicross-dispatch/1` 未增删改字段；Reply 仅追加可选 `skipped_reason?: string`。四条指定命令及输出原文见本报告上方“修正轮 R5 验证记录”：`cargo check` 零 warning；`cargo test` 175 passed、9 ignored；Vitest 11 files、124 tests；生产构建 582 modules、built in 3.69s，均 exit=0。
+
+未启动窗口，未发真机请求，未 commit，未 push。
+
 
 ## 修正轮 R4
 
@@ -2375,7 +2470,8 @@ test result: ok. 168 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; fi
 (node:1120) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
 (Use `node --trace-warnings ...` to show where the warning was created)
 vite v8.0.7 building client environment for production...
-[2Ktransforming...✓ 580 modules transformed.
+[2K
+transforming...✓ 580 modules transformed.
 rendering chunks...
 computing gzip size...
 dist/index.html                                         2.65 kB │ gzip:   1.16 kB
@@ -2701,3 +2797,18 @@ dist/assets/main-BIcRheUs.js                        1,249.49 kB │ gzip: 446.05
 ```
 
 未启动窗口，未发真机请求，未 commit，未 push。
+
+## 修正轮 R5
+
+1. 已修：封顶验收为 `draft + skipped_reason`，三处统一“已跳过”（`src-ui/src/graph/dispatch.ts:252,407`；`src-ui/src/components/center/graph/GraphTab.tsx:464,587`；`src-ui/src/components/right/orchestration/OrchestrationPanel.tsx:189`；`src-ui/src/components/center/graph/DispatchOverlay.tsx:408`）／已补：测试名 `R5-1 验证重试到顶把未派验收标为已跳过`。
+2. 已修：重试路由与理由分行（`src-ui/src/graph/dispatch.ts:228-250,375`）／已补：测试名 `R5-2 验证重试路由显示修正轮且理由独立`。
+3. 已修：ANSI 与退出码格式（`src/dispatch.rs:1057-1083,1582-1603`）／已补：测试名 `r5_3_validation_error_strips_ansi_and_formats_exit_code`。
+4. 已修：Escape 与外点关闭预设（`src-ui/src/components/center/graph/GraphTab.tsx:260-274`）／已补：测试名 `R5-4 盖预设菜单响应 Escape 与外点`。
+5. 已修：新 tab 继承活动目录（`src-ui/src/store/app-state.tsx:401-414`）／已补：测试名 `R5-5 新开 tab 继承活动 tab 工作目录`。
+6. 已修：切 tab 清理跨图焦点（`src-ui/src/store/app-state.tsx:454-464`）／已补：测试名 `R5-6 切到没有当前图的 tab 清除 graphFocus`。
+7. 已修：根列采用执行角色默认（`src-ui/src/components/center/graph/GraphTab.tsx:355`）／已补：测试名 `R5-7 根列默认执行目标采用 roles.json 的执行角色`。
+8. 已修：带引号新文件 diff 头归一（`src/dispatch.rs:1022-1030`）／已补：测试名 `r5_8_quoted_new_file_diff_headers_are_normalized`。
+9. 已修：kimi 留痕明确不报真身/用量（`src/dispatch.rs:1350,1591-1603`）／已补：测试名 `r5_9_kimi_missing_identity_and_usage_are_explicit_in_trace_fields`。
+10. 编排者补（复跑时发现）：`skipped_reason` 只加在了 TS `Reply`，Rust 镜像 `orchestration.rs::Reply` 没加，图落盘会丢字段；已补 `#[serde(default)] pub skipped_reason: Option<String>`，`graph_roundtrip` 加断言。
+
+四条指定命令及输出原文见上方“修正轮 R5 验证记录”，均 exit=0；`cargo check` 零 warning。`aicross-dispatch/1` 未变，Reply 仅追加可选 `skipped_reason`。未启动窗口，未发真机请求，未 commit，未 push。

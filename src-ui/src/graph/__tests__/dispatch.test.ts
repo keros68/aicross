@@ -23,6 +23,8 @@ import {
   setReplyAdopted,
   withinRequestLimit,
   routeLine,
+  routeReason,
+  nodeStatusLabel,
 } from '../dispatch.ts';
 import type { Graph, GraphNode, Target } from '../types.ts';
 
@@ -54,6 +56,30 @@ const graph = (nodes: GraphNode[]): Graph => ({
 });
 
 describe('graph dispatch helpers', () => {
+  it('R5-1 验证重试到顶把未派验收标为已跳过', () => {
+    const g = graph([
+      node('r', []),
+      { ...node('e', ['r'], { status: 'failed', text: '' }), target: { ...target(), role: '执行', write: '单写者' } },
+      { ...node('a', ['e'], { status: 'draft', text: '' }), target: { ...target('kimi', 'k'), role: '验收' } },
+    ]);
+    const failure = { nodeId: 'e', status: 'validation_failed', text: '', modelReported: '', sessionId: '', tokensIn: 0, tokensOut: 0, durationMs: 0, error: 'failed' };
+    const next = reducePipelineStep(g, [failure], { e: 3 }).graph;
+    expect(next.nodes.a.reply).toEqual({ status: 'draft', text: '', skipped_reason: '上游验证未通过' });
+    expect(nodeStatusLabel(next.nodes.a)).toBe('已跳过');
+  });
+
+  it('R5-2 验证重试路由显示修正轮且理由独立', () => {
+    const g = graph([node('r', []), { ...node('e', ['r']), target: { ...target(), role: '执行' } }, { ...node('a', ['e'], { status: 'draft', text: '' }), target: { ...target('kimi', 'k'), role: '验收' } }]);
+    const retried = appendValidationRetry(g, 'e', 'pytest failed', 2).graph;
+    const retry = Object.values(retried.nodes).find(item => !g.nodes[item.id] && item.target?.role === '执行')!;
+    expect(routeLine(retry, [], '部分')).toContain('执行（修正 2/3）→ codex/m');
+    expect(routeReason(retry)).toContain('验证命令未通过');
+  });
+
+  it('R5-7 根列默认执行目标采用 roles.json 的执行角色', () => {
+    const roles = { planning: target(), acceptance: target(), execution: { agent: 'codex', provider: 'openai', model: 'gpt-5', tier: '中', thinking: '高' } };
+    expect(applyRoleDefaults(target('', ''), roles)).toMatchObject(roles.execution);
+  });
   it('R3-2 异常只标记未收到结果的节点', () => {
     const active = [{ nodeId: 'a' }, { nodeId: 'b' }];
     const ok = [{ nodeId: 'a', status: 'ok', text: 'done', modelReported: '', sessionId: '', tokensIn: 0, tokensOut: 0, durationMs: 1, error: '' }];

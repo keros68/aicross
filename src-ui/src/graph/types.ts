@@ -22,6 +22,7 @@ export interface Reply {
   adopted?: boolean;
   artifacts?: ReplyArtifacts;
   error_kind?: string;
+  skipped_reason?: string;
 }
 
 export interface ChangedFile {

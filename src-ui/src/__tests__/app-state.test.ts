@@ -71,4 +71,18 @@ describe('getInitialState personalization migration', () => {
     const next = reducer(focused, { type: 'CLOSE_TERMINAL', id: focused.terminals[0].id });
     expect(next.graphFocus).toBeNull();
   });
+
+  it('R5-5 新开 tab 继承活动 tab 工作目录', () => {
+    const state = getInitialState();
+    const current = { ...state.terminals[0], folderPath: 'D:\\project' };
+    const next = reducer({ ...state, terminals: [current], activeTerminalId: current.id }, { type: 'ADD_TERMINAL', session: { id: 'new', tool: 'graph', folderPath: null } });
+    expect(next.terminals.at(-1)?.folderPath).toBe('D:\\project');
+  });
+
+  it('R5-6 切到没有当前图的 tab 清除 graphFocus', () => {
+    const state = getInitialState();
+    const terminals = [{ ...state.terminals[0], id: 'g', tool: 'graph' as const, toolData: 'graph-1' }, { id: 'plain', tool: null, folderPath: null }];
+    const next = reducer({ ...state, terminals, activeTerminalId: 'g', graphFocus: { graphId: 'graph-1', nodeId: 'n1' } }, { type: 'SET_ACTIVE_TERMINAL', id: 'plain' });
+    expect(next.graphFocus).toBeNull();
+  });
 });

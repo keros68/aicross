@@ -16,7 +16,7 @@ import { NodePanel } from './NodePanel';
 import { PresetBuilder } from './PresetBuilder';
 import { ExplainOverlay } from './ExplainOverlay';
 import { RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
-import { applyRoleDefaults } from '../../../graph/dispatch';
+import { applyRoleDefaults, nodeStatusLabel } from '../../../graph/dispatch';
 import './OrchestrationPanel.css';
 
 // 后置期次的模式：下拉里置灰 + 标期次，不实现（TASK-02 A8）。
@@ -186,6 +186,7 @@ export function OrchestrationPanel() {
         />
         <span className="orch-chip-label">{nodeLabel(node)}</span>
         {node.target?.role && <span className="orch-chip-role">{node.target.role}</span>}
+        {nodeStatusLabel(node) && <span className="orch-chip-role">{nodeStatusLabel(node)}</span>}
         {hints.map((h) => (
           <span key={h} className="hint-capsule">
             {h}
