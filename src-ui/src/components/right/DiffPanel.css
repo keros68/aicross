@@ -209,7 +209,7 @@
 }
 
 .diff-header-btn:hover {
-  background: var(--surface-hover, rgba(127, 127, 127, 0.12));
+  background: var(--bg-hover); /* --surface-hover 从未定义过，用主题真有的 --bg-hover */
   color: var(--text-1);
 }
 

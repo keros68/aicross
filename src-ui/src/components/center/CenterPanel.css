@@ -1588,7 +1588,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--text-1);
-  font-family: var(--font-primary);
+  font-family: var(--font); /* --font-primary 未定义且无兜底，整条声明是无效的 */
   font-size: 13px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25), 0 12px 32px rgba(0, 0, 0, 0.30);
   overflow: hidden;

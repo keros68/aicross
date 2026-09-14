@@ -265,8 +265,8 @@
   transition: all 0.14s ease;
 }
 .settings-btn:hover { border-color: var(--accent, #c4956a); }
-.settings-btn-danger { color: #e06666; }
-.settings-btn-danger:hover { border-color: #e06666; }
+.settings-btn-danger { color: var(--red); }
+.settings-btn-danger:hover { border-color: var(--red); }
 
 .settings-slider-row { display: flex; align-items: center; gap: 12px; }
 .settings-slider { flex: 1; accent-color: var(--accent, #c4956a); cursor: pointer; }
@@ -331,12 +331,15 @@
 
 .settings-dispatch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .settings-dispatch-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-2, rgba(255,255,255,.7)); }
+/* --bg-2 从来没有在任何主题里定义过，所以这里一直吃 #222 兜底：亮色主题下
+   变成近黑输入框 + var(--text-1)=#1c1917 的近黑文字，字几乎看不见。换成真正
+   存在的 --bg-input，两套主题都跟其它输入框一致。 */
 .settings-dispatch-field input,
-.settings-dispatch-field select { height: 34px; padding: 0 10px; border: 1px solid var(--border, rgba(255,255,255,.12)); border-radius: 6px; background: var(--bg-2, #222); color: var(--text-1, #fff); font: inherit; }
+.settings-dispatch-field select { height: 34px; padding: 0 10px; border: 1px solid var(--border, rgba(255,255,255,.12)); border-radius: var(--radius-sm); background: var(--bg-input); color: var(--text-1); font: inherit; }
 .settings-dispatch-wide { grid-column: 1 / -1; }
 .settings-role-templates { display: grid; gap: 10px; }
 .settings-role-template { display: grid; gap: 6px; color: var(--text-2, rgba(255,255,255,.7)); font-size: 12px; }
-.settings-role-template pre { margin: 0; padding: 10px; border: 1px solid var(--border, rgba(255,255,255,.12)); border-radius: 6px; background: var(--bg-app, #181818); color: var(--text-1, #fff); font: 11px/1.55 var(--mono, monospace); white-space: pre-wrap; }
+.settings-role-template pre { margin: 0; padding: 10px; border: 1px solid var(--border, rgba(255,255,255,.12)); border-radius: var(--radius-xs); background: var(--bg-app); color: var(--text-1, #fff); font: 11px/1.55 var(--mono, monospace); white-space: pre-wrap; }
 .settings-key-combo { display: flex; align-items: center; gap: 5px; color: var(--text-2, rgba(255, 255, 255, 0.7)); }
 .settings-key-plus { color: var(--text-3, rgba(255, 255, 255, 0.4)); font-size: 12px; }
 .settings-key-card kbd {

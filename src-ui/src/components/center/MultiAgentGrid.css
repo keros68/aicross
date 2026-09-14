@@ -131,7 +131,7 @@
   border: none;
   padding: 0;
   font-size: 14px;
-  font-family: var(--font-display, 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif);
+  font-family: var(--font); /* --font-display 从未定义过，一直吃兜底栈；用主题真有的 --font */
   font-weight: 700;
   font-feature-settings: 'tnum' 1, 'lnum' 1;
   line-height: 1;
@@ -193,7 +193,7 @@
   height: 100%;
   padding: 20px;
   gap: 14px;
-  color: var(--text-secondary, #aaa);
+  color: var(--text-2); /* --text-secondary 从未定义过，兜底 #aaa 在亮色主题下对比度约 2:1 */
 }
 .empty-pane-options {
   display: flex;
@@ -210,7 +210,7 @@
   color: var(--text-1, #e9e9ea);
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--accent, #6cc275) 28%, transparent);
-  border-radius: var(--shape-radius-button, 6px);
+  border-radius: var(--shape-radius-btn); /* 真实 token 名是 --shape-radius-btn，原来拼成了 -button，形态切换对这颗按钮无效 */
   cursor: pointer;
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }

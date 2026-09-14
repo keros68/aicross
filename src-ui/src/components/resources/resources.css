@@ -14,7 +14,7 @@
   margin: 8px;
   padding: 6px 8px;
   border: 1px solid var(--red);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   color: var(--red);
   font-size: 12px;
   white-space: pre-wrap;
@@ -58,7 +58,7 @@
   padding: 5px 6px;
   background: none;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   color: var(--text-1);
   font-size: 12px;
   cursor: pointer;
@@ -105,7 +105,7 @@
   padding: 4px 6px;
   background: none;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   cursor: pointer;
   text-align: left;
 }
@@ -195,10 +195,13 @@
   position: absolute;
   top: 16px;
   right: 20px;
-  padding: 6px 14px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 12px;
   background: none;
   border: 1px solid var(--border-input);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text-2);
   font-size: 12px;
   cursor: pointer;
@@ -219,7 +222,7 @@
 .resources-hint {
   padding: 8px 10px;
   border: 1px solid var(--border-input);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: var(--accent-bg);
   color: var(--text-2);
   font-size: 12px;
@@ -239,7 +242,7 @@
   gap: 8px;
   padding: 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--bg-card);
 }
 
@@ -255,7 +258,7 @@
   justify-content: center;
   width: 26px;
   height: 26px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: var(--accent-bg);
   color: var(--accent);
   font-size: 11px;
@@ -314,7 +317,7 @@
 .agent-card-model {
   padding: 6px 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
 }
 
 .agent-card-model-main {
@@ -333,7 +336,7 @@
 .resource-status {
   margin-left: auto;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-size: 11px;
   flex-shrink: 0;
 }
@@ -385,7 +388,7 @@
 .agent-card-model-fields select {
   background: var(--bg-input);
   border: 1px solid var(--border-input);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   color: var(--text-1);
   font-size: 11px;
   padding: 2px 4px;
@@ -451,12 +454,20 @@
 /* ── 按钮与对话框 ─────────────────────────────────────────────────────── */
 
 .res-btn {
-  padding: 5px 12px;
+  /* 与 .orch-btn / .graph-primary-btn 同一套按钮度量：最小高度 + 只留水平
+     padding + 行盒居中。原来的 5px 上下 padding 既不在 4 的倍数上，卡片里
+     几个按钮的高度也随字体度量各差 1–2px。 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 12px;
   background: var(--bg-input);
   border: 1px solid var(--border-input);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text-1);
   font-size: 12px;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -467,7 +478,11 @@
 .res-btn.primary {
   background: var(--accent-bg);
   border-color: var(--accent);
-  color: var(--accent);
+  /* 文字用 text-1 不用 accent——和 .orch-btn-primary / .graph-primary-btn 里
+     写过的同一条：cappuccino / obsidian 这类单色主题的 --accent 是中灰
+     (#4a4a4a / #5a5a5a)，压在 --accent-bg 上几乎看不见，主按钮读起来像禁用态。 */
+  color: var(--text-1);
+  font-weight: 600;
 }
 
 .res-btn:disabled {
@@ -494,7 +509,7 @@
   max-width: calc(100vw - 48px);
   padding: 16px;
   border: 1px solid var(--border-input);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--bg-panel);
   display: flex;
   flex-direction: column;
@@ -519,7 +534,7 @@
 .res-field select {
   background: var(--bg-input);
   border: 1px solid var(--border-input);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   color: var(--text-1);
   font-size: 12px;
   padding: 6px 8px;

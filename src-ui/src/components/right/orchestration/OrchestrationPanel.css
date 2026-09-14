@@ -22,12 +22,16 @@
 
 .orch-preset-select {
   width: 100%;
+  /* 固定 32px 而不是靠 6px 上下 padding：原生 select 在 WebView2 里按 padding
+     算出的高度和下面按钮不一样高，两行控件边缘对不齐。固定高度后下拉和按钮行
+     同高，工具条读起来是一组。 */
+  height: 32px;
   background: var(--bg-input);
   border: 1px solid var(--border-input);
   border-radius: var(--radius-sm);
   color: var(--text-1);
   font-size: 13px;
-  padding: 6px 8px;
+  padding: 0 8px;
   outline: none;
 }
 
@@ -41,8 +45,15 @@
 }
 
 .orch-btn {
-  padding: 4px 12px;
+  /* 同 .graph-primary-btn：最小高度 + 只留水平 padding + 行盒居中，按钮内文字
+     不随字体度量上下漂。28px 是次级按钮档，比 32px 的下拉/主按钮矮一档。 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 12px;
   font-size: 12px;
+  line-height: 1;
   color: var(--text-2);
   background: transparent;
   border: 1px solid var(--border);

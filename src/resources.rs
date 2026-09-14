@@ -451,7 +451,7 @@ fn detect_into(
     }
 
     let models = match agent_id {
-        "claude" => Ok(claude_presets()),
+        "claude" => Ok(claude_presets(resolved.as_ref())),
         "codex" => detect_codex(),
         "kimi" => detect_kimi(),
         _ => Ok(Vec::new()),
@@ -782,22 +782,114 @@ fn parse_pi_list_models(listed: &str) -> Vec<(String, String)> {
     output
 }
 
-fn claude_presets() -> Vec<ResourceModel> {
-    ["opus", "sonnet", "haiku"]
+/// claude 没有本地模型清单文件，事实源是 `claude --help` 里 `--model` 那一段的
+/// 别名举例。抓不到时的兜底表（写表日期见 CLAUDE_STATIC_TABLE_DATE）。
+/// `haiku` 一直不在 `--help` 的举例里但确实可用，所以无论走哪条路都补上。
+const CLAUDE_FALLBACK_ALIASES: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
+const CLAUDE_STATIC_TABLE_DATE: &str = "2026-09-14";
+
+fn claude_presets(binary: Option<&PathBuf>) -> Vec<ResourceModel> {
+    let (aliases, source) = claude_aliases(binary);
+    aliases
         .into_iter()
         .map(|id| {
             detected_model(
-                id,
+                &id,
                 "claude",
                 "",
                 "Anthropic",
                 "官方订阅",
                 "未知",
-                "文档(2026-08-30)",
+                &source,
                 "CLI 别名",
             )
         })
         .collect()
+}
+
+/// 跑一次 `claude --help`，抓 `--model` 段里的别名；进程失败/超时/抓不到都退静态表。
+fn claude_aliases(binary: Option<&PathBuf>) -> (Vec<String>, String) {
+    if let Some(path) = binary {
+        if let Ok(output) = run_process(
+            path,
+            &["--help".to_string()],
+            None,
+            Duration::from_secs(20),
+            None,
+        ) {
+            if !output.timed_out {
+                let (aliases, from_help) = claude_aliases_from_help(&output.stdout);
+                if from_help {
+                    return (
+                        aliases,
+                        format!("claude --help 别名 ({})", Local::now().format("%Y-%m-%d")),
+                    );
+                }
+            }
+        }
+    }
+    (
+        CLAUDE_FALLBACK_ALIASES.iter().map(|a| a.to_string()).collect(),
+        format!("静态表({CLAUDE_STATIC_TABLE_DATE})"),
+    )
+}
+
+/// 返回 (别名表, 是否真从 --help 抓到)。抓不到就是静态表原样。
+fn claude_aliases_from_help(help: &str) -> (Vec<String>, bool) {
+    let mut aliases = parse_claude_model_aliases(help);
+    if aliases.is_empty() {
+        return (
+            CLAUDE_FALLBACK_ALIASES.iter().map(|a| a.to_string()).collect(),
+            false,
+        );
+    }
+    if !aliases.iter().any(|alias| alias == "haiku") {
+        aliases.push("haiku".to_string());
+    }
+    (aliases, true)
+}
+
+/// 从 `--model <model>` 那一段里抓所有单引号里的别名。同一段里还有完整模型名的
+/// 举例（`'claude-fable-5'`），用「纯小写字母、2..=16 字符」把带连字符/数字的
+/// 完整名滤掉——别名只可能是 fable/opus/sonnet/haiku 这种单词。
+fn parse_claude_model_aliases(help: &str) -> Vec<String> {
+    let Some(section) = claude_model_help_section(help) else {
+        return Vec::new();
+    };
+    let quoted = Regex::new(r"'([^']+)'").expect("别名正则是常量");
+    let mut aliases: Vec<String> = Vec::new();
+    for capture in quoted.captures_iter(&section) {
+        let alias = capture[1].trim();
+        let is_alias = (2..=16).contains(&alias.len())
+            && alias.chars().all(|c| c.is_ascii_lowercase());
+        if is_alias && !aliases.iter().any(|kept| kept == alias) {
+            aliases.push(alias.to_string());
+        }
+    }
+    aliases
+}
+
+/// `--model` 的说明在 help 里换行续排（后续行缩进更深），一直到下一个选项行为止。
+/// 把整段折成一行返回，免得引号被换行切开。
+fn claude_model_help_section(help: &str) -> Option<String> {
+    let mut lines = help.lines();
+    let start = lines.by_ref().find(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("--model ") || trimmed.starts_with("--model\t")
+    })?;
+    let indent = start.len() - start.trim_start().len();
+    let mut section = start.trim().to_string();
+    for line in lines {
+        let trimmed = line.trim_start();
+        let line_indent = line.len() - trimmed.len();
+        // 空行或回到同级/更浅缩进的下一个选项 → 段结束
+        if trimmed.is_empty() || (line_indent <= indent && trimmed.starts_with('-')) {
+            break;
+        }
+        section.push(' ');
+        section.push_str(trimmed);
+    }
+    Some(section)
 }
 
 // ── cc-switch 发现提示 ────────────────────────────────────────────────────
@@ -1646,6 +1738,43 @@ mod tests {
             timed_out: false,
             truncated: false,
             timeout: Duration::from_secs(20),
+        }
+    }
+
+    /// 本机 claude 2.1.270 `--help` 里 `--model` 那一段的原样（含换行续排，
+    /// 以及同段里那个会误伤的完整模型名举例 'claude-fable-5'）。
+    const CLAUDE_HELP_FIXTURE: &str = concat!(
+        "  --mcp-config <configs...>             Load MCP servers from JSON files\n",
+        "  --model <model>                       Model for the current session. Provide\n",
+        "                                        an alias for the latest model (e.g.\n",
+        "                                        'fable', 'opus', or 'sonnet') or a\n",
+        "                                        model's full name (e.g.\n",
+        "                                        'claude-fable-5').\n",
+        "  -n, --name <name>                     Set a display name for this session\n",
+    );
+
+    #[test]
+    fn claude_help_yields_fable_opus_sonnet_plus_haiku() {
+        let aliases = parse_claude_model_aliases(CLAUDE_HELP_FIXTURE);
+        assert_eq!(aliases, vec!["fable", "opus", "sonnet"]);
+
+        let (list, from_help) = claude_aliases_from_help(CLAUDE_HELP_FIXTURE);
+        assert!(from_help);
+        // haiku 不在 --help 举例里，按约定补在末尾
+        assert_eq!(list, vec!["fable", "opus", "sonnet", "haiku"]);
+        // 同段里的完整模型名举例不能被当成别名
+        assert!(!list.iter().any(|alias| alias.contains('-')));
+        // 下一个选项（-n, --name）的说明不能被卷进来
+        assert!(!list.iter().any(|alias| alias == "name"));
+    }
+
+    #[test]
+    fn claude_help_without_model_section_falls_back_to_static_table() {
+        for help in ["", "Usage: claude [options]\n  --version  print version\n"] {
+            assert!(parse_claude_model_aliases(help).is_empty());
+            let (list, from_help) = claude_aliases_from_help(help);
+            assert!(!from_help);
+            assert_eq!(list, vec!["fable", "opus", "sonnet", "haiku"]);
         }
     }
 
