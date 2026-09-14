@@ -10,15 +10,15 @@ import { commands, isTauri, type GraphMeta } from '../../../tauri';
 import type { DispatchableModel, Graph, GraphNode, Preset } from '../../../graph/types';
 import { newGraph } from '../../../graph/types';
 import { contextOf } from '../../../graph/context';
-import { stamp } from '../../../graph/stamp';
+import { childrenOf, stamp } from '../../../graph/stamp';
 import { findModel, validateNode } from '../../../graph/validate';
 import { latestLeaf, layersOf, normalizeNodeKinds, pathTo, sameBranch } from '../../../graph/layout';
-import { appendTurn, defaultTurnTarget, fillRoot, parseSend } from '../../../graph/mutate';
+import { appendTurn, defaultTurnTarget, fillRoot, parseSend, removeDraftNode } from '../../../graph/mutate';
 import { commitGraph, presetNameOf, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
 import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
-import { applyRoleDefaults, dispatchableNodeIds, nodeStatusLabel, redraftNode } from '../../../graph/dispatch';
+import { applyRoleDefaults, dispatchableNodeIds, fallbackNoticeOf, nodeStatusLabel, parseAdvise, presetWithRoleDefaults, redraftNode } from '../../../graph/dispatch';
 import { DispatchOverlay } from './DispatchOverlay';
 import { appendMention, INSERT_MENTION_EVENT, openResourcesPage, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { groupPickableModels, modelKey, modelOptionLabel } from '../../../resources/model-picker';
@@ -337,7 +337,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const applyStamp = (nodeId: string, preset: Preset) => {
     if (!graph) return;
     const before = new Set(Object.keys(graph.nodes));
-    const effective = roles ? { ...preset, stages: preset.stages.map((stage) => ({ ...stage, nodes: stage.nodes.map((target) => applyRoleDefaults(target, roles)) })) } : preset;
+    // 擂台跳过角色默认填充：三路目标留空，G1 确认屏逐家选（不然会填成同一家）
+    const effective = roles ? presetWithRoleDefaults(preset, roles) : preset;
     const g2 = stamp(graph, nodeId, effective);
     recordStamp(
       graph.id,
@@ -355,6 +356,17 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     const endId = columns[colIdx];
     const endNode = endId ? graph.nodes[endId] : undefined;
     if (!endNode) return;
+    // /advise @agent/model 问题 → 顾问节点（盲、只读、只要方案不要执行）
+    const advise = parseAdvise(raw, models);
+    if (advise) {
+      if (advise.question === '') return;
+      setDrafts((d) => ({ ...d, [colIdx]: '' }));
+      const { graph: g2, nodeId } = appendTurn(graph, endId, advise.question, advise.target);
+      commit(g2);
+      setColumns((cols) => cols.map((c, i) => (i === colIdx ? nodeId : c)));
+      dispatch({ type: 'SET_GRAPH_FOCUS', focus: { graphId: graph.id, nodeId } });
+      return;
+    }
     const { text, target } = parseSend(raw, models);
     if (text === '') return;
     setDrafts((d) => ({ ...d, [colIdx]: '' }));
@@ -542,6 +554,11 @@ export function GraphTab({ session }: { session: TerminalSession }) {
                 重派
               </button>
             )}
+            {node.reply?.status === 'draft' && childrenOf(graph, id).length === 0 && (
+              <button className="graph-mini-btn" onClick={(e) => { e.stopPropagation(); commit(removeDraftNode(graph, id)); }}>
+                删除
+              </button>
+            )}
             <button
               className="graph-mini-btn graph-stamp-trigger"
               onClick={(e) => {
@@ -627,6 +644,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
                 <span> · in {node.reply?.tokens_in ?? '—'} / out {node.reply?.tokens_out ?? '—'}</span>
               )}
               {node.reply?.adopted && <span> · 已采纳</span>}
+              {node.target?.role === '顾问' && <span> · 顾问意见</span>}
+              {fallbackNoticeOf(node.reply) && <span> · {fallbackNoticeOf(node.reply)}</span>}
             </div>
             {node.reply && node.reply.status !== 'draft' && node.reply.status !== 'pending' ? (
               <div className="graph-msg-text">{node.reply.text}</div>
@@ -744,7 +763,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
             <input
               className="graph-input"
               value={value}
-              placeholder="@agent/模型 分叉，回车发送"
+              placeholder="@agent/模型 分叉，/advise 问顾问，回车发送"
               onChange={(e) => setDrafts((d) => ({ ...d, [colIdx]: e.target.value }))}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.nativeEvent.isComposing) sendInColumn(colIdx);
@@ -793,6 +812,10 @@ export function GraphTab({ session }: { session: TerminalSession }) {
           projectDir={session.folderPath ?? ''}
           onCommit={commit}
           onClose={() => setDispatchOpen(false)}
+          onFocusNode={(nodeId) => {
+            dispatch({ type: 'SET_GRAPH_FOCUS', focus: { graphId: graph.id, nodeId } });
+            setColumns((cols) => [nodeId, ...cols.slice(1).filter((c) => c !== nodeId)]);
+          }}
         />
       )}
     </div>

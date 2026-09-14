@@ -3952,6 +3952,8 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::dispatch::abandon_dispatch_state,
             crate::channels::acp::detect_acp_adapters,
             crate::channels::acp::release_acp_pool,
+            crate::orchestration::load_premises,
+            crate::orchestration::save_premises,
         ])
         .setup(|app| {
             // Seed bundled skills (screenshot, vibeid) into

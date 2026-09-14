@@ -16,11 +16,13 @@ import { NodePanel } from './NodePanel';
 import { PresetBuilder } from './PresetBuilder';
 import { ExplainOverlay } from './ExplainOverlay';
 import { RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
-import { applyRoleDefaults, nodeStatusLabel } from '../../../graph/dispatch';
+import { nodeStatusLabel, presetWithRoleDefaults } from '../../../graph/dispatch';
 import './OrchestrationPanel.css';
 
 // 后置期次的模式：下拉里置灰 + 标期次，不实现（TASK-02 A8）。
-const FUTURE_PRESETS = ['擂台', '评审团', '仲裁', '前提抽查', '主备', '顾问', '红蓝', '群聊', '蜂群'];
+// 擂台/评审团/仲裁/前提抽查/主备/顾问已在 TASK-05B 落地（前两个是这里的真预设，
+// 后四个分别是结果屏动作、设置页、G1 备选、/advise 输入）。
+const FUTURE_PRESETS = ['红蓝', '群聊', '蜂群'];
 
 export function OrchestrationPanel() {
   const { state, dispatch } = useAppState();
@@ -127,7 +129,8 @@ export function OrchestrationPanel() {
   const applyPreset = (preset: Preset | null) => {
     if (!graph || !focus || !focusNode || !preset) return;
     const before = new Set(Object.keys(graph.nodes));
-    const effective = roles ? { ...preset, stages: preset.stages.map((stage) => ({ ...stage, nodes: stage.nodes.map((target) => applyRoleDefaults(target, roles)) })) } : preset;
+    // 擂台跳过角色默认填充：三路目标留空，G1 确认屏逐家选（不然会填成同一家）
+    const effective = roles ? presetWithRoleDefaults(preset, roles) : preset;
     const g2 = stamp(graph, focus.nodeId, effective);
     recordStamp(
       graph.id,

@@ -1364,7 +1364,7 @@ fn find_model_mut<'a>(
         .ok_or_else(|| format!("资源不存在：{agent_id}/{id}"))
 }
 
-fn infer_vendor(id: &str) -> &'static str {
+pub(crate) fn infer_vendor(id: &str) -> &'static str {
     let normalized = id.to_ascii_lowercase();
     if normalized.contains("claude") || normalized.contains("anthropic") {
         "Anthropic"

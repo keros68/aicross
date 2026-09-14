@@ -339,6 +339,11 @@ export const commands = {
   listGraphs: () => invoke<GraphMeta[]>('list_graphs'),
   loadRoles: () => invoke<RoleSettings>('load_roles'),
   saveRoles: (settings: RoleSettings) => invoke<void>('save_roles', { settings }),
+  // 前提台账（TASK-05B，~/.aicross/premises.json；损坏文件读侧给空、写侧拒写）
+  loadPremises: () =>
+    invoke<{ version: 1; premises: import('./graph/premise').Premise[] }>('load_premises'),
+  savePremises: (file: { version: 1; premises: import('./graph/premise').Premise[] }) =>
+    invoke<void>('save_premises', { file }),
   previewDispatch: (request: DispatchStageRequest) =>
     invoke<DispatchPreview>('preview_dispatch', { request }),
   dispatchGraphStage: (request: DispatchStageRequest) =>
@@ -440,6 +445,8 @@ export interface DispatchNodeRequest {
   write: string;
   originalRequest: string;
   upstreamArtifacts: import('./graph/types').ReplyArtifacts[];
+  // TASK-05B 主备/熔断（镜像图契约 Target.fallback；R2 追加 vendor：前端已知的真实厂商）
+  fallback?: { agent: string; provider: string; model: string; vendor?: string };
 }
 
 export interface DispatchStageRequest {
@@ -483,6 +490,11 @@ export interface DispatchNodeResult {
   error: string;
   artifacts: import('./graph/types').ReplyArtifacts | null;
   validationOutput: string;
+  // TASK-05B：结果由备选重跑产生时带主/备路由（"agent/model"），否则空串
+  fallbackFrom: string;
+  fallbackTo: string;
+  // TASK-05B R1：可写节点主失败但未切备选时带原因（"可写节点"），空/缺省 = 未跳过
+  fallbackSkipped?: string;
 }
 
 export interface DispatchStageResult {

@@ -106,6 +106,22 @@ pub struct DispatchNodeRequest {
     pub original_request: String,
     #[serde(default)]
     pub upstream_artifacts: Vec<DispatchArtifacts>,
+    /// TASK-05B 主备/熔断：主目标 error/timeout/identity_mismatch 时用备选重跑一次。
+    #[serde(default)]
+    pub fallback: Option<FallbackSpec>,
+}
+
+/// 备选目标（图契约 Target.fallback 的三字段 + R2 追加的下发 vendor；camelCase 由外层结构继承）。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct FallbackSpec {
+    pub agent: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    /// TASK-05B R2：前端已知的真实厂商随请求下发；空则按模型 ID 推断。
+    #[serde(default)]
+    pub vendor: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -190,6 +206,14 @@ pub struct DispatchNodeResult {
     pub error: String,
     pub artifacts: Option<DispatchArtifacts>,
     pub validation_output: String,
+    /// TASK-05B：本结果由备选重跑产生时，主目标与备选目标的 "agent/model"。
+    #[serde(default)]
+    pub fallback_from: String,
+    #[serde(default)]
+    pub fallback_to: String,
+    /// 主失败但跳过备选的原因（空串 = 未发生跳过）；可写节点为「可写节点」。
+    #[serde(default)]
+    pub fallback_skipped: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -262,6 +286,15 @@ struct DispatchRecord {
     session_id: String,
     exit_code: Option<i32>,
     error: String,
+    /// TASK-05B：「主」或「备」（备选重跑的那条留痕）。追加字段，不改名不删。
+    #[serde(default)]
+    attempt: String,
+    /// TASK-05B R2：生效的写权限（盲节点强制只读之后的值）。
+    #[serde(default)]
+    write: String,
+    /// TASK-05B R2：主失败但未切备选的原因（空串 = 未发生）；可写节点为「可写节点」。
+    #[serde(default)]
+    fallback_skipped: String,
 }
 
 #[tauri::command]
@@ -336,6 +369,20 @@ fn requires_single_writer(node: &DispatchNodeRequest, worktree_falls_back: bool)
         && (node.write == "单写者" || (node.write == "worktree" && worktree_falls_back))
 }
 
+// 节点运行时占用的 agent 集合：主 agent + 有效备选 agent。同一 agent 同时最多
+// 1 路的串行约束对备选尝试同样成立，调度按整个集合记账。
+fn node_agents(node: &DispatchNodeRequest) -> Vec<String> {
+    let mut agents = vec![channels::normalize_agent(&node.agent).to_string()];
+    if let Some(fallback) = node
+        .fallback
+        .as_ref()
+        .filter(|f| !f.agent.trim().is_empty() && !f.model.trim().is_empty())
+    {
+        agents.push(channels::normalize_agent(&fallback.agent).to_string());
+    }
+    agents
+}
+
 fn preview_core(request: &DispatchStageRequest) -> Result<DispatchPreview, String> {
     let _ = project_path(&request.project_dir)?;
     if request
@@ -396,13 +443,15 @@ fn dispatch_stage_core(
     }
     let mut rejected = Vec::new();
     request.nodes.retain(|node| {
-        let invalid = (node.role == "验收" || node.role == "验证") && node.write != "只读";
+        // 与前端 validateNode 同口径：验收/验证/仲裁角色只读（R2-7 补仲裁）。
+        let readonly_role = matches!(node.role.as_str(), "验收" | "验证" | "仲裁");
+        let invalid = readonly_role && node.write != "只读";
         if invalid {
             rejected.push(DispatchNodeResult {
                 node_id: node.node_id.clone(),
                 stage: node.stage,
                 status: "error".into(),
-                error: format!("节点 {} 的验收/验证写权限必须为只读", node.node_id),
+                error: format!("节点 {} 的「{}」角色写权限必须为只读", node.node_id, node.role),
                 ..DispatchNodeResult::default()
             });
         }
@@ -470,14 +519,16 @@ fn dispatch_stage_core(
     let mut active_agents = HashSet::new();
     let mut active = 0_usize;
     let mut results = rejected;
-    let (sender, receiver) = mpsc::channel::<(String, bool, DispatchNodeResult)>();
+    let (sender, receiver) = mpsc::channel::<(Vec<String>, bool, DispatchNodeResult)>();
     let mut active_single_writer = false;
 
     while !queued.is_empty() || active > 0 {
         while active < limit {
             let next_index = queued.iter().position(|node| {
                 let requires_single_writer = requires_single_writer(node, worktree_falls_back);
-                !active_agents.contains(channels::normalize_agent(&node.agent))
+                node_agents(node)
+                    .iter()
+                    .all(|agent| !active_agents.contains(agent))
                     && !(requires_single_writer && active_single_writer)
             });
             if active_single_writer {
@@ -496,8 +547,10 @@ fn dispatch_stage_core(
             if single_writer {
                 active_single_writer = true;
             }
-            let agent = channels::normalize_agent(&node.agent).to_string();
-            active_agents.insert(agent.clone());
+            let agents = node_agents(&node);
+            for agent in &agents {
+                active_agents.insert(agent.clone());
+            }
             active += 1;
             status.insert(node.node_id.clone(), "运行中".into());
             emit_progress(&app, &request.run_id, &node.node_id, "运行中");
@@ -518,17 +571,19 @@ fn dispatch_stage_core(
             let log_dir = log_dir.clone();
             thread::spawn(move || {
                 let result = run_one(&run_id, &project, &run_root, &log_dir, &settings, node);
-                let _ = tx.send((agent, single_writer, result));
+                let _ = tx.send((agents, single_writer, result));
             });
         }
         if active == 0 {
             return Err("同一 agent 并发调度未能推进".into());
         }
-        let (agent, single_writer, result) = receiver
+        let (agents, single_writer, result) = receiver
             .recv()
             .map_err(|error| format!("接收派发结果失败：{error}"))?;
         active -= 1;
-        active_agents.remove(&agent);
+        for agent in &agents {
+            active_agents.remove(agent);
+        }
         if single_writer {
             active_single_writer = false;
         }
@@ -1119,11 +1174,14 @@ fn redact_artifacts(value: &mut DispatchArtifacts) -> usize {
     redacted + count
 }
 
-fn record_stdout(raw_stdout: &str, run_root: &Path, node_id: &str) -> String {
+// 主/备两次尝试各自的原始输出转存（R2-3）：备选加 .fallback 后缀，
+// 不再覆盖主尝试的转存。
+fn record_stdout(raw_stdout: &str, run_root: &Path, node_id: &str, attempt: &str) -> String {
     if raw_stdout.len() <= 32 * 1024 {
         return raw_stdout.to_string();
     }
-    let raw_path = run_root.join(format!("{}.raw.txt", safe_name(node_id)));
+    let suffix = if attempt == "备" { ".fallback" } else { "" };
+    let raw_path = run_root.join(format!("{}{}.raw.txt", safe_name(node_id), suffix));
     let tail = raw_stdout
         .chars()
         .rev()
@@ -1172,13 +1230,126 @@ fn resolve_acp_attempt<T>(
     }
 }
 
+// TASK-05B 主备/熔断：主目标以 error/timeout/identity_mismatch 收场且设了备选
+// 时重跑一次。validation_failed 不触发（备选换的是通道不是产物，验证失败应走修正轮）。
+fn should_try_fallback(status: &str, fallback: Option<&FallbackSpec>) -> bool {
+    matches!(status, "error" | "timeout" | "identity_mismatch")
+        && fallback
+            .map(|f| !f.agent.trim().is_empty() && !f.model.trim().is_empty())
+            .unwrap_or(false)
+}
+
 fn run_one(
     run_id: &str,
     project: &Path,
     run_root: &Path,
     log_dir: &Path,
     settings: &DispatchSettings,
+    node: DispatchNodeRequest,
+) -> DispatchNodeResult {
+    let cancel_key = registry_key(run_id, &node.node_id);
+    // 可写节点（单写者 / worktree 等）主尝试可能已改动项目，备选再跑会叠加
+    // 写入；不触发备选。把跳过原因预先交给主尝试：主失败时直接写进结果的
+    // fallback_skipped 与该条留痕的 frontmatter（R2-11），事后只看留痕也能
+    // 区分「可写节点未切备选」与普通失败。盲节点由引擎强制只读，不受限。
+    let has_fallback = node
+        .fallback
+        .as_ref()
+        .map(|f| !f.agent.trim().is_empty() && !f.model.trim().is_empty())
+        .unwrap_or(false);
+    let skip_reason = if has_fallback && node.visibility != "盲" && node.write != "只读" {
+        "可写节点"
+    } else {
+        ""
+    };
+    let primary = run_one_attempt(
+        run_id,
+        project,
+        run_root,
+        log_dir,
+        settings,
+        node.clone(),
+        "主",
+        skip_reason,
+    );
+    let result = if should_try_fallback(&primary.status, node.fallback.as_ref())
+        && !is_cancelled(&cancel_key)
+    {
+        if skip_reason.is_empty() {
+            run_fallback(run_id, project, run_root, log_dir, settings, &node)
+        } else {
+            primary
+        }
+    } else {
+        primary
+    };
+    clear_cancelled(&cancel_key);
+    result
+}
+
+// 备选重跑：同 prompt、同可见性、同写权限，只换 agent/provider/model；
+// 留痕由 run_one_attempt 各写一条（attempt: 主 / 备），结果带上主备路由供界面显示。
+fn run_fallback(
+    run_id: &str,
+    project: &Path,
+    run_root: &Path,
+    log_dir: &Path,
+    settings: &DispatchSettings,
+    node: &DispatchNodeRequest,
+) -> DispatchNodeResult {
+    let fallback = node.fallback.clone().unwrap_or_default();
+    // 盲节点的隔离目录在第一次尝试时已铺过材料；重跑前清掉，否则 prepare_outbound
+    // 会因目录非空而拒绝。
+    if node.visibility == "盲" {
+        let dir = run_root.join(&node.node_id);
+        if dir.exists() {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+    let mut retry = node.clone();
+    retry.agent = fallback.agent.clone();
+    retry.provider = fallback.provider.clone();
+    retry.model = fallback.model.clone();
+    // 计费口径按备选目标记：vendor 优先用前端随请求下发的真实值（R2-4），
+    // 没下发再按模型 ID 推断（同 resources 的既有口径）；都拿不到就置空，
+    // 不抄主目标的。billing_source 取备选 provider。
+    retry.vendor = if !fallback.vendor.trim().is_empty() {
+        fallback.vendor.clone()
+    } else {
+        let inferred_vendor = crate::resources::infer_vendor(&fallback.model);
+        if inferred_vendor == "其他" {
+            String::new()
+        } else {
+            inferred_vendor.into()
+        }
+    };
+    retry.billing_source = if fallback.provider.trim().is_empty() {
+        String::new()
+    } else {
+        fallback.provider.clone()
+    };
+    retry.fallback = None; // 备选不再套备选，最多重跑一次
+    retry.session_id = String::new(); // 换通道不续接旧会话
+    let mut result = run_one_attempt(run_id, project, run_root, log_dir, settings, retry, "备", "");
+    // R2-1：这个 session 属于备选通道，而节点 target 仍是主目标；写回会让下游
+    // 同目标「共享」子节点经 continuationSession 把它续到主通道（-S/-r 一个
+    // 主通道不存在的会话）。备选作答 = 另起会话不续聊：结果 session 置空，
+    // 下游节点发完整 prompt；留痕里保留真实 session 仅供查账。
+    result.session_id = String::new();
+    result.fallback_from = format!("{}/{}", node.agent, node.model);
+    result.fallback_to = format!("{}/{}", fallback.agent, fallback.model);
+    result
+}
+
+fn run_one_attempt(
+    run_id: &str,
+    project: &Path,
+    run_root: &Path,
+    log_dir: &Path,
+    settings: &DispatchSettings,
     mut node: DispatchNodeRequest,
+    attempt: &str,
+    fallback_skip_reason: &str,
 ) -> DispatchNodeResult {
     let stage = node.stage.max(1);
     let started = Local::now();
@@ -1465,6 +1636,15 @@ fn run_one(
 
     let ended = Local::now();
     let duration_ms = timer.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    // R2-11：主失败且可写节点跳过备选时，把原因写进留痕 frontmatter 与结果；
+    // validation_failed 不触发备选（走修正轮），不标。
+    let fallback_skipped = if !fallback_skip_reason.is_empty()
+        && matches!(status.as_str(), "error" | "timeout" | "identity_mismatch")
+    {
+        fallback_skip_reason.to_string()
+    } else {
+        String::new()
+    };
     let record = DispatchRecord {
         schema: "aicross-dispatch/1".into(),
         run_id: run_id.into(),
@@ -1497,9 +1677,12 @@ fn run_one(
         session_id: channel_output.session_id.clone(),
         exit_code,
         error: error.clone(),
+        attempt: attempt.into(),
+        write: node.write.clone(),
+        fallback_skipped: fallback_skipped.clone(),
     };
     let frontmatter = serialize_frontmatter(&record).unwrap_or_else(|e| format!("error: {e}"));
-    let record_stdout = record_stdout(&raw_stdout, run_root, &node.node_id);
+    let record_stdout = record_stdout(&raw_stdout, run_root, &node.node_id, attempt);
     let dispatch_file = write_record(
         log_dir,
         &record,
@@ -1538,8 +1721,10 @@ fn run_one(
         error,
         artifacts,
         validation_output: safe_trace(&validation_output),
+        fallback_from: String::new(),
+        fallback_to: String::new(),
+        fallback_skipped,
     };
-    clear_cancelled(&cancel_key);
     result
 }
 
@@ -2019,6 +2204,7 @@ mod tests {
             write: "只读".into(),
             original_request: "分析材料".into(),
             upstream_artifacts: Vec::new(),
+            fallback: None,
         }
     }
 
@@ -2067,15 +2253,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("aicross-r3-stdout-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let large = "x".repeat(40 * 1024);
-        let recorded = record_stdout(&large, &root, "node-large");
+        let recorded = record_stdout(&large, &root, "node-large", "主");
         assert!(recorded.len() <= 32 * 1024 + 512);
         assert!(recorded.contains("原始输出已转存"));
         assert_eq!(fs::read_to_string(root.join("node-large.raw.txt")).unwrap(), large);
         let small = "y".repeat(20 * 1024);
-        assert_eq!(record_stdout(&small, &root, "node-small"), small);
-        let failed_target = root.join("node-failed.raw.txt");
+        assert_eq!(record_stdout(&small, &root, "node-small", "主"), small);
+        let failed_target = root.join("node-failed.fallback.raw.txt");
         fs::create_dir_all(&failed_target).unwrap();
-        let failed = record_stdout(&large, &root, "node-failed");
+        let failed = record_stdout(&large, &root, "node-failed", "备");
         assert!(failed.contains("原始输出转存失败："));
         assert!(failed.contains("末尾 4KB"));
         assert!(!root.join("node-small.raw.txt").exists());
@@ -2274,6 +2460,9 @@ mod tests {
             session_id: "s".into(),
             exit_code: Some(0),
             error: String::new(),
+            attempt: "主".into(),
+            write: "只读".into(),
+            fallback_skipped: String::new(),
         };
         let yaml = serde_yaml::to_string(&record).unwrap();
         let restored: DispatchRecord = serde_yaml::from_str(&yaml).unwrap();
@@ -2495,6 +2684,61 @@ mod tests {
         .unwrap();
         assert!(!invocation.args.iter().any(|arg| arg == "-S" || arg == "-r"));
         assert!(invocation.args.iter().any(|arg| arg == full));
+    }
+
+    // R2-11：旧留痕（没有 attempt/write/fallback_skipped 字段）照常解析，新字段取默认空。
+    #[test]
+    fn legacy_frontmatter_without_r2_fields_parses_with_empty_defaults() {
+        let record = DispatchRecord {
+            schema: "aicross-dispatch/1".into(),
+            run_id: "run".into(),
+            stage: 1,
+            node: "node".into(),
+            agent: "codex".into(),
+            provider: String::new(),
+            model: "gpt".into(),
+            vendor: "OpenAI".into(),
+            billing_source: "官方订阅".into(),
+            role: "验证".into(),
+            tier: "低".into(),
+            thinking: "中".into(),
+            visibility: "盲".into(),
+            isolation: "部分".into(),
+            workdir: "x".into(),
+            materials: vec!["a.csv".into()],
+            redacted: 2,
+            truncated: false,
+            status: "ok".into(),
+            started_at: "2026-01-01T00:00:00+08:00".into(),
+            ended_at: "2026-01-01T00:00:01+08:00".into(),
+            duration_ms: 1000,
+            tokens_in: 10,
+            tokens_out: 3,
+            cache_read: 0,
+            identity: "openai/gpt".into(),
+            session_id: "s".into(),
+            exit_code: Some(0),
+            error: String::new(),
+            attempt: "主".into(),
+            runner: "oneshot".into(),
+            runner_note: String::new(),
+            write: "只读".into(),
+            fallback_skipped: "可写节点".into(),
+        };
+        let yaml = serde_yaml::to_string(&record).unwrap();
+        let legacy = yaml
+            .lines()
+            .filter(|line| {
+                !line.starts_with("attempt:")
+                    && !line.starts_with("write:")
+                    && !line.starts_with("fallback_skipped:")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let restored: DispatchRecord = serde_yaml::from_str(&legacy).unwrap();
+        assert_eq!(restored.attempt, "");
+        assert_eq!(restored.write, "");
+        assert_eq!(restored.fallback_skipped, "");
     }
 
     #[test]
@@ -2902,6 +3146,424 @@ mod tests {
         );
     }
 
+    // ── TASK-05B 主备/熔断 ────────────────────────────────────────────────
+
+    #[test]
+    fn fallback_predicate_only_triggers_on_channel_failures() {
+        let spec = FallbackSpec {
+            agent: "codex".into(),
+            provider: String::new(),
+            model: "gpt-5.6-luna".into(),
+            ..FallbackSpec::default()
+        };
+        for status in ["error", "timeout", "identity_mismatch"] {
+            assert!(should_try_fallback(status, Some(&spec)), "{status} 应触发备选");
+        }
+        for status in ["ok", "validation_failed"] {
+            assert!(!should_try_fallback(status, Some(&spec)), "{status} 不应触发备选");
+        }
+        assert!(!should_try_fallback("error", None));
+        let incomplete = FallbackSpec {
+            agent: " ".into(),
+            ..FallbackSpec::default()
+        };
+        assert!(!should_try_fallback("error", Some(&incomplete)));
+    }
+
+    #[test]
+    fn fallback_reruns_once_and_records_both_attempts() {
+        let root = std::env::temp_dir().join(format!("aicross-fallback-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "missing-agent".into();
+        request.model = "m-main".into();
+        request.visibility = "共享".into();
+        request.fallback = Some(FallbackSpec {
+            agent: "missing-agent-b".into(),
+            provider: String::new(),
+            model: "m-back".into(),
+            ..FallbackSpec::default()
+        });
+        let result = run_one(
+            "fb-run",
+            &project,
+            &run_root,
+            &log_dir,
+            &DispatchSettings::default(),
+            request,
+        );
+        // 主备都不可用（agent 不存在，构建调用即失败），但最终结果带备选路由
+        assert_eq!(result.status, "error");
+        assert_eq!(result.fallback_from, "missing-agent/m-main");
+        assert_eq!(result.fallback_to, "missing-agent-b/m-back");
+        assert!(result.frontmatter.contains("attempt: 备"));
+        // R2-1：备选作答的 session 属于备选通道，不写回结果（节点 target 仍是主目标）
+        assert!(result.session_id.is_empty(), "备选作答结果不得带回 session_id");
+        // 留痕两条：主一条、备一条
+        let records: Vec<String> = fs::read_dir(&log_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("md"))
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2, "应各留一条主/备记录");
+        assert!(records.iter().any(|body| body.contains("attempt: 主")));
+        assert!(records.iter().any(|body| body.contains("attempt: 备")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fallback_blind_attempt_gets_fresh_material_dir() {
+        let root = std::env::temp_dir().join(format!("aicross-fallback-blind-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let material = project.join("m.txt");
+        fs::write(&material, "材料").unwrap();
+        let mut request = node(vec![material.to_string_lossy().into_owned()]);
+        request.agent = "missing-agent".into();
+        request.model = "m-main".into();
+        // node() 默认 visibility=盲：第一次尝试会把材料铺进隔离目录，
+        // 备选重跑前必须清掉，否则第二次 prepare_outbound 拒非空目录。
+        request.fallback = Some(FallbackSpec {
+            agent: "missing-agent-b".into(),
+            provider: String::new(),
+            model: "m-back".into(),
+            ..FallbackSpec::default()
+        });
+        let result = run_one(
+            "fb-blind-run",
+            &project,
+            &run_root,
+            &log_dir,
+            &DispatchSettings::default(),
+            request,
+        );
+        assert_eq!(result.status, "error");
+        assert!(!result.error.contains("盲审目录不是空目录"), "备选不应死在隔离目录上：{}", result.error);
+        let records = fs::read_dir(&log_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("md"))
+            .count();
+        assert_eq!(records, 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fallback_skipped_for_writable_node_returns_primary_failure() {
+        let root = std::env::temp_dir().join(format!("aicross-fallback-writable-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "missing-agent".into();
+        request.model = "m-main".into();
+        request.visibility = "共享".into();
+        request.write = "单写者".into();
+        request.fallback = Some(FallbackSpec {
+            agent: "missing-agent-b".into(),
+            provider: String::new(),
+            model: "m-back".into(),
+            ..FallbackSpec::default()
+        });
+        let result = run_one(
+            "fb-writable-run",
+            &project,
+            &run_root,
+            &log_dir,
+            &DispatchSettings::default(),
+            request,
+        );
+        // 可写节点主失败：不切备选（主尝试可能已写项目，备选再跑会叠加写入）
+        assert_eq!(result.status, "error");
+        assert_eq!(result.fallback_skipped, "可写节点");
+        assert!(result.fallback_from.is_empty());
+        assert!(result.fallback_to.is_empty());
+        assert!(result.frontmatter.contains("attempt: 主"));
+        // R2-11：跳过原因进留痕 frontmatter，事后只看留痕也能区分普通失败
+        assert!(result.frontmatter.contains("fallback_skipped: 可写节点"));
+        let bodies: Vec<String> = fs::read_dir(&log_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("md"))
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 1, "可写节点只能有主尝试一条留痕");
+        assert!(bodies[0].contains("fallback_skipped: 可写节点"), "落盘留痕同样带跳过原因");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fallback_reruns_for_blind_node_and_marks_no_skip() {
+        let root = std::env::temp_dir().join(format!("aicross-fallback-blind-rerun-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let material = project.join("m.txt");
+        fs::write(&material, "材料").unwrap();
+        // node() 默认 visibility=盲 / write=只读：主失败照常切备选
+        let mut request = node(vec![material.to_string_lossy().into_owned()]);
+        request.agent = "missing-agent".into();
+        request.model = "m-main".into();
+        request.fallback = Some(FallbackSpec {
+            agent: "missing-agent-b".into(),
+            provider: String::new(),
+            model: "m-back".into(),
+            ..FallbackSpec::default()
+        });
+        let result = run_one(
+            "fb-blind-rerun",
+            &project,
+            &run_root,
+            &log_dir,
+            &DispatchSettings::default(),
+            request,
+        );
+        assert_eq!(result.status, "error");
+        assert!(result.fallback_skipped.is_empty(), "盲节点不得标可写跳过");
+        assert_eq!(result.fallback_from, "missing-agent/m-main");
+        assert_eq!(result.fallback_to, "missing-agent-b/m-back");
+        assert!(result.frontmatter.contains("attempt: 备"));
+        assert!(!result.frontmatter.contains("fallback_skipped: 可写节点"), "切了备选不得标跳过");
+        let records = fs::read_dir(&log_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("md"))
+            .count();
+        assert_eq!(records, 2, "盲节点备选重跑应各留一条主/备记录");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fallback_record_uses_fallback_billing_and_vendor() {
+        let root = std::env::temp_dir().join(format!("aicross-fallback-billing-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "missing-agent".into();
+        request.model = "m-main".into();
+        request.visibility = "共享".into();
+        request.write = "只读".into();
+        request.vendor = "Anthropic".into();
+        request.billing_source = "官方订阅".into();
+        request.fallback = Some(FallbackSpec {
+            agent: "missing-agent-b".into(),
+            provider: "deepseek".into(),
+            model: "deepseek-v4-flash".into(),
+            ..FallbackSpec::default()
+        });
+        let result = run_one(
+            "fb-billing-run",
+            &project,
+            &run_root,
+            &log_dir,
+            &DispatchSettings::default(),
+            request,
+        );
+        assert_eq!(result.fallback_to, "missing-agent-b/deepseek-v4-flash");
+        let bodies: Vec<String> = fs::read_dir(&log_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("md"))
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        let main = bodies.iter().find(|body| body.contains("attempt: 主")).unwrap();
+        let backup = bodies.iter().find(|body| body.contains("attempt: 备")).unwrap();
+        // 主留痕用主目标口径；备选留痕用备选目标的 vendor/billing，不抄主目标
+        assert!(main.contains("vendor: Anthropic"));
+        assert!(main.contains("billing_source: 官方订阅"));
+        assert!(backup.contains("vendor: DeepSeek"));
+        assert!(backup.contains("billing_source: deepseek"));
+        assert!(!backup.contains("官方订阅"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fallback_agent_blocks_same_agent_node_from_running_concurrently() {
+        let root = std::env::temp_dir().join(format!("aicross-fallback-serial-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        // A 的备选 agent 与 B 的主 agent 相同：B 必须等 A 整个结束才能开始。
+        // A 是单写者且写锁被本测试持有，会阻塞到写锁超时（1 秒），
+        // 若 B 与 A 并发，B（missing agent 秒败）的开始时间会早于 A 的结束时间。
+        let _guard = acquire_project_write(&project, Duration::from_secs(10), "serial-hold").unwrap();
+        let mut a = node(Vec::new());
+        a.node_id = "node-a".into();
+        a.agent = "missing-a".into();
+        a.model = "m-a".into();
+        a.role = "执行".into();
+        a.visibility = "共享".into();
+        a.write = "单写者".into();
+        a.fallback = Some(FallbackSpec {
+            agent: "missing-b".into(),
+            provider: String::new(),
+            model: "m-b".into(),
+            ..FallbackSpec::default()
+        });
+        let mut b = node(Vec::new());
+        b.node_id = "node-b".into();
+        b.agent = "missing-b".into();
+        b.model = "m-b".into();
+        b.visibility = "共享".into();
+        b.write = "只读".into();
+        let mut settings = DispatchSettings::default();
+        settings.timeout_secs = 1;
+        settings.concurrency = 3;
+        let result = dispatch_stage_core(
+            DispatchStageRequest {
+                run_id: format!("serial-run-{}", Uuid::new_v4()),
+                stage: 1,
+                project_dir: project.to_string_lossy().into_owned(),
+                nodes: vec![a, b],
+                settings,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.results.len(), 2);
+        let time_of = |node_id: &str, key: &str| {
+            let item = result.results.iter().find(|item| item.node_id == node_id).unwrap();
+            item.frontmatter
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+                .unwrap_or_else(|| panic!("{node_id} 留痕缺 {key}：\n{}", item.frontmatter))
+                .to_string()
+        };
+        assert!(time_of("node-b", "started_at") >= time_of("node-a", "ended_at"),
+            "B 与 A 的备选 agent 相同，不得在 A 结束前开始");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // R2-4：前端随请求下发真实 vendor 时，备选留痕直接用下发值，不靠 infer_vendor 猜
+    // （k3-256k 之类模型 ID 推断不出厂商）。
+    #[test]
+    fn fallback_record_prefers_dispatched_vendor_over_inference() {
+        let root = std::env::temp_dir().join(format!("aicross-fallback-vendor-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "missing-agent".into();
+        request.model = "m-main".into();
+        request.visibility = "共享".into();
+        request.write = "只读".into();
+        request.fallback = Some(FallbackSpec {
+            agent: "missing-agent-b".into(),
+            provider: "kimi".into(),
+            model: "k3-256k".into(),
+            vendor: "Moonshot AI".into(),
+        });
+        let result = run_one(
+            "fb-vendor-run",
+            &project,
+            &run_root,
+            &log_dir,
+            &DispatchSettings::default(),
+            request,
+        );
+        assert_eq!(result.fallback_to, "missing-agent-b/k3-256k");
+        let bodies: Vec<String> = fs::read_dir(&log_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("md"))
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        let backup = bodies.iter().find(|body| body.contains("attempt: 备")).unwrap();
+        assert!(backup.contains("vendor: Moonshot AI"), "备选留痕用下发的 vendor：{backup}");
+        let main = bodies.iter().find(|body| body.contains("attempt: 主")).unwrap();
+        assert!(!main.contains("Moonshot AI"), "主留痕不受备选 vendor 影响");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // R2-3：主/备两次尝试的原始输出转存路径不同且都存在（备选不再覆盖主尝试）。
+    #[test]
+    fn record_stdout_keeps_primary_and_fallback_dumps_separate() {
+        let root = std::env::temp_dir().join(format!("aicross-rawdump-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let large = "x".repeat(40 * 1024);
+        let primary = record_stdout(&large, &root, "node-1", "主");
+        let backup = record_stdout(&large, &root, "node-1", "备");
+        assert_ne!(primary, backup);
+        assert!(primary.contains("node-1.raw.txt"));
+        assert!(!primary.contains("fallback"));
+        assert!(backup.contains("node-1.fallback.raw.txt"));
+        assert_eq!(fs::read_to_string(root.join("node-1.raw.txt")).unwrap(), large);
+        assert_eq!(fs::read_to_string(root.join("node-1.fallback.raw.txt")).unwrap(), large);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // R2-7：仲裁角色与验收/验证一样由 Rust 强制只读（此前只有前端 validateNode 提示）。
+    #[test]
+    fn arbitration_role_is_forced_readonly_by_engine() {
+        let root = std::env::temp_dir().join(format!("aicross-arb-readonly-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let mut arb = node(Vec::new());
+        arb.agent = "missing-agent".into();
+        arb.model = "m-arb".into();
+        arb.role = "仲裁".into();
+        arb.visibility = "共享".into();
+        arb.write = "单写者".into();
+        let rejected = dispatch_stage_core(
+            stage_request(project.to_string_lossy().into_owned(), vec![arb]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(rejected.results[0].status, "error");
+        assert!(
+            rejected.results[0].error.contains("「仲裁」") && rejected.results[0].error.contains("只读"),
+            "仲裁可写应被拒：{}",
+            rejected.results[0].error
+        );
+        // 对照：仲裁 + 只读 通过这扇门（随后死在 missing agent 的构建/执行上，不是门禁）
+        let mut ok = node(Vec::new());
+        ok.agent = "missing-agent".into();
+        ok.model = "m-arb".into();
+        ok.role = "仲裁".into();
+        ok.visibility = "共享".into();
+        ok.write = "只读".into();
+        let passed = dispatch_stage_core(
+            stage_request(project.to_string_lossy().into_owned(), vec![ok]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(passed.results[0].status, "error");
+        assert!(
+            !passed.results[0].error.contains("写权限必须为只读"),
+            "只读仲裁不该被门禁拦：{}",
+            passed.results[0].error
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // 与前端 disputeExcerpt（graph/dispatch.ts）同口径的摘录：折叠空白，
+    // 超 200 字截断加省略号。仅供 live 测试构造中性描述。
+    fn dispute_excerpt(text: &str, limit: usize) -> String {
+        let clean = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if clean.chars().count() <= limit {
+            return clean;
+        }
+        format!("{}…", clean.chars().take(limit).collect::<String>())
+    }
+
     fn live_node(
         id: &str,
         agent: &str,
@@ -2939,6 +3601,7 @@ mod tests {
             write: "只读".into(),
             original_request: prompt.into(),
             upstream_artifacts: Vec::new(),
+            fallback: None,
         }
     }
 
@@ -3360,5 +4023,119 @@ mod tests {
             "CC_SWITCH_REQUESTS=1 RECORD={}",
             result.results[0].dispatch_file
         );
+    }
+
+    #[test]
+    #[ignore = "three real model requests (擂台两家 + 仲裁一家); run outside the sandbox for TASK-05B acceptance"]
+    fn live_arena_and_arbitration() {
+        const BLIND_PREFIX: &str = include_str!("../fixtures/prompts/blind-prefix.txt");
+        let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let enforce_live_success = user_data_root_is_writable();
+        if !enforce_live_success {
+            println!("ARENA_ASSERTIONS_SKIPPED=用户数据目录不可写，当前为受限环境");
+            return;
+        }
+        std::env::set_var("AICROSS_TEST_RUN_ROOT", project.join(".dispatch/runtime"));
+        let prompt = "估算一个三口之家一个月的饮用水需求量（升）。只给数字区间与一条依据，不要展开。";
+        // 擂台：同一问题两家共享作答（对应内置预设 builtin-arena 的目标组合，
+        // 由编排者在 G1 确认屏选定；这里直接按定案模型落死）。
+        let first = live_node("arena-pi-glm", "pi", "zai-coding-cn", "glm-5.3-flash", "执行", "共享", prompt, prompt, Vec::new(), "");
+        let second = live_node("arena-codex-luna", "codex", "", "gpt-5.6-luna", "执行", "共享", prompt, prompt, Vec::new(), "");
+        let arena = dispatch_stage_core(
+            DispatchStageRequest {
+                run_id: format!("task05b-arena-{}", Local::now().format("%Y%m%d-%H%M%S")),
+                stage: 1,
+                project_dir: project.to_string_lossy().into_owned(),
+                nodes: vec![first, second],
+                settings: live_settings(2),
+            },
+            None,
+        )
+        .unwrap();
+        println!("ARENA_RUN={} STATE={}", arena.run_id, arena.state_file);
+        for item in &arena.results {
+            println!("ARENA_RESULT node={} status={} record={}", item.node_id, item.status, item.dispatch_file);
+            assert_eq!(item.status, "ok", "{}: {}", item.node_id, item.error);
+        }
+        // R2-6：厂商与写权限不写死，从真实结果的留痕 frontmatter 读回再断言。
+        let record_field = |node_id: &str, key: &str| {
+            arena
+                .results
+                .iter()
+                .find(|item| item.node_id == node_id)
+                .and_then(|item| {
+                    item.frontmatter
+                        .lines()
+                        .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+                })
+                .unwrap_or_else(|| panic!("{node_id} 留痕缺 {key}"))
+                .to_string()
+        };
+        let first_vendor = record_field("arena-pi-glm", "vendor");
+        let second_vendor = record_field("arena-codex-luna", "vendor");
+        // 仲裁：与前端 appendArbitration 的产物同形——盲、只读、role=仲裁，
+        // 材料只带双方共同材料祖先（根，这里即擂台题目本身），中性描述按
+        // node_id 映射取两边正文，标签「甲方/乙方」，不写双方 agent/model。
+        let body_of = |node_id: &str| {
+            arena
+                .results
+                .iter()
+                .find(|item| item.node_id == node_id)
+                .map(|item| item.text.clone())
+                .unwrap_or_else(|| panic!("擂台缺 {node_id} 的结果"))
+        };
+        // R2-6：与产品 disputeExcerpt 同口径（200 字 + 省略号），不再用 take(400)。
+        let dispute = format!(
+            "【甲方】认为：{}；【乙方】认为：{}。请独立裁决，给出你的结论与理由。",
+            dispute_excerpt(&body_of("arena-pi-glm"), 200),
+            dispute_excerpt(&body_of("arena-codex-luna"), 200)
+        );
+        assert!(dispute.contains("【甲方】") && dispute.contains("【乙方】"));
+        for leaked in ["pi/", "codex/", "glm-5.3-flash", "gpt-5.6-luna"] {
+            assert!(!dispute.contains(leaked), "中性描述不得写双方 agent/model：{leaked}");
+        }
+        let material = std::env::temp_dir().join(format!("aicross-arb-root-{}.md", Uuid::new_v4()));
+        fs::write(&material, prompt).unwrap();
+        let arb_prompt = format!(
+            "{}\n\n[用户] {prompt}\n\n[附件] {}\n\n{dispute}",
+            BLIND_PREFIX.trim(),
+            material.file_name().unwrap().to_string_lossy()
+        );
+        let arb = live_node(
+            "arb-kimi", "kimi", "kimi", "kimi-code/k3-256k", "仲裁", "盲",
+            &arb_prompt, &arb_prompt, vec![material.to_string_lossy().into_owned()], "",
+        );
+        let arbitration = dispatch_stage_core(
+            DispatchStageRequest {
+                run_id: format!("task05b-arb-{}", Local::now().format("%Y%m%d-%H%M%S")),
+                stage: 2,
+                project_dir: project.to_string_lossy().into_owned(),
+                nodes: vec![arb],
+                settings: live_settings(1),
+            },
+            None,
+        )
+        .unwrap();
+        let arb = &arbitration.results[0];
+        println!("ARBITRATION status={} record={} isolation={}", arb.status, arb.dispatch_file, arb.isolation);
+        assert_eq!(arb.status, "ok", "{}", arb.error);
+        // R2-6：仲裁留痕读回的 vendor 与两边不同、write 是引擎强制后的「只读」。
+        let arb_field = |key: &str| {
+            arb.frontmatter
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+                .unwrap_or_else(|| panic!("仲裁留痕缺 {key}：\n{}", arb.frontmatter))
+                .to_string()
+        };
+        assert_eq!(arb_field("role"), "仲裁");
+        assert_eq!(arb_field("write"), "只读", "盲仲裁的生效写权限必须是只读");
+        assert_ne!(arb_field("vendor"), first_vendor, "仲裁厂商不得与甲方相同");
+        assert_ne!(arb_field("vendor"), second_vendor, "仲裁厂商不得与乙方相同");
+        let arb_workdir = Path::new(&arb.workdir);
+        assert_ne!(arb_workdir, project.as_path(), "盲仲裁的 workdir 不得是项目目录");
+        assert!(arb_workdir.join(material.file_name().unwrap()).is_file(),
+            "隔离目录只应收到共同材料祖先");
+        assert!(!arb_workdir.join("Cargo.toml").exists(), "隔离目录不得含项目文件");
+        let _ = fs::remove_file(material);
     }
 }

@@ -1,0 +1,1 @@
+先读仓库根目录的 AGENTS.md，再读 tasks/fix-05b-r1.md（19 条，来自 DeepSeek 与 GLM 两家对 TASK-05B 的盲审，第 1–7 条最优先），逐条修并每条补具名测试。在 tasks/REPORT-05B.md 末尾「修正轮 R1」一节按编号写「已修：怎么改的（文件:行）／已补：测试名」或「不采纳：原因」。不动 src/channels/。cargo check 零 warning。验证命令实际跑过并把命令与输出原文贴进报告。不起窗口，不发真机请求，不 commit，不 push。

@@ -1,0 +1,9 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/5b 分支。本期是 TASK-05 的 B 节「第 2 期预设：擂台、评审团、仲裁、前提抽查、主备/熔断、顾问」。先读 tasks/TASK-05-acp-and-polish.md 的第 0 节第 1 条与 B 节、AGENTS.md、tasks/REPORT-05B.md（实现方报告），再读本期改动：src-ui/src/graph/（stamp.ts、dispatch.ts、validate.ts、types.ts、premise.ts、__tests__/presets-05b.test.ts）、src-ui/src/components/center/graph/DispatchOverlay.tsx 与 GraphTab.tsx、src-ui/src/components/right/orchestration/（NodePanel.tsx、OrchestrationPanel.tsx）、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/tauri.ts、src/orchestration.rs、src/dispatch.rs、src/server.rs、fixtures/prompts/advisor.txt 与 premise-check.txt。不读 node_modules、target、dist、port。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照第 0 节第 1 条六个预设各自的落地口径（擂台=N 个共享执行节点 + 选它；评审团=≤3 盲节点、视角进 user.text；仲裁=盲节点、parents 指向共同材料祖先、中性描述可改、目标排除双方厂商；前提抽查=premises.json + 新图 + 排除三角色厂商 + 结论写回；主备=Target.fallback 唯一契约追加、失败重跑一次、留痕两条、界面显示已切备选；顾问=/advise 盲只读节点、顾问意见标签）。报告里两处口径调整（不做分歧自动检测、擂台不在盖章时选家）是否合理。
+2. 逻辑正确性：stamp 出的节点的 parents/visibility/write 是否正确；「选它」清掉同父候选会不会误伤；仲裁的中性描述生成是否真的不带立场；备选重跑对盲节点隔离目录、写锁、快照、留痕的处理；前提抽查结论按图标题匹配写回是否会串；顾问节点在推进循环里会不会被当成执行节点。
+3. 安全：前提抽查外发的材料范围（只发前提原文 + 勾选附件，不带项目其它上下文）；仲裁外发的中性描述是否泄露双方立场或密钥；备选重跑是否重复写项目文件。
+4. 代码质量与契约：Target 只追加 fallback 且 Rust/TS 镜像同步 #[serde(default)]；aicross-dispatch/1 只追加 attempt 字段；第 2/3/4 期图与派发行为是否被破坏（dispatchableNodeIds、reducePipelineStep、applyDispatchResults、验收 PASS/NEEDS_FIX 路径）；server.rs/tauri.ts 注册与类型镜像。
+5. 测试：报告里的 10 条 vitest 与 8 条 Rust 测试是否真实存在且断言目标行为；ignored 真机测试 live_arena_and_arbitration 构造是否正确、会不会误判；最该补的 3 个。
+最后单独回答：对照 B 节原始需求是否完整实现？一句话 + 缺项列表（按严重度排序）。

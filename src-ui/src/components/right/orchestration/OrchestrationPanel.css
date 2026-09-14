@@ -259,6 +259,20 @@
   outline: none;
 }
 
+.te-row textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-xs);
+  color: var(--text-1);
+  font-size: 12px;
+  padding: 4px 8px;
+  outline: none;
+  resize: vertical;
+  font-family: inherit;
+}
+
 .te-row select:focus,
 .te-row input:focus {
   border-color: var(--border-focus);
@@ -277,6 +291,13 @@
   font-size: 11px;
   color: var(--text-3);
   margin-left: 72px;
+}
+
+.te-readonly {
+  margin-left: 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: var(--text-2);
 }
 
 .te-upstreams {

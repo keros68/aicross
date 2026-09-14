@@ -17,6 +17,7 @@ import { IS_WINDOWS } from '../../lib/platform';
 import { TERM_COLOR_SCHEMES } from '../center/TierTerminal';
 import { commands, type AcpAdapterStatus, type FontInfo, type RoleProfile, type RoleSettings } from '../../tauri';
 import type { DispatchableModel } from '../../graph/types';
+import { buildPremiseCheckGraph, matchPremiseResults, validatePremiseAttachments, type Premise } from '../../graph/premise';
 import { modelStatusSuffix } from '../../resources/model-picker';
 import { FontPicker } from './FontPicker';
 import { THEME_COLORS, LANGUAGES, TASK_VIEW_MODES } from '../../lib/personalization';
@@ -24,7 +25,7 @@ import { loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } f
 import { ROLE_PROMPT_TEMPLATES } from '../../graph/dispatch';
 import './SettingsModal.css';
 
-type Section = 'appearance' | 'terminal' | 'roles' | 'dispatch' | 'tasks' | 'language' | 'feedback';
+type Section = 'appearance' | 'terminal' | 'roles' | 'dispatch' | 'premises' | 'tasks' | 'language' | 'feedback';
 
 // Trailing "opens outside the app" affordance on the feedback cards.
 const ExternalLinkArrow = () => (
@@ -85,6 +86,12 @@ const ICONS: Record<Section, ReactNode> = {
       <path d="m9 11 3 3L22 4" />
     </svg>
   ),
+  premises: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+      <path d="M14 2v6h6" /><path d="M9 13h6" /><path d="M9 17h6" />
+    </svg>
+  ),
   language: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="10" /><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /><path d="M2 12h20" />
@@ -117,6 +124,11 @@ export function SettingsModal() {
   const [roleModels, setRoleModels] = useState<DispatchableModel[]>([]);
   const [acpAdapters, setAcpAdapters] = useState<AcpAdapterStatus[] | null>(null);
   const [acpProbeError, setAcpProbeError] = useState('');
+  // 前提台账（TASK-05B）：~/.aicross/premises.json，抽查图结论回本页并列显示
+  const [premiseFile, setPremiseFile] = useState<{ version: 1; premises: Premise[] }>({ version: 1, premises: [] });
+  const [premiseDraft, setPremiseDraft] = useState('');
+  const [premiseTargetKey, setPremiseTargetKey] = useState('');
+  const [premiseNote, setPremiseNote] = useState('');
   // Installed fonts for the terminal font picker — loaded lazily (Rust scan)
   // the first time the Terminal section is opened. null = not loaded yet.
   const [fonts, setFonts] = useState<FontInfo[] | null>(null);
@@ -173,6 +185,30 @@ export function SettingsModal() {
     if (!open || section !== 'dispatch' || acpAdapters !== null) return;
     commands.detectAcpAdapters().then((items) => { setAcpAdapters(items); setAcpProbeError(''); }).catch((error) => { setAcpAdapters([]); setAcpProbeError(String(error)); });
   }, [open, section, acpAdapters]);
+  // 前提台账：打开时读盘，并把已跑完的抽查图结论写回台账（按 last_graph_id
+  // 读图匹配，取图中验证节点的完成回复；回写失败要提示，不吞）。
+  useEffect(() => {
+    if (!open || section !== 'premises') return;
+    let dead = false;
+    (async () => {
+      const [file, rolesResult, modelsResult] = await Promise.all([
+        commands.loadPremises().catch(() => ({ version: 1 as const, premises: [] as Premise[] })),
+        commands.loadRoles().catch(() => null),
+        commands.listDispatchableModels().catch(() => null),
+      ]);
+      if (dead) return;
+      if (rolesResult) setRoleSettings(rolesResult);
+      if (modelsResult) setRoleModels(modelsResult.models);
+      const matched = await matchPremiseResults(file.premises, (id) => commands.loadGraph(id));
+      if (dead) return;
+      const next = { version: 1 as const, premises: matched.premises };
+      if (matched.changed) {
+        commands.savePremises(next).catch((err) => { if (!dead) setPremiseNote(String(err)); });
+      }
+      setPremiseFile(next);
+    })();
+    return () => { dead = true; };
+  }, [open, section]);
 
   if (!open) return null;
 
@@ -215,16 +251,101 @@ export function SettingsModal() {
     }).catch(() => {});
   };
 
+  // ── 前提台账 ──────────────────────────────────────────────────────────
+  const savePremiseFile = (next: { version: 1; premises: Premise[] }) => {
+    setPremiseFile(next);
+    commands.savePremises(next).catch((err) => setPremiseNote(String(err)));
+  };
+  const addPremise = () => {
+    const text = premiseDraft.trim();
+    if (!text) return;
+    savePremiseFile({
+      ...premiseFile,
+      premises: [...premiseFile.premises, { id: crypto.randomUUID(), text, recorded_at: new Date().toISOString(), attachments: [] }],
+    });
+    setPremiseDraft('');
+  };
+  const removePremise = (id: string) =>
+    savePremiseFile({ ...premiseFile, premises: premiseFile.premises.filter((p) => p.id !== id) });
+  const setPremiseAttachments = (id: string, raw: string) => {
+    const attachments = raw.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean);
+    const current = premiseFile.premises.find((p) => p.id === id);
+    if (!current || current.attachments.join('，') === attachments.join('，')) return;
+    // 保存前校验（R2-2）：相对路径、同名 basename 会让抽查节点整体失败，拒绝并提示
+    const invalid = validatePremiseAttachments(attachments);
+    if (invalid) {
+      setPremiseNote(`附件未保存：${invalid}`);
+      return;
+    }
+    savePremiseFile({
+      ...premiseFile,
+      premises: premiseFile.premises.map((p) => (p.id === id ? { ...p, attachments } : p)),
+    });
+  };
+  // 文件选择器（R2-2）：系统对话框选出的就是绝对路径；与已有附件合并去重后保存。
+  const pickPremiseAttachments = async (id: string) => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ multiple: true });
+      if (!selected) return;
+      const paths = (Array.isArray(selected) ? selected : [selected]).filter((p): p is string => typeof p === 'string');
+      const current = premiseFile.premises.find((p) => p.id === id);
+      if (!current || paths.length === 0) return;
+      const attachments = [...new Set([...current.attachments, ...paths])];
+      const invalid = validatePremiseAttachments(attachments);
+      if (invalid) {
+        setPremiseNote(`附件未保存：${invalid}`);
+        return;
+      }
+      savePremiseFile({
+        ...premiseFile,
+        premises: premiseFile.premises.map((p) => (p.id === id ? { ...p, attachments } : p)),
+      });
+    } catch (err) {
+      setPremiseNote(String(err));
+    }
+  };
+  const runPremiseCheck = (premise: Premise) => {
+    const [agent, provider, model] = premiseTargetKey
+      ? (JSON.parse(premiseTargetKey) as string[])
+      : ['', '', ''];
+    const graph = buildPremiseCheckGraph(
+      premise,
+      model ? { agent, provider: provider || undefined, model } : undefined,
+    );
+    commands.saveGraph(graph).then(() => {
+      // 建图只记 last_graph_id（回写匹配用）；last_checked_at 等结论写回时再记
+      savePremiseFile({
+        ...premiseFile,
+        premises: premiseFile.premises.map((p) =>
+          p.id === premise.id ? { ...p, last_graph_id: graph.id } : p),
+      });
+      setPremiseNote(`已建图「${graph.title}」：到中栏对话图起始页打开并派发，结论回本页自动并列`);
+    }).catch((err) => setPremiseNote(String(err)));
+  };
+
   const SECTIONS: { id: Section; label: string }[] = [
     { id: 'appearance', label: t('settings.appearance' as any) },
     { id: 'terminal',   label: t('settings.terminal' as any) },
     { id: 'roles',      label: '角色' },
     { id: 'dispatch',   label: '派发' },
+    { id: 'premises',   label: '前提' },
     { id: 'tasks',      label: t('settings.tasks' as any) },
     { id: 'language',   label: t('settings.language' as any) },
     { id: 'feedback',   label: t('settings.feedback' as any) },
   ];
   const currentLabel = SECTIONS.find(s => s.id === section)?.label ?? '';
+
+  // 抽查目标清单：排除 roles.json 三个角色所用厂商（非项目常用厂商才够独立）
+  const roleVendors = new Set(
+    [roleSettings.planning, roleSettings.execution, roleSettings.acceptance]
+      .map((profile) =>
+        roleModels.find((m) =>
+          m.agent === profile.agent && m.id === profile.model &&
+          (profile.provider === '' || m.provider === profile.provider))?.vendor)
+      .filter((vendor): vendor is string => !!vendor),
+  );
+  const premiseModels = roleModels.filter((m) => !roleVendors.has(m.vendor));
 
   return (
     <div className="settings-overlay" onMouseDown={close}>
@@ -565,6 +686,65 @@ export function SettingsModal() {
                     <span className="settings-key-sub">{dispatchSettings.writeProjectDispatch ? '写入 .dispatch/' : '只写运行目录'}</span>
                   </button>
                 </div>
+              </>
+            )}
+
+            {section === 'premises' && (
+              <>
+                <div className="settings-section-label">前提台账</div>
+                <div className="settings-premise-add">
+                  <input
+                    value={premiseDraft}
+                    placeholder="一行一条，例如：上游 API 保持 v2 兼容"
+                    onChange={(e) => setPremiseDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addPremise(); }}
+                  />
+                  <button onClick={addPremise}>添加</button>
+                </div>
+                <div className="settings-section-label">抽查目标（已排除三个角色所用厂商）</div>
+                <div className="settings-dispatch-grid">
+                  <label className="settings-dispatch-field settings-dispatch-wide">
+                    <span>抽查发给</span>
+                    <select value={premiseTargetKey} onChange={(e) => setPremiseTargetKey(e.target.value)}>
+                      <option value="">派发时再选</option>
+                      {premiseModels.map((model) => (
+                        <option key={JSON.stringify([model.agent, model.provider, model.id])} value={JSON.stringify([model.agent, model.provider, model.id])}>
+                          {model.agent}/{model.provider ? `${model.provider}/` : ''}{model.id}{modelStatusSuffix(model)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {premiseFile.premises.length === 0 && (
+                  <p className="settings-feedback-desc">还没有记录的前提。</p>
+                )}
+                {premiseFile.premises.map((premise) => (
+                  <div key={premise.id} className="settings-premise-row">
+                    <div className="settings-premise-text">{premise.text}</div>
+                    <div className="settings-premise-meta">
+                      记录 {premise.recorded_at ? new Date(premise.recorded_at).toLocaleDateString('zh-CN') : '—'}
+                      {' · 最近抽查 '}
+                      {premise.last_checked_at ? new Date(premise.last_checked_at).toLocaleString('zh-CN') : '—'}
+                    </div>
+                    {premise.last_result && <pre className="settings-premise-result">{premise.last_result}</pre>}
+                    <input
+                      className="settings-premise-attach"
+                      key={premise.attachments.join('，')}
+                      defaultValue={premise.attachments.join('，')}
+                      placeholder="附件路径，逗号分隔（可空），随抽查一起发出"
+                      onBlur={(e) => setPremiseAttachments(premise.id, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.nativeEvent.isComposing) setPremiseAttachments(premise.id, (e.target as HTMLInputElement).value);
+                      }}
+                    />
+                    <div className="settings-premise-actions">
+                      <button onClick={() => pickPremiseAttachments(premise.id)}>选择文件</button>
+                      <button onClick={() => runPremiseCheck(premise)}>抽查</button>
+                      <button onClick={() => removePremise(premise.id)}>删除</button>
+                    </div>
+                  </div>
+                ))}
+                {premiseNote && <p className="settings-feedback-desc">{premiseNote}</p>}
               </>
             )}
 

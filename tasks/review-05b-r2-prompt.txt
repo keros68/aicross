@@ -1,0 +1,14 @@
+你是代码审查者，本次是 TASK-05B（第 2 期预设）修正轮 R2 的复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/5b 分支。先读 tasks/fix-05b-r2.md（12 条，来自 DeepSeek 与 GLM 对 R1 的复审尾巴），再读 tasks/REPORT-05B.md 末尾「修正轮 R2」一节，再读涉及文件：src/dispatch.rs、src/orchestration.rs、src/server.rs、src-ui/src/graph/（dispatch.ts、premise.ts、types.ts、__tests__/presets-05b-r2.test.tsx、__tests__/presets-05b-r1.test.ts）、src-ui/src/components/center/graph/（DispatchOverlay.tsx、DispatchBits.tsx）、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/tauri.ts。不读 node_modules、target、dist、port、src/channels/。
+
+逐条核对 12 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- 第 1 条：备选作答时 Reply 的 session 是否置空、下游 continuationSession 是否对 fallbackFrom 父回复返回空、主通道不会再拿到备选 session；
+- 第 2 条：前提附件是否走文件选择器或至少校验相对路径与重名；
+- 第 3 条：主/备两次尝试的 raw 转存是否不再互相覆盖；
+- 第 4 条：备选 vendor 是否由前端下发、Rust 优先用下发值；
+- 第 5 条：三处组件级断言是否真的渲染了 DispatchOverlay/DispatchBits 的 JSX（不是又一层纯函数）；
+- 第 6 条：live 测试的 vendor/write 断言是否从真实结果读回，不再由 helper 写死；
+- 第 7、10、11、12 条：仲裁只读进 Rust 强制、选它按 kind/role 收窄、fallback_skipped 进留痕 frontmatter、G1 备选 onChange 只写 fallback；
+- 修正是否引入新缺陷：第 2/3/4 期图与派发路径（dispatchableNodeIds、reducePipelineStep、applyDispatchResults、验收 PASS/NEEDS_FIX）的回归；留痕契约 aicross-dispatch/1 只追加；Rust/TS 镜像 #[serde(default)]。
+编排者已复跑 cargo 193 / vitest 172 / build 零 warning，并在 R1 后真跑 live_arena_and_arbitration 1 passed（61s）。
+
+最后单独回答：R2 之后 TASK-05B 是否达到可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

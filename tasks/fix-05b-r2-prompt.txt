@@ -1,0 +1,1 @@
+先读仓库根目录的 AGENTS.md，再读 tasks/fix-05b-r2.md（12 条：DeepSeek 与 GLM 两家对修正轮 R1 的复审尾巴），按严重度逐条修，第 1、2、3 条最优先。每条补具名测试。在 tasks/REPORT-05B.md 末尾「修正轮 R2」一节逐条写「已修：怎么改的（文件:行）／已补：测试名」或「不采纳：原因」，并按第 9 条改写 R1 报告里三处名不副实的表述。cargo check 零 warning。验证命令实际跑过并把命令与输出原文贴进报告（vitest 用 --configLoader native --pool threads）。不跑 cargo fmt，保持文件原有换行；不动 src/channels/；不起窗口，不发真机请求，不 commit，不 push。

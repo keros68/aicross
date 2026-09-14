@@ -13,7 +13,7 @@ import type {
   WriteMode,
 } from '../../../graph/types';
 import { roleDefaults } from '../../../graph/types';
-import { defaultTurnTarget, updateNodeTarget } from '../../../graph/mutate';
+import { defaultTurnTarget, updateNodeTarget, updateNodeUserText } from '../../../graph/mutate';
 import { ancestorsOf } from '../../../graph/layout';
 import { validateNode } from '../../../graph/validate';
 import { nodeLabel } from '../../../graph/label';
@@ -28,7 +28,7 @@ import {
 } from '../../../resources/model-picker';
 import './OrchestrationPanel.css';
 
-const ROLES = ['出方案', '执行', '验收', '验证'];
+const ROLES = ['出方案', '执行', '验收', '验证', '顾问', '仲裁'];
 const THINKINGS: Thinking[] = ['关', '低', '中', '高'];
 const VISIBILITIES: VisibilityKind[] = ['共享', '盲', '指定上游'];
 const WRITES: WriteMode[] = ['只读', '单写者', 'worktree'];
@@ -229,6 +229,32 @@ export function TargetEditor({ target, models, ancestors, hints, onChange }: Tar
           ))}
         </select>
       </div>
+      <div className="te-row">
+        <label>备选</label>
+        <select
+          value={JSON.stringify(target.fallback ? [target.fallback.agent, target.fallback.provider ?? '', target.fallback.model] : ['', '', ''])}
+          onChange={(e) => {
+            const [agent, provider, model] = JSON.parse(e.target.value) as string[];
+            patch({ fallback: model === '' ? undefined : { agent, provider: provider === '' ? undefined : provider, model } });
+          }}
+        >
+          <option value={JSON.stringify(['', '', ''])}>无</option>
+          {target.fallback && !models.some((m) => m.agent === target.fallback!.agent && (m.provider ?? '') === (target.fallback!.provider ?? '') && m.id === target.fallback!.model) && (
+            <option value={JSON.stringify([target.fallback.agent, target.fallback.provider ?? '', target.fallback.model])}>
+              {target.fallback.agent}/{target.fallback.model}
+            </option>
+          )}
+          {groups.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.models.map((m) => (
+                <option key={modelKey(m)} value={modelSelectValue(m)}>
+                  {modelOptionLabel(m)}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
       {hints && hints.length > 0 && (
         <div className="te-hints">
           {hints.map((h) => (
@@ -291,6 +317,21 @@ export function NodePanel({ graph, nodeId, models, onCommit, onClose }: NodePane
           </div>
         ) : (
           <div className="np-body">
+            {(node.reply?.status === 'draft' || node.user.text !== '') && (
+              <div className="te-row">
+                <label>节点消息</label>
+                {node.reply?.status === 'draft' ? (
+                  <textarea
+                    rows={3}
+                    value={node.user.text}
+                    placeholder="自定义视角"
+                    onChange={(e) => onCommit(updateNodeUserText(graph, nodeId, e.target.value))}
+                  />
+                ) : (
+                  <div className="te-note te-readonly">{node.user.text}</div>
+                )}
+              </div>
+            )}
             <TargetEditor
               target={node.target ?? defaultTurnTarget()}
               models={models}
