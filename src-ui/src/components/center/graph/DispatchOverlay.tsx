@@ -1,23 +1,29 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { commands, type DispatchNodeResult, type DispatchStageRequest } from '../../../tauri';
+import { commands, type DispatchNodeResult, type DispatchStageRequest, type GitChanges } from '../../../tauri';
 import { contextPartsOf, originalRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../../../graph/context';
 import {
   appendArbitration,
   appendDecision,
   applyDispatchResults,
+  buildNodeRequest,
   clearTargetSession,
   continuationSession,
   continuationRunner,
   dispatchableNodeIds,
-  fallbackSpecOf,
+  dirtyWorktreeHintOf,
+  dispatchBatchKey,
+  initialDispatchSelection,
+  markBatchProcessed,
   markPending,
+  resetNodesToDraft,
+  rollbackBeforeOf,
+  toggleRollbackOnReview,
   graphStage,
   groupResultsByStage,
   isSmallEconomyTask,
   needsChainThinking,
   neutralDisputeSummary,
   pickOne,
-  promptForRole,
   reducePipelineStep,
   failedNodesWithoutResults,
   nextStageStep,
@@ -28,7 +34,7 @@ import {
   setReplyAdopted,
 } from '../../../graph/dispatch';
 import { updateNodeFallback } from '../../../graph/mutate';
-import { FallbackSkippedLine, PickOneButton, WritableFallbackHint } from './DispatchBits';
+import { FallbackSkippedLine, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, WritableFallbackHint } from './DispatchBits';
 import { presetNameOf } from '../../../graph/persist';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import type { DispatchableModel, Graph, Target, Thinking } from '../../../graph/types';
@@ -41,6 +47,10 @@ interface Props {
   graph: Graph;
   models: DispatchableModel[];
   projectDir: string;
+  // 崩溃后对账判「未知」的节点（TASK-06-1）：确认屏标「待核对」，默认不勾选派发。
+  needsReview?: string[];
+  // 节点卡上按过「重派」的节点（TASK-06-2）：单写者的那些请求带 rollbackBefore。
+  retryNodes?: string[];
   onCommit: (graph: Graph) => Graph;
   onClose: () => void;
   // 擂台「选它」与仲裁建节点后，把焦点/主列对齐到该节点（GraphTab 提供）
@@ -50,9 +60,10 @@ interface Props {
 const resultStatus = (status: string) =>
   status === 'ok' ? '完成' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证失败' : '失败';
 
-export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, onFocusNode }: Props) {
+export function DispatchOverlay({ graph, models, projectDir, needsReview, retryNodes, onCommit, onClose, onFocusNode }: Props) {
   const initialIds = useMemo(() => dispatchableNodeIds(graph), [graph]);
-  const [nodeIds, setNodeIds] = useState(initialIds);
+  const reviewIds = useMemo(() => new Set(needsReview ?? []), [needsReview]);
+  const [nodeIds, setNodeIds] = useState(() => initialDispatchSelection(initialIds, needsReview));
   const [phase, setPhase] = useState<Phase>('confirm');
   const [runId, setRunId] = useState(() => crypto.randomUUID());
   const [targets, setTargets] = useState(() => Object.fromEntries(initialIds.map((id) => {
@@ -81,6 +92,12 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, 
   const [collapsed, setCollapsed] = useState(false);
   const [currentNodes, setCurrentNodes] = useState<DispatchStageRequest['nodes']>([]);
   const [userEdited, setUserEdited] = useState<Set<string>>(new Set());
+  // 单写者重派：请求带 rollbackBefore，引擎先回滚上次改动再派（TASK-06-2）。
+  const [rollbackNodes, setRollbackNodes] = useState<Set<string>>(() => new Set(
+    (retryNodes ?? []).filter((id) => rollbackBeforeOf(graph.nodes[id]?.target, true)),
+  ));
+  // 项目目录未提交改动提示：用现有只读命令 gitChanges，读不出来就不显示。
+  const [gitChanges, setGitChanges] = useState<GitChanges | null>(null);
   // 仲裁编排（按结果阶段行）：双方选择 + 中性描述（可改）+ 第三家目标
   const [arbRows, setArbRows] = useState<Record<number, { aId: string; bId: string; text: string; targetKey: string; error: string }>>({});
 
@@ -111,36 +128,22 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, 
       validationCommand: settings.validationCommand,
       acpEnabled: settings.acpEnabled,
     },
+    // 节点装配在 graph/dispatch.ts 的 buildNodeRequest（R1-5：请求体形状可测）
     nodes: ids.map((id) => {
       const node = sourceGraph.nodes[id];
-      const target = node.target!;
       const selected = serializeContext(sourceGraph, id, selection[id]);
-      const model = models.find((item) =>
-        item.agent === target.agent && item.id === target.model &&
-        (item.provider ?? '') === (target.provider ?? ''));
-      return {
-        nodeId: id,
-        stage: graphStage(sourceGraph, id),
-        agent: target.agent,
-        provider: target.provider ?? '',
-        model: target.model,
-        vendor: model?.vendor ?? '',
-        billingSource: model?.billing_source ?? '',
-        role: target.role,
-        tier: target.tier ?? model?.tier ?? '',
-        thinking: target.thinking,
-        visibility: target.visibility,
-        prompt: promptForRole(target.role, selected.prompt),
-        currentMessage: serializeCurrentMessage(node.user),
+      return buildNodeRequest(id, node.target!, {
+        models,
+        prompt: selected.prompt,
         materials: selected.materials,
-        sessionId: restartNodes.has(id) ? '' : continuationSession(sourceGraph, id) ?? '',
-        previousRunner: restartNodes.has(id) ? '' : continuationRunner(sourceGraph, id) ?? '',
-        write: target.write,
+        currentMessage: serializeCurrentMessage(node.user),
         originalRequest: originalRequestOf(sourceGraph),
         upstreamArtifacts: upstreamArtifactsOf(sourceGraph, id),
-        // TASK-05B 主备/熔断：备选随请求下发（带真实 vendor），通道层主目标失败时重跑一次
-        fallback: fallbackSpecOf(target, models),
-      };
+        sessionId: restartNodes.has(id) ? '' : continuationSession(sourceGraph, id) ?? '',
+        previousRunner: restartNodes.has(id) ? '' : continuationRunner(sourceGraph, id) ?? '',
+        rollback: rollbackNodes.has(id),
+        stage: graphStage(sourceGraph, id),
+      });
     }),
   });
 
@@ -148,8 +151,23 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, 
     () => buildRequest(graphWithTargets, nodeIds),
     // buildRequest only closes over the listed immutable render values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [graphWithTargets, models, nodeIds, projectDir, restartNodes, runId, selection, settings],
+    [graphWithTargets, models, nodeIds, projectDir, restartNodes, rollbackNodes, runId, selection, settings],
   );
+
+  // G1 未提交改动提示（TASK-06-2）：只读，走既有的 gitChanges 命令；
+  // 不是仓库 / 命令不可用时不显示。R1-13：只在本批含 worktree 节点时才出这句，
+  // 所以读回来的原始状态进 state，提示文案在渲染期按本批节点算。
+  useEffect(() => {
+    if (phase !== 'confirm' || projectDir === '') return;
+    let cancelled = false;
+    commands.gitChanges(projectDir)
+      .then((changes) => { if (!cancelled) setGitChanges(changes); })
+      .catch(() => { if (!cancelled) setGitChanges(null); });
+    return () => { cancelled = true; };
+  }, [phase, projectDir]);
+
+  const hasWorktreeNode = nodeIds.some((id) => (targets[id] ?? graph.nodes[id]?.target)?.write === 'worktree');
+  const dirtyHint = dirtyWorktreeHintOf(gitChanges, hasWorktreeNode);
 
   useEffect(() => {
     if (phase !== 'confirm' || request.nodes.length === 0 || hasMissingTargets) return;
@@ -173,6 +191,22 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, 
     return () => { unlisten?.(); };
   }, [phase, runId]);
 
+  // 待核对节点：对账判 unknown 且这一屏本来就可派的那些。勾选后加回派发队列，
+  // 顺序按 initialIds（与路由卡顺序一致）。
+  const reviewNodeIds = initialIds.filter((id) => reviewIds.has(id));
+  const toggleReviewNode = (id: string) => {
+    const checked = !nodeIds.includes(id);
+    setNodeIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return initialIds.filter((item) => next.has(item));
+    });
+    // R1-8：勾回来的单写者节点也要先回滚——上次可能已经改过文件。
+    setRollbackNodes((current) =>
+      toggleRollbackOnReview(current, targets[id] ?? graph.nodes[id]?.target, id, checked));
+  };
+
   const toggleMessage = (nodeId: string, key: string) => setSelection((current) => {
     const row = current[nodeId];
     const has = row.messageKeys.includes(key);
@@ -192,9 +226,14 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, 
     const collected: DispatchNodeResult[] = [];
     let activeNodes: DispatchStageRequest['nodes'] = [];
     let validationRetries: Record<string, number> = {};
+    // 推进幂等（TASK-06-7）：同一 run 的同一批结果送达两次，只推进一层。
+    let processedBatches: Set<string> = new Set();
+    // R1-7：确认屏取消勾选的「待核对」节点不进实际派发集合——这一层不派，
+    // 后续层重算时也不再捡起来。
+    const skipIds = new Set([...reviewIds].filter((id) => !nodeIds.includes(id)));
     try {
       while (true) {
-        const next = nextStageStep(working, collected, settings);
+        const next = nextStageStep(working, collected, settings, skipIds);
         if (next.kind === 'done') break;
         if (next.kind === 'missing-target') {
           setNodeIds(next.nodeIds);
@@ -218,6 +257,18 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, 
         const pending = markPending(working, ids);
         working = onCommit(pending);
         const output = await commands.dispatchGraphStage(stageRequest);
+        const batch = markBatchProcessed(
+          processedBatches,
+          dispatchBatchKey(output.runId || runId, stageRequest.stage, output.results),
+        );
+        processedBatches = batch.seen;
+        if (!batch.fresh) {
+          // 同一批结果重复送达：不再推进下一层。本层节点刚 markPending 过，
+          // 停下前要放回 draft，不能悬挂在 pending 上（R1-3）。
+          working = onCommit(resetNodesToDraft(working, ids));
+          setRunError('同一批结果重复送达，已停止推进；这一层的节点已放回待派。');
+          break;
+        }
         collected.push(...output.results);
         setResults([...collected]);
         working = onCommit(applyDispatchResults(working, output.results));
@@ -251,6 +302,8 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, 
     } });
     setRunId(crypto.randomUUID());
     setRestartNodes(new Set());
+    // 单写者节点重派/升级：这一路带 rollbackBefore（TASK-06-2）。
+    setRollbackNodes(rollbackBeforeOf(node.target, true) ? new Set([nodeId]) : new Set());
     setResults([]);
     setPhase('confirm');
   };
@@ -357,6 +410,22 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, 
             {smallTask && <div className="dispatch-warning">单步小任务，外派固定足迹不划算，建议直接 @ 一个执行者</div>}
             {nodeIds.length === 0 && <div className="dispatch-empty">当前没有父节点已完成的待派节点。</div>}
             {exceedsRequestLimit && <div className="dispatch-warning">本层有 {nodeIds.length} 路，超过总请求上限 {settings.maxRequests}，不能确认派发。</div>}
+            {dirtyHint && <div className="dispatch-reason">{dirtyHint}</div>}
+            {reviewNodeIds.length > 0 && (
+              <section className="dispatch-route-card">
+                <div className="dispatch-stage-heading">待核对</div>
+                <div className="dispatch-reason">上次派发结果未知，默认不派。核对项目目录后可勾选加入本次派发。</div>
+                {/* R1-10：未勾选的节点在下面没有路由卡，这里连路由行一起显示 */}
+                {reviewNodeIds.map((id) => (
+                  <ReviewPendingRow
+                    key={id}
+                    line={routeLine(graphWithTargets.nodes[id], models, '核对中')}
+                    checked={nodeIds.includes(id)}
+                    onToggle={() => toggleReviewNode(id)}
+                  />
+                ))}
+              </section>
+            )}
             {nodeIds.map((id) => {
               const node = graphWithTargets.nodes[id];
               const target = targets[id];
@@ -378,8 +447,9 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose, 
               });
               return (
                 <section key={id} className="dispatch-route-card">
-                  <div className="dispatch-route-line">{routeLine(node, models, isolation)}</div>
+                  <div className="dispatch-route-line">{routeLine(node, models, isolation)}<ReviewPendingTag visible={reviewIds.has(id)} /></div>
                   {routeReason(node) && <div className="dispatch-reason">{routeReason(node)}</div>}
+                  <RollbackBeforeHint target={target} retrying={rollbackNodes.has(id)} />
                   <div className="dispatch-reason">理由：{userEdited.has(id) ? '用户指定' : '角色默认'}</div>
                   {missingTarget && <div className="dispatch-warning">未指定模型，不能确认派发。</div>}
                   {target.role === '执行' && ['关', '低'].includes(graph.nodes[id].target?.thinking ?? '') && target.thinking === '中' && (

@@ -18,7 +18,7 @@ import { commitGraph, presetNameOf, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
 import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
-import { applyRoleDefaults, dispatchableNodeIds, fallbackNoticeOf, nodeStatusLabel, parseAdvise, presetWithRoleDefaults, redraftNode } from '../../../graph/dispatch';
+import { applyReconcile, applyRoleDefaults, dispatchableNodeIds, EMPTY_RECONCILE_UI, fallbackNoticeOf, nodeStatusLabel, parseAdvise, presetWithRoleDefaults, RECONCILE_UNKNOWN_TEXT, reconcileUiAfter, reconcileUiFor, redraftNode, resetPendingToDraft, type ReconcileSummary, type ReconcileUi } from '../../../graph/dispatch';
 import { DispatchOverlay } from './DispatchOverlay';
 import { appendMention, INSERT_MENTION_EVENT, openResourcesPage, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { groupPickableModels, modelKey, modelOptionLabel } from '../../../resources/model-picker';
@@ -67,6 +67,11 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   // 误判成「一个资源都没有」，首启引导就会闪一下。
   const [modelsRead, setModelsRead] = useState(false);
   const [unfinishedRun, setUnfinishedRun] = useState<{ runId: string; nodeIds: string[] } | null>(null);
+  // 崩溃后对账判「未知」的节点（TASK-06-1）：G1 标「待核对」，默认不勾选派发。
+  // 这份状态属于某一张图，带 graphId 存；换图后 reconcileUiFor 过滤掉（R1-1）。
+  const [reconcile, setReconcile] = useState<ReconcileUi>(EMPTY_RECONCILE_UI);
+  // 节点卡按过「重派」的节点（TASK-06-2）：单写者的那些在 G1 带 rollbackBefore。
+  const [retryNodes, setRetryNodes] = useState<string[]>([]);
   const [roles, setRoles] = useState<any>(null);
 
   // 左栏「资源」tab 点模型时往主面板（列 0）输入框插入 @agent/模型（TASK-07）。
@@ -213,18 +218,23 @@ export function GraphTab({ session }: { session: TerminalSession }) {
 
   const commit = (g: Graph) => commitGraph(dispatch, g);
 
+  // 「继续」先对账（TASK-06-1）：completed 直接收回留痕正文与产物，incomplete
+  // 回 draft 重跑，unknown 回 draft 并标「待核对」。对账命令未接通（后端还没接
+  // 上这条命令）或返回 exists:false 时，退回原有的「pending 全部重置为 draft」。
   const continueUnfinished = async () => {
     if (!graph) return;
     if (unfinishedRun?.runId) {
       await Promise.all(unfinishedRun.nodeIds.map((nodeId) =>
         commands.cancelDispatchNode(unfinishedRun.runId, nodeId).catch(() => false)));
     }
-    const nodes = Object.fromEntries(Object.entries(graph.nodes).map(([id, node]) => [id,
-      node.reply?.status === 'pending'
-        ? { ...node, reply: { ...node.reply, status: 'draft' as const } }
-        : node,
-    ]));
-    commit({ ...graph, nodes });
+    let summary: ReconcileSummary | null = null;
+    try {
+      summary = await commands.reconcileDispatchState(session.folderPath ?? '');
+    } catch {
+      summary = null;
+    }
+    commit(applyReconcile(resetPendingToDraft(graph), summary));
+    setReconcile(reconcileUiAfter(graph.id, summary));
     setUnfinishedRun(null);
     setDispatchOpen(true);
   };
@@ -239,7 +249,11 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     commit({ ...graph, nodes });
     commands.abandonDispatchState(session.folderPath ?? '').catch(() => {});
     setUnfinishedRun(null);
+    setReconcile(EMPTY_RECONCILE_UI);
   };
+
+  // 换图后这份状态不跟着走（R1-1）：id 对不上就当空的。
+  const reconcileUi = reconcileUiFor(reconcile, graphId);
 
   const focusNodeId =
     state.graphFocus?.graphId === graphId ? state.graphFocus.nodeId : null;
@@ -550,7 +564,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
         {isFocus && (
           <div className="graph-node-actions" style={{ left: p.x, top: p.y + NODE_H + 4 }}>
             {node.reply?.status === 'failed' && (
-              <button className="graph-mini-btn" onClick={(e) => { e.stopPropagation(); commit(redraftNode(graph, id)); }}>
+              <button className="graph-mini-btn" onClick={(e) => { e.stopPropagation(); commit(redraftNode(graph, id)); setRetryNodes((current) => [...new Set([...current, id])]); }}>
                 重派
               </button>
             )}
@@ -650,7 +664,9 @@ export function GraphTab({ session }: { session: TerminalSession }) {
             {node.reply && node.reply.status !== 'draft' && node.reply.status !== 'pending' ? (
               <div className="graph-msg-text">{node.reply.text}</div>
             ) : (
-              <div className="graph-msg-pending">{node.reply?.skipped_reason ? `已跳过：${node.reply.skipped_reason}` : node.reply?.status === 'pending' ? '运行中' : '待派'}</div>
+              // 对账判「未知」的节点（R1-10）：这句说明要看得到，不然
+              // 「请检查项目目录后重派或放弃」只在 G1 里闪一次
+              <div className="graph-msg-pending">{node.reply?.skipped_reason ? `已跳过：${node.reply.skipped_reason}` : node.reply?.status === 'pending' ? '运行中' : node.reply?.text === RECONCILE_UNKNOWN_TEXT ? RECONCILE_UNKNOWN_TEXT : '待派'}</div>
             )}
           </div>
         )}
@@ -779,6 +795,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     <div className="graph-tab">
       <div className="graph-dispatch-toolbar">
         {unfinishedRun && <span className="graph-resume">上次派发未完成；若上次是崩溃退出，请先手动检查残留进程 <button onClick={continueUnfinished}>继续</button><button onClick={abandonUnfinished}>放弃</button></span>}
+        {!unfinishedRun && reconcileUi.note !== '' && <span className="graph-resume">{reconcileUi.note}</span>}
         <span>可派 {dispatchableNodeIds(graph).length} 路</span>
         <button className="graph-primary-btn" disabled={dispatchableNodeIds(graph).length === 0} onClick={() => setDispatchOpen(true)}>派发</button>
       </div>
@@ -810,8 +827,10 @@ export function GraphTab({ session }: { session: TerminalSession }) {
           graph={graph}
           models={models}
           projectDir={session.folderPath ?? ''}
+          needsReview={reconcileUi.needsReview}
+          retryNodes={retryNodes}
           onCommit={commit}
-          onClose={() => setDispatchOpen(false)}
+          onClose={() => { setDispatchOpen(false); setRetryNodes([]); }}
           onFocusNode={(nodeId) => {
             dispatch({ type: 'SET_GRAPH_FOCUS', focus: { graphId: graph.id, nodeId } });
             setColumns((cols) => [nodeId, ...cols.slice(1).filter((c) => c !== nodeId)]);

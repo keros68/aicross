@@ -1,0 +1,13 @@
+你是代码审查者，本次是 TASK-06B（界面：崩溃后继续走对账、单写者重派回滚、Reply.fallback 字段、G1 折行、前提附件逐行、盲父节点、推进幂等）修正轮 R1 的复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/6b 分支。先读 tasks/fix-06b-r1.md（13 条，来自 tasks/review-06b-glm.md 与 tasks/review-06b-ds.md 两家盲审）、tasks/TASK-06-consistency.md 的「契约」节（R1 有追加），再读 tasks/REPORT-06B.md 末尾「修正轮 R1」一节，再读涉及文件：src-ui/src/graph/dispatch.ts、types.ts、premise.ts、__tests__/consistency-06b.test.tsx、src-ui/src/components/center/graph/（GraphTab.tsx、DispatchOverlay.tsx、DispatchBits.tsx、GraphTab.css）、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/tauri.ts。不读 node_modules、target、dist、port、src/。
+
+逐条核对 13 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- 第 7 条：nextStageStep 的 skip 是否在 dispatchableNodeIds 之后过滤、start() 每一层都传、后续层不会再捡起未勾选的待核对节点；「材料将发送至」按实际集合算；
+- 第 8 条：勾回的单写者节点是否带 rollbackBefore；
+- 第 3 条：幂等分支停止时本层节点是否复位 draft、不留 pending；
+- 第 2、4、9 条：applyReconcile 只覆写 pending/draft；completed 写回 session/runner/用量；incomplete/unknown 清 session；
+- 第 12 条：禁外部动作按可写挂载、模板已有则不重复；
+- 第 5 条：buildNodeRequest 端到端断言的是序列化后的键；
+- 修正是否引入新缺陷：第 2/3/4/5 期路径（dispatchableNodeIds、reducePipelineStep、applyDispatchResults、pickOne、擂台/仲裁、备选重跑）无回归；类型只追加；tauri.ts 命名与契约一致。
+编排者已复跑 vitest 254 / build 全绿。
+
+最后单独回答：R1 之后 TASK-06B 是否达到可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

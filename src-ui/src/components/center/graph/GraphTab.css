@@ -31,10 +31,12 @@
 .dispatch-route-card, .dispatch-result-card { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); }
 .dispatch-route-card + .dispatch-route-card { margin-top: 8px; }
 .dispatch-route-line, .dispatch-result-lines { font: 12px/1.6 var(--font-mono, monospace); color: var(--text-1); }
-.dispatch-controls { display: flex; gap: 12px; margin-top: 12px; }
+/* 四个控件（目标 / 档位 / thinking / 备选）一行放不下时折行，不溢出卡片右边（TASK-06-4） */
+.dispatch-controls { display: flex; flex-wrap: wrap; gap: 12px; row-gap: 8px; margin-top: 12px; }
 .dispatch-controls > span { display: flex; align-items: center; color: var(--text-3); font-size: 12px; }
-.dispatch-controls label { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 12px; }
-.dispatch-controls input, .dispatch-controls select { height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-app); color: var(--text-1); }
+.dispatch-controls label { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-2); font-size: 12px; }
+.dispatch-controls input, .dispatch-controls select { height: 28px; max-width: 240px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-app); color: var(--text-1); }
+.dispatch-review-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; color: var(--text-2); font-size: 12px; }
 .dispatch-manual-target { flex-wrap: wrap; }
 .dispatch-manual-target input { width: 132px; }
 .dispatch-materials { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }

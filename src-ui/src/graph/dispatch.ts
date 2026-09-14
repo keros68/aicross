@@ -3,6 +3,9 @@ import { newNodeId } from './types.ts';
 import { ancestorsOf } from './layout.ts';
 import { defaultTurnTarget, parseSend } from './mutate.ts';
 import { arbitrationVendorConflict } from './validate.ts';
+// TASK-06 R1：请求体与 git 状态的契约形状住在 tauri.ts，这里 type-only 引用
+// （运行时擦除，不构成与 tauri.ts 的值依赖环）。
+import type { DispatchNodeRequest, GitChanges } from '../tauri';
 import acceptancePrompt from '../../../fixtures/prompts/acceptance.txt?raw';
 import executionPrompt from '../../../fixtures/prompts/execution.txt?raw';
 import planningPrompt from '../../../fixtures/prompts/planning.txt?raw';
@@ -105,12 +108,16 @@ export type NextStageStep =
   | { kind: 'limit'; nodeIds: string[] }
   | { kind: 'done'; nodeIds: [] };
 
+// skip：用户在 G1 取消勾选的「待核对」节点（TASK-06 R1-7）。派发集合是从图上
+// 重算的，不过滤的话这些节点第一层就被派出去，后续层还会再捡起来——与确认屏
+// 授权的集合不一致，单写者还会在半截改动上再叠一遍。过滤后为空按 done 处理。
 export function nextStageStep(
   graph: Graph,
   collected: Pick<BackendNodeResult, 'nodeId'>[],
   settings: { maxRequests: number },
+  skip: ReadonlySet<string> = new Set<string>(),
 ): NextStageStep {
-  const nodeIds = dispatchableNodeIds(graph);
+  const nodeIds = dispatchableNodeIds(graph).filter((id) => !skip.has(id));
   if (nodeIds.length === 0) return { kind: 'done', nodeIds: [] };
   const missing = missingTargetNodeIds(graph, nodeIds);
   if (missing.length > 0) return { kind: 'missing-target', nodeIds: missing };
@@ -125,8 +132,11 @@ export function continuationSession(graph: Graph, nodeId: string): string | unde
   if (!node?.target || node.target.visibility !== '共享' || node.parents.length !== 1) return undefined;
   const parent = graph.nodes[node.parents[0]];
   if (!parent?.target || !parent.reply?.session_id) return undefined;
-  // R2-1：父回复是备选作答（首行「已切备选」标记）时，session 属于备选通道，
-  // 不能续到本节点的主通道上——发完整 prompt，不续聊。
+  // TASK-06-6：父节点是盲节点时，它的会话跑在隔离目录、只看得到外发材料，
+  // 续到共享子节点上等于把盲分支的上下文漏过来——发完整 prompt，不续聊。
+  if (parent.target.visibility === '盲') return undefined;
+  // R2-1：父回复是备选作答（fallback 字段或旧图的首行标记）时，session 属于
+  // 备选通道，不能续到本节点的主通道上——发完整 prompt，不续聊。
   if (fallbackNoticeOf(parent.reply) !== null) return undefined;
   const sameTarget =
     parent.target.agent === node.target.agent &&
@@ -192,9 +202,13 @@ export function markPending(graph: Graph, nodeIds: string[]): Graph {
   return { ...graph, nodes };
 }
 
-// 「已切备选」在回复正文里的标记行。Reply 契约本期不加字段，节点卡靠这行识别
-// （fallbackNoticeOf 提取；正文其余部分不变，下游上下文仍可用）。
+// 「已切备选」整行。TASK-06 起首选 Reply.fallback_from/to 两个字段（正文不再
+// 前置标记行，标记不会随 serializeContext 进下游 prompt）；旧图里只有正文首行
+// 标记的，退回按标记识别。
 export function fallbackNoticeOf(reply?: Reply): string | null {
+  if (reply?.fallback_from) {
+    return `（已切备选：主 ${reply.fallback_from} → 备 ${reply.fallback_to ?? ''}）`;
+  }
   const first = reply?.text.split('\n', 1)[0] ?? '';
   return first.startsWith('（已切备选：') ? first : null;
 }
@@ -236,12 +250,13 @@ export function applyDispatchResults(graph: Graph, results: BackendNodeResult[])
       ? `${result.text}${result.text ? '\n\n' : ''}[验证输出]\n${result.validationOutput}`
       : undefined;
     const body = validationText ?? (ok ? result.text : result.text || result.error);
-    const notice = result.fallbackFrom
-      ? `（已切备选：主 ${result.fallbackFrom} → 备 ${result.fallbackTo}）\n\n`
-      : '';
     const reply: Reply = {
       status: ok ? 'done' : 'failed',
-      text: `${notice}${body}`,
+      text: body,
+      // TASK-06-3：主/备路由进字段，不再前置标记行（正文干净，不污染下游上下文）
+      ...(result.fallbackFrom
+        ? { fallback_from: result.fallbackFrom, fallback_to: result.fallbackTo ?? '' }
+        : {}),
       ...(ok ? {} : { error_kind: result.status }),
       model_reported: result.modelReported || undefined,
       tokens_in: result.tokensIn || undefined,
@@ -336,6 +351,9 @@ export function nodeStatusLabel(node: GraphNode): string | null {
     if (node.reply.error_kind === 'validation_failed') return '验证失败';
     return '失败';
   }
+  // 对账判「未知」的节点（R1-10）：draft 但正文是那句说明，节点卡要看得出来，
+  // 否则用户只在 G1 分区里见过一次，回到图上与普通「待派」没有区别。
+  if (node.reply?.status === 'draft' && node.reply.text === RECONCILE_UNKNOWN_TEXT) return '待核对';
   return ({ draft: '待派', pending: '运行中', done: '完成' } as const)[node.reply?.status ?? 'draft'];
 }
 
@@ -723,4 +741,282 @@ export function groupResultsByStage<T extends BackendNodeResult>(graph: Graph, r
 
 export function withinRequestLimit(dispatched: number, next: number, limit: number): boolean {
   return dispatched + next <= Math.max(1, limit);
+}
+
+// ── TASK-06 重派与崩溃恢复的一致性 ────────────────────────────────────────
+
+// reconcile_dispatch_state 的返回（camelCase，与 Rust 侧契约镜像）。
+export type ReconcileVerdict = 'completed' | 'incomplete' | 'unknown';
+
+export interface ReconcileNodeSummary {
+  nodeId: string;
+  verdict: ReconcileVerdict;
+  recordPath?: string;
+  replyText?: string;
+  artifacts?: ReplyArtifacts | null;
+  error?: string;
+  // R1 追加（契约）：崩溃前那次实际跑完的会话、运行方式与用量，从留痕
+  // frontmatter 取，缺失为空/0。不收回的话下游子节点续不上会话、结果也没用量。
+  sessionId?: string;
+  runner?: string;
+  usage?: { input: number; output: number; cacheRead: number };
+}
+
+export interface ReconcileSummary {
+  exists: boolean;
+  runId: string;
+  nodes: ReconcileNodeSummary[];
+}
+
+// rollback_node_changes 的返回（camelCase 契约；本期前端只展示 note）。
+export interface RollbackSummary {
+  restored: string[];
+  removed: string[];
+  skipped: string[];
+  note: string;
+}
+
+export const RECONCILE_UNKNOWN_TEXT = '上次派发结果未知，请检查项目目录后重派或放弃';
+
+// 崩溃后「继续」的回退路径：把还挂在 pending 的节点放回 draft 重跑。
+// 对账接通时先跑这一步，再由 applyReconcile 覆盖留痕说得清的节点。
+export function resetPendingToDraft(graph: Graph): Graph {
+  const nodes = { ...graph.nodes };
+  let touched = false;
+  for (const [id, node] of Object.entries(nodes)) {
+    if (node.reply?.status !== 'pending') continue;
+    nodes[id] = { ...node, reply: { ...node.reply, status: 'draft' } };
+    touched = true;
+  }
+  return touched ? { ...graph, nodes } : graph;
+}
+
+// 留痕正文进 Reply 的上限（R1-11）：留痕若没被切干净，整份（可能含裸 stdout）
+// 会进 Reply.text，再随 serializeContext 外发给下游。超限截断并说明。
+export const RECONCILE_TEXT_LIMIT = 64 * 1024;
+
+export function clampReconcileText(text: string): string {
+  if (text.length <= RECONCILE_TEXT_LIMIT) return text;
+  return `${text.slice(0, RECONCILE_TEXT_LIMIT)}\n…（正文超过 ${RECONCILE_TEXT_LIMIT} 字符已截断，完整内容见留痕文件）`;
+}
+
+function reconcileRunner(runner?: string): Reply['runner'] | undefined {
+  return runner === 'acp' || runner === 'oneshot' || runner === 'unknown' ? runner : undefined;
+}
+
+// 对账结果写回图：completed 收回留痕正文、产物与会话/用量（status done）；
+// incomplete 回 draft 重跑；unknown 回 draft 并写一句说明，由 G1 的「待核对」
+// 区决定派不派。
+// 前置条件（R1-4）：只覆写 pending / draft 的节点。崩溃后已经重派成功的节点
+// （done）、已判失败的节点不能被一条更旧的留痕抹掉。
+// 会话（R1-9）：incomplete / unknown 不保留上一条 reply 的 session_id / runner
+// ——重跑即新会话，半途或结果未知的会话不能被子节点当作可续父会话。
+export function applyReconcile(graph: Graph, summary: ReconcileSummary | null | undefined): Graph {
+  if (!summary?.exists || summary.nodes.length === 0) return graph;
+  const nodes = { ...graph.nodes };
+  let touched = false;
+  for (const row of summary.nodes) {
+    const node = nodes[row.nodeId];
+    if (!node) continue;
+    const status = node.reply?.status;
+    if (status !== 'pending' && status !== 'draft') continue;
+    const adopted = node.reply?.adopted === undefined ? {} : { adopted: node.reply.adopted };
+    const runner = reconcileRunner(row.runner);
+    const reply: Reply =
+      row.verdict === 'completed'
+        ? {
+            status: 'done',
+            text: clampReconcileText(row.replyText ?? ''),
+            ...(row.artifacts ? { artifacts: row.artifacts } : {}),
+            ...(row.sessionId ? { session_id: row.sessionId } : {}),
+            ...(runner ? { runner } : {}),
+            ...(row.usage?.input ? { tokens_in: row.usage.input } : {}),
+            ...(row.usage?.output ? { tokens_out: row.usage.output } : {}),
+            ...adopted,
+          }
+        : row.verdict === 'incomplete'
+          ? { status: 'draft', text: '', ...adopted }
+          : { status: 'draft', text: RECONCILE_UNKNOWN_TEXT, ...adopted };
+    nodes[row.nodeId] = { ...node, reply };
+    touched = true;
+  }
+  return touched ? { ...graph, nodes } : graph;
+}
+
+// 重复批次守卫用（R1-3）：本层节点已 markPending 并提交过，停止推进前把它们
+// 放回 draft，不能悬挂在 pending 上。
+export function resetNodesToDraft(graph: Graph, nodeIds: string[]): Graph {
+  const nodes = { ...graph.nodes };
+  let touched = false;
+  for (const id of nodeIds) {
+    const node = nodes[id];
+    if (node?.reply?.status !== 'pending') continue;
+    nodes[id] = { ...node, reply: { ...node.reply, status: 'draft' } };
+    touched = true;
+  }
+  return touched ? { ...graph, nodes } : graph;
+}
+
+// 「待核对」节点：留痕找不到、结果未知的那些。G1 对它们显示标签且默认不勾选。
+export function reconcileNeedsReview(summary: ReconcileSummary | null | undefined): string[] {
+  if (!summary?.exists) return [];
+  return summary.nodes.filter((row) => row.verdict === 'unknown').map((row) => row.nodeId);
+}
+
+// G1 初始勾选：待核对节点默认不派（用户核对完项目目录再手动勾回来）。
+export function initialDispatchSelection(ids: string[], needsReview: string[] = []): string[] {
+  const review = new Set(needsReview);
+  return ids.filter((id) => !review.has(id));
+}
+
+// 对账后工具条上的那点状态（R1-1）：它属于某一张图，不属于组件。带上 graphId，
+// 渲染前过一次 reconcileUiFor——换图后 id 对不上就当空的，不会把上一张图的
+// 「已按留痕对账 N 个节点」和「待核对」标签带过去。
+export interface ReconcileUi {
+  graphId: string;
+  needsReview: string[];
+  note: string;
+}
+
+export const EMPTY_RECONCILE_UI: ReconcileUi = { graphId: '', needsReview: [], note: '' };
+
+export function reconcileUiFor(state: ReconcileUi, graphId: string): ReconcileUi {
+  return state.graphId !== '' && state.graphId === graphId ? state : EMPTY_RECONCILE_UI;
+}
+
+export function reconcileUiAfter(
+  graphId: string,
+  summary: ReconcileSummary | null | undefined,
+): ReconcileUi {
+  const needsReview = reconcileNeedsReview(summary);
+  return {
+    graphId,
+    needsReview,
+    note: summary?.exists
+      ? `已按留痕对账 ${summary.nodes.length} 个节点${needsReview.length > 0 ? `，${needsReview.length} 个待核对` : ''}`
+      : '未能对账，按上次的待派节点重跑',
+  };
+}
+
+// 请求体里的 rollbackBefore：单写者（write != 只读 且非 worktree）节点重派时
+// 为真，引擎在写锁内先按 before 快照回滚上次改动再派发。只读节点没有改动可滚，
+// worktree 节点每次从 HEAD 新建、天然幂等，两者都不带这个字段。
+export function rollbackBeforeOf(target: Target | undefined, retrying: boolean): true | undefined {
+  if (!retrying || !target) return undefined;
+  return target.write !== '只读' && target.write !== 'worktree' ? true : undefined;
+}
+
+// G1 提示：单写者重派会先回滚。
+export function rollbackHintOf(target: Target | undefined, retrying: boolean): string | null {
+  return rollbackBeforeOf(target, retrying) ? '将先回滚上次改动' : null;
+}
+
+// 待核对节点被勾回本次派发时（R1-8）：单写者的那一路要带 rollbackBefore，否则
+// 会在上次留下的半截改动上再叠一遍；取消勾选时撤掉。
+export function toggleRollbackOnReview(
+  current: ReadonlySet<string>,
+  target: Target | undefined,
+  nodeId: string,
+  checked: boolean,
+): Set<string> {
+  const next = new Set(current);
+  if (!checked) next.delete(nodeId);
+  else if (rollbackBeforeOf(target, true)) next.add(nodeId);
+  return next;
+}
+
+// G1 提示：项目目录有未提交改动时说一句——worktree 节点从 HEAD 新建，看不到
+// 这些改动。git 状态读不出来（未接通 / 不是仓库）时不显示；本批没有 worktree
+// 节点时也不显示（R1-13，这句只与 worktree 有关）。
+// 形状取自 tauri.ts 的 GitChanges（R1-6），不再手写副本。
+type GitChangesShape =
+  Pick<GitChanges, 'state'>
+  & Partial<Pick<Extract<GitChanges, { state: 'ok' }>, 'uncommitted' | 'untracked'>>;
+
+export function dirtyWorktreeHintOf(
+  changes: GitChangesShape | null | undefined,
+  hasWorktreeNode: boolean,
+): string | null {
+  if (!hasWorktreeNode || !changes || changes.state !== 'ok') return null;
+  const count = (changes.uncommitted?.length ?? 0) + (changes.untracked?.length ?? 0);
+  return count > 0 ? `项目目录有 ${count} 处未提交改动；worktree 从 HEAD 新建，看不到这些改动` : null;
+}
+
+// 禁外部动作（R1-12）：按「可写」挂，不挂在角色模板上——自定义角色的可写节点
+// 同样要带这句。fixtures/prompts/execution.txt 里已有同一句时不重复追加。
+export const NO_EXTERNAL_ACTIONS = '不得 git push、发布、安装依赖或调用付费接口；这些留给用户在验收之后做。';
+
+export function promptWithWriteGuard(prompt: string, write: string): string {
+  if (write === '只读' || prompt.includes(NO_EXTERNAL_ACTIONS)) return prompt;
+  return `${prompt}\n\n${NO_EXTERNAL_ACTIONS}`;
+}
+
+// G1 请求体里单个节点的装配（R1-5）：从 DispatchOverlay.buildRequest 提出来，
+// rollbackBefore / fallback / 写护栏这些契约字段才能按序列化后的形状断言。
+// 上下文（prompt / materials / 会话）由调用方算好传进来，这里不碰 IO。
+export interface NodeRequestParts {
+  models: DispatchableModel[];
+  prompt: string; // serializeContext 的正文；角色模板与写护栏在这里加
+  materials: string[];
+  currentMessage: string;
+  originalRequest: string;
+  upstreamArtifacts: ReplyArtifacts[];
+  sessionId: string;
+  previousRunner: string;
+  rollback: boolean; // 本节点这一轮是重派 / 从待核对勾回
+  stage: number;
+}
+
+export function buildNodeRequest(
+  nodeId: string,
+  target: Target,
+  parts: NodeRequestParts,
+): DispatchNodeRequest {
+  const model = parts.models.find((item) =>
+    item.agent === target.agent && item.id === target.model &&
+    (item.provider ?? '') === (target.provider ?? ''));
+  return {
+    nodeId,
+    stage: parts.stage,
+    agent: target.agent,
+    provider: target.provider ?? '',
+    model: target.model,
+    vendor: model?.vendor ?? '',
+    billingSource: model?.billing_source ?? '',
+    role: target.role,
+    tier: target.tier ?? model?.tier ?? '',
+    thinking: target.thinking,
+    visibility: target.visibility,
+    prompt: promptWithWriteGuard(promptForRole(target.role, parts.prompt), target.write),
+    currentMessage: parts.currentMessage,
+    materials: parts.materials,
+    sessionId: parts.sessionId,
+    previousRunner: parts.previousRunner,
+    write: target.write,
+    originalRequest: parts.originalRequest,
+    upstreamArtifacts: parts.upstreamArtifacts,
+    // TASK-05B 主备/熔断：备选随请求下发（带真实 vendor）
+    fallback: fallbackSpecOf(target, parts.models),
+    // TASK-06-2：单写者重派先回滚上次改动；只读与 worktree 节点不带这个字段
+    ...(rollbackBeforeOf(target, parts.rollback) ? { rollbackBefore: true } : {}),
+  };
+}
+
+// 推进幂等（backlog 10 前端半边）：同一批结果送达两次只推进一层。
+// 批次 id = run + 阶段 + 本批节点集合（排序后），与送达顺序无关。
+export function dispatchBatchKey(
+  runId: string,
+  stage: number,
+  results: Pick<BackendNodeResult, 'nodeId'>[],
+): string {
+  const ids = [...new Set(results.map((result) => result.nodeId))].sort();
+  return `${runId}#${stage}#${ids.join(',')}`;
+}
+
+export function markBatchProcessed(
+  seen: ReadonlySet<string>,
+  key: string,
+): { seen: Set<string>; fresh: boolean } {
+  if (seen.has(key)) return { seen: new Set(seen), fresh: false };
+  return { seen: new Set(seen).add(key), fresh: true };
 }
