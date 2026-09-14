@@ -23,6 +23,7 @@ import {
 import { presetNameOf } from '../../../graph/persist';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import type { DispatchableModel, Graph, Thinking } from '../../../graph/types';
+import { modelStatusSuffix } from '../../../resources/model-picker';
 
 type Phase = 'confirm' | 'running' | 'results';
 
@@ -304,6 +305,11 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
               const parts = contextPartsOf(graphWithTargets, id);
               const canRestart = !!continuationSession(graphWithTargets, id) && !restartNodes.has(id);
               const vendor = models.find((item) => item.agent === target.agent && item.id === target.model && (item.provider ?? '') === (target.provider ?? ''))?.vendor;
+              // models 现在含未冒烟条目（TASK-08b），G1 决策行要能看出这一点。
+              // provider 先精确匹配，匹配不上再退到 agent+id——节点面板选模型时不写 provider。
+              const picked = models.find((item) => item.agent === target.agent && item.id === target.model && (item.provider ?? '') === (target.provider ?? ''))
+                ?? models.find((item) => item.agent === target.agent && item.id === target.model);
+              const unsmoked = picked !== undefined && picked.status !== '已接入' && picked.status !== '';
               const sameVendorReview = target.role === '验收' && !!vendor && initialIds.some((otherId) => {
                 const other = targets[otherId];
                 if (!other || other.role !== '执行') return false;
@@ -318,6 +324,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
                     <div className="dispatch-warning">任务含数字或链式关键词，thinking 已调为中；可修改。</div>
                   )}
                   {sameVendorReview && <div className="dispatch-warning">复核，非独立验证</div>}
+                  {unsmoked && <div className="dispatch-warning">该模型{picked?.status}，尚未核对真身；派发时通道会核对。</div>}
                   <div className="dispatch-controls">
                     {models.length > 0 ? <label>目标<select
                       value={JSON.stringify([target.agent, target.provider ?? '', target.model])}
@@ -338,7 +345,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
                       )}
                       {models.map((item) => (
                         <option key={JSON.stringify([item.agent, item.provider, item.id])} value={JSON.stringify([item.agent, item.provider, item.id])}>
-                          {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}
+                          {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}{modelStatusSuffix(item)}
                         </option>
                       ))}
                     </select></label> : <label className="dispatch-manual-target">目标

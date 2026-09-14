@@ -286,6 +286,9 @@ fn store_lock() -> MutexGuard<'static, ()> {
 }
 
 /// 派发清单：已接入模型。cc-switch 在本期不再是可派发通道，一律排除。
+// 08b 起派发清单改列全部探测到的模型（`detected`）；`connected` 留作「已接入」语义的
+// 查询入口（测试与后续预设角色默认值用），暂无生产调用。
+#[allow(dead_code)]
 pub fn connected(path: &Path) -> Result<Vec<ResourceModel>, String> {
     Ok(load(path)?
         .agents
@@ -293,6 +296,38 @@ pub fn connected(path: &Path) -> Result<Vec<ResourceModel>, String> {
         .flat_map(|agent| agent.models)
         .filter(|model| model.status == STATUS_CONNECTED && model.agent != "cc-switch")
         .collect())
+}
+
+/// 供界面挑模型用的清单：**不按冒烟状态过滤**，已接入 / 待冒烟 / 冒烟失败都给，
+/// 只排除 cc-switch（已降级为发现提示，不产生可派发条目）。
+/// 和 `connected()` 的分工：`connected()` 是「可派发清单」的语义（左栏资源 tab、
+/// 预设角色默认值用它）；这个是「本机探测到什么」的语义，节点面板和 `@` 弹层用它，
+/// 界面自己按 status 打后缀。
+/// 排序：已接入 → 待冒烟 → 冒烟失败 → 其它，同状态内 agent → provider → id。
+pub fn detected(path: &Path) -> Result<Vec<ResourceModel>, String> {
+    let mut models: Vec<ResourceModel> = load(path)?
+        .agents
+        .into_iter()
+        .flat_map(|agent| agent.models)
+        .filter(|model| model.agent != "cc-switch")
+        .collect();
+    models.sort_by(|a, b| {
+        status_rank(&a.status)
+            .cmp(&status_rank(&b.status))
+            .then_with(|| a.agent.cmp(&b.agent))
+            .then_with(|| a.provider.cmp(&b.provider))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(models)
+}
+
+fn status_rank(status: &str) -> u8 {
+    match status {
+        STATUS_CONNECTED => 0,
+        STATUS_PENDING => 1,
+        STATUS_FAILED => 2,
+        _ => 3,
+    }
 }
 
 /// 保证内置四 agent 骨架存在；迁移掉历史 store 里的 cc-switch agent
@@ -1915,6 +1950,54 @@ mod tests {
         let models = connected(&path).unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "a");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// `detected()` 与 `connected()` 的分工：前者给界面挑模型用，不按冒烟状态过滤，
+    /// 但仍然排除 cc-switch；排序是已接入 → 待冒烟 → 冒烟失败，同状态内 agent/provider/id。
+    #[test]
+    fn detected_keeps_unsmoked_drops_cc_switch_and_sorts_by_status() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[
+                {"id":"pi","name":"pi","models":[
+                    {"id":"z-b","agent":"pi","provider":"zai","status":"待冒烟"},
+                    {"id":"z-a","agent":"pi","provider":"zai","status":"待冒烟"},
+                    {"id":"m-a","agent":"pi","provider":"moon","status":"待冒烟"},
+                    {"id":"bad","agent":"pi","provider":"moon","status":"冒烟失败"}]},
+                {"id":"codex","name":"Codex","models":[
+                    {"id":"gpt","agent":"codex","status":"已接入"}]},
+                {"id":"cc-switch","name":"cc-switch","models":[
+                    {"id":"ghost","agent":"cc-switch","status":"已接入"}]}]}"#,
+        )
+        .unwrap();
+
+        let all = detected(&path).unwrap();
+        let listed: Vec<(&str, &str)> = all
+            .iter()
+            .map(|m| (m.agent.as_str(), m.id.as_str()))
+            .collect();
+        // 已接入在前；待冒烟按 provider(moon<zai) → id；冒烟失败垫底；cc-switch 不出现
+        assert_eq!(
+            listed,
+            vec![
+                ("codex", "gpt"),
+                ("pi", "m-a"),
+                ("pi", "z-a"),
+                ("pi", "z-b"),
+                ("pi", "bad"),
+            ]
+        );
+        assert!(all.iter().all(|m| m.agent != "cc-switch"));
+
+        // connected() 的语义不受影响：仍然只有已接入的那一条
+        let only_connected = connected(&path).unwrap();
+        assert_eq!(only_connected.len(), 1);
+        assert_eq!(only_connected[0].id, "gpt");
+
         let _ = fs::remove_dir_all(root);
     }
 

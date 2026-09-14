@@ -18,6 +18,14 @@ import { ancestorsOf } from '../../../graph/layout';
 import { validateNode } from '../../../graph/validate';
 import { nodeLabel } from '../../../graph/label';
 import { redraftNode } from '../../../graph/dispatch';
+import {
+  groupPickableModels,
+  modelKey,
+  modelOptionLabel,
+  modelSelectValue,
+  parseModelSelectValue,
+  targetSelectValue,
+} from '../../../resources/model-picker';
 import './OrchestrationPanel.css';
 
 const ROLES = ['出方案', '执行', '验收', '验证'];
@@ -46,15 +54,18 @@ export function TargetEditor({ target, models, ancestors, hints, onChange }: Tar
 
   const patch = (p: Partial<Target>) => onChange({ ...target, ...p });
 
-  // 模型下拉按 agent 分组
-  const byAgent = new Map<string, DispatchableModel[]>();
-  for (const m of models) {
-    const arr = byAgent.get(m.agent) ?? [];
-    arr.push(m);
-    byAgent.set(m.agent, arr);
-  }
+  // 模型下拉按 agent · provider 分组（pi 一家挂三个 provider，只按 agent 分会挤成一组）；
+  // 顺序沿用后端排好的「已接入 → 待冒烟 → 冒烟失败」。
+  const groups = groupPickableModels(models);
 
-  const modelValue = manual ? MANUAL : isBlank ? '' : `${target.agent}/${target.model}`;
+  // 下拉的 value 是 [agent, provider, id] 三元组（见 model-picker.ts）：只有把
+  // provider 编进 value，选中时才能把它一起写回 Target；否则 pi 三个 provider 下的
+  // 同名模型区分不开，Target 的 provider 留空，派发 argv 的 --provider 段就是空的。
+  const modelValue = manual ? MANUAL : isBlank ? '' : targetSelectValue(target);
+  // 老图里的 Target 可能只有 agent + model 没有 provider，在清单里对不上任何一项。
+  // 那就额外挂一条「当前值」选项如实显示它现在是什么（同 DispatchOverlay 的做法），
+  // 用户重选一次即可绑上 provider；不做静默回填，免得界面显示的 provider 和图里存的不一致。
+  const listed = models.some((m) => modelSelectValue(m) === modelValue);
 
   return (
     <div className="target-editor">
@@ -70,19 +81,25 @@ export function TargetEditor({ target, models, ancestors, hints, onChange }: Tar
             }
             setManual(false);
             if (v === '') {
-              patch({ agent: '', model: '' });
+              patch({ agent: '', model: '', provider: undefined });
               return;
             }
-            const slash = v.indexOf('/');
-            patch({ agent: v.slice(0, slash), model: v.slice(slash + 1) });
+            const picked = parseModelSelectValue(v);
+            if (picked) patch(picked);
           }}
         >
           <option value="">未指定模型</option>
-          {[...byAgent.entries()].map(([agent, arr]) => (
-            <optgroup key={agent} label={agent}>
-              {arr.map((m) => (
-                <option key={`${m.agent}/${m.id}`} value={`${m.agent}/${m.id}`}>
-                  {m.agent}/{m.id}
+          {!manual && !isBlank && !listed && (
+            <option value={modelValue}>
+              {target.agent}/{target.provider ? `${target.provider}/` : ''}
+              {target.model}
+            </option>
+          )}
+          {groups.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.models.map((m) => (
+                <option key={modelKey(m)} value={modelSelectValue(m)}>
+                  {modelOptionLabel(m)}
                 </option>
               ))}
             </optgroup>

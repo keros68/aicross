@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::paths::aicross_root;
-use crate::resources::{connected as connected_resources, ResourceModel};
+use crate::resources::{detected as detected_resources, ResourceModel};
 
 // ── 对话图数据模型（A 节契约） ─────────────────────────────────────────────
 
@@ -426,9 +426,12 @@ fn validate_graph_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 注意用的是 `detected` 不是 `connected`：节点面板与 `@` 弹层要看到本机探测到的
+/// 全部模型（本机 pi 一家三个 provider 就有 31 条），未冒烟的由前端按 status 打后缀。
+/// 左栏资源 tab 与预设角色默认值仍走 `connected`（可派发清单语义），不受影响。
 fn dispatchable_from(root: &Path) -> DispatchableModels {
     let path = resources_path(root);
-    match connected_resources(&path) {
+    match detected_resources(&path) {
         Ok(models) => DispatchableModels {
             models,
             error: None,
@@ -909,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatchable_filters_connected_only() {
+    fn dispatchable_lists_all_detected_with_connected_first() {
         let root = temp_root("models-filter");
         let store = serde_json::json!({
             "version": 1,
@@ -926,8 +929,12 @@ mod tests {
         fs::write(root.join("resources.json"), store.to_string()).unwrap();
         let result = dispatchable_from(&root);
         assert_eq!(result.error, None);
+        // 08b 起：派发清单列出全部探测到的模型，已接入排前，未冒烟的靠状态后缀区分。
         let ids: Vec<&str> = result.models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["m1", "m3"]);
+        assert_eq!(ids.len(), 3);
+        assert_eq!(&ids[..2], ["m1", "m3"]);
+        assert_eq!(ids[2], "m2");
+        assert_eq!(result.models[2].status, "未接入");
         // m1/m2 缺了一大堆字段也能解析，缺字段落成空串
         assert_eq!(result.models[0].vendor, "");
     }

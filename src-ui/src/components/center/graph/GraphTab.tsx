@@ -4,6 +4,7 @@
 // 文案直接中文硬编码（见 REPORT-02：接入 11 语言 i18n 字典成本过高）。
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useAppState, type TerminalSession } from '../../../store/app-state';
 import { commands, isTauri, type GraphMeta } from '../../../tauri';
 import type { DispatchableModel, Graph, GraphNode, Preset } from '../../../graph/types';
@@ -20,6 +21,7 @@ import { NodePanel } from '../../right/orchestration/NodePanel';
 import { applyRoleDefaults, dispatchableNodeIds, redraftNode } from '../../../graph/dispatch';
 import { DispatchOverlay } from './DispatchOverlay';
 import { appendMention, INSERT_MENTION_EVENT, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
+import { groupPickableModels, modelKey, modelOptionLabel } from '../../../resources/model-picker';
 import './GraphTab.css';
 
 // 节点卡固定尺寸，图区横向滚动；不做缩放、不做拖拽（任务书硬约束）。
@@ -28,6 +30,10 @@ const NODE_H = 56;
 const GAP_X = 64;
 const GAP_Y = 40; // 留出高亮节点下方「分叉」「盖预设」按钮的位置，不压下一行
 const ACTIONS_H = 32; // 节点下方按钮行高度，加进画布高度，末行按钮不被底边裁掉
+// 「盖预设」菜单（portal + fixed）夹进视口用的尺寸，和 .graph-stamp-menu 的
+// min-width / 最小可读高度对齐；菜单本身仍按内容自适应。
+const STAMP_MENU_W = 140;
+const STAMP_MENU_MIN_H = 120;
 
 export function GraphTab({ session }: { session: TerminalSession }) {
   const { state, dispatch } = useAppState();
@@ -42,6 +48,11 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const [metas, setMetas] = useState<GraphMeta[] | null>(() => (isTauri ? null : []));
   const [columns, setColumns] = useState<string[]>([]);
   const [stampFor, setStampFor] = useState<string | null>(null);
+  // 「盖预设」菜单改走 portal：它原来是 .graph-canvas-inner 里的 absolute 元素，
+  // 而 .graph-canvas 是 max-height:44% + overflow:auto 的滚动容器，菜单一超过画布
+  // 下边沿就被裁掉（下半聊天面板并没有「压住」它，是画布自己把它切了）。
+  // 这里记下触发按钮的视口坐标，菜单挂到 document.body 上按 fixed 定位。
+  const [stampAt, setStampAt] = useState<{ left: number; top: number } | null>(null);
   const [panelNode, setPanelNode] = useState<string | null>(null);
   const [ctxOpen, setCtxOpen] = useState<Record<number, boolean>>({});
   const [drafts, setDrafts] = useState<Record<number, string>>({});
@@ -229,6 +240,23 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     canvas.querySelector('.graph-node-actions')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [focusNodeId]);
 
+  // 「盖预设」菜单按打开那一刻的按钮坐标固定在视口上，画布一滚动或窗口一改尺寸，
+  // 它就会和按钮脱节 —— 这种情况直接收起菜单（和点别处收起是同一种结果）。
+  // scroll 用捕获阶段，因为滚的是画布不是 window。
+  useEffect(() => {
+    if (stampFor === null) return;
+    const close = () => {
+      setStampFor(null);
+      setStampAt(null);
+    };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [stampFor]);
+
   const openGraph = (id: string) => {
     if (!isTauri) return;
     commands
@@ -273,6 +301,11 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     setPanelNode(child); // 弹出节点面板填 Target
   };
 
+  const closeStamp = () => {
+    setStampFor(null);
+    setStampAt(null);
+  };
+
   const applyStamp = (nodeId: string, preset: Preset) => {
     if (!graph) return;
     const before = new Set(Object.keys(graph.nodes));
@@ -284,7 +317,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
       preset.name,
     );
     commit(g2);
-    setStampFor(null);
+    closeStamp();
   };
 
   const sendInColumn = (colIdx: number) => {
@@ -467,31 +500,47 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               className="graph-mini-btn"
               onClick={(e) => {
                 e.stopPropagation();
-                setStampFor(stampFor === id ? null : id);
+                if (stampFor === id) {
+                  closeStamp();
+                  return;
+                }
+                const rect = e.currentTarget.getBoundingClientRect();
+                setStampAt({ left: rect.left, top: rect.bottom + 4 });
+                setStampFor(id);
               }}
             >
               盖预设
             </button>
           </div>
         )}
-        {stampFor === id && (
-          <div className="graph-stamp-menu" style={{ left: p.x, top: p.y + NODE_H + 34 }}>
-            {presets.map((preset) => (
-              <button
-                key={preset.id}
-                className="graph-stamp-item"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  applyStamp(id, preset);
-                }}
-              >
-                {preset.name}
-              </button>
-            ))}
-            {presets.length === 0 && <div className="graph-stamp-empty">无可用预设</div>}
-          </div>
-        )}
       </div>
+    );
+  };
+
+  // 菜单本体：挂在 document.body 上，按触发按钮的视口坐标 fixed 定位，
+  // 再夹一次防止贴着窗口右/下边缘时溢出屏幕。
+  const renderStampMenu = () => {
+    if (stampFor === null || stampAt === null) return null;
+    const nodeId = stampFor;
+    const left = Math.min(stampAt.left, Math.max(8, window.innerWidth - STAMP_MENU_W - 8));
+    const top = Math.min(stampAt.top, Math.max(8, window.innerHeight - STAMP_MENU_MIN_H - 8));
+    return createPortal(
+      <div className="graph-stamp-menu" style={{ left, top }}>
+        {presets.map((preset) => (
+          <button
+            key={preset.id}
+            className="graph-stamp-item"
+            onClick={(e) => {
+              e.stopPropagation();
+              applyStamp(nodeId, preset);
+            }}
+          >
+            {preset.name}
+          </button>
+        ))}
+        {presets.length === 0 && <div className="graph-stamp-empty">无可用预设</div>}
+      </div>,
+      document.body,
     );
   };
 
@@ -546,15 +595,14 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     const value = drafts[colIdx] ?? '';
     const atMatch = value.match(/@([^\s@]*)$/);
     const filter = (atMatch?.[1] ?? '').toLowerCase();
-    const grouped = new Map<string, DispatchableModel[]>();
-    if (atMatch) {
-      for (const m of models) {
-        if (filter !== '' && !`${m.agent}/${m.id}`.toLowerCase().includes(filter)) continue;
-        const arr = grouped.get(m.agent) ?? [];
-        arr.push(m);
-        grouped.set(m.agent, arr);
-      }
-    }
+    // 与节点面板同一套分组（agent · provider）与状态后缀，见 resources/model-picker.ts
+    const grouped = atMatch
+      ? groupPickableModels(
+          models.filter(
+            (m) => filter === '' || `${m.agent}/${m.id}`.toLowerCase().includes(filter),
+          ),
+        )
+      : [];
     const pickModel = (m: DispatchableModel) => {
       const v = drafts[colIdx] ?? '';
       const nm = v.match(/@([^\s@]*)$/);
@@ -615,12 +663,12 @@ export function GraphTab({ session }: { session: TerminalSession }) {
                     尚未接入资源{modelsError ? `（${modelsError}）` : ''}，可直接手输 agent/模型
                   </div>
                 )}
-                {[...grouped.entries()].map(([agent, arr]) => (
-                  <div key={agent}>
-                    <div className="graph-at-group">{agent}</div>
-                    {arr.map((m) => (
+                {grouped.map((group) => (
+                  <div key={group.label}>
+                    <div className="graph-at-group">{group.label}</div>
+                    {group.models.map((m) => (
                       <button
-                        key={`${m.agent}/${m.id}`}
+                        key={modelKey(m)}
                         className="graph-at-item"
                         onMouseDown={(e) => {
                           e.preventDefault();
@@ -631,7 +679,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
                           className="graph-node-dot"
                           style={{ background: vendorColor(m.agent, m.vendor) }}
                         />
-                        {m.agent}/{m.id}
+                        {modelOptionLabel(m)}
                       </button>
                     ))}
                   </div>
@@ -672,6 +720,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
         </div>
       </div>
       <div className="graph-columns">{columns.map(renderColumn)}</div>
+      {renderStampMenu()}
       {panelNode && graph.nodes[panelNode] && (
         <NodePanel
           key={panelNode}
