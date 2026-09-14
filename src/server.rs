@@ -3855,6 +3855,8 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::orchestration::save_roles,
             crate::dispatch::inspect_dispatch_state,
             crate::dispatch::abandon_dispatch_state,
+            crate::channels::acp::detect_acp_adapters,
+            crate::channels::acp::release_acp_pool,
         ])
         .setup(|app| {
             // Seed bundled skills (screenshot, vibeid) into
@@ -4007,6 +4009,7 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             }
 
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                crate::channels::acp::shutdown_all();
                 let state = app_handle.state::<AppState>();
                 let mut n = 0usize;
                 if let Ok(mut map) = state.terminal_session.lock() {

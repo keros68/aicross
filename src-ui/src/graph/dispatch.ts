@@ -15,6 +15,7 @@ export interface BackendNodeResult {
   tokensOut: number;
   durationMs: number;
   error: string;
+  runner?: 'acp' | 'oneshot' | 'unknown';
   artifacts?: ReplyArtifacts | null;
   validationOutput?: string;
 }
@@ -105,6 +106,13 @@ export function continuationSession(graph: Graph, nodeId: string): string | unde
   return sameTarget ? parent.reply.session_id : undefined;
 }
 
+export function continuationRunner(graph: Graph, nodeId: string): 'acp' | 'oneshot' | undefined {
+  const node = graph.nodes[nodeId];
+  if (!continuationSession(graph, nodeId) || !node || node.parents.length !== 1) return undefined;
+  const runner = graph.nodes[node.parents[0]]?.reply?.runner;
+  return runner === 'acp' || runner === 'oneshot' ? runner : undefined;
+}
+
 export function clearTargetSession(graph: Graph, nodeId: string): Graph {
   const node = graph.nodes[nodeId];
   if (!node?.target) return graph;
@@ -173,6 +181,7 @@ export function applyDispatchResults(graph: Graph, results: BackendNodeResult[])
       tokens_out: result.tokensOut || undefined,
       ms: result.durationMs,
       session_id: result.sessionId || undefined,
+      ...(result.runner ? { runner: result.runner } : {}),
       artifacts: result.artifacts ?? undefined,
       ...(node.reply?.adopted === undefined ? {} : { adopted: node.reply.adopted }),
     };

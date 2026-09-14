@@ -1,0 +1,13 @@
+你是代码审查者，本次是 TASK-05A（ACP 长驻运行方式）修正轮 R2 的复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/5a 分支。先读 tasks/fix-05a-r2.md（20 条：DeepSeek 与 GLM 对 R1 的复审尾巴 + 编排者真机复跑发现的 kimi ACP 协议事实，第 13 条是真机炸点），再读 tasks/REPORT-05A.md 的「修正轮 R2」一节（实现方逐条自报），再读涉及的文件：src/channels/acp.rs、src/channels/mod.rs、src/process.rs、src/dispatch.rs、src/server.rs、src/terminal.rs、src/orchestration.rs、fixtures/acp/fake_server.py、src-ui/src/graph/dispatch.ts、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/components/center/graph/DispatchOverlay.tsx、src-ui/src/tauri.ts。不读 node_modules、target、dist、port。
+
+逐条核对 20 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- 第 1 条：request() 等待循环里超时是否按 RecvTimeoutError 类型分流、到 deadline 是否返回 Timeout（不回退）；
+- 第 13、14、15、16 条：模型清单是否先读 configOptions[category==model] 再退 models.availableModels、两者都无时不校验不回退；切模型是否走 session/set_config_option；只读/盲节点是否 set mode=plan、可写节点 default、永不 auto/yolo；thinking 映射；session/close 时机；假 server 是否有 configOptions 与 models 两种形状；
+- 第 3、17 条：杀假 server → run_one 回退 → 留痕 runner: oneshot 的端到端是否真实；假 server 的 session id 是否递增；
+- 第 4 条：shutdown_all 是否 try_lock、忙进程直接终止、不阻塞；
+- 第 7 条：is_read_request 是否 kind 优先、edit/write/execute/delete/move 一律写；
+- 第 2、6、18 条：append_bounded 字符边界、8MB 上限、标记后不再追加；
+- 修正是否引入新缺陷：第 3/4 期一次性路径的回归、留痕契约 aicross-dispatch/1 只追加、Reply 契约只追加、server.rs/tauri.ts 注册与类型镜像；R1 报告里三处名不副实的「已补测试」是否已改写。
+编排者会在沙箱外复跑 cargo test / vitest / build 并真跑 live_kimi_acp_two_turn_continuation；指出会导致误判的断言或会在真机上炸的路径。
+
+最后单独回答：R2 之后 TASK-05A 是否达到可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

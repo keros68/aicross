@@ -6,6 +6,7 @@ import {
   applyDispatchResults,
   clearTargetSession,
   continuationSession,
+  continuationRunner,
   dispatchableNodeIds,
   markPending,
   graphStage,
@@ -96,6 +97,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
       writeProjectDispatch: settings.writeProjectDispatch,
       ccSwitchPath: settings.ccSwitchPath,
       validationCommand: settings.validationCommand,
+      acpEnabled: settings.acpEnabled,
     },
     nodes: ids.map((id) => {
       const node = sourceGraph.nodes[id];
@@ -120,6 +122,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
         currentMessage: serializeCurrentMessage(node.user),
         materials: selected.materials,
         sessionId: restartNodes.has(id) ? '' : continuationSession(sourceGraph, id) ?? '',
+        previousRunner: restartNodes.has(id) ? '' : continuationRunner(sourceGraph, id) ?? '',
         write: target.write,
         originalRequest: originalRequestOf(sourceGraph),
         upstreamArtifacts: upstreamArtifactsOf(sourceGraph, id),
@@ -214,7 +217,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
       const message = String(error);
       setRunError(message);
       const failed: DispatchNodeResult[] = failedNodesWithoutResults(activeNodes, collected, message)
-        .map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null }));
+        .map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', runner: 'unknown' as const, workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null }));
       if (failed.length > 0) working = onCommit(applyDispatchResults(working, failed));
       setResults([...collected, ...failed]);
       setPhase('results');
@@ -417,7 +420,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
                 return (
                 <section key={result.nodeId} className={`dispatch-result-card${adopted ? ' adopted' : ''}`}>
                   <div className="dispatch-result-head">
-                    <span>{node?.target?.agent}/{node?.target?.model}{node?.target?.agent === 'cc-switch' ? ' · 单轮' : ''}</span>
+                    <span>{node?.target?.agent}/{node?.target?.model}{node?.target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</span>
                     <span>{resultStatus(result.status)}</span>
                   </div>
                   {result.truncated && <div className="dispatch-warning">输出已截断</div>}
@@ -444,7 +447,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
             </div>
             <table className="dispatch-usage"><thead><tr><th>阶段</th><th>agent/模型</th><th>in / out tokens</th><th>cache_read</th><th>耗时</th><th>结果</th></tr></thead>
               <tbody>{usageGroups.map((group) => <Fragment key={group.stage}>
-                {group.rows.map((result) => { const target = graph.nodes[result.nodeId]?.target; return <tr key={result.nodeId}><td>{result.stage}</td><td>{target?.agent}/{target?.model}{target?.agent === 'cc-switch' ? ' · 单轮' : ''}</td><td>{result.tokensIn || '—'} / {result.tokensOut || '—'}</td><td>{result.cacheRead || '—'}</td><td>{result.durationMs} ms</td><td>{resultStatus(result.status)}</td></tr>; })}
+                {group.rows.map((result) => { const target = graph.nodes[result.nodeId]?.target; return <tr key={result.nodeId}><td>{result.stage}</td><td>{target?.agent}/{target?.model}{target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</td><td>{result.tokensIn || '—'} / {result.tokensOut || '—'}</td><td>{result.cacheRead || '—'}</td><td>{result.durationMs} ms</td><td>{resultStatus(result.status)}</td></tr>; })}
                 <tr className="dispatch-usage-subtotal"><td>{group.stage} 小计</td><td>{group.rows.length} 路</td><td>{group.tokensIn} / {group.tokensOut}</td><td>{group.cacheRead}</td><td>{group.durationMs} ms</td><td>—</td></tr>
               </Fragment>)}</tbody>
             </table>

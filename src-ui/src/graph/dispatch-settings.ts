@@ -13,6 +13,7 @@ export const DEFAULT_DISPATCH_SETTINGS: UiDispatchSettings = {
   writeProjectDispatch: true,
   ccSwitchPath: '',
   validationCommand: '',
+  acpEnabled: false,
 };
 
 const KEY = 'aicross-dispatch-settings';
@@ -37,6 +38,7 @@ export function loadDispatchSettings(): UiDispatchSettings {
       writeProjectDispatch: parsed.writeProjectDispatch !== false,
       ccSwitchPath: typeof parsed.ccSwitchPath === 'string' ? parsed.ccSwitchPath : '',
       validationCommand: typeof parsed.validationCommand === 'string' ? parsed.validationCommand : '',
+      acpEnabled: parsed.acpEnabled === true,
     };
   } catch {
     return { ...DEFAULT_DISPATCH_SETTINGS };

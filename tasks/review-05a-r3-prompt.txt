@@ -1,0 +1,13 @@
+你是代码审查者，本次是 TASK-05A（ACP 长驻运行方式）修正轮 R3 的复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/5a 分支。先读 tasks/fix-05a-r3.md（6 条，来自 DeepSeek 与 GLM 对 R2 的复审）、tasks/REPORT-05A.md 的「编排者在 R2 之后的修正」与「修正轮 R3」两节，再读涉及文件：src/channels/acp.rs、src/channels/mod.rs、src/process.rs、src/dispatch.rs、fixtures/acp/fake_server.py、src-ui/src/graph/dispatch.ts、src-ui/src/graph/__tests__/dispatch.test.ts、docs/PRODUCT.md 第 184 行附近。不读 node_modules、target、dist、port。
+
+逐条核对 6 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- 第 1 条：ACP 超时/失败/取消分支的留痕 runner 是否为 acp、runner_note 是否写明未回退；超时判定是否按 AcpErrorKind::Timeout 类型；
+- 第 2 条：两条 run_one 端到端是否真的驱动 run_one（不是纯函数复刻）：超时用例断言一次性 stub 零调用，死进程用例断言 runner: oneshot、note、argv 无 -S/-r、task file 完整上下文；测试专用 provider 注入假 server 的做法有没有把生产路径改坏；
+- 第 3 条：8MB 水位是否按未消费字节计、消费后归还，两轮各 5MB 是否能收到结果；原子计数有没有竞态；
+- 第 4 条：并发用例是否真的两线程同时 run() 且用启动计数文件证明只起一个进程；
+- 第 5 条：跨 runner 清理是否覆盖「ACP 开着但 agent 不支持」；前端 continuationRunner/continuationSession 是否对齐；
+- 编排者的改动：configure_session 固定 mode=default（kimi plan 模式会逼回合以 ExitPlanMode 收尾）、live 测试不断言 usage、AICROSS_ACP_DEBUG 门控的 stderr 调试打印——有无副作用（如调试打印落入留痕、只读节点失去保护）；
+- 修正是否引入新缺陷：第 3/4 期一次性路径的回归、留痕契约 aicross-dispatch/1 只追加、Reply 契约只追加、server.rs/tauri.ts 注册与类型镜像。
+编排者已复跑 cargo 208 / vitest 130 / build 零 warning，并真跑 live_kimi_acp_two_turn_continuation 1 passed（18.6s）。
+
+最后单独回答：R3 之后 TASK-05A 是否达到可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

@@ -33,6 +33,8 @@ pub struct DispatchSettings {
     pub validation_command: String,
     #[serde(default = "default_max_requests")]
     pub max_requests: usize,
+    #[serde(default)]
+    pub acp_enabled: bool,
 }
 
 impl Default for DispatchSettings {
@@ -45,6 +47,7 @@ impl Default for DispatchSettings {
             cc_switch_path: String::new(),
             validation_command: String::new(),
             max_requests: default_max_requests(),
+            acp_enabled: false,
         }
     }
 }
@@ -60,6 +63,10 @@ fn default_max_requests() -> usize {
 }
 fn default_true() -> bool {
     true
+}
+
+fn oneshot() -> String {
+    "oneshot".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,6 +98,8 @@ pub struct DispatchNodeRequest {
     pub materials: Vec<String>,
     #[serde(default)]
     pub session_id: String,
+    #[serde(default)]
+    pub previous_runner: String,
     #[serde(default)]
     pub write: String,
     #[serde(default)]
@@ -172,6 +181,8 @@ pub struct DispatchNodeResult {
     pub truncated: bool,
     pub redacted: usize,
     pub isolation: String,
+    pub runner: String,
+    pub runner_note: String,
     pub workdir: String,
     pub dispatch_file: String,
     pub frontmatter: String,
@@ -232,6 +243,10 @@ struct DispatchRecord {
     thinking: String,
     visibility: String,
     isolation: String,
+    #[serde(default = "oneshot")]
+    runner: String,
+    #[serde(default)]
+    runner_note: String,
     workdir: String,
     materials: Vec<String>,
     redacted: usize,
@@ -610,13 +625,13 @@ fn mark_cancelled(key: &str) {
     }
 }
 
-fn is_cancelled(key: &str) -> bool {
+pub(crate) fn is_cancelled(key: &str) -> bool {
     cancelled_dispatches()
         .lock()
         .is_ok_and(|cancelled| cancelled.contains(key))
 }
 
-fn clear_cancelled(key: &str) {
+pub(crate) fn clear_cancelled(key: &str) {
     if let Ok(mut cancelled) = cancelled_dispatches().lock() {
         cancelled.remove(key);
     }
@@ -1136,6 +1151,27 @@ fn nonempty_process_error(result: &crate::process::ProcessResult, fallback: &str
     }
 }
 
+enum AcpResolution<T> {
+    Use(T),
+    Fallback(String),
+    Failed(channels::acp::AcpError),
+    Cancelled(String),
+}
+
+fn resolve_acp_attempt<T>(
+    result: Result<T, channels::acp::AcpError>,
+    cancelled: bool,
+) -> AcpResolution<T> {
+    match result {
+        Ok(output) => AcpResolution::Use(output),
+        Err(error) if cancelled || error.kind == channels::acp::AcpErrorKind::Cancelled => {
+            AcpResolution::Cancelled(error.message)
+        }
+        Err(error) if error.permits_fallback() => AcpResolution::Fallback(error.message),
+        Err(error) => AcpResolution::Failed(error),
+    }
+}
+
 fn run_one(
     run_id: &str,
     project: &Path,
@@ -1231,6 +1267,10 @@ fn run_one(
     let mut truncated = false;
     let mut timed_out = false;
     let mut status = "error".to_string();
+    let mut runner = "oneshot".to_string();
+    let mut runner_note = String::new();
+    let mut oneshot_session = effective_session.clone();
+    let mut oneshot_outbound = outbound.clone();
     let mut error = write_lock_error
         .or(snapshot_error)
         .unwrap_or(preparation_error);
@@ -1238,7 +1278,75 @@ fn run_one(
         error = "派发已取消".into();
     }
 
-    if error.is_empty() {
+    let mut needs_oneshot = error.is_empty();
+    let uses_acp = settings.acp_enabled && channels::acp::supports(&node.agent);
+    if needs_oneshot && !uses_acp && node.previous_runner == "acp" {
+        (oneshot_session, oneshot_outbound) = reset_acp_fallback(&prompt);
+        runner_note = "本轮不走 ACP，旧 ACP 会话已重置，改一次性完整上下文".into();
+    }
+    if needs_oneshot && uses_acp {
+        let attempt = channels::acp::run(
+            &node.agent,
+            &node.provider,
+            &node.model,
+            (!node.session_id.is_empty()).then_some(node.session_id.as_str()),
+            &outbound,
+            &workdir,
+            timeout,
+            &node.thinking,
+            node.write != "只读",
+            blind,
+            &cancel_key,
+        );
+        match resolve_acp_attempt(attempt, is_cancelled(&cancel_key)) {
+            AcpResolution::Use(output) => {
+                channel_output = output.channel;
+                raw_stdout = output.raw_stdout;
+                raw_stderr = output.raw_stderr;
+                status = "ok".into();
+                runner = "acp".into();
+                runner_note = if node.write == "只读" || blind {
+                    "ACP 权限：读类放行，写/执行类拒绝，仅本次授权".into()
+                } else {
+                    "ACP 权限：仅本次授权，永不持久授权".into()
+                };
+                if !output.runner_note.is_empty() {
+                    runner_note.push_str("；");
+                    runner_note.push_str(&output.runner_note);
+                }
+                needs_oneshot = false;
+            }
+            AcpResolution::Cancelled(reason) => {
+                error = reason;
+                runner = "acp".into();
+                runner_note = "ACP 已取消，未回退".into();
+                needs_oneshot = false;
+            }
+            AcpResolution::Fallback(reason) => {
+                (oneshot_session, oneshot_outbound) = reset_acp_fallback(&prompt);
+                runner_note = format!("ACP 会话已重置，改一次性完整上下文：{reason}");
+            }
+            AcpResolution::Failed(acp_error) => {
+                timed_out = acp_error.kind == channels::acp::AcpErrorKind::Timeout;
+                error = acp_error.message;
+                status = if timed_out {
+                    "timeout".into()
+                } else {
+                    "error".into()
+                };
+                runner = "acp".into();
+                runner_note = if timed_out {
+                    "ACP 超时，未回退".into()
+                } else {
+                    "ACP 失败，未回退".into()
+                };
+                needs_oneshot = false;
+            }
+        }
+    }
+
+    if needs_oneshot {
+        let _ = fs::write(&task_file, oneshot_outbound.as_bytes());
         match channels::build_invocation(
             &node.agent,
             &node.provider,
@@ -1246,8 +1354,8 @@ fn run_one(
             &node.tier,
             &node.thinking,
             blind,
-            (!effective_session.is_empty()).then_some(effective_session.as_str()),
-            &outbound,
+            (!oneshot_session.is_empty()).then_some(oneshot_session.as_str()),
+            &oneshot_outbound,
             Some(&task_file),
             session_dir.as_deref(),
             (!settings.cc_switch_path.trim().is_empty())
@@ -1347,7 +1455,7 @@ fn run_one(
         }
     }
 
-    annotate_kimi_metadata(&node.agent, &mut channel_output, &mut error);
+    annotate_kimi_metadata(&node.agent, &mut channel_output, &mut runner_note);
 
     // CLI 输出可能回显请求头或配置片段。无论外发脱敏开关如何，留痕与
     // 返回给前端的错误文本都先做安全过滤。
@@ -1372,6 +1480,8 @@ fn run_one(
         thinking: node.thinking.clone(),
         visibility: node.visibility.clone(),
         isolation: isolation.clone(),
+        runner: runner.clone(),
+        runner_note: runner_note.clone(),
         workdir: workdir.to_string_lossy().into_owned(),
         materials: material_names,
         redacted,
@@ -1419,6 +1529,8 @@ fn run_one(
         truncated,
         redacted,
         isolation,
+        runner,
+        runner_note,
         workdir: workdir.to_string_lossy().into_owned(),
         dispatch_file,
         frontmatter,
@@ -1429,6 +1541,10 @@ fn run_one(
     };
     clear_cancelled(&cancel_key);
     result
+}
+
+fn reset_acp_fallback(full_prompt: &str) -> (String, String) {
+    (String::new(), full_prompt.to_string())
 }
 
 fn prepare_outbound(
@@ -1588,13 +1704,14 @@ fn validation_failure(code: Option<i32>, output: &str) -> String {
     format!("验证命令失败（exit={exit}）\n{}", strip_ansi(output))
 }
 
-fn annotate_kimi_metadata(agent: &str, output: &mut ChannelOutput, error: &mut String) {
+fn annotate_kimi_metadata(agent: &str, output: &mut ChannelOutput, runner_note: &mut String) {
     if agent != "kimi" { return; }
     if output.identity.is_empty() {
         output.identity = "kimi 不报真身".into();
     }
     if output.usage.input == 0 && output.usage.output == 0 && output.usage.cache_read == 0 {
-        *error = if error.is_empty() { "kimi 不报用量".into() } else { format!("{error}\nkimi 不报用量") };
+        *runner_note = if runner_note.is_empty() { "kimi 不报用量".into() } else { format!("{runner_note}
+kimi 不报用量") };
     }
 }
 
@@ -1898,6 +2015,7 @@ mod tests {
             current_message: "分析材料".into(),
             materials,
             session_id: String::new(),
+            previous_runner: String::new(),
             write: "只读".into(),
             original_request: "分析材料".into(),
             upstream_artifacts: Vec::new(),
@@ -2139,6 +2257,8 @@ mod tests {
             thinking: "中".into(),
             visibility: "盲".into(),
             isolation: "部分".into(),
+            runner: "oneshot".into(),
+            runner_note: String::new(),
             workdir: "x".into(),
             materials: vec!["a.csv".into()],
             redacted: 2,
@@ -2159,6 +2279,222 @@ mod tests {
         let restored: DispatchRecord = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(restored, record);
         assert!(serialize_frontmatter(&record).unwrap().starts_with("---\n"));
+        assert!(serialize_frontmatter(&record)
+            .unwrap()
+            .contains("runner: oneshot"));
+    }
+
+    #[test]
+    fn legacy_dispatch_record_without_runner_defaults_to_oneshot() {
+        let yaml = "schema: aicross-dispatch/1\nrun_id: old\nstage: 1\nnode: n\nagent: kimi\nprovider: ''\nmodel: m\nvendor: v\nbilling_source: b\nrole: r\ntier: t\nthinking: 中\nvisibility: 共享\nisolation: 部分\nworkdir: x\nmaterials: []\nredacted: 0\ntruncated: false\nstatus: ok\nstarted_at: s\nended_at: e\nduration_ms: 1\ntokens_in: 0\ntokens_out: 0\ncache_read: 0\nidentity: ''\nsession_id: ''\nexit_code: 0\nerror: ''\n";
+        let restored: DispatchRecord = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(restored.runner, "oneshot");
+        assert!(restored.runner_note.is_empty());
+    }
+
+    #[test]
+    fn acp_disabled_or_unsupported_preserves_oneshot_dispatch_result() {
+        let root = std::env::temp_dir().join(format!("aicross-acp-regression-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(
+            &stub,
+            "print('stub answer')\nprint('input=2 cache_read=0 output=1')\n",
+        )
+        .unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = "stub".into();
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            ..DispatchSettings::default()
+        };
+        let disabled = run_one(
+            "off",
+            &project,
+            &run_root,
+            &log_dir,
+            &settings,
+            request.clone(),
+        );
+        let enabled = run_one(
+            "on",
+            &project,
+            &run_root,
+            &log_dir,
+            &DispatchSettings {
+                acp_enabled: true,
+                ..settings
+            },
+            request,
+        );
+        assert_eq!(enabled.status, disabled.status);
+        assert_eq!(enabled.error, disabled.error);
+        assert_eq!(enabled.runner, "oneshot");
+        assert!(enabled.text.starts_with("stub answer"));
+        assert!(enabled.frontmatter.contains("runner: oneshot"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn acp_run_one_fixture(root: &Path, acp_args: &[&str]) -> (DispatchNodeRequest, DispatchSettings, PathBuf) {
+        let fake_server = std::env::current_dir().unwrap().join("fixtures/acp/fake_server.py");
+        let oneshot = root.join("kimi_oneshot_stub.py");
+        fs::write(&oneshot, "import json, pathlib, sys\npathlib.Path(__file__).with_suffix('.count').open('a', encoding='utf-8').write('run\\n')\nprint(json.dumps({'role':'assistant','content':'oneshot answer'}))\nprint('ARGV=' + repr(sys.argv))\n").unwrap();
+        let provider = format!("__aicross_test__|{}|{}{}", fake_server.display(), oneshot.display(), acp_args.iter().map(|arg| format!("|{arg}")).collect::<String>());
+        let mut request = node(Vec::new());
+        request.agent = "kimi".into();
+        request.provider = provider;
+        request.model = "fake-model/model".into();
+        request.visibility = "共享".into();
+        request.prompt = "完整祖先上下文\n当前追问".into();
+        request.current_message = "当前追问".into();
+        let settings = DispatchSettings { acp_enabled: true, timeout_secs: 1, ..DispatchSettings::default() };
+        (request, settings, oneshot.with_extension("count"))
+    }
+
+    #[test]
+    fn run_one_silent_acp_timeout_stays_acp_and_never_calls_oneshot() {
+        let _pool_guard = channels::acp::test_pool_guard();
+        let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
+        let root = std::env::temp_dir().join(format!("aicross-run-one-timeout-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let (request, settings, count) = acp_run_one_fixture(&root, &["--hang-after-prompt"]);
+        let result = run_one("acp-timeout", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "timeout");
+        assert_eq!(result.runner, "acp");
+        assert!(result.runner_note.contains("ACP 超时，未回退"));
+        assert!(!count.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_one_cancelled_acp_stays_acp_and_never_calls_oneshot() {
+        let _pool_guard = channels::acp::test_pool_guard();
+        let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
+        let root = std::env::temp_dir().join(format!("aicross-run-one-cancel-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let (request, mut settings, count) = acp_run_one_fixture(&root, &["--hang-after-prompt"]);
+        settings.timeout_secs = 5;
+        let run_root = root.join("runs");
+        let worker = thread::spawn(move || run_one("acp-cancel", &project, &run_root, &log_dir, &settings, request));
+        thread::sleep(Duration::from_millis(300));
+        cancel_dispatch_node("acp-cancel".into(), "node-1".into());
+        let result = worker.join().unwrap();
+        assert_eq!(result.runner, "acp");
+        assert!(result.runner_note.contains("ACP 已取消，未回退"));
+        assert!(!count.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_one_acp_turn_failure_stays_acp_and_never_calls_oneshot() {
+        let _pool_guard = channels::acp::test_pool_guard();
+        let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
+        let root = std::env::temp_dir().join(format!("aicross-run-one-failed-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let (request, settings, count) = acp_run_one_fixture(&root, &["--late-update"]);
+        let result = run_one("acp-failed", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "error");
+        assert_eq!(result.runner, "acp");
+        assert!(result.runner_note.contains("ACP 失败，未回退"));
+        assert!(!count.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_one_dead_acp_falls_back_once_without_resume_and_rewrites_full_task() {
+        let _pool_guard = channels::acp::test_pool_guard();
+        let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
+        let root = std::env::temp_dir().join(format!("aicross-run-one-fallback-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let (mut request, settings, count) = acp_run_one_fixture(&root, &["--exit-after-first-turn"]);
+        request.current_message = request.prompt.clone();
+        let first = run_one("acp-first", &project, &root.join("runs-1"), &log_dir, &settings, request.clone());
+        assert_eq!(first.runner, "acp");
+        thread::sleep(Duration::from_millis(100));
+        request.session_id = first.session_id;
+        request.previous_runner = "acp".into();
+        request.current_message = "当前追问".into();
+        let second = run_one("acp-second", &project, &root.join("runs-2"), &log_dir, &settings, request);
+        assert_eq!(second.status, "ok");
+        assert_eq!(second.runner, "oneshot");
+        assert!(second.runner_note.contains("ACP 会话已重置"));
+        assert_eq!(fs::read_to_string(count).unwrap().lines().count(), 1);
+        assert!(!second.raw_stdout.contains("'-S'"));
+        assert!(!second.raw_stdout.contains("'-r'"));
+        assert_eq!(fs::read_to_string(root.join("runs-2/tasks/node-1.txt")).unwrap(), "完整祖先上下文\n当前追问");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsupported_acp_previous_runner_resets_session_and_uses_full_context() {
+        let root = std::env::temp_dir().join(format!("aicross-acp-off-resume-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, "import sys\nprint('stub full context')\nprint('input=1 cache_read=0 output=1')\nprint('ARGV=' + repr(sys.argv))\nprint('STDIN=' + sys.stdin.read())\n").unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = "stub".into();
+        request.visibility = "共享".into();
+        request.session_id = "old-acp-session".into();
+        request.previous_runner = "acp".into();
+        request.prompt = "完整祖先上下文\n当前追问".into();
+        request.current_message = "当前追问".into();
+        let result = run_one("acp-unsupported", &project, &root.join("runs"), &log_dir, &DispatchSettings {
+            acp_enabled: true,
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            ..DispatchSettings::default()
+        }, request);
+        assert_eq!(result.runner, "oneshot");
+        assert!(result.runner_note.contains("旧 ACP 会话已重置"));
+        assert!(result.session_id.is_empty());
+        assert_eq!(fs::read_to_string(root.join("runs/tasks/node-1.txt")).unwrap(), "完整祖先上下文\n当前追问");
+        assert!(result.text.contains("stub full context"));
+        assert!(result.raw_stdout.contains("--task-file"));
+        assert!(!result.raw_stdout.contains("old-acp-session"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reset_acp_fallback_builds_full_context_invocation_without_resume_flags() {
+        let full = "完整祖先上下文\n当前追问";
+        let (session, outbound) = reset_acp_fallback(full);
+        let invocation = channels::build_invocation(
+            "kimi",
+            "",
+            "kimi-code/model",
+            "",
+            "中",
+            false,
+            (!session.is_empty()).then_some(session.as_str()),
+            &outbound,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!invocation.args.iter().any(|arg| arg == "-S" || arg == "-r"));
+        assert!(invocation.args.iter().any(|arg| arg == full));
     }
 
     #[test]
@@ -2599,6 +2935,7 @@ mod tests {
             current_message: current_message.into(),
             materials,
             session_id: session_id.into(),
+            previous_runner: String::new(),
             write: "只读".into(),
             original_request: prompt.into(),
             upstream_artifacts: Vec::new(),
@@ -2614,6 +2951,7 @@ mod tests {
             cc_switch_path: String::new(),
             validation_command: String::new(),
             max_requests: 8,
+            acp_enabled: false,
         }
     }
 

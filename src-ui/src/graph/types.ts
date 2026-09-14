@@ -19,6 +19,7 @@ export interface Reply {
   tokens_out?: number;
   ms?: number;
   session_id?: string;
+  runner?: 'acp' | 'oneshot' | 'unknown';
   adopted?: boolean;
   artifacts?: ReplyArtifacts;
   error_kind?: string;

@@ -1,0 +1,9 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/5a 分支。本期是 TASK-05 的 A 节「ACP 客户端（长驻运行方式）」。先读 tasks/TASK-05-acp-and-polish.md 的第 0 节第 2 条与 A 节、AGENTS.md、tasks/REPORT-05A.md（实现方报告），再读本期改动：src/channels/acp.rs（新）、src/channels/mod.rs、src/process.rs、src/dispatch.rs、src/server.rs、src-ui/src/graph/dispatch-settings.ts、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/components/center/graph/DispatchOverlay.tsx、src-ui/src/tauri.ts、src-ui/src/__tests__/dispatch-settings.test.ts。不读 node_modules、target、dist、port。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照第 0 节第 2 条与 A 节——JSON-RPC over stdio 的 initialize / session/new / session/prompt / session/update 流式；进程按 agent/model 复用；Reply.session_id 存 ACP session；异常退出或不可用回退一次性续聊且结果与第 3 期一致；留痕 frontmatter 追加 runner: acp|oneshot；先接 kimi，claude/codex 只探测与设置项；用量拿不到标"—"不猜。
+2. 逻辑正确性：stdio 读写死锁与半包/粘包处理；进程崩溃/超时/取消时的清理与回退；并发两路同一 agent/model 复用同一进程时的串行化；session id 与图节点的对应；回退后留痕字段。
+3. 安全：长驻进程的环境变量与密钥六铁律；只读/盲节点走 ACP 时的工具权限是否与一次性方式等价（ACP 下 --tools/--no-tools 的等价物）；进程留在后台时的生命周期（应用退出是否杀干净）。
+4. 代码质量与契约：aicross-dispatch/1 只追加不改名；Reply/Target 契约未动；与第 3 期 channels 的重复；server.rs/tauri.ts 注册与类型镜像。
+5. 测试：报告里列的测试是否真实存在且断言目标行为；ignored 真机测试（kimi ACP 两轮续聊）构造是否正确、会不会误判；最该补的 3 个。
+最后单独回答：对照 A 节原始需求是否完整实现？一句话 + 缺项列表（按严重度排序）。

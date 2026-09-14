@@ -1,0 +1,13 @@
+你是代码审查者，本次是 TASK-05A（ACP 长驻运行方式）修正轮 R1 的复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/5a 分支。先读 tasks/fix-05a-r1.md（19 条修正单，来自 tasks/review-05a-ds.md 与 tasks/review-05a-glm.md 两家盲审），再读 tasks/REPORT-05A.md 的「修正轮 R1」一节（实现方逐条自报），再读涉及的文件：src/channels/acp.rs、src/channels/mod.rs、src/process.rs、src/dispatch.rs、src/server.rs、src/terminal.rs、src/main.rs、src/orchestration.rs、fixtures/acp/fake_server.py、src-ui/src/graph/dispatch.ts、src-ui/src/graph/types.ts、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/components/center/graph/DispatchOverlay.tsx、src-ui/src/tauri.ts。不读 node_modules、target、dist、port。
+
+逐条核对 19 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- 第 1 条：回退时是否丢弃 ACP session id、用完整 prompt；一次性 argv 是否不含 -S/-r；
+- 第 2 条：answer_permission 是否按读/写分类、只读与盲节点拒写放读、永不 allow_always；
+- 第 3、17 条：spawn_interactive 子进程是否进 Job Object；ExitRequested 与关闭开关是否清池；
+- 第 4、5 条：轮级错误是否保留进程；非 JSON 行、未知 agent→client 请求、sessionId 过滤；等锁节点可取消、共享进程发 session/cancel 而非 taskkill；
+- 第 10 条：假 ACP server 端到端测试是否真的覆盖两轮复用、非 JSON 行、只读拒写、杀进程后回退与留痕 runner: oneshot；「一次性回归」是否不再可能真发请求；
+- 第 13 条：超时是否不再回退；
+- 修正是否引入新缺陷：与第 3/4 期一次性路径的回归、留痕契约 aicross-dispatch/1 只追加、Reply 契约只追加 runner、server.rs/tauri.ts 注册与类型镜像。
+编排者已在沙箱外复跑 cargo 188 / vitest 127 / build、零 warning，并在 R1 之前真跑过 kimi ACP 两轮续聊 ignored 测试（1 passed）；指出会导致误判的断言或会在真机上炸的路径。
+
+最后单独回答：R1 之后 TASK-05A 是否达到可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

@@ -372,6 +372,9 @@ export const commands = {
     invoke<{ exists: boolean; unfinished: boolean; content: string; runId: string; activeNodeIds: string[] }>('inspect_dispatch_state', { projectDir }),
   abandonDispatchState: (projectDir: string) =>
     invoke<void>('abandon_dispatch_state', { projectDir }),
+  detectAcpAdapters: () =>
+    invoke<AcpAdapterStatus[]>('detect_acp_adapters'),
+  releaseAcpPool: () => invoke<void>('release_acp_pool'),
 };
 
 // ── 对话图契约类型：Graph / GraphNode / Target / Preset / Stage /
@@ -391,6 +394,15 @@ export interface DispatchSettings {
   writeProjectDispatch: boolean;
   ccSwitchPath: string;
   validationCommand: string;
+  acpEnabled: boolean;
+}
+
+export interface AcpAdapterStatus {
+  id: string;
+  label: string;
+  installed: boolean;
+  command: string;
+  detail: string;
 }
 
 export interface RoleProfile {
@@ -424,6 +436,7 @@ export interface DispatchNodeRequest {
   currentMessage: string;
   materials: string[];
   sessionId: string;
+  previousRunner: string;
   write: string;
   originalRequest: string;
   upstreamArtifacts: import('./graph/types').ReplyArtifacts[];
@@ -461,6 +474,8 @@ export interface DispatchNodeResult {
   truncated: boolean;
   redacted: number;
   isolation: string;
+  runner: 'acp' | 'oneshot' | 'unknown';
+  runnerNote?: string;
   workdir: string;
   dispatchFile: string;
   frontmatter: string;
