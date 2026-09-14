@@ -1,0 +1,5 @@
+你是代码审查者，本次是 TASK-07B（界面：G2 疑似空转提示、对账说明收敛、Reply.tokens_cache_read、runStageLoop、小质量项）修正轮 R1 的复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/7b 分支。先读 tasks/fix-07b-r1.md（7 条，来自 tasks/review-07b-ds.md 与 tasks/review-07b-glm.md），再读 tasks/REPORT-07B.md 末尾「修正轮 R1」一节，再读 src-ui/src/graph/dispatch.ts、src-ui/src/graph/__tests__/idle-and-tail-07b.test.tsx、src-ui/src/components/center/graph/DispatchOverlay.tsx、DispatchBits.tsx、GraphTab.tsx、GraphTab.css、tasks/TASK-07-idle-and-tail.md。不读 node_modules、target、dist、port、src/。
+
+逐条核对 7 条：每条「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：无心跳元数据的快照永不判空转；start/retry 复位进度且按 runId 取快照；重复工具 ≥3 且 30s 无输出才提示；终态冻结耗时；reconcileUiConverged 按终态过滤；修正是否引入新缺陷（第 2–6 期路径无回归）。编排者已复跑 vitest 278 / build 全绿。
+
+最后单独回答：R1 之后 TASK-07B 是否可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

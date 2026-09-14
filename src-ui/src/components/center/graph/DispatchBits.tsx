@@ -1,7 +1,7 @@
 // DispatchOverlay 的三处小组件（TASK-05B R2-5）：抽出来是为了能用
 // react-dom/server 做组件级断言，不只停在纯函数层。
 
-import { fallbackSkippedLineOf, idleHint, rollbackHintOf, writableFallbackHintOf, type BackendNodeResult, type ProgressSnapshot } from '../../../graph/dispatch';
+import { fallbackSkippedLineOf, idleHint, rollbackHintOf, runningDetailOf, writableFallbackHintOf, type BackendNodeResult, type ProgressSnapshot } from '../../../graph/dispatch';
 import type { Target } from '../../../graph/types';
 
 // G1 确认屏：可写节点（write != 只读）配了备选时的提示。
@@ -52,6 +52,20 @@ export function IdleHint({ progress, now }: { progress?: ProgressSnapshot; now: 
   const hint = idleHint(progress, now);
   if (!hint) return null;
   return <span className="hint-capsule">{hint}</span>;
+}
+
+// 图上的节点卡：运行中那一行（TASK-07C）。与运行屏读同一份快照、用同一套
+// 判定，只是排版不同——卡片定宽，读数过长时省略，完整文本在 title 里；胶囊
+// 不压缩。既没有读数也没有提示时不占行。
+export function NodeProgressRow({ progress, now }: { progress?: ProgressSnapshot; now: number }) {
+  const detail = runningDetailOf(progress, now);
+  if (detail === '' && idleHint(progress, now) === null) return null;
+  return (
+    <div className="graph-node-row graph-node-progress" title={detail || undefined}>
+      {detail !== '' && <span className="graph-node-elapsed">{detail}</span>}
+      <IdleHint progress={progress} now={now} />
+    </div>
+  );
 }
 
 // 结果卡：擂台「选它」。visible 由调用方按 sameParentsResultCount >= 2 决定。

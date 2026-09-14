@@ -1058,7 +1058,19 @@ export const IDLE_HINT_MS = 3 * 60 * 1000;
 export const REPEATED_TOOL_LIMIT = 3;
 export const REPEATED_TOOL_IDLE_MS = 30 * 1000;
 
-export function progressSnapshot(payload: DispatchProgress, receivedAt: number): ProgressSnapshot {
+// 终态事件不带心跳字段（TASK-07 契约）：只换状态词，`elapsedMs`/`idleMs`/
+// `toolCalls`/`repeatedToolCalls`/`lastTool`/`hasHeartbeat` 与 `receivedAt` 都沿用
+// 上一条 running 的快照（R1-1）。补成 0 的话节点一收尾读数就变 0、
+// `runningDetailOf` 返回空串，整行消失——那是清空，不是冻结。
+export function progressSnapshot(
+  payload: DispatchProgress,
+  receivedAt: number,
+  previous?: ProgressSnapshot,
+): ProgressSnapshot {
+  const hasHeartbeat = payload.elapsedMs !== undefined || payload.idleMs !== undefined;
+  if (!hasHeartbeat && previous && previous.runId === payload.runId) {
+    return { ...previous, status: payload.status };
+  }
   return {
     runId: payload.runId,
     status: payload.status,
@@ -1068,7 +1080,7 @@ export function progressSnapshot(payload: DispatchProgress, receivedAt: number):
     repeatedToolCalls: payload.repeatedToolCalls ?? 0,
     lastTool: payload.lastTool ?? '',
     receivedAt,
-    hasHeartbeat: payload.elapsedMs !== undefined || payload.idleMs !== undefined,
+    hasHeartbeat,
   };
 }
 
@@ -1082,7 +1094,7 @@ export function nextProgress(
   runId: string,
 ): Record<string, ProgressSnapshot> {
   if (payload.runId !== runId) return current;
-  return { ...current, [payload.nodeId]: progressSnapshot(payload, now) };
+  return { ...current, [payload.nodeId]: progressSnapshot(payload, now, current[payload.nodeId]) };
 }
 
 // 渲染时取快照（R1-2）：state 以 nodeId 为键、跨轮存活，上一轮没收到终态的
@@ -1102,8 +1114,14 @@ export function progressStatusLabel(status: string): string {
 }
 
 // 节点还在跑（心跳或「运行中」）才算得上空转；排队、等待写锁与终态不算。
-function progressRunning(progress: ProgressSnapshot): boolean {
+export function progressRunning(progress: ProgressSnapshot): boolean {
   return progress.status === 'running' || progress.status === '运行中';
+}
+
+// 本轮还有没有节点在跑（TASK-07C）：共享层的 5s 时钟只在这时候走——全部到
+// 终态之后读数已经冻结，再 tick 只是白重渲染整张图。
+export function progressRunningAny(progress: Record<string, ProgressSnapshot>): boolean {
+  return Object.values(progress).some(progressRunning);
 }
 
 function idleMsOf(progress: ProgressSnapshot, now: number): number {

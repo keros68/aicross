@@ -220,6 +220,7 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+  line-height: 1.4;
 }
 
 .graph-node-dot {
@@ -245,6 +246,35 @@
 .graph-node-status {
   font-size: 11px;
   color: var(--text-3);
+}
+
+/* 节点卡第三行（TASK-07C）：运行中的耗时/工具 + 疑似空转胶囊。卡片内容宽只有
+   142px，最长的那句「疑似空转：同一工具连续 N 次」一行放不下（R1-4）：读数单独
+   占一行、过长时省略（完整文本在 title 里），胶囊换行显示完整，不再被卡片
+   overflow 裁掉。行高显式写死，NODE_H 按这里的三行算。 */
+.graph-node-progress {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  row-gap: 2px;
+  line-height: 1.4;
+}
+
+.graph-node-elapsed {
+  flex: 1 1 100%;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.graph-node-progress .hint-capsule {
+  max-width: 100%;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .graph-node-actions {

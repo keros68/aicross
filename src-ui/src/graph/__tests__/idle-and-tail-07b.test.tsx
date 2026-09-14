@@ -206,12 +206,12 @@ describe('07B-1 G2 疑似空转提示', () => {
     const overlay = readSource('../../components/center/graph/DispatchOverlay.tsx');
     expect(overlay).toMatch(/cancelDispatchNode\(\s*runId\s*,\s*node\.nodeId\s*\)/);
     expect(overlay).toMatch(/>\s*叫停\s*<\/button>/);
-    // 快照按 runId 过滤后再渲染，不直接取 progress[nodeId]
-    expect(overlay).toMatch(/progressOf\(\s*progress\s*,\s*node\.nodeId\s*,\s*runId\s*\)/);
+    // 快照按 runId 过滤后再渲染，不直接取 progress[nodeId]。过滤本身搬进了
+    // 共享层的 snapshotOf（TASK-07C），这里只断不再自己取。
+    expect(overlay).toMatch(/progressStore\.snapshotOf\(\s*node\.nodeId\s*\)/);
     expect(overlay).not.toContain('progress[node.nodeId]');
-    // start() 与 retry() 各清一次（R1-2）
-    expect(overlay.match(/setProgress\(\{\}\)/g)?.length).toBe(2);
-    expect(overlay.match(/setStatuses\(\{\}\)/g)?.length).toBe(2);
+    // start() 与 retry() 各清一次（R1-2）；清的是共享层的一轮（TASK-07C）
+    expect(overlay.match(/progressStore\.beginRun\(/g)?.length).toBe(2);
     expect(overlay.match(/setCurrentNodes\(\[\]\)/g)?.length).toBe(2);
   });
 });
