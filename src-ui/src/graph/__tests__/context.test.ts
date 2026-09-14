@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { BLIND_PROMPT_PREFIX, contextOf, contextPartsOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../context.ts';
+import { artifactSummary, BLIND_PROMPT_PREFIX, contextOf, contextPartsOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../context.ts';
 import { stamp } from '../stamp.ts';
-import type { Graph, GraphNode, NodeKind, Reply, Target, VisibilityKind } from '../types.ts';
+import type { Graph, GraphNode, NodeKind, Reply, ReplyArtifacts, Target, VisibilityKind } from '../types.ts';
 
 function mkTarget(visibility: VisibilityKind, upstreams?: string[]): Target {
   return {
@@ -52,6 +52,11 @@ function mkGraph(nodes: GraphNode[], root = 'root'): Graph {
 }
 
 describe('contextOf', () => {
+  it('R3-1 空 artifacts 与缺省 changed_files 的摘要辅助函数不抛', () => {
+    expect(() => artifactSummary({} as ReplyArtifacts)).not.toThrow();
+    expect(() => artifactSummary({ changed_files: undefined } as unknown as ReplyArtifacts)).not.toThrow();
+    expect(artifactSummary({} as ReplyArtifacts)).toContain('无改后全文');
+  });
   it('续接本条消息保留用户角色和附件名', () => {
     expect(serializeCurrentMessage({ text: '继续检查', attachments: ['C:\\tmp\\data.csv'] }))
       .toBe('[用户]\n继续检查\n\n[附件]\nC:\\tmp\\data.csv');

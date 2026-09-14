@@ -1,6 +1,14 @@
 use crate::process::ProcessResult;
 use regex::Regex;
 use serde_json::Value;
+
+pub(crate) const KNOWN_MODEL_ROUTES: &[(&str, &str, &str)] = &[
+    ("deepseek", "deepseek-v4-flash", "deepseek-flash"),
+];
+
+fn known_model_route(provider: &str, requested: &str, actual: &str) -> bool {
+    KNOWN_MODEL_ROUTES.iter().any(|(p, req, response)| *p == provider && *req == requested && *response == actual)
+}
 use std::path::{Path, PathBuf};
 
 pub const BLIND_ARTIFACT_NOTICE: &str = "待验材料已在工作目录：REQUEST.md（用户原话）、diff.patch（统一 diff）、changed/（改后文件全文），请先读取再判定";
@@ -584,7 +592,9 @@ fn parse_pi(
             .unwrap_or("pi 返回错误");
         return Err(ChannelParseError::with_identity(error, identity));
     }
-    if actual_provider != provider || actual_model != model {
+    if (actual_provider != provider || actual_model != model)
+        && !known_model_route(provider, model, actual_model)
+    {
         return Err(ChannelParseError::identity_mismatch(
             format!("真身不符：请求 {provider}/{model}，响应 {identity}"),
             identity,
@@ -978,6 +988,16 @@ mod tests {
         assert_eq!(error.kind, ChannelErrorKind::IdentityMismatch);
         assert!(error.message.contains("真身不符"));
         assert_eq!(error.identity, "zai-coding-cn/glm-5.3-flash");
+    }
+
+    #[test]
+    fn r3_6_pi_accepts_known_deepseek_route_alias_but_not_zai_upgrade() {
+        let base = include_str!("../../fixtures/channels/pi-response-model-mismatch.jsonl");
+        let deepseek = base.replace("zai-coding-cn", "deepseek").replace("glm-5.3-flash", "deepseek-flash");
+        let parsed = parse_pi(&result(&deepseek), "deepseek", "deepseek-v4-flash").unwrap();
+        assert_eq!(parsed.identity, "deepseek/deepseek-flash");
+        let error = parse_pi(&result(base), "zai-coding-cn", "glm-4.7").unwrap_err();
+        assert_eq!(error.kind, ChannelErrorKind::IdentityMismatch);
     }
 
     #[test]

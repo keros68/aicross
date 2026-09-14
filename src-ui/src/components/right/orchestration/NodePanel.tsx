@@ -17,6 +17,7 @@ import { defaultTurnTarget, updateNodeTarget } from '../../../graph/mutate';
 import { ancestorsOf } from '../../../graph/layout';
 import { validateNode } from '../../../graph/validate';
 import { nodeLabel } from '../../../graph/label';
+import { redraftNode } from '../../../graph/dispatch';
 import './OrchestrationPanel.css';
 
 const ROLES = ['出方案', '执行', '验收', '验证'];
@@ -255,6 +256,9 @@ export function NodePanel({ graph, nodeId, models, onCommit, onClose }: NodePane
             关闭
           </button>
         </div>
+        {node.reply?.status === 'failed' && (
+          <div className="np-body"><button onClick={() => onCommit(redraftNode(graph, nodeId))}>重派</button></div>
+        )}
         {node.kind === 'material' ? (
           <div className="np-body">
             <p className="te-note">材料节点没有派发目标。</p>

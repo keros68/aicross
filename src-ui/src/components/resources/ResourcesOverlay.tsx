@@ -306,6 +306,7 @@ function AgentCard({
   onManual: () => void;
 }) {
   const groups = groupModelsByProvider(agent.models);
+  const [openDetails, setOpenDetails] = useState<Record<string, boolean>>({});
   const detecting = busy === `detect:${agent.id}`;
   const smokingAgent = busy === `smoke-agent:${agent.id}`;
   return (
@@ -336,8 +337,9 @@ function AgentCard({
                     </span>
                     <StatusTag status={model.status} />
                   </div>
-                  <details className="agent-card-model-detail">
-                    <summary>详情</summary>
+                  <div className="agent-card-model-detail">
+                    <button type="button" className="agent-card-detail-toggle" onClick={() => setOpenDetails((current) => ({ ...current, [key]: !current[key] }))}>详情</button>
+                    {openDetails[key] && <div>
                     <div className="agent-card-model-fields">
                       <label>
                         厂商
@@ -407,7 +409,8 @@ function AgentCard({
                       </button>
                       {updating && <span className="agent-card-model-saving">保存中…</span>}
                     </div>
-                  </details>
+                    </div>}
+                  </div>
                 </div>
               );
             })}

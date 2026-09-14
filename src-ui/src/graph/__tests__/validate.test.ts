@@ -56,6 +56,17 @@ const MODELS: DispatchableModel[] = [
 ];
 
 describe('validateNode', () => {
+  it('R4-2 验收节点与盲执行节点非只读都报约束', () => {
+    const single = { ...mkTarget('claude', 'm1', '验收'), write: '单写者' as const };
+    const worktree = { ...mkTarget('codex', 'm2', '执行'), visibility: '盲' as const, write: 'worktree' as const };
+    const g = mkGraph([
+      mkNode('root', 'material', []),
+      mkNode('single', 'turn', ['root'], single),
+      mkNode('blind', 'turn', ['root'], worktree),
+    ]);
+    expect(validateNode(g, 'single', MODELS)).toContain('验收/验证节点只能只读');
+    expect(validateNode(g, 'blind', MODELS)).toContain('盲节点只能只读');
+  });
   it('同厂商验收：标 复核，非独立验证', () => {
     const g = mkGraph([
       mkNode('root', 'material', []),

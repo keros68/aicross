@@ -19,6 +19,39 @@ export interface BackendNodeResult {
   validationOutput?: string;
 }
 
+export function failedNodesWithoutResults(
+  active: Pick<BackendNodeResult, 'nodeId'>[],
+  results: BackendNodeResult[],
+  error: string,
+): BackendNodeResult[] {
+  const received = new Set(results.map((result) => result.nodeId));
+  return active.filter((node) => !received.has(node.nodeId)).map((node) => ({
+    nodeId: node.nodeId,
+    stage: 1,
+    status: 'error',
+    text: '',
+    modelReported: '',
+    sessionId: '',
+    tokensIn: 0,
+    tokensOut: 0,
+    durationMs: 0,
+    error,
+    artifacts: null,
+  }));
+}
+
+type RoleTarget = { agent: string; provider?: string; model: string; tier?: string; thinking: string };
+
+export function applyRoleDefaults<T extends RoleTarget & { role: string }>(
+  target: T,
+  roles: { planning: RoleTarget; execution: RoleTarget; acceptance: RoleTarget },
+): T {
+  if (target.model.trim()) return target;
+  const profile = target.role === '出方案' ? roles.planning : target.role === '执行' ? roles.execution : target.role === '验收' ? roles.acceptance : undefined;
+  if (!profile || !profile.model.trim()) return target;
+  return { ...target, agent: profile.agent, provider: profile.provider, model: profile.model, tier: profile.tier, thinking: profile.thinking };
+}
+
 export function dispatchableNodeIds(graph: Graph): string[] {
   return Object.values(graph.nodes)
     .filter((node) => {
@@ -30,6 +63,34 @@ export function dispatchableNodeIds(graph: Graph): string[] {
     })
     .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
     .map((node) => node.id);
+}
+
+export function missingTargetNodeIds(graph: Graph, nodeIds: string[]): string[] {
+  return nodeIds.filter((id) => {
+    const target = graph.nodes[id]?.target;
+    return !target?.agent.trim() || !target.model.trim();
+  });
+}
+
+export type NextStageStep =
+  | { kind: 'dispatch'; nodeIds: string[] }
+  | { kind: 'missing-target'; nodeIds: string[] }
+  | { kind: 'limit'; nodeIds: string[] }
+  | { kind: 'done'; nodeIds: [] };
+
+export function nextStageStep(
+  graph: Graph,
+  collected: Pick<BackendNodeResult, 'nodeId'>[],
+  settings: { maxRequests: number },
+): NextStageStep {
+  const nodeIds = dispatchableNodeIds(graph);
+  if (nodeIds.length === 0) return { kind: 'done', nodeIds: [] };
+  const missing = missingTargetNodeIds(graph, nodeIds);
+  if (missing.length > 0) return { kind: 'missing-target', nodeIds: missing };
+  if (!withinRequestLimit(collected.length, nodeIds.length, settings.maxRequests)) {
+    return { kind: 'limit', nodeIds };
+  }
+  return { kind: 'dispatch', nodeIds };
 }
 
 export function continuationSession(graph: Graph, nodeId: string): string | undefined {
@@ -177,7 +238,9 @@ export function routeLine(node: GraphNode, models: DispatchableModel[], isolatio
   const route = target.agent.trim() && target.model.trim()
     ? `${target.agent}/${target.model}`
     : '未指定模型';
-  return `[aicross] ${summary} → ${route} ｜ ${target.tier || model?.tier || '未分档'} · thinking=${target.thinking} ｜ 可见性=${target.visibility} ｜ 隔离=${isolation}`;
+  const validation = (target as Target & { validation_command?: string }).validation_command?.trim() ? ` ｜ 验证=${(target as Target & { validation_command?: string }).validation_command?.trim()}` : '';
+  const warning = target.agent === 'cc-switch' && ['单写者', 'worktree'].includes(target.write) ? ' ｜ cc-switch 单轮无工具，产物将为空' : target.agent === 'kimi' && target.visibility === '盲' ? ' ｜ kimi 无只读档，隔离=部分' : '';
+  return `[aicross] ${summary} → ${route} ｜ ${target.tier || model?.tier || '未分档'} · thinking=${target.thinking} ｜ 可见性=${target.visibility} ｜ 写=${target.write} ｜ 隔离=${isolation}${validation}${warning}`;
 }
 
 export type AcceptanceVerdict = 'PASS' | 'NEEDS_FIX' | 'UNKNOWN';
@@ -189,7 +252,7 @@ export function parseAcceptance(text: string): AcceptanceVerdict {
 }
 
 export function isSmallEconomyTask(text: string, attachments: string[]): boolean {
-  return text.length < 200 && attachments.length === 0;
+  return text.length < 120 && attachments.length === 0 && !/[\r\n]|测试|验证|新建|实现|并/.test(text);
 }
 
 export function needsChainThinking(text: string): boolean {

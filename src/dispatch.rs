@@ -100,15 +100,14 @@ pub struct DispatchNodeRequest {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct ChangedFile {
     pub path: String,
     pub content: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct DispatchArtifacts {
+    #[serde(default)]
     pub diff: String,
     #[serde(default)]
     pub changed_files: Vec<ChangedFile>,
@@ -306,7 +305,9 @@ pub fn abandon_dispatch_state(project_dir: String) -> Result<(), String> {
         .join(".dispatch")
         .join("STATE.md");
     if path.is_file() {
-        fs::remove_file(&path).map_err(|error| format!("放弃派发状态失败：{error}"))?;
+        let stamp = Local::now().format("%Y%m%d-%H%M%S");
+        let abandoned = path.with_file_name(format!("STATE.abandoned-{stamp}.md"));
+        fs::rename(&path, &abandoned).map_err(|error| format!("放弃派发状态失败：{error}"))?;
     }
     Ok(())
 }
@@ -316,10 +317,12 @@ fn is_continuing(node: &DispatchNodeRequest) -> bool {
 }
 
 fn requires_single_writer(node: &DispatchNodeRequest, worktree_falls_back: bool) -> bool {
-    node.write == "单写者" || (node.write == "worktree" && worktree_falls_back)
+    node.visibility != "盲"
+        && (node.write == "单写者" || (node.write == "worktree" && worktree_falls_back))
 }
 
 fn preview_core(request: &DispatchStageRequest) -> Result<DispatchPreview, String> {
+    let _ = project_path(&request.project_dir)?;
     if request
         .nodes
         .iter()
@@ -362,6 +365,40 @@ fn dispatch_stage_core(
 ) -> Result<DispatchStageResult, String> {
     if request.nodes.is_empty() {
         return Err("当前阶段没有可派发节点".into());
+    }
+    if let Some(node) = request.nodes.iter().find(|node| node.agent.trim().is_empty() || node.model.trim().is_empty()) {
+        return Ok(DispatchStageResult {
+            run_id: request.run_id,
+            results: vec![DispatchNodeResult {
+                node_id: node.node_id.clone(),
+                stage: node.stage,
+                status: "error".into(),
+                error: format!("节点 {} 未指定 agent/model，不能派发", node.node_id),
+                ..DispatchNodeResult::default()
+            }],
+            state_file: String::new(),
+        });
+    }
+    let mut rejected = Vec::new();
+    request.nodes.retain(|node| {
+        let invalid = (node.role == "验收" || node.role == "验证") && node.write != "只读";
+        if invalid {
+            rejected.push(DispatchNodeResult {
+                node_id: node.node_id.clone(),
+                stage: node.stage,
+                status: "error".into(),
+                error: format!("节点 {} 的验收/验证写权限必须为只读", node.node_id),
+                ..DispatchNodeResult::default()
+            });
+        }
+        !invalid
+    });
+    if request.nodes.is_empty() {
+        return Ok(DispatchStageResult {
+            run_id: request.run_id,
+            results: rejected,
+            state_file: String::new(),
+        });
     }
     if request.nodes.len() > request.settings.max_requests.clamp(1, 100) {
         return Err(format!(
@@ -417,7 +454,7 @@ fn dispatch_stage_core(
     let mut queued: VecDeque<DispatchNodeRequest> = request.nodes.clone().into();
     let mut active_agents = HashSet::new();
     let mut active = 0_usize;
-    let mut results = Vec::new();
+    let mut results = rejected;
     let (sender, receiver) = mpsc::channel::<(String, bool, DispatchNodeResult)>();
     let mut active_single_writer = false;
 
@@ -881,9 +918,9 @@ fn materialize_snapshot(
     Ok(())
 }
 
-fn project_is_git_work_tree(project: &Path, timeout: Duration) -> Result<bool, String> {
+fn project_is_git_work_tree_with(program: &Path, project: &Path, timeout: Duration) -> Result<bool, String> {
     let probe = run_process_registered(
-        Path::new("git"),
+        program,
         &["rev-parse".into(), "--is-inside-work-tree".into()],
         None,
         timeout,
@@ -893,8 +930,24 @@ fn project_is_git_work_tree(project: &Path, timeout: Duration) -> Result<bool, S
     Ok(!probe.timed_out && probe.code == Some(0) && probe.stdout.trim() == "true")
 }
 
+fn project_is_git_work_tree(project: &Path, timeout: Duration) -> Result<bool, String> {
+    project_is_git_work_tree_with(Path::new("git"), project, timeout)
+}
+
 fn artifact_diff_for_project(
     project: &Path,
+    scratch_parent: &Path,
+    before: &DirectorySnapshot,
+    after: &DirectorySnapshot,
+    timeout: Duration,
+) -> Result<DispatchArtifacts, String> {
+    let is_git = project_is_git_work_tree(project, timeout).unwrap_or(false);
+    artifact_diff_for_project_with_git(Path::new("git"), is_git, scratch_parent, before, after, timeout)
+}
+
+fn artifact_diff_for_project_with_git(
+    git: &Path,
+    is_git: bool,
     scratch_parent: &Path,
     before: &DirectorySnapshot,
     after: &DirectorySnapshot,
@@ -904,7 +957,7 @@ fn artifact_diff_for_project(
     if paths.is_empty() {
         return Ok(DispatchArtifacts::default());
     }
-    if !project_is_git_work_tree(project, timeout)? {
+    if !is_git {
         return Ok(artifact_diff(before, after));
     }
 
@@ -924,10 +977,14 @@ fn artifact_diff_for_project(
     let scratch = scratch_parent.join(format!("diff-{}", Uuid::new_v4()));
     let before_root = scratch.join("before");
     let after_root = scratch.join("after");
-    materialize_snapshot(&before_root, before, &materialized)?;
-    materialize_snapshot(&after_root, after, &materialized)?;
+    if let Err(error) = materialize_snapshot(&before_root, before, &materialized)
+        .and_then(|_| materialize_snapshot(&after_root, after, &materialized))
+    {
+        let _ = fs::remove_dir_all(&scratch);
+        return Err(error);
+    }
     let result = run_process_registered(
-        Path::new("git"),
+        git,
         &[
             "diff".into(),
             "--no-index".into(),
@@ -945,20 +1002,29 @@ fn artifact_diff_for_project(
         None,
     );
     let _ = fs::remove_dir_all(&scratch);
-    let result = result?;
+    let result = match result {
+        Ok(result) => result,
+        Err(_) => return Ok(artifact_diff(before, after)),
+    };
     if result.timed_out || !matches!(result.code, Some(0 | 1)) {
-        return Err(nonempty_process_error(&result, "git diff --no-index 失败"));
+        return Ok(artifact_diff(before, after));
     }
-    let mut diff = result
-        .stdout
-        .replace("a/before/", "a/")
-        .replace("b/after/", "b/");
+    let mut diff = normalize_git_diff(&result.stdout);
+    if !diff.is_empty() { diff.push('\n'); }
     diff.push_str(&fallback_diff_for_paths(before, after, &oversized));
     Ok(DispatchArtifacts {
         diff,
         changed_files: changed_file_contents(after, &paths),
         ..DispatchArtifacts::default()
     })
+}
+
+fn normalize_git_diff(raw: &str) -> String {
+    raw.lines().map(|line| {
+        if line.starts_with("diff --git ") || line.starts_with("--- ") || line.starts_with("+++ ") {
+            line.replace("a/before/", "a/").replace("b/after/", "b/")
+        } else { line.to_string() }
+    }).collect::<Vec<_>>().join("\n")
 }
 
 fn create_worktree(project: &Path, path: &Path, timeout: Duration) -> Result<(), String> {
@@ -1014,6 +1080,45 @@ fn run_validation(command: &str, cwd: &Path, timeout: Duration) -> Result<String
     Ok(output)
 }
 
+fn successful_validation_output(node: &DispatchNodeRequest, used_worktree: bool) -> Option<&'static str> {
+    (node.role == "执行" && used_worktree)
+        .then_some("worktree 节点未跑验证命令，采纳合并后再验")
+}
+
+fn redact_artifacts(value: &mut DispatchArtifacts) -> usize {
+    let mut redacted = 0;
+    let (diff, count) = redact_text(&value.diff, true);
+    value.diff = diff;
+    redacted += count;
+    for file in &mut value.changed_files {
+        let (content, count) = redact_text(&file.content, true);
+        file.content = content;
+        redacted += count;
+    }
+    let (summary, count) = redact_text(&value.stdout_summary, true);
+    value.stdout_summary = summary;
+    redacted + count
+}
+
+fn record_stdout(raw_stdout: &str, run_root: &Path, node_id: &str) -> String {
+    if raw_stdout.len() <= 32 * 1024 {
+        return raw_stdout.to_string();
+    }
+    let raw_path = run_root.join(format!("{}.raw.txt", safe_name(node_id)));
+    let tail = raw_stdout
+        .chars()
+        .rev()
+        .take(4096)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    match fs::write(&raw_path, raw_stdout.as_bytes()) {
+        Ok(()) => format!("原始输出已转存：{}\n末尾 4KB：\n{}", raw_path.display(), tail),
+        Err(error) => format!("原始输出转存失败：{error}\n末尾 4KB：\n{tail}"),
+    }
+}
+
 fn nonempty_process_error(result: &crate::process::ProcessResult, fallback: &str) -> String {
     let text = if result.stderr.trim().is_empty() {
         result.stdout.trim()
@@ -1033,13 +1138,16 @@ fn run_one(
     run_root: &Path,
     log_dir: &Path,
     settings: &DispatchSettings,
-    node: DispatchNodeRequest,
+    mut node: DispatchNodeRequest,
 ) -> DispatchNodeResult {
     let stage = node.stage.max(1);
     let started = Local::now();
     let timer = Instant::now();
     let cancel_key = registry_key(run_id, &node.node_id);
     let blind = node.visibility == "盲";
+    if blind {
+        node.write = "只读".into();
+    }
     let isolation = channels::isolation_for(&node.agent, blind).to_string();
     let timeout = Duration::from_secs(settings.timeout_secs.clamp(1, 3600));
     let mut worktree_warning = String::new();
@@ -1100,7 +1208,7 @@ fn run_one(
         Err(error) => ("(未发送)".into(), Vec::new(), 0, error),
     };
     let continuing = is_continuing(&node);
-    let (outbound, redacted) = if continuing {
+    let (outbound, mut redacted) = if continuing {
         if node.current_message.is_empty() {
             (prompt.clone(), prepared_redacted)
         } else {
@@ -1192,7 +1300,9 @@ fn run_one(
     }
 
     let mut validation_output = String::new();
-    if status == "ok" && node.role == "执行" && node.write != "只读" {
+    if status == "ok" && successful_validation_output(&node, worktree_path.is_some()).is_some() {
+        validation_output = successful_validation_output(&node, true).unwrap().into();
+    } else if status == "ok" && node.role == "执行" && node.write != "只读" {
         match run_validation(&settings.validation_command, &workdir, timeout) {
             Ok(output) => validation_output = output,
             Err(validation_error) => {
@@ -1221,6 +1331,9 @@ fn run_one(
                 } else {
                     format!("{worktree_warning}\n{summary}")
                 };
+                if settings.redact {
+                    redacted += redact_artifacts(&mut value);
+                }
                 artifacts = Some(value);
             }
             Err(snapshot_error) => {
@@ -1270,12 +1383,13 @@ fn run_one(
         error: error.clone(),
     };
     let frontmatter = serialize_frontmatter(&record).unwrap_or_else(|e| format!("error: {e}"));
+    let record_stdout = record_stdout(&raw_stdout, run_root, &node.node_id);
     let dispatch_file = write_record(
         log_dir,
         &record,
         &frontmatter,
         &outbound,
-        &raw_stdout,
+        &record_stdout,
         &raw_stderr,
     )
     .unwrap_or_default();
@@ -1494,11 +1608,10 @@ fn redaction_count(
 }
 
 fn project_path(value: &str) -> Result<PathBuf, String> {
-    let path = if value.trim().is_empty() {
-        std::env::current_dir().map_err(|error| format!("读取当前目录失败：{error}"))?
-    } else {
-        PathBuf::from(value)
-    };
+    if value.trim().is_empty() {
+        return Err("请先在左栏「工作区」选择项目目录".into());
+    }
+    let path = PathBuf::from(value);
     if !path.is_dir() {
         return Err(format!("项目目录不存在：{}", path.display()));
     }
@@ -1532,7 +1645,7 @@ fn write_record(
     let base = format!(
         "{}-{}-{}-{}",
         stamp,
-        safe_name(&record.agent),
+        if record.agent.trim().is_empty() { "unspecified".into() } else { safe_name(&record.agent) },
         safe_name(&record.model),
         safe_name(&record.role)
     );
@@ -1761,6 +1874,201 @@ mod tests {
             original_request: "分析材料".into(),
             upstream_artifacts: Vec::new(),
         }
+    }
+
+    fn stage_request(project_dir: String, nodes: Vec<DispatchNodeRequest>) -> DispatchStageRequest {
+        DispatchStageRequest {
+            run_id: "r3-test-run".into(),
+            stage: 1,
+            project_dir,
+            nodes,
+            settings: DispatchSettings::default(),
+        }
+    }
+
+    #[test]
+    fn r3_1_artifacts_serialize_with_snake_case_keys() {
+        let value = serde_json::to_value(DispatchArtifacts {
+            diff: "d".into(),
+            changed_files: vec![ChangedFile { path: "a.txt".into(), content: "c".into() }],
+            worktree: Some("wt".into()),
+            stdout_summary: "s".into(),
+        }).unwrap();
+        let mut keys = value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(keys, ["changed_files", "diff", "stdout_summary", "worktree"]);
+        let changed = &value["changed_files"][0];
+        let mut changed_keys = changed.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        changed_keys.sort();
+        assert_eq!(changed_keys, ["content", "path"]);
+    }
+
+    #[test]
+    fn r3_3_empty_target_returns_node_error_without_creating_run_files() {
+        let root = std::env::temp_dir().join(format!("aicross-r3-empty-target-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut empty = node(Vec::new());
+        empty.agent.clear();
+        let result = dispatch_stage_core(stage_request(root.to_string_lossy().into_owned(), vec![empty]), None).unwrap();
+        assert_eq!(result.results[0].status, "error");
+        assert!(result.results[0].error.contains("未指定"));
+        assert!(fs::read_dir(&root).unwrap().next().is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r3_7_large_stdout_is_externalized_but_small_stdout_is_inlined() {
+        let root = std::env::temp_dir().join(format!("aicross-r3-stdout-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let large = "x".repeat(40 * 1024);
+        let recorded = record_stdout(&large, &root, "node-large");
+        assert!(recorded.len() <= 32 * 1024 + 512);
+        assert!(recorded.contains("原始输出已转存"));
+        assert_eq!(fs::read_to_string(root.join("node-large.raw.txt")).unwrap(), large);
+        let small = "y".repeat(20 * 1024);
+        assert_eq!(record_stdout(&small, &root, "node-small"), small);
+        let failed_target = root.join("node-failed.raw.txt");
+        fs::create_dir_all(&failed_target).unwrap();
+        let failed = record_stdout(&large, &root, "node-failed");
+        assert!(failed.contains("原始输出转存失败："));
+        assert!(failed.contains("末尾 4KB"));
+        assert!(!root.join("node-small.raw.txt").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r3_8_empty_project_dir_rejects_preview_and_dispatch_without_writes() {
+        let before = fs::read_dir(std::env::current_dir().unwrap()).unwrap().count();
+        let request = stage_request(String::new(), vec![node(Vec::new())]);
+        assert!(preview_core(&request).unwrap_err().contains("工作区"));
+        assert!(dispatch_stage_core(request, None).unwrap_err().contains("工作区"));
+        let after = fs::read_dir(std::env::current_dir().unwrap()).unwrap().count();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn r3_12_artifacts_and_blind_delivery_redact_secrets() {
+        let secret = "sk-abcdef0123456789abcdef";
+        let mut artifacts = DispatchArtifacts {
+            diff: format!("+api_key={secret}"),
+            changed_files: vec![ChangedFile { path: "a.txt".into(), content: format!("api_key={secret}") }],
+            ..DispatchArtifacts::default()
+        };
+        let hits = redact_artifacts(&mut artifacts);
+        assert!(hits >= 1);
+        assert!(!artifacts.diff.contains(secret));
+        assert!(!artifacts.changed_files[0].content.contains(secret));
+
+        let root = std::env::temp_dir().join(format!("aicross-r3-blind-redact-{}", Uuid::new_v4()));
+        let mut blind = node(Vec::new());
+        blind.original_request = "review".into();
+        blind.upstream_artifacts = vec![DispatchArtifacts {
+            diff: format!("+api_key={secret}"),
+            changed_files: vec![ChangedFile { path: "a.txt".into(), content: format!("api_key={secret}") }],
+            ..DispatchArtifacts::default()
+        }];
+        let (_, _, count) = prepare_outbound(&blind, true, &root, true).unwrap();
+        assert!(count >= 1);
+        assert!(!fs::read_to_string(root.join("diff.patch")).unwrap().contains(secret));
+        assert!(!fs::read_to_string(root.join("changed/a.txt")).unwrap().contains(secret));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r3_13_missing_git_probe_falls_back_and_failed_materialization_leaves_no_diff_dir() {
+        let root = std::env::temp_dir().join(format!("aicross-r3-git-fallback-{}", Uuid::new_v4()));
+        let missing = root.join("missing-project");
+        let fake_git = root.join("git-does-not-exist.exe");
+        assert!(!project_is_git_work_tree_with(&fake_git, &missing, Duration::from_millis(50)).unwrap_or(false));
+        let before = HashMap::from([("a.txt".into(), SnapshotFile { bytes: Some(b"old".to_vec()), ..SnapshotFile::default() })]);
+        let after = HashMap::from([("a.txt".into(), SnapshotFile { bytes: Some(b"new".to_vec()), ..SnapshotFile::default() })]);
+        fs::create_dir_all(&root).unwrap();
+        let fallback = artifact_diff_for_project(&missing, &root, &before, &after, Duration::from_millis(50)).unwrap();
+        assert!(!fallback.diff.is_empty());
+        let diff_failed = artifact_diff_for_project_with_git(&fake_git, true, &root, &before, &after, Duration::from_millis(50)).unwrap();
+        assert_eq!(diff_failed.diff, artifact_diff(&before, &after).diff);
+        let blocked = root.join("blocked");
+        fs::write(&blocked, "file").unwrap();
+        assert!(artifact_diff_for_project_with_git(&fake_git, true, &blocked, &before, &after, Duration::from_millis(50)).is_err());
+        let diff_dirs = fs::read_dir(&root).unwrap().filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("diff-")).count();
+        assert_eq!(diff_dirs, 0);
+        let normalized = normalize_git_diff("diff --git a/before/a.txt b/after/a.txt\n--- a/before/a.txt\n+++ b/after/a.txt\n+a/before/content");
+        assert!(normalized.contains("+a/before/content"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r3_14_blind_single_writer_nodes_do_not_take_the_project_write_lock() {
+        let project = std::env::temp_dir().join(format!("aicross-r4-blind-lock-{}", Uuid::new_v4()));
+        fs::create_dir_all(&project).unwrap();
+        let _held = acquire_project_write(&project, Duration::from_secs(1), "writer").unwrap();
+        let mut blind = node(Vec::new());
+        blind.write = "单写者".into();
+        blind.visibility = "盲".into();
+        assert!(!requires_single_writer(&blind, true));
+        assert!(!requires_single_writer(&blind, false));
+        blind.visibility = "共享".into();
+        assert!(requires_single_writer(&blind, true));
+        let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn r4_2_invalid_acceptance_write_returns_node_error() {
+        let root = std::env::temp_dir().join(format!("aicross-r4-readonly-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut invalid = node(Vec::new());
+        invalid.node_id = "invalid-review".into();
+        invalid.write = "worktree".into();
+        let result = dispatch_stage_core(stage_request(root.to_string_lossy().into_owned(), vec![invalid]), None).unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].node_id, "invalid-review");
+        assert_eq!(result.results[0].status, "error");
+        assert!(result.state_file.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r4_1_worktree_fallback_runs_validation_in_effective_directory() {
+        let root = std::env::temp_dir().join(format!("aicross-r4-validation-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        std::env::set_var("AICROSS_TEST_RUN_ROOT", root.join("runtime"));
+        let mut worktree = node(Vec::new());
+        worktree.role = "执行".into();
+        worktree.visibility = "共享".into();
+        worktree.write = "worktree".into();
+        assert!(successful_validation_output(&worktree, false).is_none());
+        let marker = root.join("validated.txt");
+        #[cfg(windows)]
+        let command = format!("Set-Content -LiteralPath '{}' -Value validated", marker.display());
+        #[cfg(not(windows))]
+        let command = format!("printf validated > '{}'", marker.display());
+        let output = run_validation(&command, &root, Duration::from_secs(5)).unwrap();
+        assert!(!output.contains("未跑验证命令"));
+        assert!(marker.exists());
+        std::env::remove_var("AICROSS_TEST_RUN_ROOT");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r3_16_worktree_validation_and_r3_17_abandoned_state_keep_run_identity() {
+        let mut worktree = node(Vec::new());
+        worktree.role = "执行".into();
+        worktree.write = "worktree".into();
+        assert!(successful_validation_output(&worktree, true).unwrap().contains("未跑验证命令"));
+
+        let root = std::env::temp_dir().join(format!("aicross-r3-state-{}", Uuid::new_v4()));
+        let dispatch = root.join(".dispatch");
+        fs::create_dir_all(&dispatch).unwrap();
+        let status = HashMap::from([("a".into(), "排队".into())]);
+        write_state(&dispatch.join("STATE.md"), "run-from-state", 2, 1, &status, &[]).unwrap();
+        let inspected = inspect_dispatch_state(root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(inspected.run_id, "run-from-state");
+        abandon_dispatch_state(root.to_string_lossy().into_owned()).unwrap();
+        assert!(!dispatch.join("STATE.md").exists());
+        assert!(fs::read_dir(&dispatch).unwrap().filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("STATE.abandoned-")));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2118,6 +2426,7 @@ mod tests {
     fn non_git_worktree_is_accounted_as_single_writer() {
         let mut request = node(Vec::new());
         request.write = "worktree".into();
+        request.visibility = "共享".into();
         assert!(requires_single_writer(&request, true));
         assert!(!requires_single_writer(&request, false));
     }
@@ -2619,13 +2928,11 @@ mod tests {
     #[ignore = "one real cc-switch request; requires AICROSS_CC_SWITCH_PATH and provider"]
     fn live_cc_switch_route() {
         let Ok(script) = std::env::var("AICROSS_CC_SWITCH_PATH") else {
-            println!("CC_SWITCH_UNVERIFIED=AICROSS_CC_SWITCH_PATH 未设置");
-            return;
+            panic!("需要 AICROSS_CC_SWITCH_PATH 与 AICROSS_CC_SWITCH_PROVIDER");
         };
         let provider = std::env::var("AICROSS_CC_SWITCH_PROVIDER").unwrap_or_default();
         if provider.is_empty() {
-            println!("CC_SWITCH_UNVERIFIED=AICROSS_CC_SWITCH_PROVIDER 未设置");
-            return;
+            panic!("需要 AICROSS_CC_SWITCH_PATH 与 AICROSS_CC_SWITCH_PROVIDER");
         }
         let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut request = live_node(

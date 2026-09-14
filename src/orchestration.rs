@@ -336,7 +336,6 @@ fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), String> {
 fn fill_role_defaults(
     presets: &mut [Preset],
     roles: &RoleSettings,
-    _models: &[ResourceModel],
 ) {
     for preset in presets {
         for target in preset
@@ -459,8 +458,7 @@ fn presets_from(root: &Path) -> PresetFile {
             }
         }
     }
-    let models = connected_resources(&resources_path(root)).unwrap_or_default();
-    fill_role_defaults(&mut presets, &roles_from(root), &models);
+    fill_role_defaults(&mut presets, &roles_from(root));
     PresetFile {
         version: 1,
         presets,
@@ -813,13 +811,7 @@ mod tests {
             },
             ..RoleSettings::default()
         };
-        let models = vec![ResourceModel {
-            agent: "codex".into(),
-            id: "writable-model".into(),
-            tier: "低".into(),
-            ..ResourceModel::default()
-        }];
-        fill_role_defaults(&mut presets, &roles, &models);
+        fill_role_defaults(&mut presets, &roles);
         let execution = &presets
             .iter()
             .find(|preset| preset.id == "builtin-economy")

@@ -1,0 +1,1 @@
+先读仓库根目录的 AGENTS.md，再读 tasks/fix-04-r4.md（12 条，来自 GLM 与 DeepSeek 对 R3 系列的复审），逐条处理，第 1、2、3 条最优先。每条在 tasks/REPORT-04.md 末尾「修正轮 R4」一节写「已修：怎么改的（文件:行）／已补：测试名」。cargo check 必须零 warning。验证命令实际跑过并把命令与输出原文贴进报告（vitest 用 --configLoader native --pool threads）。不起窗口，不发真机请求，不 commit，不 push。

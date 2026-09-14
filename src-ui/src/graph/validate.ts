@@ -23,6 +23,13 @@ export function validateNode(
   const hints: string[] = [];
   const target = node.target;
 
+  if (target && (target.role === '验收' || target.role === '验证') && target.write !== '只读') {
+    hints.push('验收/验证节点只能只读');
+  }
+  if (target && target.visibility === '盲' && target.write !== '只读') {
+    hints.push('盲节点只能只读');
+  }
+
   if (target && (target.role === '验收' || target.role === '验证')) {
     const own = findModel(models, target);
     if (own) {

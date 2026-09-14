@@ -1,0 +1,15 @@
+你是代码审查者，本次是第 4 期修正轮 R3 的复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/4-r3 分支。先读 tasks/fix-04-r3.md（22 条修正单：必修 A 来自编排者窗口真派实测，必修 B 来自 tasks/review-04-glm-r2.md 与 tasks/review-04-ds-r2.md 两家复审的共同未闭合项），再读 tasks/fix-04-r3b.md（R3 补课单：补测试与被推掉的必修项）与 tasks/REPORT-04.md 的「修正轮 R3」「修正轮 R3b」两节（实现方逐条自报），再读涉及的文件：src/dispatch.rs、src/channels/mod.rs、src/orchestration.rs、src/resources.rs、src-ui/src/graph/（dispatch.ts、context.ts、validate.ts、types.ts、__tests__）、src-ui/src/components/center/graph/DispatchOverlay.tsx 与 GraphTab.tsx、src-ui/src/components/right/orchestration/（OrchestrationPanel.tsx、NodePanel.tsx）、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/components/resources/ResourcesOverlay.tsx、src-ui/src/tauri.ts。不读 node_modules、target、dist、port。
+
+逐条核对 22 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- A1：Rust 产物结构与 TS `ReplyArtifacts` 键名是否完全一致（changed_files / stdout_summary），前端访问是否防御式；有没有测试钉住键名；
+- A2：循环异常后已 ok 的节点是否还会被改成 failed；
+- A3：逐层推进遇到未指定模型是否真的停下来回 G1，后端是否在拍快照/拿写锁之前就拒绝空 agent；
+- A4：保存角色后预设是否重拉；盖预设时的兜底填充；
+- A5：失败节点重派入口是否在图上/节点面板可达，重派后 dispatchableNodeIds 是否包含它；
+- A6：别名表是否只放行明示三元组，zai glm-4.7→glm-5.3-flash 是否仍报真身不符；资源冒烟是否同样走通；
+- A7：留痕大小上限与外置 raw 文件；A8：空工作目录是否拒绝且 G1 禁用确认；
+- B12：脱敏是否覆盖 diff / changed_files 内容 / stdout_summary / 盲目录文件；B13：git 不可用回退与临时目录清理；B14：盲/验收节点强制只读；B16：worktree 跳过验证；B17：恢复沿用 run_id、放弃改名不删。
+- 修正是否引入新缺陷：并发/写锁、留痕契约 aicross-dispatch/1 字段、Reply 契约（只追加）、第 2/3 期图与派发行为、server.rs / tauri.ts 命令注册与类型镜像。
+编排者会在沙箱外复跑 cargo test / vitest / build，并在窗口里真派一次三层流水线到 G4；指出会导致误判的断言或会在真机上炸的路径。
+
+最后单独回答：R3 之后第 4 期是否达到可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

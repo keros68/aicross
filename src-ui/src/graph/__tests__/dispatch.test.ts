@@ -5,12 +5,16 @@ import {
   appendCorrectionRound,
   appendValidationRetry,
   applyDispatchResults,
+  applyRoleDefaults,
   clearTargetSession,
+  failedNodesWithoutResults,
   continuationSession,
   dispatchableNodeIds,
   graphStage,
   groupResultsByStage,
   isSmallEconomyTask,
+  missingTargetNodeIds,
+  nextStageStep,
   needsChainThinking,
   parseAcceptance,
   promptForRole,
@@ -18,6 +22,7 @@ import {
   redraftNode,
   setReplyAdopted,
   withinRequestLimit,
+  routeLine,
 } from '../dispatch.ts';
 import type { Graph, GraphNode, Target } from '../types.ts';
 
@@ -49,6 +54,34 @@ const graph = (nodes: GraphNode[]): Graph => ({
 });
 
 describe('graph dispatch helpers', () => {
+  it('R3-2 异常只标记未收到结果的节点', () => {
+    const active = [{ nodeId: 'a' }, { nodeId: 'b' }];
+    const ok = [{ nodeId: 'a', status: 'ok', text: 'done', modelReported: '', sessionId: '', tokensIn: 0, tokensOut: 0, durationMs: 1, error: '' }];
+    expect(failedNodesWithoutResults(active, ok, '连接中断').map((item) => item.nodeId)).toEqual(['b']);
+    expect(failedNodesWithoutResults(active, ok, '连接中断')[0]).toMatchObject({ status: 'error', error: '连接中断' });
+  });
+
+  it('R3-3 推进层遇到空 agent 或 model 时停在对应节点', () => {
+    const g = graph([
+      node('r', []),
+      { ...node('a', ['r'], { status: 'draft', text: '' }), target: target('', 'm') },
+      { ...node('b', ['r'], { status: 'draft', text: '' }), target: target('codex', '') },
+    ]);
+    const ids = dispatchableNodeIds(g);
+    expect(missingTargetNodeIds(g, ids)).toEqual(['a', 'b']);
+  });
+
+  it('R3-4 角色默认值只填空目标并携带提供者档位与 thinking', () => {
+    const roles = {
+      planning: { agent: 'pi', provider: 'deepseek', model: 'plan', tier: '低', thinking: '高' },
+      execution: { agent: 'codex', provider: 'openai', model: 'exec', tier: '中', thinking: '中' },
+      acceptance: { agent: 'claude', provider: 'anthropic', model: 'review', tier: '高', thinking: '低' },
+    };
+    const empty = { ...target('', ''), role: '执行', provider: '', tier: '低' };
+    expect(applyRoleDefaults(empty, roles)).toMatchObject(roles.execution);
+    const filled = { ...target('kimi', 'chosen'), role: '执行', provider: 'moonshot', tier: '高' };
+    expect(applyRoleDefaults(filled, roles)).toEqual(filled);
+  });
   it('只返回父节点完成或为材料的 draft 节点', () => {
     const g = graph([
       node('r', []),
@@ -124,8 +157,21 @@ describe('graph dispatch helpers', () => {
   it('小任务与链式任务启发式', () => {
     expect(isSmallEconomyTask('改一个按钮', [])).toBe(true);
     expect(isSmallEconomyTask('改一个按钮', ['spec.md'])).toBe(false);
+    expect(isSmallEconomyTask('这'.repeat(194), [])).toBe(false);
+    expect(isSmallEconomyTask('先修改按钮并补测试', [])).toBe(false);
+    expect(isSmallEconomyTask('修改按钮\n补充说明', [])).toBe(false);
     expect(needsChainThinking('计算 1、2、3 的统计值')).toBe(true);
     expect(needsChainThinking('只改标题')).toBe(false);
+  });
+
+  it('R4-5 推进函数覆盖派发、未指定、上限和结束四态', () => {
+    const ready = graph([node('r', []), node('a', ['r'], { status: 'draft', text: '' })]);
+    expect(nextStageStep(ready, [], { maxRequests: 3 })).toEqual({ kind: 'dispatch', nodeIds: ['a'] });
+    const missing = { ...ready, nodes: { ...ready.nodes, a: { ...ready.nodes.a, target: target('', '') } } };
+    expect(nextStageStep(missing, [], { maxRequests: 3 })).toEqual({ kind: 'missing-target', nodeIds: ['a'] });
+    expect(nextStageStep(ready, [{ nodeId: 'used' }], { maxRequests: 1 })).toEqual({ kind: 'limit', nodeIds: ['a'] });
+    const done = { ...ready, nodes: { ...ready.nodes, a: { ...ready.nodes.a, reply: { status: 'done' as const, text: 'ok' } } } };
+    expect(nextStageStep(done, [], { maxRequests: 3 })).toEqual({ kind: 'done', nodeIds: [] });
   });
 
   it('角色模板固定加入数值、任务契约与验收维度', () => {
@@ -263,5 +309,22 @@ describe('graph dispatch helpers', () => {
     expect(groups.map((group) => [group.stage, group.title])).toEqual([[1, '出方案'], [2, '第 2 阶段']]);
     expect(withinRequestLimit(6, 2, 8)).toBe(true);
     expect(withinRequestLimit(7, 2, 8)).toBe(false);
+  });
+
+  it('R3-5 失败节点重派后可再次派发且有产物父节点不受影响', () => {
+    const parent = { ...node('p', ['r'], { status: 'done', text: 'parent', artifacts: { diff: 'd', changed_files: [], stdout_summary: 's' } }), target: target() };
+    const g = graph([node('r', []), parent, { ...node('e', ['p'], { status: 'failed', text: 'x' }), target: target() }]);
+    const next = redraftNode(g, 'e');
+    expect(dispatchableNodeIds(next)).toEqual(['e']);
+    expect(next.nodes.p).toEqual(parent);
+  });
+
+  it('G1 路由行显示验证命令和必要的通道提示', () => {
+    const n = { ...node('e', ['r']), target: { ...target('cc-switch', 'm'), write: '单写者' as const, validation_command: 'npm test' } };
+    const line = routeLine(n, [], '部分');
+    expect(line).toContain('验证=npm test');
+    expect(line).toContain('cc-switch 单轮无工具，产物将为空');
+    const kimi = { ...node('k', ['r']), target: { ...target('kimi', 'kimi-code/k3'), visibility: '盲' as const } };
+    expect(routeLine(kimi, [], '部分')).toContain('隔离=部分');
   });
 });

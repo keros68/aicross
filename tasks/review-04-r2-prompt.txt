@@ -1,0 +1,13 @@
+你是代码审查者，本次是复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是并入第 4 期与资源接入之后的 main。先读 tasks/review-04-glm.md 与 tasks/review-04-qwen.md（上一轮两家盲审）、tasks/fix-04-r1.md 与 tasks/fix-04-r2.md（两轮修正单）、tasks/REPORT-04.md 的「修正轮 R1」「修正轮 R2」两节（实现方逐条处理），再读涉及的文件：src/dispatch.rs、src/channels/mod.rs、src/orchestration.rs、src/process.rs、src-ui/src/graph/（context.ts、dispatch.ts、dispatch-settings.ts、types.ts、__tests__）、src-ui/src/components/center/graph/DispatchOverlay.tsx 与 GraphTab.tsx、src-ui/src/components/common/SettingsModal.tsx、fixtures/prompts/、fixtures/pipeline/。不读 node_modules、target、dist、port。
+
+逐条核对两份修正单（R1 17 条、R2 16 条）：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- R2 第 1 条：盲验收 prompt 是否含「待验材料已在工作目录」提示；带产物的 pi 盲节点是否放开只读工具；<30KB diff 是否内联；有测试；
+- R2 第 2 条：非盲可写的 claude / pi 工具集；
+- R2 第 5、6 条：git diff --no-index 路径与回退实现；快照跳过链接、大小上限、失败置 error；
+- R2 第 8 条：写锁公平排队、超时、取消可中断；
+- R2 第 9、10 条：stage 逐节点；确认清单与派发集合一致；总请求上限；
+- R1 第 1、2 条：G1 补勾方案；parseAcceptance 单词边界；
+- 修正是否引入新缺陷（并发、留痕契约 aicross-dispatch/1 字段、第 2/3 期图与派发行为、与资源接入并回后的 server.rs / tauri.ts 注册）。
+编排者已在沙箱外复跑合并后的 main：cargo test 156 passed、vitest 91 passed、build 通过；R1 前的真机：经济流水线 3 次请求 ok、cc-switch 路 ok（R2 之后未再真跑，编排者今天会在窗口里真派一次）。
+
+最后单独回答：两轮修正之后第 4 期是否达到可交付？一句话 + 仍未闭合的项列表（按严重度排序）。
