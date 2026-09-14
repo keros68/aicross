@@ -98,6 +98,10 @@ pub struct Reply {
     /// R5：验证重试到顶后未派出的验收节点标「已跳过」的原因（前端 Reply.skipped_reason）。
     #[serde(default)]
     pub skipped_reason: Option<String>,
+    #[serde(default)]
+    pub fallback_from: Option<String>,
+    #[serde(default)]
+    pub fallback_to: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -1148,6 +1152,17 @@ mod tests {
         // R5：skipped_reason 是前端追加的可选字段，Rust 镜像必须原样保住。
         let kept = loaded.nodes.values().find_map(|n| n.reply.as_ref().and_then(|r| r.skipped_reason.clone()));
         assert_eq!(kept.as_deref(), Some("上游验证未通过"));
+    }
+
+    #[test]
+    fn task06_reply_fallback_fields_roundtrip_and_default_for_old_graphs() {
+        let reply = Reply { fallback_from: Some("claude/main".into()), fallback_to: Some("codex/backup".into()), ..Reply::default() };
+        let restored: Reply = serde_json::from_value(serde_json::to_value(&reply).unwrap()).unwrap();
+        assert_eq!(restored.fallback_from.as_deref(), Some("claude/main"));
+        assert_eq!(restored.fallback_to.as_deref(), Some("codex/backup"));
+        let legacy: Reply = serde_json::from_str(r#"{"status":"done","text":"old"}"#).unwrap();
+        assert_eq!(legacy.fallback_from, None);
+        assert_eq!(legacy.fallback_to, None);
     }
 
     #[test]

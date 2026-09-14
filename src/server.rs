@@ -3949,6 +3949,8 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::orchestration::load_roles,
             crate::orchestration::save_roles,
             crate::dispatch::inspect_dispatch_state,
+            crate::dispatch::reconcile_dispatch_state,
+            crate::dispatch::rollback_node_changes,
             crate::dispatch::abandon_dispatch_state,
             crate::channels::acp::detect_acp_adapters,
             crate::channels::acp::release_acp_pool,

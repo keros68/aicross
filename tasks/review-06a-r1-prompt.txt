@@ -1,0 +1,13 @@
+你是代码审查者，本次是 TASK-06A（引擎：before 快照与回滚、崩溃后对账、禁外部动作、推进幂等、8MB 标记、Reply.fallback 字段）修正轮 R1 的复审。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/6a 分支。先读 tasks/fix-06a-r1.md（16 条，来自 tasks/review-06a-glm.md 与 tasks/review-06a-ds.md 两家盲审）、tasks/TASK-06-consistency.md 的「契约」节（R1 有追加），再读 tasks/REPORT-06A.md 的「修正轮 R1」一节，再读涉及文件：src/dispatch.rs、src/orchestration.rs、src/process.rs、src/server.rs、src/channels/mod.rs。不读 node_modules、target、dist、port、src/channels/acp.rs。
+
+逐条核对 16 条：每条给出「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：
+- 第 1、2 条：回滚与快照按 uses_single_writer 生效模式；rollback_before 按 node_id 找最新留痕的 before_dir、不依赖当前 run_id；端到端测试是否真的两次用不同 run_id 且断言文件复原；
+- 第 3 条：RootDir/CurDir 拒绝；恢复目标是链接/junction 时不穿透；canonicalize 校验父目录；测试是否真造了链接（Windows 上 junction 或 symlink_file，创建失败时是否只是跳过）；
+- 第 9、10、11 条：早退不覆盖旧快照；回滚 read_dir 遍历、收集→执行→summary 永远返回、.created 删除不早于恢复；命令取项目写锁；
+- 第 4 条：write_project_dispatch=false 时快照落运行目录、before_dir 绝对路径、.gitignore 覆盖、persist 失败降级为 warning；
+- 第 6、12 条：对账取最后一个标题段、RFC3339 排序同刻 ok 优先；
+- 第 8 条：ReconcileNode 的 sessionId/runner/usage 从 frontmatter 回填，camelCase；
+- 修正是否引入新缺陷：第 2/3/4/5 期路径（run_one、run_fallback、ACP 分支、验收 PASS/NEEDS_FIX）无回归；留痕契约只追加；server.rs 注册。
+编排者已复跑 cargo 250 / vitest 221 / build 零 warning，并在沙箱外真跑 live_kimi_acp_two_turn_continuation。
+
+最后单独回答：R1 之后 TASK-06A 是否达到可交付？一句话 + 仍未闭合的项列表（按严重度排序）。
