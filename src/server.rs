@@ -1,7 +1,7 @@
 use crate::terminal;
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{State, Manager, Emitter};
 use tauri_plugin_dialog::DialogExt;
@@ -3450,10 +3450,16 @@ fn tasks_file_path() -> PathBuf {
 
 #[tauri::command]
 fn load_tasks() -> Result<String, String> {
-    let path = tasks_file_path();
+    read_tasks_at(&tasks_file_path())
+}
+
+/// Reads the board file. A missing file is an empty board; a file that is
+/// there but unreadable is an error, never a silent `[]` — the caller must be
+/// able to tell "no tasks yet" from "could not read your tasks", because the
+/// frontend stops saving on the second so the file survives untouched.
+fn read_tasks_at(path: &Path) -> Result<String, String> {
     if path.exists() {
-        std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read tasks: {}", e))
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read tasks: {}", e))
     } else {
         Ok("[]".to_string())
     }
@@ -3461,15 +3467,104 @@ fn load_tasks() -> Result<String, String> {
 
 #[tauri::command]
 fn save_tasks(data: String, app: tauri::AppHandle) -> Result<(), String> {
-    // Validate JSON before writing to disk — guards against corrupted broadcasts
-    serde_json::from_str::<serde_json::Value>(&data)
-        .map_err(|e| format!("Invalid task data (not valid JSON): {e}"))?;
-    let path = tasks_file_path();
-    std::fs::write(&path, &data)
-        .map_err(|e| format!("Failed to save tasks: {}", e))?;
+    write_tasks_at(&tasks_file_path(), &data)?;
     // Notify all windows so other instances can reload
     let _ = app.emit("tasks-changed", &data);
     Ok(())
+}
+
+/// Validates then writes the board file atomically: a temp file in the same
+/// directory, then a rename over the target. A crash mid-write leaves either
+/// the old file or the new one, never a half-written board. Same shape as
+/// `orchestration::write_json_atomic`; kept local so the task file has no
+/// dependency on the graph tier.
+fn write_tasks_at(path: &Path, data: &str) -> Result<(), String> {
+    // Validate JSON before touching disk — guards against corrupted broadcasts
+    // and refuses to replace a good file with garbage.
+    let value = serde_json::from_str::<serde_json::Value>(data)
+        .map_err(|e| format!("Invalid task data (not valid JSON): {e}"))?;
+    if !value.is_array() {
+        return Err("Invalid task data (expected an array)".to_string());
+    }
+
+    let directory = path
+        .parent()
+        .ok_or_else(|| "Invalid tasks path".to_string())?;
+    std::fs::create_dir_all(directory).map_err(|e| format!("Failed to save tasks: {}", e))?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("tasks.json");
+    let temporary = directory.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temporary, data.as_bytes()).map_err(|e| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("Failed to save tasks: {}", e)
+    })?;
+    std::fs::rename(&temporary, path).map_err(|e| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("Failed to save tasks: {}", e)
+    })?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tasks_tests {
+    use super::{read_tasks_at, write_tasks_at};
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aicross-tasks-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn missing_file_reads_as_an_empty_board() {
+        let dir = temp_dir("missing");
+        assert_eq!(read_tasks_at(&dir.join("tasks.json")).unwrap(), "[]");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_then_read_round_trips_and_leaves_no_temp_file() {
+        let dir = temp_dir("roundtrip");
+        let path = dir.join("tasks.json");
+        let body = r#"[{"id":"a","title":"写手册","status":"todo","createdAt":1}]"#;
+        write_tasks_at(&path, body).unwrap();
+        assert_eq!(read_tasks_at(&path).unwrap(), body);
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != "tasks.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_payload_never_replaces_a_good_file() {
+        let dir = temp_dir("invalid");
+        let path = dir.join("tasks.json");
+        let good = r#"[{"id":"a","title":"保留我","status":"done","createdAt":2}]"#;
+        write_tasks_at(&path, good).unwrap();
+
+        assert!(write_tasks_at(&path, "{ not json").is_err());
+        assert!(write_tasks_at(&path, r#"{"id":"a"}"#).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_damaged_file_is_returned_verbatim_rather_than_as_an_empty_board() {
+        // The frontend's parser is what rejects it; load must not paper over
+        // the damage with "[]", which would then be saved back over the file.
+        let dir = temp_dir("damaged");
+        let path = dir.join("tasks.json");
+        std::fs::write(&path, "{ truncated").unwrap();
+        assert_eq!(read_tasks_at(&path).unwrap(), "{ truncated");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 // ─── Credential Store (OS Keychain) ──────────────────────────────────────────

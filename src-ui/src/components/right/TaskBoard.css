@@ -701,3 +701,17 @@
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+
+/* Shown when ~/.aicross/tasks.json could not be parsed. The board goes
+   read-only for the session rather than overwriting the file (TASK-05 C). */
+.task-damaged {
+  margin: 8px 10px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-1, rgba(255, 255, 255, 0.14));
+  border-left-width: 3px;
+  border-radius: var(--radius-xs, 4px);
+  background: var(--bg-2, rgba(255, 255, 255, 0.04));
+  color: var(--text-1, #e8e4de);
+  font-size: 12px;
+  line-height: 1.6;
+}

@@ -1,6 +1,6 @@
 // App.tsx — 3-panel IDE layout (frameless window)
 
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useAppState, useAppDispatch, matchHotkeyScheme } from './store/app-state';
 import { retryInvoke } from './tauri';
 import { subscribeAgentStatus } from './lib/agent-status-bus';
@@ -8,7 +8,12 @@ import { routeFileDrop } from './lib/file-drop';
 import { initHistoryAutoRefresh } from './lib/history-cache';
 import { TitleBar } from './components/common/TitleBar';
 import { ResizeEdges } from './components/common/ResizeEdges';
-import { SettingsModal } from './components/common/SettingsModal';
+// 设置面板按需载入（TASK-05 C 拆包）：它只在点齿轮后出现，却把主题、
+// 快捷键、角色默认这一大摊常量拖进首屏包。外层用 settingsOpen 把关，
+// 组件内部原有的 open 判断照旧。
+const SettingsModal = lazy(() =>
+  import('./components/common/SettingsModal').then((m) => ({ default: m.SettingsModal })),
+);
 import { Explorer } from './components/left/Explorer';
 import { CenterPanel } from './components/center/CenterPanel';
 import { RightPanel } from './components/right/Compiler';
@@ -279,7 +284,11 @@ export function App() {
       {/* Personalization settings — centered modal opened by the titlebar
           gear. App-level overlay (gated on state.settingsOpen) so it floats
           above the whole workspace. */}
-      <SettingsModal />
+      {state.settingsOpen && (
+        <Suspense fallback={null}>
+          <SettingsModal />
+        </Suspense>
+      )}
 
       {/* 8 transparent resize-edge strips (window chrome). Three-platform
           unified — Windows + macOS already get edge cursors via OS shims,
