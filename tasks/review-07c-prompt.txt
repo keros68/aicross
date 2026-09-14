@@ -1,0 +1,10 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/7c 分支。本期 TASK-07C：把 dispatch-progress 的订阅从 DispatchOverlay 提到共享层（src-ui/src/graph/dispatch-progress.ts：ProgressRun + beginProgressRun/applyProgressEvent/progressRunOf + useDispatchProgress hook），节点卡（GraphTab/DispatchBits 的 NodeProgressRow）显示耗时/最近工具与疑似空转胶囊，DispatchOverlay 改为消费同一份快照。先读 tasks/TASK-07-idle-and-tail.md（契约与 B-1）、tasks/REPORT-07C.md，再读 src-ui/src/graph/dispatch-progress.ts、src-ui/src/graph/dispatch.ts（progressSnapshot/nextProgress/progressOf/idleHint/runningDetailOf 一组）、src-ui/src/graph/__tests__/idle-and-tail-07c.test.tsx、src-ui/src/components/center/graph/（GraphTab.tsx、GraphTab.css、DispatchOverlay.tsx、DispatchBits.tsx）。不读 node_modules、target、dist、port、src/。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。
+1. 需求完整性：节点卡与运行屏是否读同一份快照；订阅是否只有一处；按 runId 取快照、重派/换图复位、终态冻结、无心跳元数据不判空转是否与 R1 语义一致。
+2. 逻辑正确性：hook 的 listen/unlisten 生命周期（换图、关 tab、组件卸载）是否泄漏或串图；5s 时钟只在有运行中节点时走；迟到事件与 runId 不匹配的事件被丢弃；NODE_H 变高后布局/连线坐标是否同步。
+3. 安全：lastTool 只作文本渲染；无新增外发。
+4. 代码质量与契约：类型只追加；DispatchOverlay 删掉的本地 state 没有遗留引用；第 2–7 期路径无回归（start/retry/runStageLoop、对账、回滚标志、擂台/仲裁）。
+5. 测试：报告里的 10 条测试是否真实存在且断言目标行为；最该补的 3 个。
+编排者已复跑 vitest 288 / build 全绿。
+最后单独回答：是否可交付？一句话 + 缺项列表（按严重度排序）。

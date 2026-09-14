@@ -107,6 +107,10 @@ TASK-07 B-1 的另一半（`tasks/TASK-07-idle-and-tail.md` B-1 的括注、`tas
   （复位后 `snapshotOf` 为 undefined、节点卡渲染空串、本轮事件也不再写入，因为 runId 已是空串）。
 - **终态冻结**：不清快照，`runningDetailOf` 自己冻结（R1-4 已有的行为），
   由 `07C-2` 第三条在节点卡这一路再钉一次。
+  **（修正轮 R1 更正：这条当时不成立。）** 引擎的终态事件按契约不带心跳字段，
+  R0 的 `progressSnapshot` 把缺字段补成 0，节点一收尾读数就变 0、整行消失——
+  是清空不是冻结。`07C-2` 第三条喂的是带字段的终态事件，验的是假前提。
+  已在 R1-1 修好，见下方「修正轮 R1」。
 
 ## 没做
 
@@ -120,6 +124,10 @@ TASK-07 B-1 的另一半（`tasks/TASK-07-idle-and-tail.md` B-1 的括注、`tas
 - **卡片高度的目视核对**：`NODE_H` 76 是按 11px 行高 + 既有 8px padding 算的，没起窗口看。
   读数与长胶囊同时出现的极端情况靠 nowrap + 省略号 + `flex-shrink: 0` 兜底：胶囊完整显示，
   读数被省略号截断，完整文本在 `title` 里。
+  **（修正轮 R1 更正：「胶囊完整显示」不成立。）** 最长那句约 160px，卡片内容宽只有
+  168−24−2 = 142px；`flex-shrink: 0` + 不换行的写法下，读数被压到 0 宽、胶囊自己溢出，
+  尾部被 `.graph-node { overflow: hidden }` 裁掉。已在 R1-4 改成换行 + 显式行高，
+  `NODE_H` 同步加高，见下方「修正轮 R1」。
 
 ## 不确定处
 
@@ -191,3 +199,139 @@ dist/assets/xterm-_r9IGi5_.js                                  465.79 kB │ gzi
 
 没起窗口、没发真机请求、没 commit、没 push；临时文件只在 `%TEMP%`。
 改过的文件全是 LF，`git diff` 里没有 CR。
+
+## 修正轮 R1
+
+来源 `tasks/fix-07c-r1.md` 的 4 条必修（DeepSeek 盲审 `tasks/review-07c-ds.md` 的 F1–F4）。
+GLM 盲审 `tasks/review-07c-glm.md` 在修完这一轮之后才到，逐条比对：它的「缺项 1」＝ DS F2、
+「缺项 4」的前两例 ＝ DS F2/F3 的测试，都已在本轮覆盖；不重复的两条见本节末尾。
+只改 `src-ui/` 与 `tasks/`，没动 `src/`；行号是改完之后的。
+
+### R1-1 终态事件保留上一条心跳读数（DS F1）
+
+**已修**：`src-ui/src/graph/dispatch.ts:1065-1071` —— `progressSnapshot` 加第三个参数
+`previous?: ProgressSnapshot`；payload 既无 `elapsedMs` 也无 `idleMs`（`hasHeartbeat` 为假）
+且上一份快照同 `runId` 时，直接 `{ ...previous, status: payload.status }`：只换状态词，
+`elapsedMs`/`idleMs`/`toolCalls`/`repeatedToolCalls`/`lastTool`/`hasHeartbeat`/`receivedAt`
+全部沿用。`:1097` 的 `nextProgress` 把 `current[payload.nodeId]` 喂进去。
+没有上一条心跳、或 `runId` 对不上（跨轮），仍走原来的补 0 路径，不编数。
+终态耗时的冻结仍由 `runningDetailOf` 的 `progressRunning` 判据完成（非 running 时墙上时间 0）。
+
+**已补**：`07C-R1-1 终态事件保留上一条心跳读数 > 无字段终态事件后耗时与工具仍显示且不再增长`
+（只喂 `{ runId, nodeId, status: '完成' }`：读数仍是 42s / read_file，过 5 分钟不变，
+不挂胶囊，`progressRunningAny` 为假；再钉两条负向——跨 runId 的旧快照不借用、
+没有上一条心跳时整行不渲染）。
+
+### R1-2 listen 取消守卫（DS F2）
+
+**已修**：`src-ui/src/graph/dispatch-progress.ts:73-95` —— effect 体抽成
+`subscribeProgress(runId, onEvent) -> { dispose }`：`runId` 为空直接返回空 `dispose`；
+`disposed` 标志 + `.then((stop) => { if (disposed) stop(); else unlisten = stop; })`，
+`dispose()` 里 `disposed = true; unlisten?.(); unlisten = undefined;`（重复 dispose 不重复解除）。
+原来被静默吞掉的 `.catch(() => {})` 改成 `console.warn('派发进度订阅失败', error)`（`:89`）。
+hook 的 effect（`:124-130`）只剩建订阅 + `dispose`，依赖仍是 `[run.runId]`，
+事件名字面量仍只在共享层出现一次。
+
+**已补**：
+- `07C-R1-2 listen 取消守卫 > subscribeProgress：换 runId 与卸载各 unlisten 一次，迟到的 listen 立即解除`
+  （`vi.mock('@tauri-apps/api/event')` + `vi.hoisted` 的可控桩，把 `listen` 的 resolve 攥在手里：
+  空 runId 不订阅；换 runId 一次、卸载一次，各 unlisten 一次；dispose 早于 listen 解析时，
+  解析出来的监听就地被 stop）
+- `07C-R1-2 … > subscribeProgress：订阅失败留痕而不是静默吞掉`
+
+### R1-3 异常收尾后时钟停（DS F3）
+
+**已修**：`src-ui/src/graph/dispatch-progress.ts:56-70` —— 新增
+`PROGRESS_ENDED_STATUS = '已结束'` 与纯函数 `endProgressRun(run, status?)`：把还在跑的快照
+标成终态、读数原样保留，全终态时返回同一引用（空操作）。store 的死接口 `resetRun` 删掉，
+换成 `endRun`（`:111`、`:144`、`:148`）。`src-ui/src/components/center/graph/DispatchOverlay.tsx:260-265`
+给 `start()` 的 try/catch 加 `finally { progressStore.endRun(); }`——异常路径、
+`missing-target` 早退、正常跑完都会经过它；`retry()` 走的是 `beginRun`，本来就把快照清空，
+不需要另外收尾。全终态之后 `progressRunningAny` 为假，5s 时钟不再重建。
+
+**已补**：`07C-R1-3 异常收尾后时钟停 > endProgressRun：收尾后 now 不再前进、不挂胶囊`
+（fake timers：两个节点在跑时 `now` 每 5s 前进 4 次；`endProgressRun` 之后门控翻假、
+interval 被清、再推进 10 分钟 `now` 不动；读数仍是最后一条心跳，且不挂胶囊；
+重复调用返回同一引用）与 `07C-R1-3 … > 接线：start() 的 finally 调 endRun，死接口 resetRun 已删`。
+
+### R1-4 胶囊不裁切（DS F4）
+
+**已修**：
+- `src-ui/src/components/center/graph/GraphTab.css:255-278` —— `.graph-node-progress`
+  加 `flex-wrap: wrap`、`align-items: flex-start`、`row-gap: 2px`、显式 `line-height: 1.4`；
+  `.graph-node-elapsed` 加 `flex: 1 1 100%`（读数单独占一行，过长仍省略、完整文本在 `title` 里）
+  与显式 `line-height`；`.graph-node-progress .hint-capsule` 的 `flex-shrink: 0` 换成
+  `max-width: 100%` + `white-space: normal` + `overflow-wrap: anywhere` + 显式 `line-height`，
+  最长那句在 142px 内容宽里换成两行完整显示，不再溢出被裁。
+- `src-ui/src/components/center/graph/GraphTab.css:223` —— `.graph-node-row` 补显式
+  `line-height: 1.4`，让卡高可算。
+- `src-ui/src/components/center/graph/GraphTab.tsx:35-40` —— `NODE_H` 76 → 116：
+  16.8（12px 行）+ 15.4（11px 行）+ 第三行 54.2（读数 15.4 + 行距 2 + 胶囊两行 36.8）
+  + 行间距 8 + 上下 padding 16 + 边框 2 = 112.4，取 116 留余量。`NODE_H` 仍是唯一常量，
+  分层坐标、画布高、连线端点、按钮行位置全部派生。
+- 顺手（GLM 小疵）：`DispatchBits.tsx:64` 只有胶囊没有读数时不再挂空的 `title=""`。
+
+**已补**：`07C-R1-4 节点卡胶囊不裁切 > 最长空转文案在卡宽内换行显示完整，不靠 overflow 截断`
+（样式断言：第三行 `flex-wrap: wrap` + 显式行高，胶囊 `white-space: normal` + `max-width: 100%`
+且不再 `flex-shrink: 0`，读数 `flex: 1 1 100%` + `text-overflow: ellipsis`，`NODE_H >= 112`；
+字符串断言：最长文案原样渲染成 `<span class="hint-capsule">疑似空转：同一工具连续 3 次</span>`，
+markup 里没有省略号）。
+
+**如实说明**：没起窗口目视。116 是按上面的行高/padding 算出来的，只验到样式规则与 DOM
+字符串这一层；真机上字体度量与算出来的值有出入时，卡片是「留白多一点/少一点」，
+不会再退回裁切——胶囊已经可换行、卡片高度按两行胶囊留足。
+
+### GLM 盲审里不重复的两条
+
+- **不采纳（本期不改，记录代价）**：GLM「缺项 2」——派发进行中切到别的图再切回来，
+  `[graphId]` 复位把 `run.runId` 清成空串，监听 effect 不再挂，这一轮的读数与胶囊永久消失
+  （不是晚 15s 恢复）。契约明写「换图复位」，`07C-3` 的用例也钉着这个行为；要修得把 run 按
+  graphId 存成 `Record<graphId, ProgressRun>`，超出本轮范围。记在这里作为已知代价。
+- **不采纳**：GLM「缺项 5」后半——store 暴露的 `runId`/`progress` 两个字段目前没有消费者。
+  它们是 `snapshotOf` 的原料、也是后续把 run 按 graphId 存 map 时的入口，删了反而要再加回来；
+  `resetRun` 那个真死接口已在 R1-3 删掉。
+- **已覆盖**：GLM「缺项 1」＝ DS F2（R1-2）；「缺项 4」的前两例＝ R1-2 与 R1-3 的新测试。
+  「缺项 3」（重挂窗口可能丢一跳）GLM 自己的结论是「不处理，观察即可」，R0 报告已如实记录。
+
+### 验证（两条命令都实际跑过，输出原文，去掉终端色码）
+
+```
+D:\work\aicross-p5b\src-ui> npx vitest run --configLoader native --pool threads
+
+ RUN  v5.0.0 D:/work/aicross-p5b/src-ui
+
+
+ Test Files  23 passed (23)
+      Tests  294 passed (294)
+   Start at  22:30:21
+   Duration  657ms (transform 52%, import 21%, tests 19%, worker 7%)
+```
+
+288 → 294，新增的 6 条（同一次运行加 `--reporter=verbose`，过滤本文件）：
+
+```
+ ✓ src/graph/__tests__/idle-and-tail-07c.test.tsx > 07C-R1-1 终态事件保留上一条心跳读数 > 无字段终态事件后耗时与工具仍显示且不再增长 1ms
+ ✓ src/graph/__tests__/idle-and-tail-07c.test.tsx > 07C-R1-2 listen 取消守卫 > subscribeProgress：换 runId 与卸载各 unlisten 一次，迟到的 listen 立即解除 88ms
+ ✓ src/graph/__tests__/idle-and-tail-07c.test.tsx > 07C-R1-2 listen 取消守卫 > subscribeProgress：订阅失败留痕而不是静默吞掉 2ms
+ ✓ src/graph/__tests__/idle-and-tail-07c.test.tsx > 07C-R1-3 异常收尾后时钟停 > endProgressRun：收尾后 now 不再前进、不挂胶囊 5ms
+ ✓ src/graph/__tests__/idle-and-tail-07c.test.tsx > 07C-R1-3 异常收尾后时钟停 > 接线：start() 的 finally 调 endRun，死接口 resetRun 已删 1ms
+ ✓ src/graph/__tests__/idle-and-tail-07c.test.tsx > 07C-R1-4 节点卡胶囊不裁切 > 最长空转文案在卡宽内换行显示完整，不靠 overflow 截断 1ms
+```
+
+```
+D:\work\aicross-p5b\src-ui> npm run build
+
+> aicross-ui@0.0.0 build
+> tsc -b && vite build
+
+（中间 60 余个 lang-* 与样式 chunk 略）
+dist/assets/lang-cpp-macro-CgwvTOCX.js                         224.24 kB │ gzip:  18.05 kB
+dist/assets/lang-cpp-BAHFRj0j.js                               402.02 kB │ gzip:  31.11 kB
+dist/assets/main-DGF0X_pt.js                                   427.69 kB │ gzip: 211.48 kB
+dist/assets/xterm-_r9IGi5_.js                                  465.79 kB │ gzip: 123.12 kB
+
+✓ built in 589ms
+```
+
+没起窗口、没发真机请求、没 commit、没 push；临时文件只在 `%TEMP%`。
+`git diff` 里没有 CR，六个改过的文件都保持原有的 LF。

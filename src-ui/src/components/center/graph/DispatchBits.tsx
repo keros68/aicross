@@ -61,7 +61,7 @@ export function NodeProgressRow({ progress, now }: { progress?: ProgressSnapshot
   const detail = runningDetailOf(progress, now);
   if (detail === '' && idleHint(progress, now) === null) return null;
   return (
-    <div className="graph-node-row graph-node-progress" title={detail}>
+    <div className="graph-node-row graph-node-progress" title={detail || undefined}>
       {detail !== '' && <span className="graph-node-elapsed">{detail}</span>}
       <IdleHint progress={progress} now={now} />
     </div>

@@ -7,7 +7,7 @@
 // @ts-expect-error node builtin, not in this project's `types`
 import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   idleHint,
   progressRunningAny,
@@ -18,13 +18,46 @@ import {
 import {
   applyProgressEvent,
   beginProgressRun,
+  endProgressRun,
   progressRunOf,
+  subscribeProgress,
   EMPTY_PROGRESS_RUN,
+  PROGRESS_ENDED_STATUS,
   PROGRESS_TICK_MS,
   type ProgressRun,
 } from '../dispatch-progress.ts';
 import type { DispatchProgress } from '../../tauri.ts';
 import { NodeProgressRow } from '../../components/center/graph/DispatchBits.tsx';
+
+// R1-2：订阅生命周期要在 node 环境里断言，`listen` 换成可控的桩——每次调用记下
+// 事件名与回调，并把 resolve 攥在手里，好造「listen 迟到解析」这一格。
+const eventMock = vi.hoisted(() => {
+  const state = {
+    names: [] as string[],
+    handlers: [] as Array<(event: { payload: unknown }) => void>,
+    pending: [] as Array<(stop: () => void) => void>,
+    failNext: false,
+    reset() {
+      state.names = [];
+      state.handlers = [];
+      state.pending = [];
+      state.failNext = false;
+    },
+    listen(name: string, handler: (event: { payload: unknown }) => void) {
+      state.names.push(name);
+      state.handlers.push(handler);
+      if (state.failNext) return Promise.reject(new Error('no window'));
+      return new Promise<() => void>((resolve) => { state.pending.push(resolve); });
+    },
+  };
+  return state;
+});
+vi.mock('@tauri-apps/api/event', () => ({ listen: eventMock.listen }));
+
+// 动态 import + 两级 then，等够微任务队列排空；不用假时钟这一格。
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, 0); });
+}
 
 function readSource(relative: string): string {
   return readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -226,5 +259,208 @@ describe('07C-4 不复制判定逻辑', () => {
     }
     // 共享层只做 state 形状，判定仍然从 dispatch.ts 引进来
     expect(shared).toMatch(/from '\.\/dispatch'/);
+  });
+});
+
+// ── 修正轮 R1（tasks/fix-07c-r1.md，来自 tasks/review-07c-ds.md 的盲审）────────
+
+describe('07C-R1-1 终态事件保留上一条心跳读数', () => {
+  it('无字段终态事件后耗时与工具仍显示且不再增长', () => {
+    const running = applyProgressEvent(beginProgressRun('run-1'), heartbeat(), 1_000_000);
+    // 引擎发的终态事件只有 runId/nodeId/status，不带任何心跳字段（TASK-07 契约）
+    const done = applyProgressEvent(
+      running,
+      { runId: 'run-1', nodeId: 'n1', status: '完成' },
+      1_000_100,
+    );
+    const snapshot = progressRunOf(done, 'n1');
+    expect(snapshot?.status).toBe('完成');
+    expect(snapshot?.elapsedMs).toBe(42_000);
+    expect(snapshot?.lastTool).toBe('read_file');
+    expect(snapshot?.toolCalls).toBe(3);
+    expect(snapshot?.hasHeartbeat).toBe(true);
+    // 冻结：过 5 分钟读数仍是最后一条心跳的值，也不挂空转胶囊
+    expect(runningDetailOf(snapshot, 1_000_100)).toBe('已运行 42 秒 · 工具 read_file');
+    expect(runningDetailOf(snapshot, 1_000_100 + 5 * 60_000)).toBe('已运行 42 秒 · 工具 read_file');
+    expect(idleHint(snapshot, 1_000_100 + 5 * 60_000)).toBeNull();
+    const html = renderToStaticMarkup(
+      <NodeProgressRow progress={snapshot} now={1_000_100 + 5 * 60_000} />,
+    );
+    expect(html).toContain('已运行 42 秒 · 工具 read_file');
+    expect(html).not.toContain('hint-capsule');
+    // 时钟也随之停（终态不算「在跑」）
+    expect(progressRunningAny(done.progress)).toBe(false);
+    // 上一轮的旧快照不会被借用：runId 对不上就按新事件原样补 0
+    const crossRun = applyProgressEvent(
+      { runId: 'run-2', progress: { n1: snapshot! } },
+      { runId: 'run-2', nodeId: 'n1', status: '完成' },
+      1_000_200,
+    );
+    expect(progressRunOf(crossRun, 'n1')?.elapsedMs).toBe(0);
+    expect(progressRunOf(crossRun, 'n1')?.hasHeartbeat).toBe(false);
+    // 没有上一条心跳时同样不编数：整行不渲染
+    const bare = applyProgressEvent(
+      beginProgressRun('run-3'),
+      { runId: 'run-3', nodeId: 'n9', status: '完成' },
+      1_000_300,
+    );
+    expect(renderToStaticMarkup(
+      <NodeProgressRow progress={progressRunOf(bare, 'n9')} now={1_000_300} />,
+    )).toBe('');
+  });
+});
+
+describe('07C-R1-2 listen 取消守卫', () => {
+  it('subscribeProgress：换 runId 与卸载各 unlisten 一次，迟到的 listen 立即解除', async () => {
+    eventMock.reset();
+    const unlisten = vi.fn();
+    const seen: DispatchProgress[] = [];
+
+    // 没派发过（runId 空）不订阅
+    subscribeProgress('', () => {}).dispose();
+    await flushMicrotasks();
+    expect(eventMock.pending).toHaveLength(0);
+
+    // 第一轮：解析后换 runId（effect 重挂）→ unlisten 一次
+    const first = subscribeProgress('run-1', (payload) => seen.push(payload));
+    await flushMicrotasks();
+    expect(eventMock.names).toEqual(['dispatch-progress']);
+    eventMock.pending[0](unlisten);
+    await flushMicrotasks();
+    eventMock.handlers[0]({ payload: heartbeat() });
+    expect(seen).toHaveLength(1);
+    first.dispose();
+    expect(unlisten).toHaveBeenCalledTimes(1);
+
+    // 第二轮：解析后卸载 → 再 unlisten 一次（换 runId 与卸载各一次）
+    const second = subscribeProgress('run-2', (payload) => seen.push(payload));
+    await flushMicrotasks();
+    eventMock.pending[1](unlisten);
+    await flushMicrotasks();
+    second.dispose();
+    expect(unlisten).toHaveBeenCalledTimes(2);
+    // 拆过之后不再重复解除
+    second.dispose();
+    expect(unlisten).toHaveBeenCalledTimes(2);
+
+    // 迟到 resolve：dispose 发生在 listen 解析之前，解析出来的监听就地解除
+    const late = subscribeProgress('run-3', () => {});
+    await flushMicrotasks();
+    late.dispose();
+    expect(unlisten).toHaveBeenCalledTimes(2);
+    eventMock.pending[2](unlisten);
+    await flushMicrotasks();
+    expect(unlisten).toHaveBeenCalledTimes(3);
+  });
+
+  it('subscribeProgress：订阅失败留痕而不是静默吞掉', async () => {
+    eventMock.reset();
+    eventMock.failNext = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sub = subscribeProgress('run-1', () => {});
+    await flushMicrotasks();
+    expect(warn).toHaveBeenCalledTimes(1);
+    sub.dispose();
+    warn.mockRestore();
+  });
+});
+
+describe('07C-R1-3 异常收尾后时钟停', () => {
+  it('endProgressRun：收尾后 now 不再前进、不挂胶囊', () => {
+    vi.useFakeTimers();
+    try {
+      const started = 1_000_000;
+      vi.setSystemTime(started);
+      let run = applyProgressEvent(beginProgressRun('run-1'), heartbeat(), started);
+      run = applyProgressEvent(run, heartbeat({ nodeId: 'n2' }), started);
+
+      // 共享层的 5s 时钟：门控就是 progressRunningAny（hook 的 effect 依赖它）
+      let now = started;
+      let timer: ReturnType<typeof setInterval> | undefined;
+      const gate = () => {
+        if (timer !== undefined) {
+          clearInterval(timer);
+          timer = undefined;
+        }
+        if (!progressRunningAny(run.progress)) return;
+        now = Date.now();
+        timer = setInterval(() => { now = Date.now(); }, PROGRESS_TICK_MS);
+      };
+      gate();
+      expect(timer).toBeDefined();
+      vi.advanceTimersByTime(4 * PROGRESS_TICK_MS);
+      expect(now).toBe(started + 4 * PROGRESS_TICK_MS);
+
+      // 派发抛错收尾：没收到终态事件的节点在这里补成终态
+      run = endProgressRun(run);
+      expect(progressRunOf(run, 'n1')?.status).toBe(PROGRESS_ENDED_STATUS);
+      expect(progressRunOf(run, 'n2')?.status).toBe(PROGRESS_ENDED_STATUS);
+      expect(progressRunningAny(run.progress)).toBe(false);
+      gate();
+      expect(timer).toBeUndefined();
+
+      const frozen = now;
+      vi.advanceTimersByTime(10 * 60_000);
+      expect(now).toBe(frozen);
+      // 读数冻结在最后一条心跳上，3 分钟之后也不挂空转胶囊
+      const html = renderToStaticMarkup(
+        <NodeProgressRow progress={progressRunOf(run, 'n1')} now={frozen + 10 * 60_000} />,
+      );
+      expect(html).toContain('已运行 42 秒 · 工具 read_file');
+      expect(html).not.toContain('hint-capsule');
+
+      // 全终态时是空操作，返回同一引用
+      expect(endProgressRun(run)).toBe(run);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('接线：start() 的 finally 调 endRun，死接口 resetRun 已删', () => {
+    const shared = readSource('../dispatch-progress.ts');
+    const overlay = readSource('../../components/center/graph/DispatchOverlay.tsx');
+    expect(shared).not.toContain('resetRun');
+    expect(shared).toMatch(/endRun: \(\) => void;/);
+    expect(overlay).toMatch(/\} finally \{[\s\S]*?progressStore\.endRun\(\);[\s\S]*?\}/);
+  });
+});
+
+describe('07C-R1-4 节点卡胶囊不裁切', () => {
+  it('最长空转文案在卡宽内换行显示完整，不靠 overflow 截断', () => {
+    const css = readSource('../../components/center/graph/GraphTab.css');
+    const tab = readSource('../../components/center/graph/GraphTab.tsx');
+    const progressRule = css.slice(
+      css.indexOf('.graph-node-progress {'),
+      css.indexOf('.graph-node-actions'),
+    );
+
+    // 第三行可换行、行高显式
+    expect(progressRule).toContain('flex-wrap: wrap;');
+    expect(progressRule).toContain('line-height: 1.4;');
+    // 胶囊自己也换行，不再是 flex-shrink: 0 + nowrap 的溢出写法
+    const capsuleRule = progressRule.slice(progressRule.indexOf('.graph-node-progress .hint-capsule'));
+    expect(capsuleRule).toContain('white-space: normal;');
+    expect(capsuleRule).toContain('max-width: 100%;');
+    expect(capsuleRule).not.toContain('flex-shrink: 0;');
+    // 读数单独占一行，过长时才省略；完整文本仍在 title 里
+    expect(progressRule).toMatch(/\.graph-node-elapsed \{[^}]*flex: 1 1 100%;/);
+    expect(progressRule).toMatch(/\.graph-node-elapsed \{[^}]*text-overflow: ellipsis;/);
+    // 卡高按三行重算，容得下两行胶囊
+    const nodeH = Number(tab.match(/const NODE_H = (\d+);/)?.[1]);
+    expect(nodeH).toBeGreaterThanOrEqual(112);
+
+    // 最长文案原样渲染在胶囊里，没有省略号、没有截断
+    const idle = applyProgressEvent(
+      beginProgressRun('run-1'),
+      heartbeat({ repeatedToolCalls: 3, idleMs: REPEATED_TOOL_IDLE_MS }),
+      1_000_000,
+    );
+    const hint = idleHint(progressRunOf(idle, 'n1'), 1_000_000);
+    expect(hint).toBe('疑似空转：同一工具连续 3 次');
+    const html = renderToStaticMarkup(
+      <NodeProgressRow progress={progressRunOf(idle, 'n1')} now={1_000_000} />,
+    );
+    expect(html).toContain('<span class="hint-capsule">' + hint + '</span>');
+    expect(html).not.toContain('…');
   });
 });

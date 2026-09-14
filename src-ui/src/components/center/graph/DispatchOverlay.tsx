@@ -257,6 +257,11 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
       if (failed.length > 0) working = onCommit(applyDispatchResults(working, failed));
       setResults([...collected, ...failed]);
       setPhase('results');
+    } finally {
+      // 本轮收尾（R1-3）：异常路径不会给每个节点补终态事件，快照会一直停在
+      // running——5s 时钟永不停，3 分钟后还会挂出「疑似空转」。endRun 把它们标成
+      // 终态，读数仍冻结在最后一条心跳上。正常跑完时是空操作。
+      progressStore.endRun();
     }
   };
 
