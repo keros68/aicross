@@ -81,6 +81,8 @@ pub struct Reply {
     #[serde(default)]
     pub tokens_out: Option<u64>,
     #[serde(default)]
+    pub tokens_cache_read: Option<u64>,
+    #[serde(default)]
     pub ms: Option<u64>,
     #[serde(default)]
     pub session_id: Option<String>,
@@ -1163,6 +1165,15 @@ mod tests {
         let legacy: Reply = serde_json::from_str(r#"{"status":"done","text":"old"}"#).unwrap();
         assert_eq!(legacy.fallback_from, None);
         assert_eq!(legacy.fallback_to, None);
+    }
+
+    #[test]
+    fn task07_reply_cache_read_roundtrips_and_defaults_for_old_graphs() {
+        let reply = Reply { tokens_cache_read: Some(42), ..Reply::default() };
+        let restored: Reply = serde_json::from_value(serde_json::to_value(&reply).unwrap()).unwrap();
+        assert_eq!(restored.tokens_cache_read, Some(42));
+        let legacy: Reply = serde_json::from_str(r#"{"status":"done","text":"old"}"#).unwrap();
+        assert_eq!(legacy.tokens_cache_read, None);
     }
 
     #[test]
