@@ -1106,6 +1106,12 @@ function progressRunning(progress: ProgressSnapshot): boolean {
   return progress.status === 'running' || progress.status === '运行中';
 }
 
+// 本轮还有没有节点在跑（TASK-07C）：共享层的 5s 时钟只在这时候走——全部到
+// 终态之后读数已经冻结，再 tick 只是白重渲染整张图。
+export function progressRunningAny(progress: Record<string, ProgressSnapshot>): boolean {
+  return Object.values(progress).some(progressRunning);
+}
+
 function idleMsOf(progress: ProgressSnapshot, now: number): number {
   return progress.idleMs + Math.max(0, now - progress.receivedAt);
 }

@@ -247,6 +247,24 @@
   color: var(--text-3);
 }
 
+/* 节点卡第三行（TASK-07C）：运行中的耗时/工具 + 疑似空转胶囊。卡片定宽，
+   读数过长时省略（完整文本在 title 里），胶囊不压缩。 */
+.graph-node-progress {
+  gap: 6px;
+}
+
+.graph-node-elapsed {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.graph-node-progress .hint-capsule {
+  flex-shrink: 0;
+}
+
 .graph-node-actions {
   position: absolute;
   display: flex;

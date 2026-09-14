@@ -19,7 +19,9 @@ import { vendorColor } from '../../../graph/vendor';
 import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
 import { applyReconcile, applyRoleDefaults, dispatchableNodeIds, EMPTY_RECONCILE_UI, fallbackNoticeOf, nodeStatusLabel, parseAdvise, presetWithRoleDefaults, RECONCILE_UNKNOWN_TEXT, reconcileUiAfter, reconcileUiConverged, reconcileUiFor, redraftNode, resetPendingToDraft, type ReconcileSummary, type ReconcileUi } from '../../../graph/dispatch';
+import { useDispatchProgress } from '../../../graph/dispatch-progress';
 import { DispatchOverlay } from './DispatchOverlay';
+import { NodeProgressRow } from './DispatchBits';
 import { appendMention, INSERT_MENTION_EVENT, openResourcesPage, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { groupPickableModels, modelKey, modelOptionLabel } from '../../../resources/model-picker';
 import { stampMenuShouldClose } from '../../../graph/stamp-menu';
@@ -30,7 +32,9 @@ import './GraphTab.css';
 
 // 节点卡固定尺寸，图区横向滚动；不做缩放、不做拖拽（任务书硬约束）。
 const NODE_W = 168;
-const NODE_H = 56;
+// 56 → 76：卡片多一行放运行中的耗时/工具与疑似空转胶囊（TASK-07C）。卡片
+// overflow:hidden，不留出这一行的话运行时那行会被裁掉。
+const NODE_H = 76;
 const GAP_X = 64;
 const GAP_Y = 40; // 留出高亮节点下方「分叉」「盖预设」按钮的位置，不压下一行
 const ACTIONS_H = 32; // 节点下方按钮行高度，加进画布高度，末行按钮不被底边裁掉
@@ -72,6 +76,9 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const [reconcile, setReconcile] = useState<ReconcileUi>(EMPTY_RECONCILE_UI);
   // 节点卡按过「重派」的节点（TASK-06-2）：单写者的那些在 G1 带 rollbackBefore。
   const [retryNodes, setRetryNodes] = useState<string[]>([]);
+  // 派发进度的共享层（TASK-07C）：运行屏关掉之后，图上的节点卡照样显示
+  // 「已运行 … · 工具 …」与疑似空转胶囊。换图在 hook 里按 graphId 复位。
+  const progressStore = useDispatchProgress(graphId);
   const [roles, setRoles] = useState<any>(null);
 
   // 左栏「资源」tab 点模型时往主面板（列 0）输入框插入 @agent/模型（TASK-07）。
@@ -560,6 +567,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
             {status && <span className="graph-node-status">{status}</span>}
             {disconnected && <span className="hint-capsule">未接入</span>}
           </div>
+          <NodeProgressRow progress={progressStore.snapshotOf(id)} now={progressStore.now} />
         </div>
         {isFocus && (
           <div className="graph-node-actions" style={{ left: p.x, top: p.y + NODE_H + 4 }}>
@@ -829,6 +837,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
           projectDir={session.folderPath ?? ''}
           needsReview={reconcileUi.needsReview}
           retryNodes={retryNodes}
+          progressStore={progressStore}
           // 每次写回图之后收敛一次对账说明（TASK-07-2）：已跑完/已判失败的
           // 节点从「待核对」里剔除，一个不剩时工具条那句说明也一起清掉。
           onCommit={(next) => {

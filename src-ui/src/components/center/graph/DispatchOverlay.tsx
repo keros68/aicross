@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { commands, type DispatchNodeResult, type DispatchProgress, type DispatchStageRequest, type GitChanges } from '../../../tauri';
+import { commands, type DispatchNodeResult, type DispatchStageRequest, type GitChanges } from '../../../tauri';
 import { contextPartsOf, originalRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../../../graph/context';
 import {
   appendArbitration,
@@ -13,8 +13,6 @@ import {
   dispatchableNodeIds,
   dirtyWorktreeHintOf,
   initialDispatchSelection,
-  nextProgress,
-  progressOf,
   progressStatusLabel,
   rollbackBeforeOf,
   runningDetailOf,
@@ -32,9 +30,9 @@ import {
   routeReason,
   sameParentsResultCount,
   setReplyAdopted,
-  type ProgressSnapshot,
   type StageLoopState,
 } from '../../../graph/dispatch';
+import type { DispatchProgressStore } from '../../../graph/dispatch-progress';
 import { updateNodeFallback } from '../../../graph/mutate';
 import { FallbackSkippedLine, IdleHint, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, WritableFallbackHint } from './DispatchBits';
 import { presetNameOf } from '../../../graph/persist';
@@ -53,6 +51,8 @@ interface Props {
   needsReview?: string[];
   // 节点卡上按过「重派」的节点（TASK-06-2）：单写者的那些请求带 rollbackBefore。
   retryNodes?: string[];
+  // 进度状态在 GraphTab 层（TASK-07C）：运行屏与图上的节点卡读同一份快照。
+  progressStore: DispatchProgressStore;
   onCommit: (graph: Graph) => Graph;
   onClose: () => void;
   // 擂台「选它」与仲裁建节点后，把焦点/主列对齐到该节点（GraphTab 提供）
@@ -62,7 +62,7 @@ interface Props {
 const resultStatus = (status: string) =>
   status === 'ok' ? '完成' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证失败' : '失败';
 
-export function DispatchOverlay({ graph, models, projectDir, needsReview, retryNodes, onCommit, onClose, onFocusNode }: Props) {
+export function DispatchOverlay({ graph, models, projectDir, needsReview, retryNodes, progressStore, onCommit, onClose, onFocusNode }: Props) {
   const initialIds = useMemo(() => dispatchableNodeIds(graph), [graph]);
   const reviewIds = useMemo(() => new Set(needsReview ?? []), [needsReview]);
   const [nodeIds, setNodeIds] = useState(() => initialDispatchSelection(initialIds, needsReview));
@@ -86,11 +86,8 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   );
   const [preview, setPreview] = useState<{ totalRedacted: number; broadRedacted: number; nodes: { nodeId: string; redacted: number; isolation: string }[] }>({ totalRedacted: 0, broadRedacted: 0, nodes: [] });
   const [previewError, setPreviewError] = useState('');
-  const [statuses, setStatuses] = useState<Record<string, string>>({});
-  // G2 疑似空转（TASK-07-1）：每个节点最后一条心跳的快照 + 一个每 5s 走一格的
-  // 时钟。引擎整个卡死时不会再有心跳，只有这个时钟能让「无输出多久」继续长。
-  const [progress, setProgress] = useState<Record<string, ProgressSnapshot>>({});
-  const [now, setNow] = useState(() => Date.now());
+  // G2 疑似空转（TASK-07-1）：快照与时钟在 GraphTab 层的共享 store 里
+  // （TASK-07C），本屏只消费。状态词也从同一份快照读，心跳还没到的行显示「排队」。
   const [results, setResults] = useState<DispatchNodeResult[]>([]);
   const [runError, setRunError] = useState('');
   const [restartNodes, setRestartNodes] = useState<Set<string>>(new Set());
@@ -184,29 +181,6 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     return () => { cancelled = true; };
   }, [hasMissingTargets, phase, request]);
 
-  useEffect(() => {
-    if (phase !== 'running') return;
-    let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event').then(({ listen }) => listen<DispatchProgress>(
-      'dispatch-progress',
-      (event) => {
-        if (event.payload.runId !== runId) return;
-        setStatuses((current) => ({ ...current, [event.payload.nodeId]: progressStatusLabel(event.payload.status) }));
-        setProgress((current) => nextProgress(current, event.payload, Date.now(), runId));
-      },
-    )).then((stop) => { unlisten = stop; }).catch(() => {});
-    return () => { unlisten?.(); };
-  }, [phase, runId]);
-
-  // 心跳每 15s 一条；这个时钟只为让「已运行」和「无输出」在两条心跳之间
-  // （以及引擎不再发心跳之后）继续走。只在运行屏开着时跑。
-  useEffect(() => {
-    if (phase !== 'running') return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 5000);
-    return () => clearInterval(timer);
-  }, [phase]);
-
   // 待核对节点：对账判 unknown 且这一屏本来就可派的那些。勾选后加回派发队列，
   // 顺序按 initialIds（与路由卡顺序一致）。
   const reviewNodeIds = initialIds.filter((id) => reviewIds.has(id));
@@ -238,11 +212,10 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     if (request.nodes.length === 0 || hasMissingTargets) return;
     setPhase('running');
     setRunError('');
-    // 新一轮先清进度（R1-2）：这三份 state 以 nodeId 为键、跨轮存活，上一轮
-    // 没收到终态的快照（叫停、抛错、丢事件）会让新一行一出现就显示上一轮的
-    // 耗时、甚至立刻挂空转胶囊。
-    setProgress({});
-    setStatuses({});
+    // 新一轮先清进度（R1-2）：快照以 nodeId 为键、跨轮存活，上一轮没收到终态
+    // 的快照（叫停、抛错、丢事件）会让新一行一出现就显示上一轮的耗时、甚至
+    // 立刻挂空转胶囊。beginRun 同时把共享层的 runId 换成本轮的。
+    progressStore.beginRun(runId);
     setCurrentNodes([]);
     // 推进循环搬进 graph/dispatch.ts 的 runStageLoop（TASK-07-4）；这个对象由
     // 循环就地更新，抛错时下面的 catch 还要读它的 graph / collected / activeNodes。
@@ -262,10 +235,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         dispatch: (stageRequest: DispatchStageRequest) => commands.dispatchGraphStage(stageRequest),
         commit: onCommit,
         onPreview: (stagePreview) => { setPreview(stagePreview); setPreviewError(''); },
-        onStage: (stageRequest, ids) => {
-          setCurrentNodes(stageRequest.nodes);
-          setStatuses((current) => ({ ...current, ...Object.fromEntries(ids.map((id) => [id, '排队'])) }));
-        },
+        onStage: (stageRequest) => setCurrentNodes(stageRequest.nodes),
         onResults: (collected) => setResults([...collected]),
       });
       if (outcome.kind === 'missing-target') {
@@ -301,11 +271,11 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
       messageKeys: parts.filter((part) => part.defaultSelected !== false).map((part) => part.key),
       attachments: [...new Set(parts.flatMap((part) => part.message.attachments))],
     } });
-    setRunId(crypto.randomUUID());
+    const nextRunId = crypto.randomUUID();
+    setRunId(nextRunId);
     setRestartNodes(new Set());
-    // 重派复用同一个 nodeId：上一轮的进度快照与状态词不能留到这一轮（R1-2）。
-    setProgress({});
-    setStatuses({});
+    // 重派复用同一个 nodeId：上一轮的进度快照不能留到这一轮（R1-2）。
+    progressStore.beginRun(nextRunId);
     setCurrentNodes([]);
     // 单写者节点重派/升级：这一路带 rollbackBefore（TASK-06-2）。
     setRollbackNodes(rollbackBeforeOf(node.target, true) ? new Set([nodeId]) : new Set());
@@ -557,18 +527,19 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         {phase === 'running' && (
           <div className="dispatch-body">
             {currentNodes.map((node) => {
-              // 只认本轮的快照（R1-2）：上一轮残留的读数与胶囊都不渲染。
-              const snapshot = progressOf(progress, node.nodeId, runId);
-              const detail = runningDetailOf(snapshot, now);
+              // 只认本轮的快照（R1-2）：上一轮残留的读数与胶囊都不渲染。共享层
+              // 的 snapshotOf 与节点卡是同一个入口（TASK-07C）。
+              const snapshot = progressStore.snapshotOf(node.nodeId);
+              const detail = runningDetailOf(snapshot, progressStore.now);
               return (
                 <div key={node.nodeId} className="dispatch-running-row">
                   <div className="dispatch-running-main">
                     <span>{node.role || node.nodeId} · {node.agent}/{node.model}</span>
                     {detail !== '' && <span className="dispatch-running-detail">{detail}</span>}
                   </div>
-                  <span>{statuses[node.nodeId] ?? '排队'}</span>
+                  <span>{snapshot ? progressStatusLabel(snapshot.status) : '排队'}</span>
                   <span className="dispatch-running-actions">
-                    <IdleHint progress={snapshot} now={now} />
+                    <IdleHint progress={snapshot} now={progressStore.now} />
                     <button onClick={() => commands.cancelDispatchNode(runId, node.nodeId).catch(() => false)}>叫停</button>
                   </span>
                 </div>
