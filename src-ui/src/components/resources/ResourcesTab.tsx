@@ -15,6 +15,9 @@ import {
   openResourcesPage,
   RESOURCES_CHANGED_EVENT,
 } from '../../resources/mention';
+// The left-pane tab shares resources.css with ResourcesOverlay, which is lazy since
+// TASK-05 C; import it here too so the tab is styled before the overlay ever opens.
+import './resources.css';
 
 export function ResourcesTab() {
   const { state } = useAppState();
