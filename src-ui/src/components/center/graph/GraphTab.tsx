@@ -17,7 +17,7 @@ import { commitGraph, presetNameOf, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
 import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
-import { dispatchableNodeIds } from '../../../graph/dispatch';
+import { applyRoleDefaults, dispatchableNodeIds, redraftNode } from '../../../graph/dispatch';
 import { DispatchOverlay } from './DispatchOverlay';
 import { appendMention, INSERT_MENTION_EVENT, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import './GraphTab.css';
@@ -48,6 +48,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const [failedId, setFailedId] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [unfinishedRun, setUnfinishedRun] = useState<{ runId: string; nodeIds: string[] } | null>(null);
+  const [roles, setRoles] = useState<any>(null);
 
   // 左栏「资源」tab 点模型时往主面板（列 0）输入框插入 @agent/模型（TASK-07）。
   // 纯追加监听：既有 drafts/发送逻辑不变。
@@ -59,6 +60,21 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     };
     window.addEventListener(INSERT_MENTION_EVENT, onInsert);
     return () => window.removeEventListener(INSERT_MENTION_EVENT, onInsert);
+  }, []);
+
+  useEffect(() => {
+    if (isTauri) commands.loadRoles().then(setRoles).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    const reload = () => commands.listPresets().then((f) => setPresets(f.presets)).catch(() => {});
+    window.addEventListener('aicross:presets-changed', reload);
+    window.addEventListener(RESOURCES_CHANGED_EVENT, reload);
+    return () => {
+      window.removeEventListener('aicross:presets-changed', reload);
+      window.removeEventListener(RESOURCES_CHANGED_EVENT, reload);
+    };
   }, []);
 
   // 接入页写盘后重拉可派发模型（TASK-07 修正轮 R1）：@ 弹层与节点面板
@@ -260,7 +276,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const applyStamp = (nodeId: string, preset: Preset) => {
     if (!graph) return;
     const before = new Set(Object.keys(graph.nodes));
-    const g2 = stamp(graph, nodeId, preset);
+    const effective = roles ? { ...preset, stages: preset.stages.map((stage) => ({ ...stage, nodes: stage.nodes.map((target) => applyRoleDefaults(target, roles)) })) } : preset;
+    const g2 = stamp(graph, nodeId, effective);
     recordStamp(
       graph.id,
       Object.keys(g2.nodes).filter((id) => !before.has(id)),
@@ -432,6 +449,11 @@ export function GraphTab({ session }: { session: TerminalSession }) {
         </div>
         {isFocus && (
           <div className="graph-node-actions" style={{ left: p.x, top: p.y + NODE_H + 4 }}>
+            {node.reply?.status === 'failed' && (
+              <button className="graph-mini-btn" onClick={(e) => { e.stopPropagation(); commit(redraftNode(graph, id)); }}>
+                重派
+              </button>
+            )}
             <button
               className="graph-mini-btn"
               onClick={(e) => {
@@ -634,7 +656,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   return (
     <div className="graph-tab">
       <div className="graph-dispatch-toolbar">
-        {unfinishedRun && <span className="graph-resume">上次派发未完成 <button onClick={continueUnfinished}>继续</button><button onClick={abandonUnfinished}>放弃</button></span>}
+        {unfinishedRun && <span className="graph-resume">上次派发未完成；若上次是崩溃退出，请先手动检查残留进程 <button onClick={continueUnfinished}>继续</button><button onClick={abandonUnfinished}>放弃</button></span>}
         <span>可派 {dispatchableNodeIds(graph).length} 路</span>
         <button className="graph-primary-btn" disabled={dispatchableNodeIds(graph).length === 0} onClick={() => setDispatchOpen(true)}>派发</button>
       </div>

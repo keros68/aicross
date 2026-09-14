@@ -201,7 +201,9 @@ export function SettingsModal() {
   const setRole = (key: 'planning' | 'execution' | 'acceptance', profile: RoleProfile) => {
     const next = { ...roleSettings, [key]: profile };
     setRoleSettings(next);
-    commands.saveRoles(next).catch(() => {});
+    commands.saveRoles(next).then(() => {
+      window.dispatchEvent(new CustomEvent('aicross:presets-changed'));
+    }).catch(() => {});
   };
 
   const SECTIONS: { id: Section; label: string }[] = [

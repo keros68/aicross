@@ -960,7 +960,7 @@ export function CenterPanel() {
 
   const handleCloseTab = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    dispatch({ type: 'REMOVE_TERMINAL', id });
+    dispatch({ type: 'CLOSE_TERMINAL', id });
   };
 
   // ── Tab drag-to-reorder ─────────────────────────────────────────────────

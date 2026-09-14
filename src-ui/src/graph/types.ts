@@ -46,6 +46,7 @@ export interface Target {
   visibility: VisibilityKind;
   upstreams?: string[]; // 仅 visibility='指定上游' 时有意义，上游节点 id 列表
   write: WriteMode;
+  validation_command?: string;
 }
 
 export interface GraphNode {

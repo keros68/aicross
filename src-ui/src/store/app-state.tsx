@@ -328,6 +328,7 @@ type Action =
   | { type: 'SET_LANG'; lang: string }
   | { type: 'ADD_TERMINAL'; session: TerminalSession }
   | { type: 'REMOVE_TERMINAL'; id: string }
+  | { type: 'CLOSE_TERMINAL'; id: string }
   | { type: 'REORDER_TERMINAL'; sessionId: string; beforeId: string | null }
   | { type: 'SET_ACTIVE_TERMINAL'; id: string | null }
   | { type: 'SET_TERMINAL_TOOL'; id: string; tool: ToolType; toolData?: string; resumeToken?: string }
@@ -366,7 +367,7 @@ type Action =
 
 // ─── Reducer ─────────────────────────────────────────────────────────────────
 
-function reducer(state: AppState, action: Action): AppState {
+export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_FOLDER':
       // Persist as the "last folder" so a fresh launch lands here instead
@@ -403,7 +404,8 @@ function reducer(state: AppState, action: Action): AppState {
         terminals: [...state.terminals, action.session],
         activeTerminalId: action.session.id 
       };
-    case 'REMOVE_TERMINAL': {
+    case 'REMOVE_TERMINAL':
+    case 'CLOSE_TERMINAL': {
       let newTerminals = state.terminals.filter(t => t.id !== action.id);
       let newActiveId = state.activeTerminalId;
       
@@ -415,7 +417,9 @@ function reducer(state: AppState, action: Action): AppState {
       } else if (state.activeTerminalId === action.id) {
          newActiveId = newTerminals[newTerminals.length - 1].id;
       }
-      return { ...state, terminals: newTerminals, activeTerminalId: newActiveId };
+      const closed = state.terminals.find(t => t.id === action.id);
+      return { ...state, terminals: newTerminals, activeTerminalId: newActiveId,
+        graphFocus: closed?.tool === 'graph' && closed.toolData === state.graphFocus?.graphId ? null : state.graphFocus };
     }
     case 'REORDER_TERMINAL': {
       // Move `sessionId`'s tab so that it sits immediately before

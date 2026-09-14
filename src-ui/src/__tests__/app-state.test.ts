@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getInitialState } from '../store/app-state';
+import { getInitialState, reducer } from '../store/app-state';
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -63,5 +63,12 @@ describe('getInitialState personalization migration', () => {
     expect(state.iconTheme).toBe('outline');
     expect(storage.getItem('cc-shape')).toBe('soft');
     expect(storage.getItem('cc-icon-theme')).toBe('outline');
+  });
+
+  it('关闭图 tab 时清除指向该图的 graphFocus', () => {
+    const state = getInitialState();
+    const focused = { ...state, terminals: [{ ...state.terminals[0], toolData: 'graph-1' }], graphFocus: { graphId: 'graph-1', nodeId: 'n1' } };
+    const next = reducer(focused, { type: 'CLOSE_TERMINAL', id: focused.terminals[0].id });
+    expect(next.graphFocus).toBeNull();
   });
 });

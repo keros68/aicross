@@ -1240,13 +1240,19 @@ fn run_smoke(model: &ResourceModel) -> Result<SmokeSuccess, String> {
                     });
                 }
             }
-            Ok(SmokeSuccess {
-                identity: output.identity,
-                meta_marker: None,
-            })
+            let alias_marker = route_alias_marker(&model, &output.identity);
+            Ok(SmokeSuccess { identity: output.identity, meta_marker: alias_marker })
         }
         Err(error) => Err(error.message),
     }
+}
+
+fn route_alias_marker(model: &ResourceModel, identity: &str) -> Option<String> {
+    crate::channels::KNOWN_MODEL_ROUTES.iter()
+        .find(|(p, req, actual)| {
+            *p == model.provider && *req == model.id && identity == format!("{p}/{actual}")
+        })
+        .map(|(_, req, actual)| format!("路由别名：{req}→{actual}"))
 }
 
 /// 把一次冒烟结果写进 store：成功 → 已接入 + 真身 + 可选 meta 标记；
@@ -2226,6 +2232,31 @@ mod tests {
             STATUS_FAILED
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r3_6_route_alias_smoke_records_actual_id_and_meta_marker() {
+        let model = ResourceModel {
+            id: "deepseek-v4-flash".into(),
+            agent: "pi".into(),
+            provider: "deepseek".into(),
+            ..ResourceModel::default()
+        };
+        let marker = route_alias_marker(&model, "deepseek/deepseek-flash").expect("known alias");
+        assert_eq!(marker, "路由别名：deepseek-v4-flash→deepseek-flash");
+        let key = ResourceModelKey {
+            agent_id: "pi".into(),
+            provider: "deepseek".into(),
+            id: "deepseek-v4-flash".into(),
+        };
+        let mut store = ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![model])] };
+        apply_smoke_outcome(&mut store, &key, Ok(SmokeSuccess {
+            identity: "deepseek/deepseek-flash".into(),
+            meta_marker: Some(marker),
+        })).unwrap();
+        let saved = find_model(&store, "pi", "deepseek", "deepseek-v4-flash").unwrap();
+        assert_eq!(saved.smoke_model, "deepseek/deepseek-flash");
+        assert!(saved.meta.contains("路由别名：deepseek-v4-flash→deepseek-flash"));
     }
 
     #[test]

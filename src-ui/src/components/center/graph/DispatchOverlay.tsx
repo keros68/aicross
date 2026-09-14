@@ -14,10 +14,11 @@ import {
   needsChainThinking,
   promptForRole,
   reducePipelineStep,
+  failedNodesWithoutResults,
+  nextStageStep,
   redraftNode,
   routeLine,
   setReplyAdopted,
-  withinRequestLimit,
 } from '../../../graph/dispatch';
 import { presetNameOf } from '../../../graph/persist';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
@@ -79,6 +80,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
     const target = graphWithTargets.nodes[id]?.target;
     return !target?.agent.trim() || !target.model.trim();
   });
+  const exceedsRequestLimit = nodeIds.length > settings.maxRequests;
 
   const buildRequest = (sourceGraph: Graph, ids: string[]): DispatchStageRequest => ({
     runId,
@@ -173,12 +175,20 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
     let validationRetries: Record<string, number> = {};
     try {
       while (true) {
-        const ids = dispatchableNodeIds(working);
-        if (ids.length === 0) break;
-        if (!withinRequestLimit(collected.length, ids.length, settings.maxRequests)) {
+        const next = nextStageStep(working, collected, settings);
+        if (next.kind === 'done') break;
+        if (next.kind === 'missing-target') {
+          setNodeIds(next.nodeIds);
+          setTargets((current) => ({ ...current, ...Object.fromEntries(next.nodeIds.map((id) => [id, { ...working.nodes[id].target! }])) }));
+          setRunError('下一阶段有节点未指定模型，请先选择目标。');
+          setPhase('confirm');
+          return;
+        }
+        if (next.kind === 'limit') {
           setRunError(`已达总请求上限 ${settings.maxRequests}，继续派发需重新确认。`);
           break;
         }
+        const ids = next.nodeIds;
         const stageRequest = buildRequest(working, ids);
         const stagePreview = await commands.previewDispatch(stageRequest);
         setPreview(stagePreview);
@@ -201,12 +211,8 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
     } catch (error) {
       const message = String(error);
       setRunError(message);
-      const failed = activeNodes.map((node) => ({
-        nodeId: node.nodeId, stage: graphStage(working, node.nodeId), status: 'error', text: '', rawStdout: '', rawStderr: '', modelReported: '', sessionId: '',
-        tokensIn: 0, tokensOut: 0, cacheRead: 0, durationMs: 0, exitCode: null, timedOut: false, truncated: false,
-        redacted: 0, isolation: '部分', workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', error: message,
-        artifacts: null, validationOutput: '',
-      }));
+      const failed: DispatchNodeResult[] = failedNodesWithoutResults(activeNodes, collected, message)
+        .map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null }));
       if (failed.length > 0) working = onCommit(applyDispatchResults(working, failed));
       setResults([...collected, ...failed]);
       setPhase('results');
@@ -288,6 +294,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
           <div className="dispatch-body">
             {smallTask && <div className="dispatch-warning">单步小任务，外派固定足迹不划算，建议直接 @ 一个执行者</div>}
             {nodeIds.length === 0 && <div className="dispatch-empty">当前没有父节点已完成的待派节点。</div>}
+            {exceedsRequestLimit && <div className="dispatch-warning">本层有 {nodeIds.length} 路，超过总请求上限 {settings.maxRequests}，不能确认派发。</div>}
             {nodeIds.map((id) => {
               const node = graphWithTargets.nodes[id];
               const target = targets[id];
@@ -367,7 +374,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
             {previewError && <div className="dispatch-error">{previewError}</div>}
             <div className="dispatch-actions">
               <button onClick={onClose}>取消</button>
-              <button className="dispatch-primary" disabled={nodeIds.length === 0 || hasMissingTargets || !!previewError} onClick={start}>确认派发</button>
+              <button className="dispatch-primary" disabled={nodeIds.length === 0 || hasMissingTargets || exceedsRequestLimit || !!previewError} onClick={start}>确认派发</button>
             </div>
           </div>
         )}
@@ -407,7 +414,7 @@ export function DispatchOverlay({ graph, models, projectDir, onCommit, onClose }
                   <div className="dispatch-result-text">{result.text || result.error}</div>
                   {result.artifacts && (
                     <details className="dispatch-artifacts">
-                      <summary>产物 · {result.artifacts.changed_files.length} 个文件</summary>
+                      <summary>产物 · {(result.artifacts.changed_files ?? []).length} 个文件</summary>
                       {result.artifacts.worktree && <div className="dispatch-worktree">采纳前请手动合并：{result.artifacts.worktree}</div>}
                       {!result.artifacts.worktree && <div className="dispatch-worktree">单写者产物已在项目目录，标记采纳即可。</div>}
                       <pre>{result.artifacts.diff || '无文件改动'}</pre>

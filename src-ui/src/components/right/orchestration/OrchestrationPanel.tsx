@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAppState } from '../../../store/app-state';
 import { commands, isTauri } from '../../../tauri';
-import type { DispatchableModel, Graph, Preset, Stage } from '../../../graph/types';
+import type { DispatchableModel, Graph, Preset, Stage, Target } from '../../../graph/types';
 import { stamp, descendantsOf } from '../../../graph/stamp';
 import { findModel, validateNode } from '../../../graph/validate';
 import { depthMap } from '../../../graph/layout';
@@ -16,6 +16,7 @@ import { NodePanel } from './NodePanel';
 import { PresetBuilder } from './PresetBuilder';
 import { ExplainOverlay } from './ExplainOverlay';
 import { RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
+import { applyRoleDefaults } from '../../../graph/dispatch';
 import './OrchestrationPanel.css';
 
 // 后置期次的模式：下拉里置灰 + 标期次，不实现（TASK-02 A8）。
@@ -34,6 +35,7 @@ export function OrchestrationPanel() {
   const [builderOpen, setBuilderOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
   const [panelNode, setPanelNode] = useState<string | null>(null);
+  const [roles, setRoles] = useState<{ planning: Target; execution: Target; acceptance: Target } | null>(null);
 
   const focus = state.graphFocus;
   const graph: Graph | undefined = focus ? state.graphs[focus.graphId] : undefined;
@@ -78,6 +80,22 @@ export function OrchestrationPanel() {
     };
   }, []);
 
+  useEffect(() => {
+    if (isTauri) commands.loadRoles().then((value) => setRoles(value as unknown as { planning: Target; execution: Target; acceptance: Target })).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const reloadRoles = () => { if (isTauri) commands.loadRoles().then((value) => setRoles(value as unknown as { planning: Target; execution: Target; acceptance: Target })).catch(() => {}); };
+    window.addEventListener('aicross:presets-changed', reloadRoles);
+    window.addEventListener('aicross:presets-changed', refreshPresets);
+    window.addEventListener(RESOURCES_CHANGED_EVENT, refreshPresets);
+    return () => {
+      window.removeEventListener('aicross:presets-changed', reloadRoles);
+      window.removeEventListener('aicross:presets-changed', refreshPresets);
+      window.removeEventListener(RESOURCES_CHANGED_EVENT, refreshPresets);
+    };
+  }, []);
+
   // 接入页写盘后重拉可派发模型（TASK-07 修正轮 R1：纯追加监听，不改既有
   // 加载逻辑）——「尚未接入资源」提示与节点面板模型下拉都吃这份 state。
   useEffect(() => {
@@ -109,7 +127,8 @@ export function OrchestrationPanel() {
   const applyPreset = (preset: Preset | null) => {
     if (!graph || !focus || !focusNode || !preset) return;
     const before = new Set(Object.keys(graph.nodes));
-    const g2 = stamp(graph, focus.nodeId, preset);
+    const effective = roles ? { ...preset, stages: preset.stages.map((stage) => ({ ...stage, nodes: stage.nodes.map((target) => applyRoleDefaults(target, roles)) })) } : preset;
+    const g2 = stamp(graph, focus.nodeId, effective);
     recordStamp(
       graph.id,
       Object.keys(g2.nodes).filter((id) => !before.has(id)),

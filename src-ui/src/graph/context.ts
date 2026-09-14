@@ -67,9 +67,9 @@ function replyMessage(node: GraphNode): Message | undefined {
 }
 
 export function artifactSummary(artifacts: ReplyArtifacts): string {
-  const files = artifacts.changed_files.map((file) => file.path).join('、') || '无改后全文';
+  const files = (artifacts.changed_files ?? []).map((file) => file.path).join('、') || '无改后全文';
   const worktree = artifacts.worktree ? `\nworktree: ${artifacts.worktree}` : '';
-  return `[执行产物]\n改动文件：${files}${worktree}\nstdout 摘要：${artifacts.stdout_summary || '—'}\n\n${artifacts.diff}`;
+  return `[执行产物]\n改动文件：${files}${worktree}\nstdout 摘要：${artifacts.stdout_summary || '—'}\n\n${artifacts.diff || ''}`;
 }
 
 function hasUserContent(node: GraphNode): boolean {
