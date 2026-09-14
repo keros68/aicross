@@ -84,6 +84,60 @@ export default defineConfig({
       input: {
         main: resolve(configDir, 'index.html'),
       },
+      output: {
+        // `codeSplitting` is a rolldown option. Vite 8's OutputOptions type
+        // already accepts it, so no cast is needed here (the earlier
+        // `as never` was unnecessary and is gone).
+        //
+        // Keeps every emitted chunk under the 500 kB warning line (TASK-05 C).
+        // Two separate problems:
+        //   1. The app bundle had swallowed React, xterm and the Markdown
+        //      pipeline. They are big, independent, and change on their own
+        //      release cadence, so they get their own chunks — the app chunk
+        //      then re-downloads alone when only our code changed.
+        //   2. Shiki grammars import each other (cpp pulls in glsl, sql,
+        //      regexp, asm...). Left alone the bundler inlines those copies
+        //      into every importer, so cpp came out at 660 kB with four other
+        //      grammars duplicated inside it. One chunk per grammar file
+        //      de-duplicates them; each is still fetched only on demand.
+        // Rolldown's `codeSplitting.groups` rather than Rollup's
+        // `manualChunks`: the compat path for the latter only honours the
+        // requested name for modules that already start a chunk, which left
+        // the shared grammars inlined.
+        codeSplitting: {
+          // On by default a group also swallows its dependencies, which is
+          // exactly what inflated cpp (it dragged in cpp-macro) and graphql
+          // (it dragged in the whole JS/TS family). Turning it off gives the
+          // classic Rollup `manualChunks` semantics: a group takes the modules
+          // it matches and nothing else.
+          //
+          // Rolldown suggests pairing this with `strictExecutionOrder: true`.
+          // Do not: it promotes every lazily-imported grammar into the entry
+          // chunk's static preload set, so index.html ends up with a
+          // <link rel="modulepreload"> for all 45 grammars and the app
+          // downloads every one of them at startup. The grammars are pure
+          // data modules with no side effects, so the ordering guarantee buys
+          // nothing here.
+          includeDependenciesRecursively: false,
+          groups: [
+            {
+              name: (id: string) => {
+                const m = id.match(/@shikijs[\\/]langs[\\/]dist[\\/]([\w.@-]+)\.mjs/);
+                return m ? `lang-${m[1]}` : null;
+              },
+              minSize: 0,
+            },
+            { name: 'xterm', test: /node_modules[\\/]@xterm[\\/]/ },
+            {
+              name: 'markdown',
+              test: /node_modules[\\/](react-markdown|remark-[\w-]+|mdast-[\w-]+|micromark[\w-]*|hast-[\w-]+|unist-[\w-]+|vfile[\w-]*|property-information|comma-separated-tokens|space-separated-tokens|html-url-attributes|trim-lines|zwitch|longest-streak|ccount|markdown-table|devlop|bail|is-plain-obj|trough|unified|decode-named-character-reference|character-entities[\w-]*)[\\/]/,
+            },
+            { name: 'react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+            // Everything else from node_modules that is not already grouped.
+            { name: 'vendor', test: /node_modules/ },
+          ],
+        },
+      },
     },
   },
 });

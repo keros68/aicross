@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { focusTerminal } from '../../lib/focus-registry';
 import { onWindowForeground } from '../../lib/window-focus-filter';
 import { TierTerminal } from './TierTerminal';
 import { GraphTab } from './graph/GraphTab';
-import { SkillsPanel } from './SkillsPanel';
+// 技能面板按需载入（TASK-05 C 拆包）：它是启动页里的一个次级 tab。
+const SkillsPanel = lazy(() => import('./SkillsPanel').then((m) => ({ default: m.SkillsPanel })));
 import { FourSplitGrid } from './FourSplitGrid';
 import { ToolConfigModal } from './ToolConfigModal';
 import { ContributionHeatmap } from './ContributionHeatmap';
@@ -1963,7 +1964,9 @@ export function CenterPanel() {
                         </div>
                       </>
                     ) : (
-                      <SkillsPanel showToast={showToast} />
+                      <Suspense fallback={null}>
+                        <SkillsPanel showToast={showToast} />
+                      </Suspense>
                     )}
                   </div>
 

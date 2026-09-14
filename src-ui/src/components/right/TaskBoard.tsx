@@ -8,47 +8,48 @@ import { ChangesBoard } from './ChangesBoard';
 import { TaskNoteView } from './TaskNoteView';
 import { TaskPromptView } from './TaskPromptView';
 import { getTaskNewHandler, TaskEmptyState } from './TaskEmptyState';
-import { makePromptItem, NEXT_STATUS, STATUS_ORDER, type TaskItem, type TaskStatus } from './task-types';
+import { makePromptItem, STATUS_ORDER, type TaskItem, type TaskStatus } from './task-types';
+import {
+  addTask,
+  cycleStatus,
+  duplicateTask as duplicateIn,
+  moveTask,
+  parseTasks,
+  patchTask,
+  removeTask,
+  renameCategory as renameCategoryIn,
+  setTaskStatus,
+  type DropTarget,
+} from './task-reducer';
+import {
+  LEGACY_STORAGE_KEY,
+  loadTaskBoard,
+  type TaskLoadDamage,
+  type TaskLoadResult,
+} from './task-storage';
 import { useTextContextMenu } from '../../lib/use-text-context-menu';
 
 // ─── Persistence (Rust file backend with localStorage fallback) ──────────────
 
-const LEGACY_STORAGE_KEY = 'coffee-tasks';
-
-async function loadTasksFromBackend(): Promise<TaskItem[]> {
-  if (isTauri) {
-    try {
-      const raw = await commands.loadTasks();
-      const tasks: TaskItem[] = JSON.parse(raw);
-
-      // Auto-migrate: if Rust file is empty but localStorage has data, migrate it
-      if (tasks.length === 0) {
-        try {
-          const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
-          if (legacy) {
-            const legacyTasks: TaskItem[] = JSON.parse(legacy);
-            if (legacyTasks.length > 0) {
-              await commands.saveTasks(JSON.stringify(legacyTasks));
-              localStorage.removeItem(LEGACY_STORAGE_KEY); // Clean up
-              return legacyTasks;
-            }
-          }
-        } catch {}
-      }
-
-      return tasks;
-    } catch {
-      // Fallback to localStorage if Rust backend unavailable
-    }
-  }
-
-  // Non-Tauri fallback (dev mode in browser)
-  try {
-    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return [];
+// 载入流程与它的分支在 task-storage.ts 里，依赖注入、可单测。
+function loadTasksFromBackend(): Promise<TaskLoadResult> {
+  return loadTaskBoard({
+    isTauri,
+    loadTasks: () => commands.loadTasks(),
+    saveTasks: (data) => commands.saveTasks(data),
+    readLegacy: () => {
+      try { return localStorage.getItem(LEGACY_STORAGE_KEY); } catch { return null; }
+    },
+    clearLegacy: () => {
+      try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch { /* 存储不可用 */ }
+    },
+  });
 }
+
+const DAMAGED_TEXT: Record<TaskLoadDamage, string> = {
+  unreadable: '任务文件读不出来，本次未载入。已停止写入，~/.aicross/tasks.json 保持原样；检查权限或占用后重开窗口。',
+  unparsable: '任务文件内容不认识，本次未载入。已停止写入，~/.aicross/tasks.json 保持原样；修好或移走它，再重开窗口。',
+};
 
 function saveTasksToBackend(tasks: TaskItem[]) {
   const data = JSON.stringify(tasks);
@@ -137,14 +138,22 @@ export function TaskBoard() {
   const skipNextSyncRef = useRef(false); // Used to ignore external/initial load syncs
   const isLoadedRef = useRef(false);
   const pendingEchoesRef = useRef<Set<string>>(new Set());
+  // Set when the stored file could not be read or parsed. `isLoadedRef` stays
+  // false for the rest of the session, so nothing is ever written back and the
+  // file survives for the user to inspect.
+  const [loadDamaged, setLoadDamaged] = useState<TaskLoadDamage | null>(null);
 
   // Load tasks without seeding product-guide content. An empty board stays
   // empty and presents a direct New action.
   useEffect(() => {
-    loadTasksFromBackend().then(data => {
+    loadTasksFromBackend().then(result => {
+      if (result.kind === 'damaged') {
+        setLoadDamaged(result.reason);
+        return;
+      }
       isLoadedRef.current = true;
       skipNextSyncRef.current = true; // Prevent saving the initialized data purely due to React effect
-      setTasks(data);
+      setTasks(result.tasks);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -181,11 +190,10 @@ export function TaskBoard() {
           return;
         }
         
-        try {
-          const updated: TaskItem[] = JSON.parse(event.payload);
-          skipNextSyncRef.current = true; // Mark incoming external data so we don't circularly save it
-          setTasks(updated);
-        } catch {}
+        const updated = parseTasks(event.payload);
+        if (!updated) return;
+        skipNextSyncRef.current = true; // Mark incoming external data so we don't circularly save it
+        setTasks(updated);
       }).then(u => { unlisten = u; });
     });
     return () => { unlisten?.(); };
@@ -208,7 +216,7 @@ export function TaskBoard() {
       id: crypto.randomUUID(), title, status: 'todo', createdAt: Date.now()
     };
     setAddingId(newTask.id);
-    setTasks(prev => [newTask, ...prev]);
+    setTasks(prev => addTask(prev, newTask));
     setTimeout(() => setAddingId(null), 400);
     setTimeout(() => {
       setEditingId(newTask.id);
@@ -225,7 +233,7 @@ export function TaskBoard() {
   const handleAddPrompt = useCallback(() => {
     const item = makePromptItem('');
     setAddingId(item.id);
-    setTasks(prev => [item, ...prev]);
+    setTasks(prev => addTask(prev, item));
     setTimeout(() => setAddingId(null), 400);
   }, []);
 
@@ -233,7 +241,7 @@ export function TaskBoard() {
   // group moves together). '' -> name is the "name a new category" case;
   // renaming to an existing title merges into that group (pick-existing).
   const renameCategory = useCallback((oldTitle: string, newTitle: string) => {
-    setTasks(prev => prev.map(t => t.title === oldTitle ? { ...t, title: newTitle } : t));
+    setTasks(prev => renameCategoryIn(prev, oldTitle, newTitle));
   }, []);
 
   // Duplicate a note — spawns an identical sticky right AFTER the original
@@ -244,14 +252,7 @@ export function TaskBoard() {
   // "copy" is a SAVE-EFFORT gesture, not an edit. The copy just appears in place.
   const duplicateTask = useCallback((id: string) => {
     const newId = crypto.randomUUID();
-    setTasks(prev => {
-      const idx = prev.findIndex(t => t.id === id);
-      if (idx < 0) return prev;
-      const copy: TaskItem = { ...prev[idx], id: newId, createdAt: Date.now() };
-      const next = [...prev];
-      next.splice(idx + 1, 0, copy);
-      return next;
-    });
+    setTasks(prev => duplicateIn(prev, id, newId, Date.now()));
   }, []);
 
   // Send a task to the active tab's agent. Composes `title + description`
@@ -269,7 +270,7 @@ export function TaskBoard() {
       : task.title;
     actions.paste(body);
     if (task.status !== 'working') {
-      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'working' } : t));
+      setTasks(prev => setTaskStatus(prev, task.id, 'working'));
     }
   }, [state.activeTerminalId]);
 
@@ -287,26 +288,26 @@ export function TaskBoard() {
   }, [state.activeTerminalId]);
 
   const handleToggle = useCallback((id: string) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, status: NEXT_STATUS[t.status] } : t));
+    setTasks(prev => cycleStatus(prev, id));
   }, []);
 
   // Direct status set — used by the note view's traffic-light dots (the list
   // view's checkbox cycles via handleToggle instead). Card auto-regroups.
   const setStatus = useCallback((id: string, status: TaskStatus) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, status } : t));
+    setTasks(prev => setTaskStatus(prev, id, status));
   }, []);
 
   // Live title edit — the note body is always-editable (no commit step), so it
   // writes through on every keystroke. Empty is allowed while typing.
   const updateTitle = useCallback((id: string, title: string) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, title } : t));
+    setTasks(prev => patchTask(prev, id, { title }));
   }, []);
 
   // Note-view body height (bottom-edge resize). Persisted on the task so the
   // note keeps its size; the note view drives live preview locally and only
   // calls this once on drop.
   const setHeight = useCallback((id: string, height: number) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, height } : t));
+    setTasks(prev => patchTask(prev, id, { height }));
   }, []);
 
   const handleRemove = useCallback((id: string) => {
@@ -314,13 +315,13 @@ export function TaskBoard() {
     if (expandedId === id) setExpandedId(null);
     if (editingId === id) setEditingId(null);
     setTimeout(() => {
-      setTasks(prev => prev.filter(t => t.id !== id));
+      setTasks(prev => removeTask(prev, id));
       setRemovingId(null);
     }, 300);
   }, [expandedId, editingId]);
 
   const handleDescChange = useCallback((id: string, desc: string) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, description: desc } : t));
+    setTasks(prev => patchTask(prev, id, { description: desc }));
   }, []);
 
   const startEditing = useCallback((id: string, currentTitle: string) => {
@@ -332,7 +333,7 @@ export function TaskBoard() {
     if (!editingId) return;
     const trimmed = editingTitle.trim();
     if (trimmed) {
-      setTasks(prev => prev.map(t => t.id === editingId ? { ...t, title: trimmed } : t));
+      setTasks(prev => patchTask(prev, editingId, { title: trimmed }));
     }
     setEditingId(null);
     setEditingTitle('');
@@ -520,44 +521,7 @@ export function TaskBoard() {
       const drop = dropTargetRef.current;
 
       if (drop.id || drop.status) {
-        setTasks(prev => {
-          const ordered = STATUS_ORDER.flatMap(s => prev.filter(t => t.status === s));
-          const draggedIdx = ordered.findIndex(t => t.id === id);
-          if (draggedIdx === -1) return prev;
-
-          const draggedTask = ordered[draggedIdx];
-          const newStatus = drop.status || draggedTask.status;
-          const updatedTask = { ...draggedTask, status: newStatus };
-          const without = ordered.filter(t => t.id !== id);
-
-          if (drop.id) {
-            const targetIdx = without.findIndex(t => t.id === drop.id);
-            if (targetIdx !== -1) {
-              const insertAt = drop.position === 'before' ? targetIdx : targetIdx + 1;
-              without.splice(insertAt, 0, updatedTask);
-            } else {
-              without.push(updatedTask);
-            }
-          } else {
-            // Drop into empty section — append at end of that section
-            const sectionEnd = without.filter(t => t.status === newStatus).length;
-            let insertAt = 0;
-            for (let i = 0; i < without.length; i++) {
-              if (without[i].status === newStatus) insertAt = i + 1;
-            }
-            if (sectionEnd === 0) {
-              // Find where this section would be in the order
-              const sIdx = STATUS_ORDER.indexOf(newStatus);
-              insertAt = 0;
-              for (let si = 0; si < sIdx; si++) {
-                insertAt += without.filter(t => t.status === STATUS_ORDER[si]).length;
-              }
-            }
-            without.splice(insertAt, 0, updatedTask);
-          }
-
-          return without;
-        });
+        setTasks(prev => moveTask(prev, id, drop as DropTarget));
       }
 
       // Clear all inline transforms from FLIP animation
@@ -617,6 +581,11 @@ export function TaskBoard() {
 
       {activeTab === 'tasks' && (
         <>
+          {loadDamaged && (
+            <div className="task-damaged" role="status">
+              {DAMAGED_TEXT[loadDamaged]}
+            </div>
+          )}
           {viewMode === 'note' ? (
             <TaskNoteView
               tasks={tasks}

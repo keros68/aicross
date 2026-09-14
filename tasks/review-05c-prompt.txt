@@ -1,0 +1,9 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 ui/phase5c 分支。本期是 TASK-05 的 C 节「打包与体验」。先读 tasks/TASK-05-acp-and-polish.md 的第 0 节第 3 条与 C 节、AGENTS.md、tasks/REPORT-05C.md（实现方报告），再用 git diff main --stat 与 git diff main 看本期全部改动（含 tauri.conf.json、scripts/generate-aicross-icons.mjs、icons/、src-ui/vite.config.ts、src-ui/src/components/center/graph/ 的首启引导、src-ui/src/first-run.ts、src-ui/src/components/right/ 的任务板与 task-reducer.ts、src/ 里 tasks.json 的读写、docs/MANUAL.md）。不读 node_modules、target、dist、port。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：安装包（beforeBuildCommand 改法是否正确、bundle 配置）、图标（是否只是字标、全套尺寸是否齐）、首启引导（只在无图且无已接入资源时出现；三步跳转是否指向真实位置）、任务 tab（reducer 纯函数、原子写、损坏文件不覆盖）、拆包（是否真的消掉 >500KB 警告、动态 import 会不会破坏首屏功能）、MANUAL.md（是否按代码实际行为写、每节 ≤10 行、文案规范）。
+2. 逻辑正确性：shiki 从 shiki/core + 显式语法表的改法会不会漏掉常用语言、WASM 用 ?url 在 Tauri 打包后的资源协议下能否加载；React.lazy 的三个覆盖层在首次打开时的 Suspense 兜底；首启引导的判定对「资源探测未完成」的处理；任务板拖放与状态循环有没有被 reducer 抽取改变行为。
+3. 安全：tasks.json 原子写与路径；MANUAL 里密钥六铁律的用户版有没有写错（尤其「不落盘」「不进模型上下文」）；图标脚本不引入网络依赖。
+4. 代码质量与契约：不动 src/channels/、src/dispatch.rs、src-ui/src/graph/ 的逻辑（核对 diff 是否越界）；CRLF/LF 混排是否引入整文件重写；vite 配置里 rolldown 选项的注释是否说清了为何不开 strictExecutionOrder。
+5. 测试：报告里列的 vitest / Rust 测试是否真实存在且断言目标行为；最该补的 3 个。
+最后单独回答：对照 C 节原始需求是否完整实现？一句话 + 缺项列表（按严重度排序）。

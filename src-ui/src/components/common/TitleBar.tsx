@@ -7,12 +7,15 @@
 //   1. Left panel toggle  (Explorer / directory listing)
 //   2. Right panel toggle (TaskBoard / chat history)
 
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { commands, isTauri } from '../../tauri';
 import { useAppState, useAppDispatch, schemeLabels } from '../../store/app-state';
 import { IS_MACOS } from '../../lib/platform';
 import { useT } from '../../i18n/useT';
-import { ResourcesOverlay } from '../resources/ResourcesOverlay';
+// 接入页按需载入（TASK-05 C 拆包）：整张覆盖层只在点「接入」后出现。
+const ResourcesOverlay = lazy(() =>
+  import('../resources/ResourcesOverlay').then((m) => ({ default: m.ResourcesOverlay })),
+);
 import { OPEN_RESOURCES_EVENT } from '../../resources/mention';
 import './TitleBar.css';
 
@@ -190,7 +193,11 @@ export function TitleBar() {
           </button>
         </div>
       )}
-      {resourcesOpen && <ResourcesOverlay onClose={() => setResourcesOpen(false)} />}
+      {resourcesOpen && (
+        <Suspense fallback={null}>
+          <ResourcesOverlay onClose={() => setResourcesOpen(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }

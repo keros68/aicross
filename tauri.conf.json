@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "./src-ui/dist",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "",
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "./src-ui" },
     "beforeDevCommand": { "script": "npm run dev", "cwd": "./src-ui" }
   },
 

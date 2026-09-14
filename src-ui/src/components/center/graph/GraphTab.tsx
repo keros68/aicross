@@ -20,9 +20,12 @@ import { nodeLabel } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
 import { applyRoleDefaults, dispatchableNodeIds, nodeStatusLabel, redraftNode } from '../../../graph/dispatch';
 import { DispatchOverlay } from './DispatchOverlay';
-import { appendMention, INSERT_MENTION_EVENT, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
+import { appendMention, INSERT_MENTION_EVENT, openResourcesPage, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { groupPickableModels, modelKey, modelOptionLabel } from '../../../resources/model-picker';
 import { stampMenuShouldClose } from '../../../graph/stamp-menu';
+import { requestOrchestrationPanel } from '../../../lib/open-orchestration';
+import { FirstRunGuide } from './FirstRunGuide';
+import { shouldShowFirstRun, type FirstRunStepKey } from './first-run';
 import './GraphTab.css';
 
 // 节点卡固定尺寸，图区横向滚动；不做缩放、不做拖拽（任务书硬约束）。
@@ -47,6 +50,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   );
   const [presets, setPresets] = useState<Preset[]>([]);
   const [metas, setMetas] = useState<GraphMeta[] | null>(() => (isTauri ? null : []));
+  const [metasError, setMetasError] = useState(false);
   const [columns, setColumns] = useState<string[]>([]);
   const [stampFor, setStampFor] = useState<string | null>(null);
   // 「盖预设」菜单改走 portal：它原来是 .graph-canvas-inner 里的 absolute 元素，
@@ -59,6 +63,9 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [failedId, setFailedId] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
+  // 资源是否已读过一轮。models 初值是 []，没有这个标记会把「还没读」
+  // 误判成「一个资源都没有」，首启引导就会闪一下。
+  const [modelsRead, setModelsRead] = useState(false);
   const [unfinishedRun, setUnfinishedRun] = useState<{ runId: string; nodeIds: string[] } | null>(null);
   const [roles, setRoles] = useState<any>(null);
 
@@ -123,6 +130,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
         if (dead) return;
         setModels(r.models);
         setModelsError(r.error);
+        setModelsRead(true);
       })
       .catch(() => {
         if (!dead) setModelsError('读取资源失败');
@@ -177,7 +185,13 @@ export function GraphTab({ session }: { session: TerminalSession }) {
         if (!dead) setMetas(list);
       })
       .catch(() => {
-        if (!dead) setMetas([]);
+        // 列表读不出来 ≠ 一张图都没有。metas 仍置 [] 让列表区停止转圈，
+        // 但 metasError 会把首启引导的 graphCount 变成「不知道」，
+        // 免得在图状态未知时弹引导（R1 修正）。
+        if (!dead) {
+          setMetas([]);
+          setMetasError(true);
+        }
       });
     return () => {
       dead = true;
@@ -377,6 +391,34 @@ export function GraphTab({ session }: { session: TerminalSession }) {
 
   // ── 开始视图 ────────────────────────────────────────────────────────────
   if (graphId === '') {
+    const firstRunFacts = {
+      // 读不出图列表时同样按「不知道」处理。
+      graphCount: metas === null || metasError ? null : metas.length,
+      // 读不出资源时按「不知道」处理，引导不出现（宁可不提示，也不误判）。
+      resourceCount: modelsError || !modelsRead ? null : models.length,
+      folderPath: session.folderPath ?? null,
+    };
+    const onFirstRunStep = (key: FirstRunStepKey) => {
+      if (key === 'folder') {
+        import('@tauri-apps/plugin-dialog')
+          .then(({ open }) => open({ directory: true }))
+          .then((picked) => {
+            if (typeof picked === 'string') dispatch({ type: 'SET_FOLDER', path: picked });
+          })
+          .catch(() => {});
+        return;
+      }
+      if (key === 'resources') {
+        openResourcesPage();
+        return;
+      }
+      // 选预设：右栏切到「方案与编排」，预设下拉就在那儿。右栏收起时先展开，
+      // 否则这一步点了没有可见反应。展开的那一下 RightPanel 还没 mount，
+      // 光发事件会丢，所以走 requestOrchestrationPanel（事件 + 一次性标记）。
+      if (state.rightPanelHidden) dispatch({ type: 'TOGGLE_RIGHT_PANEL' });
+      requestOrchestrationPanel();
+    };
+
     return (
       <div className="graph-tab graph-start">
         <div className="graph-start-inner">
@@ -384,12 +426,17 @@ export function GraphTab({ session }: { session: TerminalSession }) {
           <div className="graph-start-desc">
             会话是一张从左向右生长的图。发第一句得到根节点，@ 模型分叉，盖预设编排。
           </div>
+          {shouldShowFirstRun(firstRunFacts) && (
+            <FirstRunGuide facts={firstRunFacts} onStep={onFirstRunStep} />
+          )}
           <button className="graph-primary-btn" onClick={createGraph}>
             新建对话图
           </button>
           {metas === null && <div className="graph-start-empty">读取中…</div>}
           {metas !== null && metas.length === 0 && (
-            <div className="graph-start-empty">还没有保存的图</div>
+            <div className="graph-start-empty">
+              {metasError ? '读取已保存的图失败' : '还没有保存的图'}
+            </div>
           )}
           {metas !== null && metas.length > 0 && (
             <>
