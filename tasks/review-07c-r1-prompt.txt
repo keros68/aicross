@@ -1,0 +1,5 @@
+你是代码审查者，本次是 TASK-07C（共享 dispatch-progress store + 节点卡进度）修正轮 R1 的复审。仓库在当前目录，当前是 main 之上的 phase/7c 分支。先读 tasks/fix-07c-r1.md（4 条，来自 tasks/review-07c-ds.md 与 tasks/review-07c-glm.md），再读 tasks/REPORT-07C.md 末尾「修正轮 R1」一节，再读 src-ui/src/graph/dispatch-progress.ts、src-ui/src/graph/dispatch.ts（progressSnapshot/nextProgress/progressOf/idleHint/runningDetailOf）、src-ui/src/graph/__tests__/idle-and-tail-07c.test.tsx、src-ui/src/components/center/graph/（DispatchOverlay.tsx、DispatchBits.tsx、GraphTab.tsx、GraphTab.css）。不读 node_modules、target、dist、port、src/。
+
+逐条核对 4 条：每条「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：终态事件保留上一条心跳读数且耗时冻结；subscribeProgress 的 dispose 守卫（换 runId/卸载各 unlisten 一次、迟到 listen 立即解除）；start() finally 的 endRun 让时钟停且不挂胶囊；节点卡第三行换行不裁切且 NODE_H 与连线坐标一致；修正是否引入新缺陷（第 2–7 期路径无回归）。编排者已复跑 vitest 294 / build 全绿。
+
+最后单独回答：R1 之后 TASK-07C 是否可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

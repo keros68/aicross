@@ -1,0 +1,5 @@
+你是代码审查者，本次是 TASK-07A（引擎：进度心跳、before 快照 .prev、零改动不覆盖、留痕默认值、tokens_cache_read）修正轮 R1 的复审。仓库在当前目录，当前是 main 之上的 phase/7a 分支。先读 tasks/fix-07a-r1.md（10 条，来自 tasks/review-07a-ds.md 与 tasks/review-07a-glm.md），再读 tasks/REPORT-07A.md 末尾「修正轮 R1」一节，再读 src/dispatch.rs、src/process.rs、src/channels/acp.rs、src/orchestration.rs、fixtures/acp/fake_server.py、tasks/TASK-07-idle-and-tail.md。不读 node_modules、target、dist、port。
+
+逐条核对 10 条：每条「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：heartbeat_loop 对 Disconnected 立即退出且终态之后不再发 running；lastTool 脱敏+120 字符截断；每次尝试重置工具计数；权限请求计数且按 sessionId 过滤；.prev 失败分支；测试判别力；修正是否引入新缺陷（第 2–6 期路径无回归、acp.rs 改动仍限于计数）。编排者已复跑 cargo 280 / vitest 254 / build 零 warning，并真跑 live_kimi_acp_two_turn_continuation。
+
+最后单独回答：R1 之后 TASK-07A 是否可交付？一句话 + 仍未闭合的项列表（按严重度排序）。
