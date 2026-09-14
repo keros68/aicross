@@ -1,6 +1,10 @@
 // TASK-06 B 节（界面/TS）：重派与崩溃恢复的一致性。
 // 编号与 tasks/TASK-06-consistency.md「B. 界面（TS）」1–7 一致。
 
+// tsconfig.app.json 的 types 里只有 vite/client：应用代码不该碰 node 内置模块，
+// 把 @types/node 拉进来会连带改写 setTimeout 的返回类型。只有这条样式断言要读
+// 磁盘，所以就地压掉解析错误（与 lib/__tests__/shiki.test.ts 同一套写法）。
+// @ts-expect-error node builtin, not in this project's `types`
 import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
