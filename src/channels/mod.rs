@@ -486,17 +486,32 @@ fn parse_claude(result: &ProcessResult) -> Result<ChannelOutput, String> {
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
         },
-        identity: value
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        identity: claude_identity(&value),
         session_id: value
             .get("session_id")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
     })
+}
+
+/// `claude -p --output-format json` 的 result 对象没有顶层 `model`；真身在 `modelUsage`
+/// 的键里（如 `claude-fable-5-1`）。优先顶层 `model`（老版本），其次 `modelUsage`：
+/// 多个键时取 output_tokens 最多的那个，避免子代理模型混进来。
+fn claude_identity(value: &Value) -> String {
+    if let Some(model) = value.get("model").and_then(Value::as_str) {
+        if !model.is_empty() {
+            return model.to_string();
+        }
+    }
+    let Some(usage) = value.get("modelUsage").and_then(Value::as_object) else {
+        return String::new();
+    };
+    usage
+        .iter()
+        .max_by_key(|(_, stats)| stats.get("outputTokens").and_then(Value::as_u64).unwrap_or(0))
+        .map(|(model, _)| model.clone())
+        .unwrap_or_default()
 }
 
 fn parse_codex(result: &ProcessResult) -> Result<ChannelOutput, String> {
@@ -1172,6 +1187,22 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(parsed.text, "OK");
+    }
+
+    #[test]
+    fn claude_identity_comes_from_model_usage_keys_when_no_top_level_model() {
+        let parsed = parse_claude(&result(
+            r#"{"is_error":false,"result":"OK","usage":{},"modelUsage":{"claude-fable-5-1":{"inputTokens":3,"outputTokens":5}}}"#,
+        ))
+        .unwrap();
+        assert_eq!(parsed.identity, "claude-fable-5-1");
+        let multi = parse_claude(&result(
+            r#"{"is_error":false,"result":"OK","usage":{},"modelUsage":{"claude-haiku-4-5-20251001":{"outputTokens":2},"claude-fable-5-1":{"outputTokens":9}}}"#,
+        ))
+        .unwrap();
+        assert_eq!(multi.identity, "claude-fable-5-1");
+        let legacy = parse_claude(&result(r#"{"is_error":false,"result":"OK","model":"claude-opus-5"}"#)).unwrap();
+        assert_eq!(legacy.identity, "claude-opus-5");
     }
 
     #[test]
