@@ -1,0 +1,9 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/6a 分支。本期是 TASK-06 的 A 节「引擎：before 快照落盘与回滚、崩溃后对账、禁外部动作、推进幂等、8MB 标记边界、Reply.fallback 字段」。先读 docs/PRODUCT.md 的「重派与崩溃恢复的一致性」一节、tasks/TASK-06-consistency.md（契约 + A 节）、AGENTS.md、tasks/REPORT-06A.md（实现方报告），再读本期改动：src/dispatch.rs、src/orchestration.rs、src/server.rs、src/process.rs、src/channels/mod.rs、fixtures/prompts/execution.txt。不读 node_modules、target、dist、port、src/channels/acp.rs。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照 A 节 6 条与契约（reconcile_dispatch_state / rollback_node_changes 的返回形状、留痕 before_dir、Reply.fallback_from/to、请求 rollback_before）逐条核对是否落地、是否只追加。
+2. 逻辑正确性：before 快照只存被改动/删除的文件、新建文件记 .created；回滚在写锁内、恢复内容与删除新建文件、超限文件进 skipped；worktree 节点跳过；对账按 run_id+node_id 匹配、三种 verdict 判定、reply_text 与 artifacts 从留痕取回是否正确、脱敏是否不会二次损坏；同 run 重复派发被拒；8MB 标记必达。
+3. 安全：回滚不得越出项目目录（路径穿越、符号链接）；对账只读；禁外部动作的提示词与 claude --tools 白名单是否真的生效。
+4. 代码质量与契约：留痕 aicross-dispatch/1 只追加且旧记录可读；Reply 镜像 #[serde(default)]；server.rs 命令注册；第 2/3/4/5 期路径（run_one、run_fallback、验收 PASS/NEEDS_FIX、ACP 分支）无回归。
+5. 测试：报告里的测试是否真实存在且断言目标行为；最该补的 3 个。
+最后单独回答：对照 A 节原始需求是否完整实现？一句话 + 缺项列表（按严重度排序）。

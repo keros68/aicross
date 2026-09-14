@@ -967,13 +967,15 @@ mod tests {
     }
 
     #[test]
-    fn writable_claude_enables_write_tools() {
+    fn writable_claude_excludes_web_tools_from_allowlist() {
         let invocation = build_invocation_spec(
             "claude", "", "sonnet", "低", "低", false, None, "x", None, None, None, true,
         )
         .unwrap();
         let tools = invocation.args.iter().position(|arg| arg == "--tools").unwrap();
         assert_eq!(invocation.args[tools + 1], "Read,Grep,Glob,Write,Edit,Bash");
+        assert!(!invocation.args[tools + 1].contains("WebFetch"));
+        assert!(!invocation.args[tools + 1].contains("WebSearch"));
     }
 
     #[test]

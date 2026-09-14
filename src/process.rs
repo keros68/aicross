@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 pub const MAX_PROCESS_OUTPUT: u64 = 4 * 1024 * 1024;
 pub const MAX_INTERACTIVE_OUTPUT: usize = 8 * 1024 * 1024;
 
+fn interactive_queue_limit(marker_bytes: usize) -> usize {
+    MAX_INTERACTIVE_OUTPUT.saturating_add(marker_bytes)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecvLineError {
     Timeout,
@@ -150,7 +154,7 @@ pub fn spawn_interactive(
                 let marker = "[ACP stdout 已截断]".to_string();
                 let marker_bytes = marker.len() + 1;
                 if queued_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                    (current.saturating_add(marker_bytes) <= MAX_INTERACTIVE_OUTPUT)
+                    (current.saturating_add(marker_bytes) <= interactive_queue_limit(marker_bytes))
                         .then_some(current + marker_bytes)
                 }).is_ok() && sender.send(InteractiveLine { value: Ok(marker), bytes: marker_bytes }).is_err() {
                     queued_bytes.fetch_sub(marker_bytes, Ordering::AcqRel);
@@ -502,6 +506,21 @@ mod tests {
         let first = process.recv_line(Duration::from_secs(5)).unwrap();
         assert_eq!(first, "[ACP stdout 已截断]");
         assert_eq!(process.recv_line(Duration::from_secs(2)).unwrap(), "after");
+        process.terminate();
+    }
+
+    #[test]
+    fn interactive_stdout_truncation_marker_is_delivered_at_full_queue_boundary() {
+        let Ok(python) = crate::channels::resolve_binary("python", None) else {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        };
+        let first_len = MAX_INTERACTIVE_OUTPUT - 17;
+        let args = vec!["-c".to_string(), format!("import time\nprint('x'*{first_len})\nprint('y'*32)\ntime.sleep(1)")];
+        let mut process = spawn_interactive(&python, &args, None).unwrap();
+        assert_eq!(process.recv_line(Duration::from_secs(10)).unwrap().len(), first_len);
+        assert_eq!(process.recv_line(Duration::from_secs(2)).unwrap(), "[ACP stdout 已截断]");
+        assert_eq!(process.try_recv_line().unwrap(), None, "超限普通行不应入队");
         process.terminate();
     }
 }
