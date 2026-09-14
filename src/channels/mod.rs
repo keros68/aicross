@@ -2,6 +2,8 @@ use crate::process::ProcessResult;
 use regex::Regex;
 use serde_json::Value;
 
+pub(crate) mod acp;
+
 pub(crate) const KNOWN_MODEL_ROUTES: &[(&str, &str, &str)] = &[
     ("deepseek", "deepseek-v4-flash", "deepseek-flash"),
 ];
@@ -106,6 +108,18 @@ pub fn build_invocation(
     cc_switch_path: Option<&Path>,
     writable: bool,
 ) -> Result<Invocation, String> {
+    #[cfg(test)]
+    if normalize_agent(agent) == "kimi" {
+        if let Some((_, oneshot, _)) = test_provider_parts(provider) {
+            let program = resolve_binary("python", None)?;
+            let mut args = vec![oneshot];
+            args.extend(build_invocation_spec(
+                "kimi", "", model, tier, thinking, blind, session_id, prompt,
+                task_file, session_dir, cc_switch_path, writable,
+            )?.args);
+            return Ok(Invocation { program, args, input: None });
+        }
+    }
     let normalized = normalize_agent(agent);
     let spec = build_invocation_spec(
         normalized,
@@ -130,6 +144,13 @@ pub fn build_invocation(
         args: spec.args,
         input: spec.input,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn test_provider_parts(provider: &str) -> Option<(String, String, Vec<String>)> {
+    let encoded = provider.strip_prefix("__aicross_test__|")?;
+    let mut parts = encoded.split('|');
+    Some((parts.next()?.to_string(), parts.next()?.to_string(), parts.map(str::to_string).collect()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -411,7 +432,7 @@ fn kimi_fallback() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".kimi-code/bin/kimi.exe"))
 }
 
-fn resolve_binary(binary: &str, fallback: Option<PathBuf>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_binary(binary: &str, fallback: Option<PathBuf>) -> Result<PathBuf, String> {
     let path = Path::new(binary);
     if path.components().count() > 1 && path.is_file() {
         return Ok(path.to_path_buf());

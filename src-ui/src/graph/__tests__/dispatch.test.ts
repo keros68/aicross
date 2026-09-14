@@ -9,6 +9,7 @@ import {
   clearTargetSession,
   failedNodesWithoutResults,
   continuationSession,
+  continuationRunner,
   dispatchableNodeIds,
   graphStage,
   groupResultsByStage,
@@ -128,6 +129,22 @@ describe('graph dispatch helpers', () => {
     expect(continuationSession(g, 'b')).toBeUndefined();
   });
 
+  it('续聊请求保留父回复的 ACP runner 来源', () => {
+    const parent = node('a', ['r'], { status: 'done', text: 'one', session_id: 'acp-1', runner: 'acp' });
+    const child = node('b', ['a'], { status: 'draft', text: '' });
+    const g = graph([node('r', []), parent, child]);
+    expect(continuationRunner(g, 'b')).toBe('acp');
+  });
+
+  it('盲节点不携带父节点的 session 与 runner', () => {
+    const parent = node('a', ['r'], { status: 'done', text: 'one', session_id: 'acp-1', runner: 'acp' });
+    const child = node('b', ['a'], { status: 'draft', text: '' });
+    child.target!.visibility = '盲';
+    const g = graph([node('r', []), parent, child]);
+    expect(continuationSession(g, 'b')).toBeUndefined();
+    expect(continuationRunner(g, 'b')).toBeUndefined();
+  });
+
   it('新开会话清除同目标父链 session_id', () => {
     const parent = node('a', ['r'], { status: 'done', text: 'one', session_id: 'thread-1' });
     const child = node('b', ['a'], { status: 'draft', text: '' });
@@ -147,6 +164,24 @@ describe('graph dispatch helpers', () => {
       status: 'done', text: 'answer', model_reported: 'openai/m', tokens_in: 12,
       tokens_out: 4, ms: 80, session_id: 'thread-2', adopted: true,
     });
+  });
+
+  it('长驻运行方式写回 Reply', () => {
+    const g = graph([node('r', []), node('a', ['r'], { status: 'pending', text: '' })]);
+    const next = applyDispatchResults(g, [{
+      nodeId: 'a', status: 'ok', text: 'answer', modelReported: '', sessionId: 'acp-1',
+      tokensIn: 0, tokensOut: 0, durationMs: 20, error: '', runner: 'acp',
+    }]);
+    expect(next.nodes.a.reply?.runner).toBe('acp');
+  });
+
+  it('本地合成失败结果写回未运行而非一次性', () => {
+    const g = graph([node('r', []), node('a', ['r'], { status: 'pending', text: '' })]);
+    const next = applyDispatchResults(g, [{
+      nodeId: 'a', status: 'error', text: '', modelReported: '', sessionId: '',
+      tokensIn: 0, tokensOut: 0, durationMs: 0, error: 'frontend failure', runner: 'unknown',
+    }]);
+    expect(next.nodes.a.reply?.runner).toBe('unknown');
   });
 
   it('升级后提高档位和 thinking 并回到 draft', () => {

@@ -1,0 +1,12 @@
+# TASK-05A 修正轮 R3（ACP 长驻，R2 复审收尾）
+
+先读 `tasks/fix-05a-r2.md`、`tasks/REPORT-05A.md` 的「修正轮 R2」与「编排者在 R2 之后的修正」两节，再读 `tasks/review-05a-r2-ds.md` 与 `tasks/review-05a-r2-glm.md`。**编排者已在 R2 之后动过 `src/channels/acp.rs`：只读/盲节点不再设 `mode=plan`（kimi 的 plan 模式要求回合以 ExitPlanMode 收尾，一问一答会空转到超时），一律 `default`；live 测试不再断言 `usage.input > 0`（kimi ACP 的 prompt 结果只有 `stopReason`）；`request()` 加了 `AICROSS_ACP_DEBUG` 门控的调试打印；并剔除了 rustfmt 排版噪音。这些保留，不要改回。** 真机 `live_kimi_acp_two_turn_continuation` 已 1 passed（26s），`session/update` 的 `agent_message_chunk` 形状已验证。每条在 `tasks/REPORT-05A.md` 末尾「修正轮 R3」一节写「已修：怎么改的（文件:行）／已补：测试名」。验证：`cargo check` 零 warning、`cargo test`、`cd src-ui && npx vitest run --configLoader native --pool threads`、`cd src-ui && npm run build`，命令与输出原文贴进报告。**绝不跑 `cargo fmt`、不整文件重排、保持文件原有换行（`server.rs` 是 CRLF，其余 Rust 文件是 LF）**；只改本轮需要的行。不起窗口、不发真机请求、不 commit、不 push。
+
+## 必修（按严重度）
+
+1. **ACP 超时/失败/取消的节点 `runner` 不得记 `oneshot`**（DS 1、GLM 4）：`run_one` 的 `AcpResolution::Failed`/取消分支把 `runner` 记为 `acp`（节点确实在 ACP 上跑过），`runner_note` 写明「ACP 超时，未回退」等；结果卡随之显示「长驻」。前端 `runner` 类型已含 `unknown`，后端不要用它冒充。
+2. **`run_one` 级端到端两条**（DS 2、GLM 2，R2 第 1、3 条的原始要求）：用假 server（`fixtures/acp/fake_server.py`，可加参数 `--hang-after-prompt` / `--exit-after-first-turn`）走 `run_one`，`acp_enabled=true`、agent=kimi：(a) 收到 prompt 后不输出直到 deadline → 断言 status=timeout、留痕 `runner: acp`、python stub 没有被第二次调用（一次性路径用可计数的 stub）；(b) 第一轮 ACP 成功 → 假 server 退出 → 第二轮断言走一次性：留痕 `runner: oneshot`、`runner_note` 含回退原因、argv 不含 `-S/-r`、task file 为完整上下文。`fake_client()` 那套 python 探测缺失即跳过的做法沿用。
+3. **8MB 上限按未消费水位而非进程生命周期**（DS 5）：读线程累计破 8MB 后永久丢行会让长驻会话下一轮必然超时。改成按每轮 prompt 重置（`drain_pending`/新 prompt 时清零计数）或按队列中未消费字节数计；补测试：两轮各 5MB 输出都能正常收到结果。
+4. **第 19 条测试驱动真实路径**（DS 6、GLM 3）：两线程同 key 同时调用 `run()`（假 server），python stub 计数进程启动次数为 1；删掉手写 `slot.client.lock()` 的复刻版。
+5. **跨 runner 脏 session 的另一半**（DS 7）：ACP 开着但本节点走一次性（agent 非 kimi、或 `supports()` 为假）且父回复 `runner == "acp"` 时，同样清 session、发完整上下文、记 note——判定条件从「ACP 已关」改成「本轮实际不走 ACP」。补测试；`docs/PRODUCT.md:184` 措辞与代码对齐。
+6. **小尾巴**（DS 8、GLM 5）：a) 旧键 `cacheReadTokens` 的兜底加断言（假 server 加参数发旧形，或单测直接喂 JSON）；b) `cancelled_inflight_acp_prompt_returns_cancelled_and_closes_session` 补「session 已从 map 移除」断言，或改名；c) `dispatch.rs` 里 `error.contains("超时")` 判 timeout 改为按 `AcpErrorKind::Timeout` 类型；d) REPORT「契约追加清单」一节补 `runner_note`、`previousRunner`、`runner:'unknown'`；e) `continuationRunner` 与 `continuationSession` 判定条件对齐（盲父节点两者都为空），避免给一次性节点写不实的「旧 ACP 会话已重置」note。

@@ -110,6 +110,13 @@ mod windows_job {
     }
 }
 
+pub(crate) fn assign_process_to_job(pid: u32) {
+    #[cfg(target_os = "windows")]
+    windows_job::assign_pid(pid);
+    #[cfg(not(target_os = "windows"))]
+    let _ = pid;
+}
+
 /// Extract the path from an OSC 7 cwd notification if present in the chunk.
 /// OSC 7 format: ESC ] 7 ; file://<host>/<path> (BEL or ESC \)
 /// Returns the percent-decoded `<path>` portion (with leading `/`), or None.

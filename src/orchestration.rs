@@ -84,6 +84,8 @@ pub struct Reply {
     pub ms: Option<u64>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub runner: Option<String>,
     /// 结果屏「采纳」标记，随图持久化（前端 Reply.adopted）
     #[serde(default)]
     pub adopted: Option<bool>,

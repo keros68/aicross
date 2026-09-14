@@ -1,25 +1,25 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod terminal;
-mod server;
-mod hook_server;
-mod hook_forwarder;
-mod hook_installer;
-mod fonts;
-mod fs_watcher;
-mod launch;
-mod tool_config;
-mod tools;
-mod skills;
-mod marketplace;
-mod git;
-mod orchestration;
-mod process;
-mod resources;
 mod channels;
 mod dispatch;
+mod fonts;
+mod fs_watcher;
+mod git;
+mod hook_forwarder;
+mod hook_installer;
+mod hook_server;
+mod launch;
+mod marketplace;
+mod orchestration;
 mod paths;
+mod process;
+mod resources;
+mod server;
 mod shell_probe;
+mod skills;
+mod terminal;
+mod tool_config;
+mod tools;
 #[cfg(target_os = "windows")]
 mod windows_path;
 
@@ -94,13 +94,19 @@ fn main() -> Result<()> {
     // effort (errors ignored). Windows has no equivalent.
     #[cfg(unix)]
     unsafe {
-        let mut rlim: libc::rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        let mut rlim: libc::rlimit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) == 0 {
             let target = std::cmp::min(rlim.rlim_max, (1 << 20) as libc::rlim_t);
             if target > rlim.rlim_cur {
                 let _ = libc::setrlimit(
                     libc::RLIMIT_NOFILE,
-                    &libc::rlimit { rlim_cur: target, rlim_max: rlim.rlim_max },
+                    &libc::rlimit {
+                        rlim_cur: target,
+                        rlim_max: rlim.rlim_max,
+                    },
                 );
             }
         }

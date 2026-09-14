@@ -15,7 +15,7 @@ import { useAppState, useAppDispatch, type ThemeColor } from '../../store/app-st
 import { useT } from '../../i18n/useT';
 import { IS_WINDOWS } from '../../lib/platform';
 import { TERM_COLOR_SCHEMES } from '../center/TierTerminal';
-import { commands, type FontInfo, type RoleProfile, type RoleSettings } from '../../tauri';
+import { commands, type AcpAdapterStatus, type FontInfo, type RoleProfile, type RoleSettings } from '../../tauri';
 import type { DispatchableModel } from '../../graph/types';
 import { modelStatusSuffix } from '../../resources/model-picker';
 import { FontPicker } from './FontPicker';
@@ -115,6 +115,8 @@ export function SettingsModal() {
     acceptance: { agent: '', provider: '', model: '', tier: '', thinking: '中' },
   });
   const [roleModels, setRoleModels] = useState<DispatchableModel[]>([]);
+  const [acpAdapters, setAcpAdapters] = useState<AcpAdapterStatus[] | null>(null);
+  const [acpProbeError, setAcpProbeError] = useState('');
   // Installed fonts for the terminal font picker — loaded lazily (Rust scan)
   // the first time the Terminal section is opened. null = not loaded yet.
   const [fonts, setFonts] = useState<FontInfo[] | null>(null);
@@ -167,6 +169,11 @@ export function SettingsModal() {
     commands.listDispatchableModels().then((result) => setRoleModels(result.models)).catch(() => setRoleModels([]));
   }, [open, section]);
 
+  useEffect(() => {
+    if (!open || section !== 'dispatch' || acpAdapters !== null) return;
+    commands.detectAcpAdapters().then((items) => { setAcpAdapters(items); setAcpProbeError(''); }).catch((error) => { setAcpAdapters([]); setAcpProbeError(String(error)); });
+  }, [open, section, acpAdapters]);
+
   if (!open) return null;
 
   // ── Handlers (identical to the former left-panel ThemeMenu/Lang wiring) ──
@@ -198,6 +205,7 @@ export function SettingsModal() {
     const next = { ...dispatchSettings, [key]: value };
     setDispatchSettings(next);
     saveDispatchSettings(next);
+    if (key === 'acpEnabled' && value === false) commands.releaseAcpPool().catch(() => {});
   };
   const setRole = (key: 'planning' | 'execution' | 'acceptance', profile: RoleProfile) => {
     const next = { ...roleSettings, [key]: profile };
@@ -514,6 +522,30 @@ export function SettingsModal() {
                     />
                   </label>
                 </div>
+                <div className="settings-section-label">ACP 长驻</div>
+                <div className="settings-key-row">
+                  <button
+                    className={`settings-key-card${dispatchSettings.acpEnabled ? ' active' : ''}`}
+                    onClick={() => setDispatchOption('acpEnabled', !dispatchSettings.acpEnabled)}
+                    aria-pressed={dispatchSettings.acpEnabled}
+                  >
+                    <span className="settings-key-combo">Kimi 长驻</span>
+                    <span className="settings-key-sub">{dispatchSettings.acpEnabled ? '已开启' : '已关闭'}</span>
+                  </button>
+                </div>
+                <div className="settings-dispatch-grid">
+                  {(acpAdapters ?? []).map((adapter) => (
+                    <div key={adapter.id} className="settings-dispatch-field">
+                      <span>{adapter.label}</span>
+                      <span>{adapter.installed ? `已检测到：${adapter.command}` : '未检测到'}</span>
+                      {adapter.id !== 'kimi' && !adapter.installed && <span>二进制：{adapter.command}，需自行安装</span>}
+                    </div>
+                  ))}
+                  {acpAdapters === null && <span>正在探测适配器…</span>}
+                  {acpProbeError && <span>探测失败：{acpProbeError}</span>}
+                </div>
+                <button onClick={() => { setAcpAdapters(null); setAcpProbeError(''); }}>重新探测</button>
+                <span>当前只有 Kimi 使用长驻运行；Claude Code 与 Codex 仅探测适配器。ACP 下只读节点允许读类请求，拒绝写入与执行；一次性 Kimi 不受此策略限制。</span>
                 <div className="settings-section-label">外发与留痕</div>
                 <div className="settings-key-row">
                   <button

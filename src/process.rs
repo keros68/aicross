@@ -1,12 +1,224 @@
 use std::collections::HashMap;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub const MAX_PROCESS_OUTPUT: u64 = 4 * 1024 * 1024;
+pub const MAX_INTERACTIVE_OUTPUT: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecvLineError {
+    Timeout,
+    Disconnected(String),
+}
+
+pub struct InteractiveProcess {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: mpsc::Receiver<InteractiveLine>,
+    stdout_queued_bytes: Arc<AtomicUsize>,
+    stderr: std::sync::Arc<Mutex<Vec<u8>>>,
+}
+
+struct InteractiveLine {
+    value: Result<String, String>,
+    bytes: usize,
+}
+
+impl InteractiveProcess {
+    pub fn send_json_line(&mut self, value: &serde_json::Value) -> Result<(), String> {
+        serde_json::to_writer(&mut self.stdin, value)
+            .map_err(|error| format!("序列化 ACP 请求失败：{error}"))?;
+        self.stdin
+            .write_all(b"\n")
+            .and_then(|_| self.stdin.flush())
+            .map_err(|error| format!("写入 ACP 进程失败：{error}"))
+    }
+
+    pub fn recv_line(&self, timeout: Duration) -> Result<String, RecvLineError> {
+        match self.stdout.recv_timeout(timeout) {
+            Ok(line) => {
+                self.stdout_queued_bytes.fetch_sub(line.bytes, Ordering::AcqRel);
+                line.value.map_err(RecvLineError::Disconnected)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(RecvLineError::Timeout),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(RecvLineError::Disconnected("ACP 进程已退出".to_string()))
+            }
+        }
+    }
+
+    pub fn try_recv_line(&self) -> Result<Option<String>, RecvLineError> {
+        match self.stdout.try_recv() {
+            Ok(line) => {
+                self.stdout_queued_bytes.fetch_sub(line.bytes, Ordering::AcqRel);
+                line.value.map(Some).map_err(RecvLineError::Disconnected)
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(RecvLineError::Disconnected("ACP 进程已退出".to_string()))
+            }
+        }
+    }
+
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    pub fn process_id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn take_stderr_text(&self) -> String {
+        let bytes = self
+            .stderr
+            .lock()
+            .map(|mut value| std::mem::take(&mut *value))
+            .unwrap_or_default();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    pub fn terminate(&mut self) {
+        terminate_process_tree(&mut self.child);
+    }
+}
+
+impl Drop for InteractiveProcess {
+    fn drop(&mut self) {
+        if self.is_running() {
+            self.terminate();
+        }
+    }
+}
+
+pub fn spawn_interactive(
+    program: &Path,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> Result<InteractiveProcess, String> {
+    let mut command = process_command(program, args);
+    command
+        .env("AI_CROSS_PEER", "1")
+        .env("PYTHONUTF8", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("启动 {} 失败：{error}", program.display()))?;
+    crate::terminal::assign_process_to_job(child.id());
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "打开 ACP stdin 失败".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "打开 ACP stdout 失败".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "打开 ACP stderr 失败".to_string())?;
+    let (sender, receiver) = mpsc::channel();
+    let stdout_queued_bytes = Arc::new(AtomicUsize::new(0));
+    let queued_bytes = stdout_queued_bytes.clone();
+    thread::spawn(move || {
+        let mut marked_truncated = false;
+        for line in BufReader::new(stdout).lines() {
+            let item = line.map_err(|error| format!("读取 ACP stdout 失败：{error}"));
+            let failed = item.is_err();
+            let item_bytes = item.as_ref().map_or(0, |line| line.len() + 1);
+            let reserved = queued_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current.saturating_add(item_bytes) <= MAX_INTERACTIVE_OUTPUT)
+                    .then_some(current + item_bytes)
+            }).is_ok();
+            if reserved {
+                marked_truncated = false;
+                if sender.send(InteractiveLine { value: item, bytes: item_bytes }).is_err() {
+                    queued_bytes.fetch_sub(item_bytes, Ordering::AcqRel);
+                    break;
+                }
+            } else if !marked_truncated {
+                marked_truncated = true;
+                let marker = "[ACP stdout 已截断]".to_string();
+                let marker_bytes = marker.len() + 1;
+                if queued_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    (current.saturating_add(marker_bytes) <= MAX_INTERACTIVE_OUTPUT)
+                        .then_some(current + marker_bytes)
+                }).is_ok() && sender.send(InteractiveLine { value: Ok(marker), bytes: marker_bytes }).is_err() {
+                    queued_bytes.fetch_sub(marker_bytes, Ordering::AcqRel);
+                    break;
+                }
+            }
+            if failed {
+                break;
+            }
+        }
+    });
+    let stderr_bytes = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let stderr_target = stderr_bytes.clone();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut chunk = [0_u8; 8192];
+        loop {
+            let Ok(read) = reader.read(&mut chunk) else {
+                break;
+            };
+            if read == 0 {
+                break;
+            }
+            if let Ok(mut target) = stderr_target.lock() {
+                let remaining = MAX_PROCESS_OUTPUT.saturating_sub(target.len() as u64) as usize;
+                target.extend_from_slice(&chunk[..read.min(remaining)]);
+            }
+        }
+    });
+    Ok(InteractiveProcess {
+        child,
+        stdin,
+        stdout: receiver,
+        stdout_queued_bytes,
+        stderr: stderr_bytes,
+    })
+}
+
+fn process_command(program: &Path, args: &[String]) -> Command {
+    #[cfg(windows)]
+    let command = {
+        use std::os::windows::process::CommandExt;
+        let is_script = program
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| {
+                value.eq_ignore_ascii_case("cmd") || value.eq_ignore_ascii_case("bat")
+            });
+        let mut command = if is_script {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/d", "/s", "/c"]).arg(program).args(args);
+            command
+        } else {
+            let mut command = Command::new(program);
+            command.args(args);
+            command
+        };
+        command.creation_flags(0x0800_0000);
+        command
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = Command::new(program);
+        command.args(args);
+        command
+    };
+    command
+}
 
 #[derive(Debug)]
 pub struct ProcessResult {
@@ -42,29 +254,7 @@ pub fn run_process_registered(
     cwd: Option<&Path>,
     registry_key: Option<&str>,
 ) -> Result<ProcessResult, String> {
-    #[cfg(windows)]
-    let is_command_script = program
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
-        });
-    #[cfg(windows)]
-    let mut command = if is_command_script {
-        let mut command = Command::new("cmd.exe");
-        command.args(["/d", "/s", "/c"]).arg(program).args(args);
-        command
-    } else {
-        let mut command = Command::new(program);
-        command.args(args);
-        command
-    };
-    #[cfg(not(windows))]
-    let mut command = {
-        let mut command = Command::new(program);
-        command.args(args);
-        command
-    };
+    let mut command = process_command(program, args);
     command
         .env("AI_CROSS_PEER", "1")
         .env("PYTHONUTF8", "1")
@@ -75,11 +265,6 @@ pub fn run_process_registered(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
@@ -158,7 +343,8 @@ pub fn cancel_registered(key: &str) -> bool {
         .ok()
         .and_then(|running| running.get(key).copied());
     if let Some(pid) = pid {
-        terminate_process_id(pid)
+        let _ = terminate_process_id(pid);
+        true
     } else {
         false
     }
@@ -303,5 +489,19 @@ mod tests {
             .expect("large output");
         assert_eq!(result.stdout.len(), MAX_PROCESS_OUTPUT as usize);
         assert!(result.truncated);
+    }
+
+    #[test]
+    fn interactive_stdout_queue_recovers_after_oversized_unconsumed_line() {
+        let Ok(python) = crate::channels::resolve_binary("python", None) else {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        };
+        let args = vec!["-c".to_string(), format!("print('x'*{})\nprint('after')", MAX_INTERACTIVE_OUTPUT + 1024)];
+        let mut process = spawn_interactive(&python, &args, None).unwrap();
+        let first = process.recv_line(Duration::from_secs(5)).unwrap();
+        assert_eq!(first, "[ACP stdout 已截断]");
+        assert_eq!(process.recv_line(Duration::from_secs(2)).unwrap(), "after");
+        process.terminate();
     }
 }
