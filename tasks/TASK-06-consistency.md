@@ -5,7 +5,7 @@
 ## 契约（两侧共同遵守，只追加）
 
 - Tauri 命令 `reconcile_dispatch_state(project_dir: String) -> ReconcileSummary`：
-  `{ exists: bool, run_id: string, nodes: [{ node_id, verdict: "completed" | "incomplete" | "unknown", record_path: string, reply_text: string, artifacts: ReplyArtifacts | null, error: string }] }`（camelCase 镜像：`runId`、`nodeId`、`recordPath`、`replyText`）。只读，不改任何文件。
+  `{ exists: bool, run_id: string, nodes: [{ node_id, verdict: "completed" | "incomplete" | "unknown", record_path: string, reply_text: string, artifacts: ReplyArtifacts | null, error: string }] }`（camelCase 镜像：`runId`、`nodeId`、`recordPath`、`replyText`）。只读，不改任何文件。R1 追加：`nodes[]` 再带 `sessionId`、`runner`、`usage: { input, output, cacheRead }`（从留痕 frontmatter 取，缺失为空/0）。回滚按 `node_id` 找该节点最新留痕的 `before_dir`，不要求重派复用原 `run_id`。
 - Tauri 命令 `rollback_node_changes(project_dir: String, run_id: String, node_id: String) -> RollbackSummary`：`{ restored: string[], removed: string[], skipped: string[], note: string }`。按 `.dispatch/<run_id>/<node_id>.before/` 恢复；没有快照目录时返回空并在 `note` 说明，不报错。
 - 留痕 `aicross-dispatch/1` frontmatter 追加 `before_dir: string`（相对项目目录，空串 = 无）。
 - `Reply` 追加可选 `fallback_from?: string`、`fallback_to?: string`（TS）/ `#[serde(default)] Option<String>`（Rust 镜像）；正文首行「（已切备选：…）」标记不再写入，读旧图时仍识别。

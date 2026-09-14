@@ -171,7 +171,8 @@ describe('TASK-05B G3 动作', () => {
     expect(ok.error).toBeUndefined();
   });
 
-  it('备选重跑记账：reply 正文带「已切备选」标记行，fallbackNoticeOf 能取出', () => {
+  // TASK-06-3 起标记不再写进正文，改记 Reply.fallback_from/to；fallbackNoticeOf 由字段拼整行。
+  it('备选重跑记账：reply 记 fallback 字段，fallbackNoticeOf 能拼出整行', () => {
     const { g, a } = arenaGraph();
     const result: BackendNodeResult = {
       nodeId: a, status: 'ok', text: '备选正文', modelReported: '', sessionId: '',
@@ -181,12 +182,15 @@ describe('TASK-05B G3 动作', () => {
     const next = applyDispatchResults(g, [result]);
     const reply = next.nodes[a].reply!;
     expect(reply.status).toBe('done');
-    expect(reply.text.startsWith('（已切备选：主 pi/glm-5.3-flash → 备 codex/gpt-5.6-luna）')).toBe(true);
-    expect(reply.text).toContain('备选正文');
-    // R1-9：fallbackNoticeOf 取整行，节点卡直接渲染主/备路由
+    // 正文干净：标记行不再前置，不会随 serializeContext 进下游 prompt
+    expect(reply.text).toBe('备选正文');
+    expect(reply.fallback_from).toBe('pi/glm-5.3-flash');
+    expect(reply.fallback_to).toBe('codex/gpt-5.6-luna');
+    // R1-9：fallbackNoticeOf 给整行，节点卡直接渲染主/备路由
     expect(fallbackNoticeOf(reply)).toBe('（已切备选：主 pi/glm-5.3-flash → 备 codex/gpt-5.6-luna）');
     // 没有备选字段的结果不带标记
     const plain = applyDispatchResults(g, [{ ...result, fallbackFrom: undefined, fallbackTo: undefined }]);
+    expect(plain.nodes[a].reply?.fallback_from).toBeUndefined();
     expect(fallbackNoticeOf(plain.nodes[a].reply)).toBeNull();
   });
 });

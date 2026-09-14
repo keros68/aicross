@@ -73,6 +73,30 @@ export function validatePremiseAttachments(paths: string[]): string | null {
   return null;
 }
 
+// 手输附件按「每行一条」拆（TASK-06-5）：路径里可以含逗号、空格。
+// 首尾空白去掉，空行丢掉，重复保留给 validatePremiseAttachments 判。
+export function parseAttachmentLines(raw: string): string[] {
+  return raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+// 附件手输框（TASK-06 R1-13）：框是受控的，草稿与已存列表不一致时界面标
+// 「未保存」——校验没通过时框里还留着那几行路径，不标一下会被当成已经生效，
+// 而「抽查」用的是已存列表。
+export function attachmentDraftState(
+  raw: string,
+  saved: string[],
+): { attachments: string[]; unsaved: boolean } {
+  const attachments = parseAttachmentLines(raw);
+  return { attachments, unsaved: attachments.join('\n') !== saved.join('\n') };
+}
+
+// 「抽查」按钮按下时再校验一次（TASK-06-5）：台账文件被手改过时，设置页保存
+// 那道校验拦不住；不通过就不建图，返回提示文案。
+export function premiseCheckBlockReason(premise: Pick<Premise, 'attachments'>): string | null {
+  const invalid = validatePremiseAttachments(premise.attachments ?? []);
+  return invalid ? `附件不合规，未建图：${invalid}` : null;
+}
+
 // 回读抽查结论：图里 role=验证 且回复已完成的节点正文；没跑完返回 null。
 export function premiseCheckOutcome(graph: Graph): string | null {
   const node = Object.values(graph.nodes).find(

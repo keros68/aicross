@@ -17,7 +17,7 @@ import { IS_WINDOWS } from '../../lib/platform';
 import { TERM_COLOR_SCHEMES } from '../center/TierTerminal';
 import { commands, type AcpAdapterStatus, type FontInfo, type RoleProfile, type RoleSettings } from '../../tauri';
 import type { DispatchableModel } from '../../graph/types';
-import { buildPremiseCheckGraph, matchPremiseResults, validatePremiseAttachments, type Premise } from '../../graph/premise';
+import { attachmentDraftState, buildPremiseCheckGraph, matchPremiseResults, premiseCheckBlockReason, validatePremiseAttachments, type Premise } from '../../graph/premise';
 import { modelStatusSuffix } from '../../resources/model-picker';
 import { FontPicker } from './FontPicker';
 import { THEME_COLORS, LANGUAGES, TASK_VIEW_MODES } from '../../lib/personalization';
@@ -129,6 +129,9 @@ export function SettingsModal() {
   const [premiseDraft, setPremiseDraft] = useState('');
   const [premiseTargetKey, setPremiseTargetKey] = useState('');
   const [premiseNote, setPremiseNote] = useState('');
+  // 附件手输框的草稿（TASK-06 R1-13）：受控组件，按 premise id 存；保存成功后
+  // 删掉这一条，框回到已存列表。校验没通过时草稿留着并标「未保存」。
+  const [attachDrafts, setAttachDrafts] = useState<Record<string, string>>({});
   // Installed fonts for the terminal font picker — loaded lazily (Rust scan)
   // the first time the Terminal section is opened. null = not loaded yet.
   const [fonts, setFonts] = useState<FontInfo[] | null>(null);
@@ -267,16 +270,23 @@ export function SettingsModal() {
   };
   const removePremise = (id: string) =>
     savePremiseFile({ ...premiseFile, premises: premiseFile.premises.filter((p) => p.id !== id) });
+  // 手输附件每行一条（TASK-06-5）：不再按逗号拆，含逗号的路径不会被拆坏。
   const setPremiseAttachments = (id: string, raw: string) => {
-    const attachments = raw.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean);
     const current = premiseFile.premises.find((p) => p.id === id);
-    if (!current || current.attachments.join('，') === attachments.join('，')) return;
+    if (!current) return;
+    const { attachments, unsaved } = attachmentDraftState(raw, current.attachments);
+    if (!unsaved) {
+      setAttachDrafts((drafts) => { const next = { ...drafts }; delete next[id]; return next; });
+      return;
+    }
     // 保存前校验（R2-2）：相对路径、同名 basename 会让抽查节点整体失败，拒绝并提示
     const invalid = validatePremiseAttachments(attachments);
     if (invalid) {
+      // 草稿留在框里并标「未保存」（R1-13）：框里显示的与真正会外发的不是一回事
       setPremiseNote(`附件未保存：${invalid}`);
       return;
     }
+    setAttachDrafts((drafts) => { const next = { ...drafts }; delete next[id]; return next; });
     savePremiseFile({
       ...premiseFile,
       premises: premiseFile.premises.map((p) => (p.id === id ? { ...p, attachments } : p)),
@@ -297,6 +307,7 @@ export function SettingsModal() {
         setPremiseNote(`附件未保存：${invalid}`);
         return;
       }
+      setAttachDrafts((drafts) => { const next = { ...drafts }; delete next[id]; return next; });
       savePremiseFile({
         ...premiseFile,
         premises: premiseFile.premises.map((p) => (p.id === id ? { ...p, attachments } : p)),
@@ -306,6 +317,12 @@ export function SettingsModal() {
     }
   };
   const runPremiseCheck = (premise: Premise) => {
+    // 建图前再校验一次附件（TASK-06-5）：premises.json 被手改过时这里才拦得住。
+    const blocked = premiseCheckBlockReason(premise);
+    if (blocked) {
+      setPremiseNote(blocked);
+      return;
+    }
     const [agent, provider, model] = premiseTargetKey
       ? (JSON.parse(premiseTargetKey) as string[])
       : ['', '', ''];
@@ -727,16 +744,17 @@ export function SettingsModal() {
                       {premise.last_checked_at ? new Date(premise.last_checked_at).toLocaleString('zh-CN') : '—'}
                     </div>
                     {premise.last_result && <pre className="settings-premise-result">{premise.last_result}</pre>}
-                    <input
+                    <textarea
                       className="settings-premise-attach"
-                      key={premise.attachments.join('，')}
-                      defaultValue={premise.attachments.join('，')}
-                      placeholder="附件路径，逗号分隔（可空），随抽查一起发出"
+                      rows={Math.min(4, Math.max(2, premise.attachments.length + 1))}
+                      value={attachDrafts[premise.id] ?? premise.attachments.join('\n')}
+                      placeholder="附件路径，每行一条（可空），随抽查一起发出"
+                      onChange={(e) => setAttachDrafts((drafts) => ({ ...drafts, [premise.id]: e.target.value }))}
                       onBlur={(e) => setPremiseAttachments(premise.id, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.nativeEvent.isComposing) setPremiseAttachments(premise.id, (e.target as HTMLInputElement).value);
-                      }}
                     />
+                    {attachDrafts[premise.id] !== undefined
+                      && attachmentDraftState(attachDrafts[premise.id], premise.attachments).unsaved
+                      && <div className="settings-premise-unsaved">未保存，抽查仍按已存附件发出</div>}
                     <div className="settings-premise-actions">
                       <button onClick={() => pickPremiseAttachments(premise.id)}>选择文件</button>
                       <button onClick={() => runPremiseCheck(premise)}>抽查</button>

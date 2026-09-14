@@ -1,0 +1,9 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/6b 分支。本期是 TASK-06 的 B 节「界面：崩溃后继续走对账、单写者重派回滚、Reply.fallback 字段、G1 备选下拉折行、前提附件逐行输入、盲父节点不传 session、推进幂等」。先读 docs/PRODUCT.md 的「重派与崩溃恢复的一致性」一节、tasks/TASK-06-consistency.md（契约 + B 节）、AGENTS.md、tasks/REPORT-06B.md（实现方报告），再读本期改动：src-ui/src/graph/（dispatch.ts、types.ts、premise.ts、mutate.ts、__tests__/）、src-ui/src/components/center/graph/（GraphTab.tsx、DispatchOverlay.tsx、DispatchBits.tsx、GraphTab.css）、src-ui/src/components/common/SettingsModal.tsx、src-ui/src/tauri.ts。不读 node_modules、target、dist、port、src/。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套、不复述优点。
+1. 需求完整性：对照 B 节 7 条与契约逐条核对；后端未接通时的回退分支是否存在且可编译。
+2. 逻辑正确性：applyReconcile 三种 verdict 的写回；unknown 节点在 G1 的「待核对」与默认不勾选；rollbackBefore 只对单写者非 worktree 的重派/升级；fallbackNoticeOf 字段优先、旧标记兼容；盲父节点 session/runner 为空；start() 对重复回调只推进一次。
+3. 安全：对账写回的 reply_text/artifacts 不经二次脱敏也不外发；前提附件校验在抽查前生效。
+4. 代码质量与契约：Reply/请求类型只追加；tauri.ts 与契约命名一致（camelCase）；第 2/3/4/5 期图与派发路径（dispatchableNodeIds、reducePipelineStep、applyDispatchResults、pickOne、擂台/仲裁）无回归。
+5. 测试：报告里的测试是否真实存在且断言目标行为；最该补的 3 个。
+最后单独回答：对照 B 节原始需求是否完整实现？一句话 + 缺项列表（按严重度排序）。

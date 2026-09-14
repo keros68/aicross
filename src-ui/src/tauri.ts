@@ -90,6 +90,11 @@ import type {
   Preset as GraphPreset,
 } from './graph/types';
 
+// TASK-06 对账/回滚契约：类型定义在 graph/dispatch.ts（纯函数与它同住），
+// 这里只做类型引用并转出，命令签名用它们。
+import type { ReconcileSummary, RollbackSummary } from './graph/dispatch';
+export type { ReconcileSummary, RollbackSummary };
+
 // 资源接入契约类型的正式来源是 resources/types.ts（与 Rust resources.rs 镜像）。
 import type {
   AddManualAgentRequest,
@@ -377,6 +382,18 @@ export const commands = {
     invoke<{ exists: boolean; unfinished: boolean; content: string; runId: string; activeNodeIds: string[] }>('inspect_dispatch_state', { projectDir }),
   abandonDispatchState: (projectDir: string) =>
     invoke<void>('abandon_dispatch_state', { projectDir }),
+  // ── TASK-06 重派与崩溃恢复的一致性（镜像 src/dispatch.rs，后端另一工作树实现）──
+  // 只读对账：按 STATE.md 的 run/active 节点在 .dispatch/ 找同 run/node 的留痕，
+  // 判 completed / incomplete / unknown。后端未接通时调用会 reject，
+  // 调用方按 exists:false 回退到原有「pending 全部重置为 draft」的行为。
+  reconcileDispatchState: (projectDir: string) =>
+    invoke<ReconcileSummary>('reconcile_dispatch_state', { projectDir }),
+  // 按 .dispatch/<run_id>/<node_id>.before/ 回滚某节点上次派发的改动。
+  // 没有快照目录时返回空列表并在 note 说明，不报错。
+  // 界面不调用这条命令：回滚由引擎在派发该节点前按请求里的 rollbackBefore 自己
+  // 做，这里只按契约留签名（TASK-06 R1-13）。
+  rollbackNodeChanges: (projectDir: string, runId: string, nodeId: string) =>
+    invoke<RollbackSummary>('rollback_node_changes', { projectDir, runId, nodeId }),
   detectAcpAdapters: () =>
     invoke<AcpAdapterStatus[]>('detect_acp_adapters'),
   releaseAcpPool: () => invoke<void>('release_acp_pool'),
@@ -447,6 +464,9 @@ export interface DispatchNodeRequest {
   upstreamArtifacts: import('./graph/types').ReplyArtifacts[];
   // TASK-05B 主备/熔断（镜像图契约 Target.fallback；R2 追加 vendor：前端已知的真实厂商）
   fallback?: { agent: string; provider: string; model: string; vendor?: string };
+  // TASK-06 契约：为真时引擎在派发该节点前先按 before 快照回滚上次改动。
+  // 单写者节点重派才带；只读与 worktree 节点不带。
+  rollbackBefore?: boolean;
 }
 
 export interface DispatchStageRequest {

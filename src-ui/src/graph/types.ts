@@ -24,6 +24,10 @@ export interface Reply {
   artifacts?: ReplyArtifacts;
   error_kind?: string;
   skipped_reason?: string;
+  // TASK-06 契约：结果由备选重跑产生时记主/备路由（"agent/model"）。
+  // 正文首行「（已切备选：…）」标记不再写入，读旧图时仍由 fallbackNoticeOf 识别。
+  fallback_from?: string;
+  fallback_to?: string;
 }
 
 export interface ChangedFile {

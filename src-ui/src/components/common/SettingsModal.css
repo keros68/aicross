@@ -543,4 +543,6 @@
 .settings-premise-meta { margin-top: 4px; font-size: 11px; color: var(--text-3, rgba(255,255,255,.45)); }
 .settings-premise-result { margin-top: 8px; padding: 8px; max-height: 200px; overflow: auto; background: var(--bg-app, #1b1917); border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: var(--radius-sm, 8px); color: var(--text-2, rgba(255,255,255,.75)); font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
 .settings-premise-actions { display: flex; gap: 8px; margin-top: 8px; }
-.settings-premise-attach { display: block; width: 100%; box-sizing: border-box; margin-top: 8px; height: 28px; padding: 0 10px; border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: var(--radius-sm, 8px); background: var(--bg-app, #1b1917); color: var(--text-2, rgba(255,255,255,.75)); font-size: 12px; }
+/* 每行一条附件路径（TASK-06-5）：多行输入框，不再按逗号拆 */
+.settings-premise-unsaved { margin-top: 4px; font-size: 11px; color: var(--text-3, rgba(255,255,255,.45)); }
+.settings-premise-attach { display: block; width: 100%; box-sizing: border-box; margin-top: 8px; min-height: 28px; padding: 6px 10px; border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: var(--radius-sm, 8px); background: var(--bg-app, #1b1917); color: var(--text-2, rgba(255,255,255,.75)); font-size: 12px; line-height: 1.6; resize: vertical; }
