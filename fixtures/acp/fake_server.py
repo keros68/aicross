@@ -13,6 +13,10 @@ hang_after_prompt = "--hang-after-prompt" in sys.argv
 exit_after_first_turn = "--exit-after-first-turn" in sys.argv
 large_turns = "--large-turns" in sys.argv
 legacy_cache_usage = "--legacy-cache-usage" in sys.argv
+repeat_tool_calls = "--repeat-tool-calls" in sys.argv
+other_session_tool_call = "--other-session-tool-call" in sys.argv
+untitled_tool_call = "--untitled-tool-call" in sys.argv
+fail_prompt_after_tools = "--fail-prompt-after-tools" in sys.argv
 start_file = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--start-file=")), None)
 close_file = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--close-file=")), None)
 if start_file:
@@ -51,15 +55,28 @@ for line in sys.stdin:
         if silent_prompt or hang_after_prompt:
             time.sleep(60)
             continue
+        if repeat_tool_calls:
+            for _ in range(3):
+                print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "tool_call", "title": "Read file"}}}), flush=True)
+        if other_session_tool_call:
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "other", "update": {"sessionUpdate": "tool_call", "title": "Wrong session"}}}), flush=True)
+        if untitled_tool_call:
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "tool_call"}}}), flush=True)
         kind = "read" if prompt == "read" else "execute"
         title = "Read misleading title" if kind == "execute" else "Read file"
-        print(json.dumps({"jsonrpc": "2.0", "id": 900 + turn, "method": "session/request_permission", "params": {"sessionId": sid, "toolCall": {"kind": kind, "title": title}, "options": [{"optionId": "always", "kind": "allow_always"}, {"optionId": "once", "kind": "allow_once"}, {"optionId": "no", "kind": "reject_once"}]}}), flush=True)
+        if repeat_tool_calls:
+            title = "Read file"
+        tool_call = {"kind": kind} if untitled_tool_call else {"kind": kind, "title": title}
+        print(json.dumps({"jsonrpc": "2.0", "id": 900 + turn, "method": "session/request_permission", "params": {"sessionId": sid, "toolCall": tool_call, "options": [{"optionId": "always", "kind": "allow_always"}, {"optionId": "once", "kind": "allow_once"}, {"optionId": "no", "kind": "reject_once"}]}}), flush=True)
         permission = json.loads(sys.stdin.readline())
         choice = permission.get("result", {}).get("outcome", {}).get("optionId", "none")
         print(json.dumps({"jsonrpc": "2.0", "id": 800 + turn, "method": "unsupported/test", "params": {}}), flush=True)
         unsupported = json.loads(sys.stdin.readline())
         if unsupported.get("error", {}).get("code") != -32601:
             raise RuntimeError("unknown request response did not use -32601")
+        if fail_prompt_after_tools:
+            print(json.dumps({"jsonrpc": "2.0", "id": rid, "error": {"code": -32000, "message": "fake prompt failure"}}), flush=True)
+            continue
         if late_update and turn == 1:
             print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": {"usage": {"inputTokens": 11, "outputTokens": 7, "cachedReadTokens": 5}}}), flush=True)
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "LATE"}}}}), flush=True)

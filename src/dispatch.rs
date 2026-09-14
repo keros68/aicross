@@ -1,6 +1,6 @@
 use crate::channels::{self, ChannelErrorKind, ChannelOutput};
 use crate::paths::aicross_root;
-use crate::process::{cancel_registered, run_process_registered};
+use crate::process::{cancel_registered, run_process_registered, run_process_registered_with_activity, ProcessActivity};
 use chrono::{DateTime, Local, SecondsFormat};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -290,9 +290,20 @@ struct DispatchProgress {
     run_id: String,
     node_id: String,
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    elapsed_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    idle_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeated_tool_calls: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_tool: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 struct DispatchRecord {
     schema: String,
     run_id: String,
@@ -336,6 +347,7 @@ struct DispatchRecord {
     /// TASK-05B R2：主失败但未切备选的原因（空串 = 未发生）；可写节点为「可写节点」。
     #[serde(default)]
     fallback_skipped: String,
+    /// 项目内快照记相对路径；write_project_dispatch=false 时例外为绝对路径。
     #[serde(default)]
     before_dir: String,
 }
@@ -397,6 +409,9 @@ fn parse_record_file(path: &Path) -> Result<(DispatchRecord, String, Option<Disp
     let (yaml, body) = rest.split_once("\n---\n").ok_or_else(|| "留痕 frontmatter 未结束".to_string())?;
     let record: DispatchRecord = serde_yaml::from_str(yaml)
         .map_err(|error| format!("解析留痕 frontmatter 失败：{error}"))?;
+    if record.schema != "aicross-dispatch/1" {
+        return Err(format!("不支持的留痕 schema：{}", record.schema));
+    }
     let section = |heading: &str| {
         let marker = format!("## {heading}");
         let start = body.match_indices(&marker)
@@ -612,6 +627,7 @@ fn dispatch_stage_core(
         request.run_id = Uuid::new_v4().to_string();
     }
     let _active_run = {
+        // 进程内按 run_id 幂等互斥；RAII guard 在成功、失败和提前返回时都会释放。
         let mut active = active_runs().lock().map_err(|_| "派发运行状态不可用".to_string())?;
         if !active.insert(request.run_id.clone()) {
             return Err(format!("该 run 已在进行：{}", request.run_id));
@@ -713,8 +729,21 @@ fn dispatch_stage_core(
             let project = project.clone();
             let run_root = run_root.clone();
             let log_dir = log_dir.clone();
+            let app = app.clone();
             thread::spawn(move || {
-                let result = run_one(&run_id, &project, &run_root, &log_dir, &settings, node);
+                let node_id = node.node_id.clone();
+                let activity = ProcessActivity::new();
+                let (stop_tx, stop_rx) = mpsc::channel();
+                let heartbeat_app = app.clone();
+                let heartbeat_run = run_id.clone();
+                let heartbeat_node = node_id.clone();
+                let heartbeat_activity = activity.clone();
+                let heartbeat = thread::spawn(move || heartbeat_loop(stop_rx, Duration::from_secs(15), || {
+                    emit_running_progress(&heartbeat_app, &heartbeat_run, &heartbeat_node, &heartbeat_activity);
+                }));
+                let result = run_one_with_activity(&run_id, &project, &run_root, &log_dir, &settings, node, activity);
+                let _ = stop_tx.send(());
+                let _ = heartbeat.join();
                 let _ = tx.send((agents, single_writer, result));
             });
         }
@@ -1051,6 +1080,98 @@ fn safe_relative_path(value: &str) -> Option<&Path> {
         .then_some(path)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PersistedBeforeSnapshot {
+    path: String,
+    note: String,
+}
+
+fn finish_before_snapshot<F>(previous: &Path, had_previous: bool, remove: F) -> String
+where
+    F: FnOnce(&Path) -> std::io::Result<()>,
+{
+    if !had_previous {
+        return String::new();
+    }
+    remove(previous)
+        .err()
+        .map(|error| format!("清理 before.prev 快照失败：{error}"))
+        .unwrap_or_default()
+}
+
+fn persist_before_snapshot_with_note(
+    project: &Path,
+    log_dir: &Path,
+    run_id: &str,
+    node_id: &str,
+    before: &DirectorySnapshot,
+    after: &DirectorySnapshot,
+) -> Result<PersistedBeforeSnapshot, String> {
+    let changed = changed_snapshot_paths(before, after);
+    if changed.is_empty() {
+        return Ok(PersistedBeforeSnapshot { path: String::new(), note: String::new() });
+    }
+    let project_dispatch = project.join(".dispatch");
+    let root = if log_dir == project_dispatch {
+        log_dir.join(safe_name(run_id)).join(format!("{}.before", safe_name(node_id)))
+    } else {
+        log_dir.join(format!("{}.before", safe_name(node_id)))
+    };
+    let previous = PathBuf::from(format!("{}.prev", root.to_string_lossy()));
+    if root.exists() && !root.is_dir() {
+        return Err("旧 before 快照不是目录".into());
+    }
+    if previous.exists() {
+        fs::remove_dir_all(&previous).map_err(|error| format!("清理旧 before.prev 快照失败：{error}"))?;
+    }
+    let had_previous = root.exists();
+    if had_previous {
+        fs::rename(&root, &previous).map_err(|error| format!("保留旧 before 快照失败：{error}"))?;
+    }
+    let written = (|| {
+        fs::create_dir_all(&root).map_err(|error| format!("创建 before 快照失败：{error}"))?;
+        let mut created = Vec::new();
+        let mut skipped = Vec::new();
+        for path in changed {
+            if before.get(&path).is_none() {
+                created.push(path);
+                continue;
+            }
+            let Some(bytes) = before.get(&path).and_then(|file| file.bytes.as_deref()) else {
+                skipped.push(path);
+                continue;
+            };
+            let relative = safe_relative_path(&path).ok_or_else(|| format!("快照路径不安全：{path}"))?;
+            let target = root.join(relative);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|error| format!("创建 before 子目录失败：{error}"))?;
+            }
+            fs::write(&target, bytes).map_err(|error| format!("写入 before 快照失败 {}：{error}", target.display()))?;
+        }
+        created.sort();
+        fs::write(root.join(".created"), created.join("\n"))
+            .map_err(|error| format!("写入新建文件清单失败：{error}"))?;
+        skipped.sort();
+        fs::write(root.join(".skipped"), skipped.join("\n"))
+            .map_err(|error| format!("写入跳过文件清单失败：{error}"))
+    })();
+    if let Err(error) = written {
+        let _ = fs::remove_dir_all(&root);
+        if had_previous {
+            fs::rename(&previous, &root).map_err(|restore| format!("{error}；恢复旧 before 快照失败：{restore}"))?;
+        }
+        return Err(error);
+    }
+    let note = finish_before_snapshot(&previous, had_previous, |path| fs::remove_dir_all(path));
+    let path = if root.starts_with(project) {
+        root.strip_prefix(project).unwrap_or(&root).to_string_lossy().replace('\\', "/")
+    } else {
+        root.to_string_lossy().into_owned()
+    };
+    Ok(PersistedBeforeSnapshot { path, note })
+}
+
+#[cfg(test)]
 fn persist_before_snapshot(
     project: &Path,
     log_dir: &Path,
@@ -1059,45 +1180,8 @@ fn persist_before_snapshot(
     before: &DirectorySnapshot,
     after: &DirectorySnapshot,
 ) -> Result<String, String> {
-    let project_dispatch = project.join(".dispatch");
-    let root = if log_dir == project_dispatch {
-        log_dir.join(safe_name(run_id)).join(format!("{}.before", safe_name(node_id)))
-    } else {
-        log_dir.join(format!("{}.before", safe_name(node_id)))
-    };
-    if root.exists() {
-        fs::remove_dir_all(&root).map_err(|error| format!("清理旧 before 快照失败：{error}"))?;
-    }
-    fs::create_dir_all(&root).map_err(|error| format!("创建 before 快照失败：{error}"))?;
-    let mut created = Vec::new();
-    let mut skipped = Vec::new();
-    for path in changed_snapshot_paths(before, after) {
-        if before.get(&path).is_none() {
-            created.push(path);
-            continue;
-        }
-        let Some(bytes) = before.get(&path).and_then(|file| file.bytes.as_deref()) else {
-            skipped.push(path);
-            continue;
-        };
-        let relative = safe_relative_path(&path).ok_or_else(|| format!("快照路径不安全：{path}"))?;
-        let target = root.join(relative);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|error| format!("创建 before 子目录失败：{error}"))?;
-        }
-        fs::write(&target, bytes).map_err(|error| format!("写入 before 快照失败 {}：{error}", target.display()))?;
-    }
-    created.sort();
-    fs::write(root.join(".created"), created.join("\n"))
-        .map_err(|error| format!("写入新建文件清单失败：{error}"))?;
-    skipped.sort();
-    fs::write(root.join(".skipped"), skipped.join("\n"))
-        .map_err(|error| format!("写入跳过文件清单失败：{error}"))?;
-    Ok(if root.starts_with(project) {
-        root.strip_prefix(project).unwrap_or(&root).to_string_lossy().replace('\\', "/")
-    } else {
-        root.to_string_lossy().into_owned()
-    })
+    persist_before_snapshot_with_note(project, log_dir, run_id, node_id, before, after)
+        .map(|saved| saved.path)
 }
 
 fn latest_before_dir(project: &Path, node_id: &str) -> Option<PathBuf> {
@@ -1118,7 +1202,7 @@ fn latest_before_dir(project: &Path, node_id: &str) -> Option<PathBuf> {
         if path.extension().and_then(|value| value.to_str()) != Some("md") { continue; }
         let Ok((record, _, _)) = parse_record_file(&path) else { continue };
         if record.node != node_id || record.before_dir.trim().is_empty() { continue; }
-        if Path::new(&record.workdir).canonicalize().ok().is_some_and(|value| value != project_canonical) { continue; }
+        if Path::new(&record.workdir).canonicalize().ok().as_ref() != Some(&project_canonical) { continue; }
         let before = PathBuf::from(&record.before_dir);
         let before = if before.is_absolute() { before } else { project.join(before) };
         let (ended, ok, record_path) = record_order_key(&record.ended_at, &record.status, &path);
@@ -1190,7 +1274,7 @@ fn rollback_node_changes_core(project: &Path, run_id: &str, node_id: &str) -> Re
     summary.removed.sort();
     summary.skipped.sort();
     summary.skipped.dedup();
-    summary.note = format!("已回滚上次改动 {} 文件；排除目录（.git/node_modules/target/dist…）与链接内的改动不在快照内", summary.restored.len() + summary.removed.len());
+    summary.note = format!("已回滚上次改动 {} 文件，跳过 {} 项；排除目录（.git/node_modules/target/dist…）与链接内的改动不在快照内", summary.restored.len() + summary.removed.len(), summary.skipped.len());
     Ok(summary)
 }
 
@@ -1553,6 +1637,7 @@ fn should_try_fallback(status: &str, fallback: Option<&FallbackSpec>) -> bool {
             .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn run_one(
     run_id: &str,
     project: &Path,
@@ -1560,6 +1645,18 @@ fn run_one(
     log_dir: &Path,
     settings: &DispatchSettings,
     node: DispatchNodeRequest,
+) -> DispatchNodeResult {
+    run_one_with_activity(run_id, project, run_root, log_dir, settings, node, ProcessActivity::new())
+}
+
+fn run_one_with_activity(
+    run_id: &str,
+    project: &Path,
+    run_root: &Path,
+    log_dir: &Path,
+    settings: &DispatchSettings,
+    node: DispatchNodeRequest,
+    activity: ProcessActivity,
 ) -> DispatchNodeResult {
     let cancel_key = registry_key(run_id, &node.node_id);
     // 可写节点（单写者 / worktree 等）主尝试可能已改动项目，备选再跑会叠加
@@ -1585,12 +1682,13 @@ fn run_one(
         node.clone(),
         "主",
         skip_reason,
+        &activity,
     );
     let result = if should_try_fallback(&primary.status, node.fallback.as_ref())
         && !is_cancelled(&cancel_key)
     {
         if skip_reason.is_empty() {
-            run_fallback(run_id, project, run_root, log_dir, settings, &node)
+            run_fallback(run_id, project, run_root, log_dir, settings, &node, &activity)
         } else {
             primary
         }
@@ -1610,6 +1708,7 @@ fn run_fallback(
     log_dir: &Path,
     settings: &DispatchSettings,
     node: &DispatchNodeRequest,
+    activity: &ProcessActivity,
 ) -> DispatchNodeResult {
     let fallback = node.fallback.clone().unwrap_or_default();
     // 盲节点的隔离目录在第一次尝试时已铺过材料；重跑前清掉，否则 prepare_outbound
@@ -1644,7 +1743,7 @@ fn run_fallback(
     };
     retry.fallback = None; // 备选不再套备选，最多重跑一次
     retry.session_id = String::new(); // 换通道不续接旧会话
-    let mut result = run_one_attempt(run_id, project, run_root, log_dir, settings, retry, "备", "");
+    let mut result = run_one_attempt(run_id, project, run_root, log_dir, settings, retry, "备", "", activity);
     // R2-1：这个 session 属于备选通道，而节点 target 仍是主目标；写回会让下游
     // 同目标「共享」子节点经 continuationSession 把它续到主通道（-S/-r 一个
     // 主通道不存在的会话）。备选作答 = 另起会话不续聊：结果 session 置空，
@@ -1664,7 +1763,9 @@ fn run_one_attempt(
     mut node: DispatchNodeRequest,
     attempt: &str,
     fallback_skip_reason: &str,
+    activity: &ProcessActivity,
 ) -> DispatchNodeResult {
+    activity.reset_attempt();
     let stage = node.stage.max(1);
     let started = Local::now();
     let timer = Instant::now();
@@ -1793,6 +1894,7 @@ fn run_one_attempt(
             node.write != "只读",
             blind,
             &cancel_key,
+            activity.clone(),
         );
         match resolve_acp_attempt(attempt, is_cancelled(&cancel_key)) {
             AcpResolution::Use(output) => {
@@ -1822,6 +1924,7 @@ fn run_one_attempt(
             AcpResolution::Fallback(reason) => {
                 (oneshot_session, oneshot_outbound) = reset_acp_fallback(&prompt);
                 append_runner_note(&mut runner_note, &format!("ACP 会话已重置，改一次性完整上下文：{reason}"));
+                activity.reset_attempt();
             }
             AcpResolution::Failed(acp_error) => {
                 timed_out = acp_error.kind == channels::acp::AcpErrorKind::Timeout;
@@ -1862,13 +1965,14 @@ fn run_one_attempt(
         ) {
             Ok(invocation) => {
                 entered_channel = true;
-                match run_process_registered(
+                match run_process_registered_with_activity(
                 &invocation.program,
                 &invocation.args,
                 invocation.input.as_deref(),
                 timeout,
                 Some(&workdir),
                 Some(&cancel_key),
+                Some(activity.clone()),
             ) {
                 Ok(process) => {
                     raw_stdout = process.stdout.clone();
@@ -1930,8 +2034,11 @@ fn run_one_attempt(
     if let Some(before) = before_snapshot {
         let built = snapshot_directory(&workdir).and_then(|after| {
             if uses_single_writer && entered_channel {
-                match persist_before_snapshot(project, log_dir, run_id, &node.node_id, &before, &after) {
-                    Ok(path) => before_dir = path,
+                match persist_before_snapshot_with_note(project, log_dir, run_id, &node.node_id, &before, &after) {
+                    Ok(saved) => {
+                        before_dir = saved.path;
+                        append_runner_note(&mut runner_note, &saved.note);
+                    }
                     Err(error) => append_runner_note(&mut runner_note, &format!("保存派发前快照失败：{error}")),
                 }
             }
@@ -2486,8 +2593,41 @@ fn emit_progress(app: &Option<AppHandle>, run_id: &str, node_id: &str, status: &
                 run_id: run_id.into(),
                 node_id: node_id.into(),
                 status: status.into(),
+                elapsed_ms: None,
+                idle_ms: None,
+                tool_calls: None,
+                repeated_tool_calls: None,
+                last_tool: None,
             },
         );
+    }
+}
+
+fn emit_running_progress(app: &Option<AppHandle>, run_id: &str, node_id: &str, activity: &ProcessActivity) {
+    if let Some(app) = app {
+        let _ = app.emit("dispatch-progress", running_progress(run_id, node_id, activity));
+    }
+}
+
+fn heartbeat_loop<F>(stop_rx: mpsc::Receiver<()>, interval: Duration, mut emit: F)
+where
+    F: FnMut(),
+{
+    loop {
+        match stop_rx.recv_timeout(interval) {
+            Err(mpsc::RecvTimeoutError::Timeout) => emit(),
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn running_progress(run_id: &str, node_id: &str, activity: &ProcessActivity) -> DispatchProgress {
+    let (elapsed_ms, idle_ms, tool_calls, repeated_tool_calls, last_tool) = activity.snapshot();
+    let last_tool = safe_trace(&last_tool).chars().take(120).collect();
+    DispatchProgress {
+        run_id: run_id.into(), node_id: node_id.into(), status: "running".into(),
+        elapsed_ms: Some(elapsed_ms), idle_ms: Some(idle_ms), tool_calls: Some(tool_calls),
+        repeated_tool_calls: Some(repeated_tool_calls), last_tool: Some(last_tool),
     }
 }
 
@@ -2845,6 +2985,182 @@ mod tests {
         let restored: DispatchRecord = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(restored.runner, "oneshot");
         assert!(restored.runner_note.is_empty());
+    }
+
+    #[test]
+    fn task07_dispatch_record_all_legacy_fields_default_instead_of_unknown() {
+        let restored: DispatchRecord = serde_yaml::from_str("node: legacy\n").unwrap();
+        assert_eq!(restored.node, "legacy");
+        assert_eq!(restored.runner, "oneshot");
+        assert_eq!((restored.stage, restored.tokens_in, restored.truncated), (0, 0, false));
+    }
+
+    #[test]
+    fn r1_record_unknown_key_is_ignored_and_missing_keys_use_defaults() {
+        let root = std::env::temp_dir().join(format!("aicross-r1-record-defaults-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("record.md");
+        fs::write(&path, "---\nschema: aicross-dispatch/1\nnode: legacy\nunknown_key: ignored\n---\n\n## 回复正文\n\nok\n").unwrap();
+        let (record, reply, _) = parse_record_file(&path).unwrap();
+        assert_eq!((record.node.as_str(), record.runner.as_str(), record.stage), ("legacy", "oneshot", 0));
+        assert_eq!(reply, "ok");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r1_record_schema_mismatch_is_rejected() {
+        let root = std::env::temp_dir().join(format!("aicross-r1-record-schema-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("record.md");
+        fs::write(&path, "---\nschema: aicross-dispatch/999\nnode: legacy\n---\n\n## 回复正文\n\nok\n").unwrap();
+        assert!(parse_record_file(&path).unwrap_err().contains("不支持的留痕 schema"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task07_running_progress_serializes_heartbeat_contract_fields() {
+        let activity = ProcessActivity::new();
+        activity.record_tool_call("Read file");
+        activity.record_tool_call("Read file");
+        activity.record_tool_call("Read file");
+        let (elapsed_ms, idle_ms, tool_calls, repeated_tool_calls, last_tool) = activity.snapshot();
+        let value = serde_json::to_value(DispatchProgress {
+            run_id: "run".into(), node_id: "node".into(), status: "running".into(),
+            elapsed_ms: Some(elapsed_ms), idle_ms: Some(idle_ms), tool_calls: Some(tool_calls),
+            repeated_tool_calls: Some(repeated_tool_calls), last_tool: Some(last_tool),
+        }).unwrap();
+        assert_eq!(value["status"], "running");
+        assert_eq!((value["toolCalls"].as_u64(), value["repeatedToolCalls"].as_u64()), (Some(3), Some(3)));
+        assert_eq!(value["lastTool"], "Read file");
+        assert!(value.get("elapsedMs").is_some() && value.get("idleMs").is_some());
+    }
+
+    #[test]
+    fn r1_heartbeat_normal_stop_emits_once_then_exits() {
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (emit_tx, emit_rx) = mpsc::channel();
+        let heartbeat = thread::spawn(move || heartbeat_loop(stop_rx, Duration::from_millis(10), || {
+            emit_tx.send(()).unwrap();
+        }));
+        emit_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        stop_tx.send(()).unwrap();
+        heartbeat.join().unwrap();
+        assert!(emit_rx.recv_timeout(Duration::from_millis(30)).is_err());
+    }
+
+    #[test]
+    fn r1_heartbeat_disconnected_stop_channel_exits_without_more_emits() {
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (emit_tx, emit_rx) = mpsc::channel();
+        let heartbeat = thread::spawn(move || heartbeat_loop(stop_rx, Duration::from_millis(10), || {
+            emit_tx.send(()).unwrap();
+        }));
+        emit_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(stop_tx);
+        heartbeat.join().unwrap();
+        assert!(emit_rx.recv_timeout(Duration::from_millis(30)).is_err());
+    }
+
+    #[test]
+    fn r1_terminal_progress_after_heartbeat_stop_has_no_running_fields_or_late_emit() {
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let (emit_tx, emit_rx) = mpsc::channel();
+        let heartbeat = thread::spawn(move || heartbeat_loop(stop_rx, Duration::from_millis(10), || {
+            emit_tx.send(running_progress("run", "node", &ProcessActivity::new())).unwrap();
+        }));
+        emit_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        stop_tx.send(()).unwrap();
+        heartbeat.join().unwrap();
+        let terminal = DispatchProgress {
+            run_id: "run".into(), node_id: "node".into(), status: "完成".into(),
+            elapsed_ms: None, idle_ms: None, tool_calls: None,
+            repeated_tool_calls: None, last_tool: None,
+        };
+        let value = serde_json::to_value(terminal).unwrap();
+        assert!(value.get("elapsedMs").is_none() && value.get("lastTool").is_none());
+        assert!(emit_rx.recv_timeout(Duration::from_millis(30)).is_err());
+    }
+
+    #[test]
+    fn r1_running_progress_redacts_authorization_bearer_title() {
+        let activity = ProcessActivity::new();
+        activity.record_tool_call("Authorization: Bearer secret-token");
+        let value = serde_json::to_value(running_progress("run", "node", &activity)).unwrap();
+        assert!(!value["lastTool"].as_str().unwrap().contains("secret-token"));
+        assert!(value["lastTool"].as_str().unwrap().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn r1_running_progress_truncates_last_tool_to_120_characters() {
+        let activity = ProcessActivity::new();
+        activity.record_tool_call(&"工".repeat(121));
+        let value = serde_json::to_value(running_progress("run", "node", &activity)).unwrap();
+        assert_eq!(value["lastTool"].as_str().unwrap().chars().count(), 120);
+    }
+
+    #[test]
+    fn task07_fake_acp_three_same_updates_plus_permission_reach_running_event_payload() {
+        let _pool_guard = channels::acp::test_pool_guard();
+        if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
+        let root = std::env::temp_dir().join(format!("aicross-task07-acp-progress-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let (request, mut settings, _) = acp_run_one_fixture(&root, &["--repeat-tool-calls"]);
+        settings.timeout_secs = 10;
+        let activity = ProcessActivity::new();
+        let result = run_one_with_activity("run", &project, &root.join("runs"), &log_dir, &settings, request, activity.clone());
+        assert_eq!(result.status, "ok", "{}", result.error);
+        let event = serde_json::to_value(running_progress("run", "node-1", &activity)).unwrap();
+        assert_eq!(event["repeatedToolCalls"], 4);
+        assert_eq!(event["toolCalls"], 4);
+        assert_eq!(event["lastTool"], "Read file");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r1_acp_to_oneshot_fallback_resets_attempt_tool_counts() {
+        let _pool_guard = channels::acp::test_pool_guard();
+        if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
+        let root = std::env::temp_dir().join(format!("aicross-r1-acp-fallback-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let (request, mut settings, _) = acp_run_one_fixture(&root, &["--repeat-tool-calls", "--fail-prompt-after-tools"]);
+        settings.timeout_secs = 10;
+        let activity = ProcessActivity::new();
+        let result = run_one_with_activity("run", &project, &root.join("runs"), &log_dir, &settings, request, activity.clone());
+        assert_eq!((result.status.as_str(), result.runner.as_str()), ("ok", "oneshot"), "{}", result.error);
+        let (_, _, calls, repeated, last_tool) = activity.snapshot();
+        assert_eq!((calls, repeated, last_tool), (0, 0, String::new()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r1_backup_attempt_does_not_inherit_primary_tool_counts() {
+        if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
+        let root = std::env::temp_dir().join(format!("aicross-r1-backup-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let stub = root.join("stub.py");
+        fs::write(&stub, "print('backup')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
+        let mut request = node(Vec::new());
+        request.visibility = "盲".into();
+        request.fallback = Some(FallbackSpec {
+            agent: "cc-switch".into(), provider: "stub".into(), model: "stub".into(), vendor: String::new(),
+        });
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..DispatchSettings::default() };
+        let activity = ProcessActivity::new();
+        activity.record_tool_call("Primary tool");
+        let result = run_fallback("run", &project, &root.join("runs"), &log_dir, &settings, &request, &activity);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        let (_, _, calls, repeated, last_tool) = activity.snapshot();
+        assert_eq!((calls, repeated, last_tool), (0, 0, String::new()));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3305,6 +3621,150 @@ mod tests {
     }
 
     #[test]
+    fn task07_before_snapshot_write_failure_restores_previous_directory() {
+        let root = std::env::temp_dir().join(format!("aicross-task07-snapshot-restore-{}", Uuid::new_v4()));
+        let old = root.join(".dispatch/run/node.before");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("kept.txt"), "old snapshot").unwrap();
+        let before = HashMap::from([("../unsafe".into(), SnapshotFile { bytes: Some(b"old".to_vec()), ..SnapshotFile::default() })]);
+        let after = HashMap::from([("../unsafe".into(), SnapshotFile { bytes: Some(b"new".to_vec()), ..SnapshotFile::default() })]);
+        assert!(persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &before, &after).is_err());
+        assert_eq!(fs::read_to_string(old.join("kept.txt")).unwrap(), "old snapshot");
+        assert!(!root.join(".dispatch/run/node.before.prev").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task07_before_snapshot_success_replaces_old_and_removes_prev() {
+        let root = std::env::temp_dir().join(format!("aicross-task07-snapshot-commit-{}", Uuid::new_v4()));
+        let old = root.join(".dispatch/run/node.before");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("stale.txt"), "stale").unwrap();
+        let before = HashMap::from([("changed.txt".into(), SnapshotFile { bytes: Some(b"old".to_vec()), ..SnapshotFile::default() })]);
+        let after = HashMap::from([("changed.txt".into(), SnapshotFile { bytes: Some(b"new".to_vec()), ..SnapshotFile::default() })]);
+        persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &before, &after).unwrap();
+        assert_eq!(fs::read_to_string(old.join("changed.txt")).unwrap(), "old");
+        assert!(!old.join("stale.txt").exists());
+        assert!(!root.join(".dispatch/run/node.before.prev").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task07_dispatch_and_reconcile_results_preserve_cache_read_usage() {
+        let dispatch = DispatchNodeResult { cache_read: 42, ..DispatchNodeResult::default() };
+        let reconcile = ReconcileUsage { cache_read: dispatch.cache_read, ..ReconcileUsage::default() };
+        assert_eq!(serde_json::to_value(&dispatch).unwrap()["cacheRead"], 42);
+        assert_eq!(serde_json::to_value(&reconcile).unwrap()["cacheRead"], 42);
+    }
+
+    #[test]
+    fn r1_parse_output_populates_dispatch_cache_read() {
+        let process = crate::process::ProcessResult {
+            code: Some(0), stdout: "answer".into(), stderr: "[usage] input=2 cache_read=42 output=1".into(),
+            timed_out: false, truncated: false, timeout: Duration::from_secs(1),
+        };
+        let output = channels::parse_output("cc-switch", "", "", &process).unwrap();
+        let result = DispatchNodeResult { cache_read: output.usage.cache_read, ..DispatchNodeResult::default() };
+        assert_eq!(result.cache_read, 42);
+    }
+
+    #[test]
+    fn r1_reconcile_refills_cache_read_from_record() {
+        let root = std::env::temp_dir().join(format!("aicross-r1-reconcile-cache-{}", Uuid::new_v4()));
+        let dispatch = root.join(".dispatch");
+        fs::create_dir_all(&dispatch).unwrap();
+        fs::write(dispatch.join("STATE.md"), "aicross-state: {\"schema\":\"aicross-state/1\",\"run_id\":\"run\",\"stage\":1,\"unfinished\":true,\"active_node_ids\":[\"node\"]}\n").unwrap();
+        let record = DispatchRecord {
+            schema: "aicross-dispatch/1".into(), run_id: "run".into(), node: "node".into(),
+            status: "ok".into(), cache_read: 42, ended_at: "2026-01-01T00:00:00+00:00".into(),
+            ..DispatchRecord::default()
+        };
+        fs::write(dispatch.join("record.md"), format!("{}\n\n## 回复正文\n\nok\n", serialize_frontmatter(&record).unwrap())).unwrap();
+        let summary = reconcile_dispatch_state(root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(summary.nodes[0].usage.cache_read, 42);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task07_zero_change_redispatch_preserves_nonempty_snapshot() {
+        let root = std::env::temp_dir().join(format!("aicross-task07-zero-change-{}", Uuid::new_v4()));
+        let old = root.join(".dispatch/run/node.before");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("kept.txt"), "old snapshot").unwrap();
+        let same = HashMap::from([("same.txt".into(), SnapshotFile { bytes: Some(b"same".to_vec()), ..SnapshotFile::default() })]);
+        assert_eq!(persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &same, &same).unwrap(), "");
+        assert_eq!(fs::read_to_string(old.join("kept.txt")).unwrap(), "old snapshot");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r1_before_root_file_error_preserves_existing_prev_directory() {
+        let root = std::env::temp_dir().join(format!("aicross-r1-before-file-{}", Uuid::new_v4()));
+        let before_root = root.join(".dispatch/run/node.before");
+        let previous = root.join(".dispatch/run/node.before.prev");
+        fs::create_dir_all(&previous).unwrap();
+        fs::write(previous.join("kept.txt"), "kept").unwrap();
+        fs::write(&before_root, "conflict").unwrap();
+        let before = HashMap::from([("a.txt".into(), SnapshotFile { bytes: Some(b"old".to_vec()), ..SnapshotFile::default() })]);
+        let after = HashMap::from([("a.txt".into(), SnapshotFile { bytes: Some(b"new".to_vec()), ..SnapshotFile::default() })]);
+        assert!(persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &before, &after).is_err());
+        assert_eq!(fs::read_to_string(previous.join("kept.txt")).unwrap(), "kept");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn r1_committed_snapshot_cleanup_failure_returns_note_not_error() {
+        let previous = Path::new("before.prev");
+        let note = finish_before_snapshot(previous, true, |_| Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked")));
+        assert!(note.contains("清理 before.prev 快照失败"));
+        assert!(finish_before_snapshot(previous, false, |_| unreachable!()).is_empty());
+    }
+
+    #[test]
+    fn r1_zero_change_redispatch_keeps_old_snapshot_discoverable_for_rollback() {
+        if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
+        let root = std::env::temp_dir().join(format!("aicross-r1-zero-e2e-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = project.join(".dispatch");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("a.txt"), "old").unwrap();
+        let stub = root.join("stub.py");
+        fs::write(&stub, "import pathlib\np=pathlib.Path.cwd()\n(p/'a.txt').write_text('new', encoding='utf-8')\nprint('changed')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "stub".into(); request.model = "stub".into();
+        request.role = "执行".into(); request.visibility = "共享".into(); request.write = "单写者".into();
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..DispatchSettings::default() };
+        let first = run_one("run-a", &project, &root.join("runs"), &log_dir, &settings, request.clone());
+        assert_eq!(first.status, "ok", "{}", first.error);
+        assert!(first.frontmatter.contains("before_dir: .dispatch/run-a/node-1.before"));
+        fs::write(&stub, "print('unchanged')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
+        let second = run_one("run-b", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(second.status, "ok", "{}", second.error);
+        assert!(second.frontmatter.contains("before_dir: ''"));
+        fs::write(project.join("a.txt"), "dirty").unwrap();
+        let summary = rollback_node_changes_core(&project, "run-b", "node-1").unwrap();
+        assert_eq!(fs::read_to_string(project.join("a.txt")).unwrap(), "old");
+        assert_eq!(summary.restored, ["a.txt"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task07_latest_before_dir_rejects_uncanonicalizable_workdir() {
+        let root = std::env::temp_dir().join(format!("aicross-task07-fail-closed-{}", Uuid::new_v4()));
+        let dispatch = root.join(".dispatch");
+        let before = dispatch.join("run/node.before");
+        fs::create_dir_all(&before).unwrap();
+        let record = DispatchRecord {
+            node: "node".into(), workdir: root.join("missing").to_string_lossy().into_owned(),
+            before_dir: ".dispatch/run/node.before".into(), ended_at: "2026-01-01T00:00:00+00:00".into(),
+            status: "ok".into(), ..DispatchRecord::default()
+        };
+        fs::write(dispatch.join("record.md"), format!("{}\n", serialize_frontmatter(&record).unwrap())).unwrap();
+        assert_eq!(latest_before_dir(&root, "node"), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn task06_rollback_before_runs_inside_run_one_before_redispatch() {
         if channels::resolve_binary("python", None).is_err() {
             eprintln!("跳过：PATH 中没有 python");
@@ -3364,11 +3824,14 @@ mod tests {
         let _reset = Reset("same-run");
         let mut request = stage_request(root.to_string_lossy().into_owned(), vec![node(Vec::new())]);
         request.run_id = "same-run".into();
-        let error = dispatch_stage_core(request, None).unwrap_err();
+        let error = dispatch_stage_core(request.clone(), None).unwrap_err();
         assert!(error.contains("该 run 已在进行"));
         drop(_reset);
-        assert!(active_runs().lock().unwrap().insert("same-run".into()));
-        active_runs().lock().unwrap().remove("same-run");
+        request.project_dir = root.join("missing").to_string_lossy().into_owned();
+        let released = dispatch_stage_core(request.clone(), None).unwrap_err();
+        assert!(!released.contains("该 run 已在进行"));
+        let released_again = dispatch_stage_core(request, None).unwrap_err();
+        assert!(!released_again.contains("该 run 已在进行"), "提前返回也应由 guard 释放 run_id");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3484,6 +3947,7 @@ mod tests {
         let before = root.join(".dispatch/run/node.before"); fs::create_dir_all(&before).unwrap();
         let file = fs::File::create(before.join("large.bin")).unwrap(); file.set_len(ROLLBACK_TEST_TOTAL_LIMIT + 1).unwrap(); drop(file);
         fs::write(before.join(".created"), "").unwrap(); fs::write(before.join(".skipped"), "").unwrap();
+        assert!(snapshot_directory_with_limits(&before, ROLLBACK_TEST_TOTAL_LIMIT * 2, ROLLBACK_TEST_TOTAL_LIMIT).is_err());
         let summary = rollback_node_changes_core(&root, "run", "node").unwrap();
         assert_eq!(fs::metadata(root.join("large.bin")).unwrap().len(), ROLLBACK_TEST_TOTAL_LIMIT + 1);
         assert_eq!(summary.restored, ["large.bin"]);

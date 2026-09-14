@@ -1,5 +1,5 @@
 use super::{ChannelOutput, Usage};
-use crate::process::{run_process, spawn_interactive, InteractiveProcess, RecvLineError};
+use crate::process::{run_process, spawn_interactive, InteractiveProcess, ProcessActivity, RecvLineError};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -107,6 +107,7 @@ pub fn run(
     writable: bool,
     blind: bool,
     registry_key: &str,
+    activity: ProcessActivity,
 ) -> Result<AcpOutput, AcpError> {
     if !supports(agent) {
         return Err(AcpError::new(
@@ -138,7 +139,7 @@ pub fn run(
         shared.pid.store(client.process.process_id(), Ordering::Release);
         *guard = Some(client);
     }
-    let result = guard.as_mut().expect("ACP slot initialized").prompt(
+    let result = guard.as_mut().expect("ACP slot initialized").prompt_with_activity(
         model,
         session_id,
         prompt,
@@ -148,6 +149,7 @@ pub fn run(
         writable,
         blind,
         registry_key,
+        &activity,
     );
     if result
         .as_ref()
@@ -217,7 +219,7 @@ fn start_client(
     };
     let mut initialize_text = String::new();
     let mut initialize_raw = String::new();
-    let initialized = client.request("initialize", json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"aicross","version":env!("CARGO_PKG_VERSION")}}), Instant::now()+timeout.min(Duration::from_secs(30)), Some(("", &mut initialize_text, &mut initialize_raw)), false, false, "")?;
+    let initialized = client.request("initialize", json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"aicross","version":env!("CARGO_PKG_VERSION")}}), Instant::now()+timeout.min(Duration::from_secs(30)), Some(("", &mut initialize_text, &mut initialize_raw)), false, false, "", None)?;
     client.prelude_raw = initialize_raw;
     client.can_close_session = initialized
         .pointer("/result/agentCapabilities/sessionCapabilities/close")
@@ -227,8 +229,17 @@ fn start_client(
 }
 
 impl AcpClient {
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn prompt(
+        &mut self, model: &str, session_id: Option<&str>, prompt: &str, cwd: &Path,
+        deadline: Instant, thinking: &str, writable: bool, blind: bool, cancel_key: &str,
+    ) -> Result<AcpOutput, AcpError> {
+        self.prompt_with_activity(model, session_id, prompt, cwd, deadline, thinking, writable, blind, cancel_key, &ProcessActivity::new())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prompt_with_activity(
         &mut self,
         model: &str,
         session_id: Option<&str>,
@@ -239,6 +250,7 @@ impl AcpClient {
         writable: bool,
         blind: bool,
         cancel_key: &str,
+        activity: &ProcessActivity,
     ) -> Result<AcpOutput, AcpError> {
         if !self.process.is_running() {
             return Err(AcpError::new(AcpErrorKind::Process, "ACP 进程已退出"));
@@ -260,6 +272,7 @@ impl AcpClient {
                     writable,
                     blind,
                     cancel_key,
+                    None,
                 )?;
                 let id = response.pointer("/result/sessionId")
                 .and_then(Value::as_str)
@@ -293,6 +306,7 @@ impl AcpClient {
             writable,
             blind,
             cancel_key,
+            Some(activity),
         )?;
         if text.trim().is_empty() {
             return Err(AcpError::new(AcpErrorKind::Turn, "ACP 未返回回复正文"));
@@ -343,13 +357,13 @@ impl AcpClient {
             let configured = self.request(
                 "session/set_config_option",
                 json!({"sessionId":session_id,"configId":"model","value":model}),
-                deadline, None, writable, blind, cancel_key,
+                deadline, None, writable, blind, cancel_key, None,
             );
             if configured.is_err() {
                 let legacy = self.request(
                     "session/set_model",
                     json!({"sessionId":session_id,"modelId":model}),
-                    deadline, None, writable, blind, cancel_key,
+                    deadline, None, writable, blind, cancel_key, None,
                 )?;
                 if model_config.is_none() {
                     if let Some(models) = legacy.pointer("/result/models/availableModels").and_then(Value::as_array) {
@@ -371,11 +385,11 @@ impl AcpClient {
         // 2026-09-14 真机：kimi 的 `plan` 模式要求回合以 ExitPlanMode/AskUserQuestion 结束，一问一答的
         // 只读节点会在那里空转到超时；只读/盲靠 answer_permission 拒写来保证，模式一律 default，永不 auto/yolo。
         let mode = "default";
-        if self.request("session/set_config_option", json!({"sessionId":session_id,"configId":"mode","value":mode}), deadline, None, writable, blind, cancel_key).is_err() {
+        if self.request("session/set_config_option", json!({"sessionId":session_id,"configId":"mode","value":mode}), deadline, None, writable, blind, cancel_key, None).is_err() {
             notes.push(format!("ACP 未能设置 {mode} 模式"));
         }
         let thought = if matches!(thinking, "关" | "低") { "low" } else { "high" };
-        if self.request("session/set_config_option", json!({"sessionId":session_id,"configId":"thinking","value":thought}), deadline, None, writable, blind, cancel_key).is_err() {
+        if self.request("session/set_config_option", json!({"sessionId":session_id,"configId":"thinking","value":thought}), deadline, None, writable, blind, cancel_key, None).is_err() {
             notes.push(format!("ACP 未能设置 thinking={thought}"));
         }
         Ok(())
@@ -398,7 +412,7 @@ impl AcpClient {
         }
         let sessions = self.sessions.keys().cloned().collect::<Vec<_>>();
         for session_id in sessions {
-            let _ = self.request("session/close", json!({"sessionId":session_id}), deadline, None, false, false, "");
+            let _ = self.request("session/close", json!({"sessionId":session_id}), deadline, None, false, false, "", None);
         }
         self.sessions.clear();
     }
@@ -413,6 +427,7 @@ impl AcpClient {
         writable: bool,
         blind: bool,
         cancel_key: &str,
+        activity: Option<&ProcessActivity>,
     ) -> Result<Value, AcpError> {
         let id = self.next_id;
         self.next_id += 1;
@@ -450,6 +465,9 @@ impl AcpClient {
                     return Err(AcpError::new(AcpErrorKind::Process, error))
                 }
             };
+            if let Some(activity) = activity {
+                activity.mark_output();
+            }
             if let Some((_, _, raw)) = output.as_mut() {
                 append_bounded(raw, &line);
             }
@@ -459,6 +477,20 @@ impl AcpClient {
             };
             let incoming = message.get("method").and_then(Value::as_str);
             if incoming == Some("session/update") {
+                let current_session = output.as_ref().is_some_and(|(session, _, _)| {
+                    message.pointer("/params/sessionId").and_then(Value::as_str) == Some(*session)
+                });
+                if current_session {
+                    if let Some(activity) = activity {
+                        if message.pointer("/params/update/sessionUpdate").and_then(Value::as_str) == Some("tool_call") {
+                            if let Some(title) = message.pointer("/params/update/title").and_then(Value::as_str) {
+                                activity.record_tool_call(title);
+                            } else {
+                                activity.record_untitled_tool_call();
+                            }
+                        }
+                    }
+                }
                 if let Some((session, text, _)) = output.as_mut() {
                     if message.pointer("/params/sessionId").and_then(Value::as_str)
                         == Some(*session)
@@ -469,6 +501,17 @@ impl AcpClient {
                 continue;
             }
             if incoming == Some("session/request_permission") {
+                if output.as_ref().is_some_and(|(session, _, _)| {
+                    message.pointer("/params/sessionId").and_then(Value::as_str) == Some(*session)
+                }) {
+                    if let Some(activity) = activity {
+                        if let Some(title) = message.pointer("/params/toolCall/title").and_then(Value::as_str) {
+                            activity.record_tool_call(title);
+                        } else {
+                            activity.record_untitled_tool_call();
+                        }
+                    }
+                }
                 self.answer_permission(&message, writable, blind)?;
                 continue;
             }
@@ -750,6 +793,42 @@ mod tests {
         assert_eq!(first.channel.usage.cache_read, 5);
     }
     #[test]
+    fn fake_acp_three_same_updates_plus_permission_count_as_four_repeated_calls() {
+        let cwd = std::env::current_dir().unwrap();
+        let Some(mut client) = fake_client_with(&["--repeat-tool-calls"]) else { return };
+        let activity = ProcessActivity::new();
+        client.prompt_with_activity("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "", &activity).unwrap();
+        let (_, _, calls, repeated, last_tool) = activity.snapshot();
+        assert_eq!((calls, repeated, last_tool.as_str()), (4, 4, "Read file"));
+    }
+    #[test]
+    fn r1_permission_request_tool_call_is_counted() {
+        let cwd = std::env::current_dir().unwrap();
+        let Some(mut client) = fake_client() else { return };
+        let activity = ProcessActivity::new();
+        client.prompt_with_activity("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "", &activity).unwrap();
+        let (_, _, calls, repeated, last_tool) = activity.snapshot();
+        assert_eq!((calls, repeated, last_tool.as_str()), (1, 1, "Read misleading title"));
+    }
+    #[test]
+    fn r1_other_session_tool_call_is_not_counted() {
+        let cwd = std::env::current_dir().unwrap();
+        let Some(mut client) = fake_client_with(&["--other-session-tool-call"]) else { return };
+        let activity = ProcessActivity::new();
+        client.prompt_with_activity("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "", &activity).unwrap();
+        let (_, _, calls, _, last_tool) = activity.snapshot();
+        assert_eq!((calls, last_tool.as_str()), (1, "Read misleading title"));
+    }
+    #[test]
+    fn r1_untitled_tool_call_still_increments_count() {
+        let cwd = std::env::current_dir().unwrap();
+        let Some(mut client) = fake_client_with(&["--untitled-tool-call"]) else { return };
+        let activity = ProcessActivity::new();
+        client.prompt_with_activity("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "", &activity).unwrap();
+        let (_, _, calls, repeated, last_tool) = activity.snapshot();
+        assert_eq!((calls, repeated, last_tool), (2, 0, String::new()));
+    }
+    #[test]
     fn writable_permission_is_allow_once_never_allow_always() {
         let cwd = std::env::current_dir().unwrap();
         let Some(mut client) = fake_client() else { return };
@@ -966,7 +1045,7 @@ mod tests {
             let handles = (0..2).map(|index| {
                 let cwd = cwd.clone();
                 let provider = provider.clone();
-                scope.spawn(move || run("kimi", &provider, "fake-model", None, &format!("turn-{index}"), &cwd, Duration::from_secs(10), "中", false, false, &format!("concurrent-{index}")))
+                scope.spawn(move || run("kimi", &provider, "fake-model", None, &format!("turn-{index}"), &cwd, Duration::from_secs(10), "中", false, false, &format!("concurrent-{index}"), ProcessActivity::new()))
             }).collect::<Vec<_>>();
             for handle in handles {
                 assert!(handle.join().unwrap().is_ok());
@@ -997,6 +1076,7 @@ mod tests {
             false,
             false,
             "live-acp-1",
+            ProcessActivity::new(),
         )
         .unwrap();
         let second = run(
@@ -1011,6 +1091,7 @@ mod tests {
             false,
             false,
             "live-acp-2",
+            ProcessActivity::new(),
         )
         .unwrap();
         assert!(!first.channel.session_id.is_empty());

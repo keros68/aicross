@@ -10,6 +10,75 @@ use std::time::{Duration, Instant};
 pub const MAX_PROCESS_OUTPUT: u64 = 4 * 1024 * 1024;
 pub const MAX_INTERACTIVE_OUTPUT: usize = 8 * 1024 * 1024;
 
+#[derive(Clone, Debug)]
+pub struct ProcessActivity {
+    started: Arc<Mutex<Instant>>,
+    last_output: Arc<Mutex<Instant>>,
+    tools: Arc<Mutex<ToolActivity>>,
+}
+
+#[derive(Debug, Default)]
+struct ToolActivity {
+    calls: u64,
+    repeated: u64,
+    last_tool: String,
+}
+
+impl ProcessActivity {
+    pub fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            started: Arc::new(Mutex::new(now)),
+            last_output: Arc::new(Mutex::new(now)),
+            tools: Arc::new(Mutex::new(ToolActivity::default())),
+        }
+    }
+
+    pub fn mark_output(&self) {
+        if let Ok(mut last) = self.last_output.lock() {
+            *last = Instant::now();
+        }
+    }
+
+    pub fn record_tool_call(&self, title: &str) {
+        self.mark_output();
+        if let Ok(mut tools) = self.tools.lock() {
+            tools.calls += 1;
+            tools.repeated = if tools.last_tool == title { tools.repeated + 1 } else { 1 };
+            tools.last_tool = title.to_string();
+        }
+    }
+
+    pub fn record_untitled_tool_call(&self) {
+        self.mark_output();
+        if let Ok(mut tools) = self.tools.lock() {
+            tools.calls += 1;
+        }
+    }
+
+    pub fn reset_attempt(&self) {
+        if let Ok(mut started) = self.started.lock() {
+            *started = Instant::now();
+        }
+        if let Ok(mut tools) = self.tools.lock() {
+            *tools = ToolActivity::default();
+        }
+    }
+
+    pub fn snapshot(&self) -> (u64, u64, u64, u64, String) {
+        let now = Instant::now();
+        let idle = self.last_output.lock().map(|last| now.duration_since(*last)).unwrap_or_default();
+        let tools = self.tools.lock().ok();
+        (
+            self.started.lock().map(|started| now.duration_since(*started)).unwrap_or_default().as_millis() as u64,
+            idle.as_millis() as u64,
+            tools.as_ref().map_or(0, |value| value.calls),
+            tools.as_ref().map_or(0, |value| value.repeated),
+            tools.as_ref().map_or_else(String::new, |value| value.last_tool.clone()),
+        )
+    }
+}
+
 fn interactive_queue_limit(marker_bytes: usize) -> usize {
     MAX_INTERACTIVE_OUTPUT.saturating_add(marker_bytes)
 }
@@ -34,6 +103,10 @@ struct InteractiveLine {
 }
 
 impl InteractiveProcess {
+    #[cfg(test)]
+    fn queued_stdout_bytes(&self) -> usize {
+        self.stdout_queued_bytes.load(Ordering::Acquire)
+    }
     pub fn send_json_line(&mut self, value: &serde_json::Value) -> Result<(), String> {
         serde_json::to_writer(&mut self.stdin, value)
             .map_err(|error| format!("序列化 ACP 请求失败：{error}"))?;
@@ -258,6 +331,18 @@ pub fn run_process_registered(
     cwd: Option<&Path>,
     registry_key: Option<&str>,
 ) -> Result<ProcessResult, String> {
+    run_process_registered_with_activity(program, args, input, timeout, cwd, registry_key, None)
+}
+
+pub fn run_process_registered_with_activity(
+    program: &Path,
+    args: &[String],
+    input: Option<&str>,
+    timeout: Duration,
+    cwd: Option<&Path>,
+    registry_key: Option<&str>,
+    activity: Option<ProcessActivity>,
+) -> Result<ProcessResult, String> {
     let mut command = process_command(program, args);
     command
         .env("AI_CROSS_PEER", "1")
@@ -290,8 +375,8 @@ pub fn run_process_registered(
         .stderr
         .take()
         .ok_or_else(|| "读取子进程 stderr 失败".to_string())?;
-    let stdout_reader = bounded_reader(stdout);
-    let stderr_reader = bounded_reader(stderr);
+    let stdout_reader = bounded_reader(stdout, activity.clone());
+    let stderr_reader = bounded_reader(stderr, activity);
     let stdin_writer = input.and_then(|input| {
         child.stdin.take().map(|mut stdin| {
             let input = input.as_bytes().to_vec();
@@ -384,16 +469,28 @@ pub fn version_for(binary: &Path) -> Option<String> {
 
 type Reader = (thread::JoinHandle<()>, mpsc::Receiver<(Vec<u8>, bool)>);
 
-fn bounded_reader<R: Read + Send + 'static>(mut reader: R) -> Reader {
+fn bounded_reader<R: Read + Send + 'static>(mut reader: R, activity: Option<ProcessActivity>) -> Reader {
     let (sender, receiver) = mpsc::channel();
     let handle = thread::spawn(move || {
         let mut output = Vec::new();
-        let _ = (&mut reader)
-            .take(MAX_PROCESS_OUTPUT)
-            .read_to_end(&mut output);
+        let mut limited = (&mut reader).take(MAX_PROCESS_OUTPUT);
+        let mut chunk = [0_u8; 8192];
+        loop {
+            let Ok(read) = limited.read(&mut chunk) else { break };
+            if read == 0 { break; }
+            output.extend_from_slice(&chunk[..read]);
+            if let Some(activity) = &activity { activity.mark_output(); }
+        }
         let mut probe = [0_u8; 1];
         let truncated = matches!(reader.read(&mut probe), Ok(n) if n > 0);
-        let _ = std::io::copy(&mut reader, &mut std::io::sink());
+        if truncated {
+            if let Some(activity) = &activity { activity.mark_output(); }
+        }
+        loop {
+            let Ok(read) = reader.read(&mut chunk) else { break };
+            if read == 0 { break; }
+            if let Some(activity) = &activity { activity.mark_output(); }
+        }
         let _ = sender.send((output, truncated));
     });
     (handle, receiver)
@@ -518,9 +615,55 @@ mod tests {
         let first_len = MAX_INTERACTIVE_OUTPUT - 17;
         let args = vec!["-c".to_string(), format!("import time\nprint('x'*{first_len})\nprint('y'*32)\ntime.sleep(1)")];
         let mut process = spawn_interactive(&python, &args, None).unwrap();
+        let expected = first_len + 1 + "[ACP stdout 已截断]".len() + 1;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while process.queued_stdout_bytes() < expected && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(process.queued_stdout_bytes(), expected, "生产者应先处理完普通行与截断标记");
         assert_eq!(process.recv_line(Duration::from_secs(10)).unwrap().len(), first_len);
         assert_eq!(process.recv_line(Duration::from_secs(2)).unwrap(), "[ACP stdout 已截断]");
         assert_eq!(process.try_recv_line().unwrap(), None, "超限普通行不应入队");
         process.terminate();
+    }
+
+    #[test]
+    fn oneshot_output_then_silent_two_seconds_reports_idle_from_last_output() {
+        let Ok(python) = crate::channels::resolve_binary("python", None) else {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        };
+        let activity = ProcessActivity::new();
+        run_process_registered_with_activity(
+            &python, &["-c".into(), "import time; print('first', flush=True); time.sleep(2.1)".into()], None,
+            Duration::from_secs(5), None, None, Some(activity.clone()),
+        ).unwrap();
+        assert!(activity.snapshot().1 >= 2000);
+    }
+
+    #[test]
+    fn oneshot_second_output_resets_idle_below_half_second() {
+        let Ok(python) = crate::channels::resolve_binary("python", None) else {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        };
+        let activity = ProcessActivity::new();
+        run_process_registered_with_activity(
+            &python, &["-c".into(), "import time; print('first', flush=True); time.sleep(2.1); print('second', flush=True)".into()], None,
+            Duration::from_secs(5), None, None, Some(activity.clone()),
+        ).unwrap();
+        assert!(activity.snapshot().1 < 500);
+    }
+
+    #[test]
+    fn r1_reset_attempt_clears_tool_counts_and_restarts_elapsed_only() {
+        let activity = ProcessActivity::new();
+        activity.record_tool_call("Read file");
+        thread::sleep(Duration::from_millis(20));
+        activity.reset_attempt();
+        let (elapsed, idle, calls, repeated, last_tool) = activity.snapshot();
+        assert!(elapsed < 100);
+        assert!(idle >= 20, "重置尝试不应伪造新的子进程输出");
+        assert_eq!((calls, repeated, last_tool), (0, 0, String::new()));
     }
 }

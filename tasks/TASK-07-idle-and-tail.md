@@ -4,7 +4,7 @@
 
 ## 契约（只追加）
 
-- Tauri 事件 `dispatch-progress` 的载荷 `DispatchProgress` 追加可选字段（camelCase）：`elapsedMs: number`、`idleMs: number`（距上一条输出/通知的毫秒数）、`toolCalls: number`（本轮工具调用次数，ACP 才有，一次性为 0）、`repeatedToolCalls: number`（连续同名工具调用次数）、`lastTool: string`。`status` 新增值 `"running"`（周期心跳，每 15s 一次，节点结束时最后一条仍是原有终态）。旧前端忽略未知字段与未知 status。
+- Tauri 事件 `dispatch-progress` 的载荷 `DispatchProgress` 追加可选字段（camelCase）：`elapsedMs: number`、`idleMs: number`（距上一条输出/通知的毫秒数）、`toolCalls: number`（本次尝试的工具调用次数，ACP 才有，一次性为 0）、`repeatedToolCalls: number`（本次尝试内连续同名工具调用次数）、`lastTool: string`。`status` 新增值 `"running"`（周期心跳，每 15s 一次，节点结束时最后一条仍是原有终态）；终态事件不带心跳字段，前端保留上一条 `running` 的 `elapsedMs`/`lastTool`。旧前端忽略未知字段与未知 status。
 - `Reply` 追加可选 `tokens_cache_read?: number`（TS）/ Rust 镜像 `#[serde(default)]`，对账与派发结果都写它。
 
 ## A. 引擎（Rust）— codex
