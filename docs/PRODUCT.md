@@ -192,13 +192,13 @@ fable-5 → [gpt-5.6 | kimi-2.7 | deepseek-v4-flash] → glm-5.3
 1. ~~三家 CLI 能否被程序化续聊~~ 已验证全 PASS（08-30，命令见 `D:\work\agentteam\COMPETITIVE-LANDSCAPE.md` 同日节）。
 2. agmsg 的 license，能否作消息传输底座。
 3. AgentConnect 的"谁能看某 agent 对话"能否做到按消息隔离（若能，它离本产品最近）。
-4. 各 CLI 的 usage 输出能否折算成订阅额度百分比（`usage_probe.py` 现有能力的边界）。
+4. 各 CLI 的 usage 输出能否折算成订阅额度百分比（`usage_probe.py` 现有能力的边界）。 09-14 补：kimi `-p` 不回 usage 也不回真身，留痕明示「不报」；codex/claude/pi 都回 token 数，界面只展示 token 与耗时（定案不做额度折算）。
 
 ## 未解的设计问题
 
 - **盲审如何从共享对话里抠出原始材料而不带结论**。09-13 基本收敛为「分叉点 + 剔除」：盲节点从用户指定的节点分叉，上下文只留路径上的用户消息与附件。剩一个口子：用户自己在消息里转述了模型结论。候选处理是 G1 圈定外发材料时把这些消息列出来让用户删。
 - **跨 CLI 的路径序列化**：把根到分叉点的路径（用户消息 / 模型回复 / 工具调用 / 附件）写成给另一家 CLI 的 prompt，各段怎么标、thinking 丢不丢、长度上限。与 `.dispatch/` 契约一起定。
-- 经济流水线里执行阶段的产物如何交给验收（diff、文件清单、还是整目录快照）。已在 `tasks/TASK-04-pipeline.md` B 节定初稿（diff + 改后全文 + `REQUEST.md` 进盲目录）；外部参考：AutoResearch 的产物清单 + 哈希记账（`D:\work\agentteam\COMPETITIVE-LANDSCAPE.md` 2026-09-03 节）。
+- ~~经济流水线里执行阶段的产物如何交给验收~~ **已定并真跑验证（09-14）**：执行节点前后快照 → `Reply.artifacts { diff, changed_files, worktree?, stdout_summary }`（六类脱敏后）；盲验收在空目录里收到 `REQUEST.md` + `diff.patch` + `changed/`，< 30KB 时 diff 同时内联；kimi 盲验收实测读到三件套并自己跑了 pytest。验证命令失败的修正轮长在图上，≤3 轮，验收节点在验证未过时标「已跳过」。
 
 ## 顺序
 
