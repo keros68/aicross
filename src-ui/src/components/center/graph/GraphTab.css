@@ -263,17 +263,25 @@
   border-color: var(--border-focus);
 }
 
+/* portal 到 document.body，position: fixed 按触发按钮的视口坐标定位。
+   原来是 .graph-canvas-inner 里的 absolute 元素，而 .graph-canvas 是
+   max-height:44% + overflow:auto 的滚动容器——菜单一旦超过画布下边沿就被
+   容器裁掉（看起来像「被下方列面板压住」，其实是画布自己切的），
+   z-index 在被裁的情况下无解，只能脱离那个滚动容器。
+   z-index 1200：高于主视图里所有弹层（节点面板遮罩 100、接入页 900），
+   低于设置弹窗 2000 与派发浮层 12000。 */
 .graph-stamp-menu {
-  position: absolute;
-  z-index: 6;
+  position: fixed;
+  z-index: 1200;
   display: flex;
   flex-direction: column;
   min-width: 140px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
   background: var(--bg-app);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-  overflow: hidden;
 }
 
 .graph-stamp-item {

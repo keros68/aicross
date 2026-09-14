@@ -17,6 +17,7 @@ import { IS_WINDOWS } from '../../lib/platform';
 import { TERM_COLOR_SCHEMES } from '../center/TierTerminal';
 import { commands, type FontInfo, type RoleProfile, type RoleSettings } from '../../tauri';
 import type { DispatchableModel } from '../../graph/types';
+import { modelStatusSuffix } from '../../resources/model-picker';
 import { FontPicker } from './FontPicker';
 import { THEME_COLORS, LANGUAGES, TASK_VIEW_MODES } from '../../lib/personalization';
 import { loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } from '../../graph/dispatch-settings';
@@ -425,7 +426,7 @@ export function SettingsModal() {
                           <option value={JSON.stringify(['', '', ''])}>未指定</option>
                           {availableModels.map((model) => (
                             <option key={JSON.stringify([model.agent, model.provider, model.id])} value={JSON.stringify([model.agent, model.provider, model.id])}>
-                              {model.agent}/{model.provider ? `${model.provider}/` : ''}{model.id}
+                              {model.agent}/{model.provider ? `${model.provider}/` : ''}{model.id}{modelStatusSuffix(model)}
                             </option>
                           ))}
                         </select>
