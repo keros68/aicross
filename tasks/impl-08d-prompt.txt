@@ -1,0 +1,1 @@
+先读仓库根目录的 AGENTS.md、tasks/TASK-08-swarm.md 契约节、tasks/REPORT-08A.md 的 R1/R2 节（合并循环现状），再读 tasks/TASK-08D-merge-by-range.md，按 1→5 做。每条补具名测试（用临时 git 仓库真跑 git，包含「两件不相交但同改一个被跟踪 pyc → 两件都 merged」这条）。报告写 tasks/REPORT-08D.md：逐条「已做：怎么做的（文件:行）／已补：测试名」或「没做：原因」，验证命令与输出原文贴进报告。cargo check 零 warning。绝不跑 cargo fmt、保持文件原有换行（server.rs CRLF，其余 Rust LF）。不动 src/channels/。不起窗口，不发真机请求，不 commit，不 push。
