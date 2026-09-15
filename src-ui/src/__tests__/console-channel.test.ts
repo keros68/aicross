@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addWindowsPathEntry, consoleInflightCount, consoleTabPlan, removeWindowsPathEntry, selectConsoleGraph } from '../console-channel';
+import { addWindowsPathEntry, consoleInflightCount, consoleTabPlan, mergeConsoleCommit, removeWindowsPathEntry, selectConsoleGraph } from '../console-channel';
 import { newGraph } from '../graph/types';
 import { startPipelineHeadless } from '../graph/dispatch';
 import type { TerminalSession } from '../store/app-state';
@@ -75,5 +75,20 @@ describe('TASK-16 R1 控制台薄中继', () => {
     expect(result.outcome.kind).toBe('done');
     expect(result.graph.nodes[nodeId].reply?.status).toBe('done');
     expect(calls).toEqual(['begin', 'stage', 'results', 'end']);
+  });
+});
+
+describe('console commit merges onto the latest graph (R1 review 1)', () => {
+  it('keeps a concurrent user edit on another node while applying the pipeline reply', () => {
+    const base = newGraph('D:/proj');
+    const rootId = base.root;
+    const previous = { ...base, nodes: { ...base.nodes, a: { ...base.nodes[rootId], id: 'a', parents: [rootId], user: { text: '执行', attachments: [] }, reply: { status: 'pending', text: '' } }, b: { ...base.nodes[rootId], id: 'b', parents: [rootId], user: { text: '旁边', attachments: [] } } } } as typeof base;
+    // 用户在运行期间改了 b 的 prompt（store 里的最新图）
+    const latest = { ...previous, nodes: { ...previous.nodes, b: { ...previous.nodes.b, user: { text: '旁边（用户改过）', attachments: [] } } } } as typeof base;
+    // 流水线只把 a 的回复落下来
+    const next = { ...previous, nodes: { ...previous.nodes, a: { ...previous.nodes.a, reply: { status: 'done', text: '完成' } } } } as typeof base;
+    const merged = mergeConsoleCommit(latest, previous, next);
+    expect(merged.nodes.a.reply?.status).toBe('done');
+    expect(merged.nodes.b.user.text).toBe('旁边（用户改过）');
   });
 });

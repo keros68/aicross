@@ -79,6 +79,14 @@ export interface ConsoleChannelContext {
 
 type ChannelCommands = Pick<typeof commands, 'listDispatchableModels' | 'listPresets' | 'loadRoles' | 'gitChanges' | 'previewDispatch' | 'dispatchGraphStage' | 'saveGraph' | 'consoleRunUpdate' | 'listConsoleRuns' | 'cancelDispatchNode' | 'consoleActionAck'>;
 
+// 把流水线这次落图（previous → next 的差）合到 store 里的最新图 latest 上：
+// 只带走本次改动或新增的节点，其余节点以 latest 为准（用户的并发编辑保留）。纯函数，可测。
+export function mergeConsoleCommit(latest: Graph, previous: Graph, next: Graph): Graph {
+  const changed = Object.keys(next.nodes).filter((id) => JSON.stringify(next.nodes[id]) !== JSON.stringify(previous.nodes[id]));
+  const nodes = { ...latest.nodes, ...Object.fromEntries(changed.map((id) => [id, next.nodes[id]])) };
+  return { ...latest, root: next.root, nodes };
+}
+
 export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: ConsoleChannelContext, io: ChannelCommands = commands): Promise<void> {
   const settings = loadDispatchSettings();
   const [resources, presetFile, roles, activeRuns] = await Promise.all([io.listDispatchableModels(), io.listPresets(), io.loadRoles(), io.listConsoleRuns()]);
@@ -120,9 +128,14 @@ export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: C
   const dirtyReason = dirtyWorktreeHintOf(dirty, first.some((id) => graph.nodes[id].target?.write === 'worktree'));
   if (dirtyReason) { await reject(dirtyReason, graph.id); return; }
 
+  // R1 复审 1：流水线持有的是自己的快照，每次落图先合到 store 里的最新图上，
+  // 只覆盖本次真正改动的节点——运行期间用户在同一张图上的编辑不会被整图回写抹掉。
+  let committed: Graph = graph;
   const commit = (next: Graph) => {
-    graph = { ...next, project: event.project, source: 'console' };
+    const latest = context.getState().graphs[graph.id] ?? committed;
+    graph = { ...mergeConsoleCommit(latest, committed, next), project: event.project, source: 'console' };
     graph = { ...graph, updated_at: new Date().toISOString() };
+    committed = graph;
     context.dispatch({ type: 'SET_GRAPH', graph });
     void io.saveGraph(graph)
       .then(() => io.consoleRunUpdate({ run_id: event.run_id, graph_id: graph.id, status: 'running', nodes: nodeSummary(graph, allRunIds), leftover: leftoverNodes(graph).flatMap((node) => node.leftover?.items ?? []), in_flight_node_ids: [], reason: '' }))
