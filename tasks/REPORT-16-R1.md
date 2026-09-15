@@ -105,3 +105,7 @@ TASK-16 的控制台通道已改为薄中继。Rust 只负责本机 HTTP 校验�
 - 未生成 NSIS / WiX 安装包，因此安装器行为由逐项脚本实现和 PATH 纯函数测试覆盖，未做安装包真机验收。
 - Windows 实际 DACL、PID 与原子替换未对真实用户目录执行；测试使用临时目录和可注入判活/命令边界验证顺序与结果。
 - 未修改 `src/terminal.rs`，未 commit，未 push。
+
+## 复审后补记（编排者，a66c5ff）
+
+两家复审（`tasks/review-16-r1-*.md`）都判可交付但有未闭合项，编排者直接修：DeepSeek 1——后台 run 整图回写会盖掉用户并发编辑，改成每次落图先合到 store 最新图、只带本次改动节点（`mergeConsoleCommit` + 测试）；GLM N1——每次落图回报把在飞清单清空，执行期 `aicross cancel` 与「N 路在飞」不工作，改成在飞清单随阶段记录并在每次回报里带上，取消目标 = 摘要在飞 ∪ 图上 pending（`consoleCancelTargets` + 测试）；GLM N2——终态 run 不接受迟到的 running 回报（Rust 侧守卫 + 测试），前端起流水线前确认 run 仍在 running；GLM N3——续写用户自己的图保留原来源；N7 文档节点状态示例改 pending。改后 cargo 407 / vitest 476 / build 通过。剩余低危记入 `tasks/fix-04-r5-backlog.md` 第 53–55 条。
