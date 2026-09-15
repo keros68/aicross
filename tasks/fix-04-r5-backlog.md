@@ -42,3 +42,8 @@
 28. 启动器目录选择器 `pickFolder` 不置 `seeded`，晚到的默认可能覆盖用户刚选的目录。（GLM 2 / DS 6 同类）
 29. `graphViewTabs` 按 session id 索引，RESTART_TERMINAL 换 id 后标记丢失、关 tab 不清理；空白 tab 换目录会翻回启动器。（GLM 3 / DS 5）
 30. 保存默认按闭包捕获的旧 id 消费，保存在途时换目录会把旧快照留在新 id 上（窗口几毫秒）。（DS 4）
+
+## TASK-10 窗口实测（09-15 16:25）
+
+31. 总指挥 PTY 继承了宿主环境里的 `CLAUDE_CODE_CHILD_SESSION` 标记（开发窗口从 Claude Code 会话里起时出现，Claude Code 提示 transcript saving off）：起总指挥时清掉 `CLAUDE_CODE_*` 之类宿主会话变量，用户从 Claude Code 里启动 aicross 时也不受影响。
+32. 总指挥 tab 标题被 CLI 的 OSC 标题（「Claude Code」）盖掉，看不到 `agent · 模型 · 目录名`；改成 commanderTitle 优先、OSC 标题进悬停。
