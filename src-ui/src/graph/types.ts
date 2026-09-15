@@ -180,7 +180,6 @@ export function newGraph(project = ''): Graph {
     parents: [],
     user: { text: '', attachments: [] },
     created_at: now,
-    ...(project ? { project } : {}),
   };
   return {
     version: 1,
@@ -190,5 +189,6 @@ export function newGraph(project = ''): Graph {
     nodes: { [rootId]: root },
     created_at: now,
     updated_at: now,
+    ...(project ? { project } : {}),
   };
 }

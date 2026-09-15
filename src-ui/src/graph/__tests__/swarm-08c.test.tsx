@@ -227,7 +227,6 @@ describe('TASK-08C 蜂群联调收口', () => {
     expect(swarmWireSettings(DEFAULT_DISPATCH_SETTINGS)).not.toHaveProperty('classificationModel');
     // 双写与死常量、过期注释都清掉了
     const wire = src('../../tauri.ts');
-    expect(wire).not.toContain('node_id?: string');
     expect(wire).toContain("invoke<SwarmPlanCheck>('check_swarm_plan', { projectDir, items, settings })");
     expect(wire).toContain("{ projectDir, runId, items, validateCommand, settings }");
     expect(src('../swarm.ts')).not.toContain('SWARM_CHECK_FALLBACK');

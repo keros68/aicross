@@ -4,7 +4,7 @@
 
 ## 发现控制台
 
-aicross 启动后写入当前用户目录下的 `~/.aicross/console.json`：
+aicross 发布版启动后写入当前用户目录下的 `~/.aicross/console.json`；开发构建使用 `~/.aicross/console.dev.json`，两者互不覆盖：
 
 ```json
 {
@@ -16,7 +16,7 @@ aicross 启动后写入当前用户目录下的 `~/.aicross/console.json`：
 }
 ```
 
-端点只监听 `127.0.0.1`。清单仅允许当前用户读取，应用退出时删除。客户端必须拒绝清单中的非 `http://127.0.0.1:<port>` 地址，所有请求都带 `Authorization: Bearer <token>`；不要输出或记录令牌。
+端点只监听 `127.0.0.1`。清单先在临时文件上收紧为仅当前用户可读，再原子替换；应用退出时删除。客户端会核对 PID，进程不存在时删除过期清单。所有请求都带 `Authorization: Bearer <token>`；不要输出或记录令牌。带 `Origin` 或 `Sec-Fetch-Site: cross-site` 的请求会被拒绝。
 
 ## HTTP 协议
 
@@ -48,13 +48,13 @@ aicross 启动后写入当前用户目录下的 `~/.aicross/console.json`：
 }
 ```
 
-成功返回：
+Rust 只校验并中继请求；前端用与确认派发相同的 `stamp()`、G1 判定和流水线执行。成功接收返回：
 
 ```json
-{ "run_id": "…", "graph_id": "…", "node_ids": ["…"] }
+{ "run_id": "…", "accepted": true, "graph_id": "", "node_ids": [] }
 ```
 
-项目目录不存在返回 404。预设不存在、角色没有可派发目标或现有派发规则拒绝请求时返回 409，并在 `error` 字段说明原因。令牌缺失或错误返回 401。
+为保持既有契约，首个响应仍保留空的 `graph_id` 与 `node_ids`；真实图 id 与节点摘要在前端开始处理后通过状态接口提供。界面未运行或 5 秒内没有回执时返回 503。run 同时在飞默认最多 3 个，可在设置的“通道在飞上限”调整；超过上限返回 409。
 
 ### 查询、采纳与取消
 
@@ -85,7 +85,19 @@ aicross 启动后写入当前用户目录下的 `~/.aicross/console.json`：
 }
 ```
 
-`status` 为 `running`、`done` 或 `failed`。`leftover` 仅在有遗留项时出现。
+run 的 `status` 为 `running`、`done`、`failed` 或 `rejected`。节点状态保留图上的原状态词，包括 `draft`、`pending`、`done`、`failed` 与 `quota_exhausted`；额度用尽不改写为 `failed`，有恢复时间时写在 `quota_resets_at`。`leftover` 从遗留节点汇总，仅在有遗留项时出现；`reason` 说明 rejected 或失败原因；`in_flight_node_ids` 是当时真正执行中的节点。
+
+### 状态码
+
+| 状态码 | 含义 |
+| --- | --- |
+| 400 | JSON 无效、正文不完整 |
+| 401 | 令牌缺失或错误 |
+| 403 | 请求带 Origin 或来自 cross-site |
+| 404 | 项目、run、节点或接口不存在 |
+| 409 | G1 拒绝、在飞超限或操作冲突 |
+| 413 | 正文超过 4 MiB |
+| 503 | 控制台界面未就绪或未在 5 秒内回执 |
 
 ## 命令行
 
@@ -94,18 +106,37 @@ aicross 启动后写入当前用户目录下的 `~/.aicross/console.json`：
 ```powershell
 aicross dispatch --project D:\work\project --preset economy --text-file D:\tmp\dispatch.txt
 aicross status <run_id>
-aicross status <run_id> --wait
+aicross status <run_id> --wait --timeout 600
 aicross adopt <run_id> <node_id>
 aicross cancel <run_id>
 ```
 
-开发态使用相同参数：
+`--timeout` 单位为秒，默认 600。`--text-file` 接受 UTF-8，可带 UTF-8 BOM；其它编码返回参数错误。`--text` 与 `--text=...` 均不接受。
+
+预设别名如下：
+
+| CLI 值 | HTTP 值 |
+| --- | --- |
+| `shared` | `builtin-shared` |
+| `economy` | `builtin-economy` |
+| `blind` | `builtin-blind` |
+
+开发态使用相同参数，但读取 `console.dev.json`：
 
 ```powershell
 cargo run -- dispatch --project D:\work\project --preset economy --text-file D:\tmp\dispatch.txt
 ```
 
-命令把 JSON 写到 stdout，把一行人读说明写到 stderr。找不到 `console.json`、清单无效或端点不通时输出 `控制台未运行` 并以退出码 3 结束。skill 遇到退出码 3 后可回退到原有通道；401、404、409 等业务响应不得按“控制台未运行”处理。
+命令把 JSON 写到 stdout，把一行说明写到 stderr。每轮状态查询都会重读清单。HTTP 客户端单次请求总超时为 30 秒；`status --wait` 到时以退出码 1 结束。HTTP 200 但正文不是 JSON 时，以退出码 1 结束，并输出原文首行。
+
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | 请求成功 |
+| 1 | HTTP 业务失败、等待超时或响应不是 JSON |
+| 2 | 命令参数、文本文件或编码错误 |
+| 3 | 控制台未运行、清单无效、PID 已结束或端点不可达 |
+
+skill 仅在退出码 3 时回退到原有通道。Windows 的 NSIS/MSI 安装包会把安装目录作为独立项加入当前用户 PATH，并在卸载时只删除该项；macOS 与 Linux 安装包不修改 PATH。
 
 如需直接调 HTTP，可从清单读取端点和令牌：
 

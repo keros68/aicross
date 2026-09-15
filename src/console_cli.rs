@@ -5,6 +5,9 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
     if !matches!(args.get(1).map(String::as_str), Some("dispatch" | "status" | "adopt" | "cancel")) {
@@ -22,13 +25,6 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
 }
 
 fn run_at(args: &[String], root: &Path, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
-    let manifest = match read_manifest(root) {
-        Ok(value) => value,
-        Err(()) => {
-            let _ = writeln!(stderr, "控制台未运行");
-            return 3;
-        }
-    };
     let request = match build_request(args) {
         Ok(value) => value,
         Err(message) => {
@@ -37,7 +33,19 @@ fn run_at(args: &[String], root: &Path, stdout: &mut dyn Write, stderr: &mut dyn
         }
     };
     let wait = request.wait;
+    let started = Instant::now();
     loop {
+        let manifest = match read_manifest(root) {
+            Ok(value) => value,
+            Err(ManifestError::Stale) => {
+                let _ = writeln!(stderr, "控制台未运行（清单已过期）");
+                return 3;
+            }
+            Err(ManifestError::Missing) => {
+                let _ = writeln!(stderr, "控制台未运行");
+                return 3;
+            }
+        };
         let response = match send(&manifest, &request.method, &request.path, request.body.as_ref()) {
             Ok(value) => value,
             Err(SendError::Unavailable) => {
@@ -49,12 +57,21 @@ fn run_at(args: &[String], root: &Path, stdout: &mut dyn Write, stderr: &mut dyn
                 let _ = writeln!(stderr, "请求失败（HTTP {status}）");
                 return 1;
             }
+            Err(SendError::InvalidResponse(text)) => {
+                let _ = writeln!(stdout, "{}", text.lines().next().unwrap_or(""));
+                let _ = writeln!(stderr, "控制台响应无效");
+                return 1;
+            }
         };
         let done = response.get("status").and_then(Value::as_str).is_some_and(|status| status != "running");
         if !wait || done {
             let _ = writeln!(stdout, "{}", serde_json::to_string(&response).unwrap_or_else(|_| "{}".into()));
             let _ = writeln!(stderr, "控制台请求完成");
             return 0;
+        }
+        if started.elapsed() >= request.timeout {
+            let _ = writeln!(stderr, "等待状态超时");
+            return 1;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -74,17 +91,20 @@ struct CliRequest {
     path: String,
     body: Option<Value>,
     wait: bool,
+    timeout: Duration,
 }
 
 fn build_request(args: &[String]) -> Result<CliRequest, String> {
     match args.get(1).map(String::as_str) {
         Some("dispatch") => {
-            if args.iter().any(|arg| arg == "--text") {
+            if args.iter().any(|arg| arg == "--text" || arg.starts_with("--text=")) {
                 return Err("派发文本必须使用 --text-file".into());
             }
             let project = option_value(args, "--project").ok_or_else(|| "缺少 --project".to_string())?;
             let text_file = option_value(args, "--text-file").ok_or_else(|| "缺少 --text-file".to_string())?;
-            let text = fs::read_to_string(&text_file).map_err(|error| format!("读取文本文件失败：{error}"))?;
+            let bytes = fs::read(&text_file).map_err(|error| format!("读取文本文件失败：{error}"))?;
+            let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
+            let text = String::from_utf8(bytes.to_vec()).map_err(|_| "文本文件必须是 UTF-8 编码".to_string())?;
             let preset = option_value(args, "--preset").unwrap_or_else(|| "economy".into());
             let preset = match preset.as_str() {
                 "shared" => "builtin-shared",
@@ -94,21 +114,23 @@ fn build_request(args: &[String]) -> Result<CliRequest, String> {
             };
             Ok(CliRequest {
                 method: "POST".into(), path: "/v1/dispatch".into(),
-                body: Some(json!({ "project": project, "preset": preset, "text": text })), wait: false,
+                body: Some(json!({ "project": project, "preset": preset, "text": text })), wait: false, timeout: Duration::from_secs(30),
             })
         }
         Some("status") => {
             let run_id = positional(args, 2).ok_or_else(|| "缺少 run_id".to_string())?;
-            Ok(CliRequest { method: "GET".into(), path: format!("/v1/runs/{run_id}"), body: None, wait: args.iter().any(|arg| arg == "--wait") })
+            let timeout = option_value(args, "--timeout").map(|value| value.parse::<u64>().map_err(|_| "--timeout 必须是正整数".to_string())).transpose()?.unwrap_or(600);
+            if timeout == 0 { return Err("--timeout 必须是正整数".into()); }
+            Ok(CliRequest { method: "GET".into(), path: format!("/v1/runs/{run_id}"), body: None, wait: args.iter().any(|arg| arg == "--wait"), timeout: Duration::from_secs(timeout) })
         }
         Some("adopt") => {
             let run_id = positional(args, 2).ok_or_else(|| "缺少 run_id".to_string())?;
             let node_id = positional(args, 3).ok_or_else(|| "缺少 node_id".to_string())?;
-            Ok(CliRequest { method: "POST".into(), path: format!("/v1/runs/{run_id}/adopt"), body: Some(json!({ "node_id": node_id })), wait: false })
+            Ok(CliRequest { method: "POST".into(), path: format!("/v1/runs/{run_id}/adopt"), body: Some(json!({ "node_id": node_id })), wait: false, timeout: Duration::from_secs(30) })
         }
         Some("cancel") => {
             let run_id = positional(args, 2).ok_or_else(|| "缺少 run_id".to_string())?;
-            Ok(CliRequest { method: "POST".into(), path: format!("/v1/runs/{run_id}/cancel"), body: Some(json!({})), wait: false })
+            Ok(CliRequest { method: "POST".into(), path: format!("/v1/runs/{run_id}/cancel"), body: Some(json!({})), wait: false, timeout: Duration::from_secs(30) })
         }
         _ => Err("未知命令".into()),
     }
@@ -125,15 +147,41 @@ fn positional(args: &[String], index: usize) -> Option<String> {
     args.get(index).filter(|arg| !arg.starts_with('-')).cloned()
 }
 
-fn read_manifest(root: &Path) -> Result<ConsoleManifest, ()> {
-    let value: ConsoleManifest = serde_json::from_slice(&fs::read(root.join("console.json")).map_err(|_| ())?).map_err(|_| ())?;
+enum ManifestError { Missing, Stale }
+
+fn read_manifest(root: &Path) -> Result<ConsoleManifest, ManifestError> {
+    read_manifest_with(root, process_alive)
+}
+
+fn read_manifest_with(root: &Path, alive: impl Fn(u32) -> bool) -> Result<ConsoleManifest, ManifestError> {
+    let path = root.join(crate::console_api::manifest_filename());
+    let value: ConsoleManifest = serde_json::from_slice(&fs::read(&path).map_err(|_| ManifestError::Missing)?).map_err(|_| ManifestError::Missing)?;
     if value.version != 1 || value.token.len() != 64
         || !value.token.bytes().all(|byte| byte.is_ascii_hexdigit())
         || !loopback_endpoint(&value.endpoint)
     {
-        return Err(());
+        return Err(ManifestError::Missing);
+    }
+    if !alive(value.pid) {
+        let _ = fs::remove_file(path);
+        return Err(ManifestError::Stale);
     }
     Ok(value)
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { return false };
+    unsafe { let _ = CloseHandle(handle); }
+    true
 }
 
 fn loopback_endpoint(endpoint: &str) -> bool {
@@ -144,6 +192,7 @@ fn loopback_endpoint(endpoint: &str) -> bool {
 enum SendError {
     Unavailable,
     Rejected(u16, String),
+    InvalidResponse(String),
 }
 
 fn send(manifest: &ConsoleManifest, method: &str, path: &str, body: Option<&Value>) -> Result<Value, SendError> {
@@ -151,22 +200,27 @@ fn send(manifest: &ConsoleManifest, method: &str, path: &str, body: Option<&Valu
     let request = match method {
         "GET" => ureq::get(&url),
         _ => ureq::post(&url),
-    }.set("Authorization", &format!("Bearer {}", manifest.token));
+    }.set("Authorization", &format!("Bearer {}", manifest.token)).timeout(HTTP_TIMEOUT);
     let response = if let Some(body) = body {
         request.set("Content-Type", "application/json").send_string(&body.to_string())
     } else {
         request.call()
     };
     match response {
-        Ok(response) => response.into_string().ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .ok_or(SendError::Unavailable),
+        Ok(response) => {
+            let text = response.into_string().map_err(|_| SendError::InvalidResponse(String::new()))?;
+            parse_success_response(text)
+        }
         Err(ureq::Error::Status(status, response)) => {
             let text = response.into_string().unwrap_or_else(|_| "{}".into());
             Err(SendError::Rejected(status, text))
         }
         Err(ureq::Error::Transport(_)) => Err(SendError::Unavailable),
     }
+}
+
+fn parse_success_response(text: String) -> Result<Value, SendError> {
+    serde_json::from_str::<Value>(&text).map_err(|_| SendError::InvalidResponse(text))
 }
 
 #[cfg(test)]
@@ -213,6 +267,50 @@ mod tests {
             build_request(&args),
             Err(error) if error == "派发文本必须使用 --text-file"
         ));
+        let equals = vec!["aicross".into(), "dispatch".into(), "--text=正文".into()];
+        assert!(matches!(build_request(&equals), Err(error) if error == "派发文本必须使用 --text-file"));
+    }
+
+    #[test]
+    fn dispatch_strips_utf8_bom_and_rejects_non_utf8() {
+        let root = std::env::temp_dir().join(format!("aicross-cli-encoding-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("prompt.txt");
+        fs::write(&path, [vec![0xef, 0xbb, 0xbf], "正文".as_bytes().to_vec()].concat()).unwrap();
+        let args = vec!["aicross".into(), "dispatch".into(), "--project".into(), "D:/p".into(), "--text-file".into(), path.to_string_lossy().into()];
+        assert_eq!(build_request(&args).unwrap().body.unwrap()["text"], "正文");
+        fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(matches!(build_request(&args), Err(error) if error == "文本文件必须是 UTF-8 编码"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn status_wait_timeout_defaults_to_600_and_accepts_override() {
+        let default = build_request(&["aicross".into(), "status".into(), "run".into(), "--wait".into()]).unwrap();
+        assert_eq!(default.timeout, Duration::from_secs(600));
+        let custom = build_request(&["aicross".into(), "status".into(), "run".into(), "--wait".into(), "--timeout".into(), "7".into()]).unwrap();
+        assert_eq!(custom.timeout, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn stale_pid_removes_manifest() {
+        let root = std::env::temp_dir().join(format!("aicross-cli-stale-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(crate::console_api::manifest_filename());
+        fs::write(&path, serde_json::to_vec(&ConsoleManifest { version: 1, endpoint: "http://127.0.0.1:43123".into(), token: "a".repeat(64), pid: u32::MAX, started_at: String::new() }).unwrap()).unwrap();
+        assert!(matches!(read_manifest_with(&root, |_| false), Err(ManifestError::Stale)));
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn http_200_non_json_is_business_error_with_original_text() {
+        assert!(matches!(parse_success_response("proxy error\nsecond".into()), Err(SendError::InvalidResponse(text)) if text == "proxy error\nsecond"));
+    }
+
+    #[test]
+    fn http_client_total_timeout_is_30_seconds() {
+        assert_eq!(HTTP_TIMEOUT, Duration::from_secs(30));
     }
 
     #[test]

@@ -32,7 +32,7 @@ import {
   useAppState,
   type ToolType,
 } from '../../store/app-state';
-import { consoleInflightCount, consoleTabPlan } from '../../console-channel';
+import { consoleInflightCount, consoleTabPlan, installConsoleChannel } from '../../console-channel';
 
 // Dropdown shown when a tool card's folder icon is clicked: the globally
 // recent project folders (any tool that used one) + "Open folder…" last.
@@ -485,6 +485,17 @@ export function CenterPanel() {
   const terminals = state.terminals;
   const activeTerminalId = state.activeTerminalId;
   const [consoleRuns, setConsoleRuns] = useState<ConsoleRun[]>([]);
+  const consoleStateRef = useRef(state);
+  useEffect(() => { consoleStateRef.current = state; });
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    installConsoleChannel({ getState: () => consoleStateRef.current, dispatch }).then((value) => {
+      if (disposed) value(); else stop = value;
+    }).catch((error) => console.warn('控制台通道接入失败', error));
+    return () => { disposed = true; stop?.(); };
+  }, [dispatch]);
   const consoleTabsRef = useRef({ terminals, activeTerminalId });
   useEffect(() => { consoleTabsRef.current = { terminals, activeTerminalId }; });
   useEffect(() => {

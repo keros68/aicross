@@ -757,14 +757,6 @@ fn presets_from(root: &Path) -> PresetFile {
     }
 }
 
-pub(crate) fn presets_at(root: &Path) -> PresetFile {
-    presets_from(root)
-}
-
-pub(crate) fn dispatchable_at(root: &Path) -> DispatchableModels {
-    dispatchable_from(root)
-}
-
 fn save_user_presets_in(root: &Path, presets: Vec<Preset>) -> Result<(), String> {
     // 防御性剔除 builtin=true 条目：内置不可改不可删，由 list_presets
     // 永远合并内置保证。
@@ -782,14 +774,6 @@ fn save_graph_in(root: &Path, graph: &Graph) -> Result<(), String> {
     }
     validate_graph_id(&graph.id)?;
     write_json_atomic(&graphs_dir(root).join(format!("{}.json", graph.id)), graph)
-}
-
-pub(crate) fn load_graph_at(root: &Path, id: &str) -> Result<Option<Graph>, String> {
-    load_graph_in(root, id)
-}
-
-pub(crate) fn list_graphs_at(root: &Path) -> Vec<GraphMeta> {
-    list_graphs_in(root)
 }
 
 fn load_graph_in(root: &Path, id: &str) -> Result<Option<Graph>, String> {
@@ -873,30 +857,6 @@ pub fn save_user_presets(presets: Vec<Preset>) -> Result<(), String> {
 #[tauri::command]
 pub fn save_graph(graph: Graph) -> Result<(), String> {
     save_graph_in(&aicross_root()?, &graph)
-}
-
-/// 结果卡与控制台通道共用的采纳写入口。
-#[tauri::command]
-pub fn adopt_graph_node(graph_id: String, node_id: String, adopted: bool) -> Result<Graph, String> {
-    let root = aicross_root()?;
-    adopt_graph_node_at(&root, &graph_id, &node_id, adopted)
-}
-
-pub(crate) fn adopt_graph_node_at(
-    root: &Path,
-    graph_id: &str,
-    node_id: &str,
-    adopted: bool,
-) -> Result<Graph, String> {
-    let mut graph = load_graph_in(root, graph_id)?
-        .ok_or_else(|| format!("找不到对话图：{graph_id}"))?;
-    let node = graph.nodes.get_mut(node_id)
-        .ok_or_else(|| format!("找不到节点：{node_id}"))?;
-    let reply = node.reply.as_mut().ok_or_else(|| "该节点没有可采纳的结果".to_string())?;
-    reply.adopted = Some(adopted);
-    graph.updated_at = chrono::Utc::now().to_rfc3339();
-    save_graph_in(root, &graph)?;
-    Ok(graph)
 }
 
 #[tauri::command]
@@ -1731,13 +1691,4 @@ mod tests {
         assert_eq!(serde_json::to_value(&plain).unwrap()["leftover"], serde_json::Value::Null);
     }
 
-    #[test]
-    fn task16_adopt_graph_node_uses_shared_persistence_entry() {
-        let root = temp_root("console-adopt");
-        save_graph_in(&root, &sample_graph()).unwrap();
-        let graph = adopt_graph_node_at(&root, "g-1", "n1", true).unwrap();
-        assert_eq!(graph.nodes["n1"].reply.as_ref().unwrap().adopted, Some(true));
-        let persisted = load_graph_in(&root, "g-1").unwrap().unwrap();
-        assert_eq!(persisted.nodes["n1"].reply.as_ref().unwrap().adopted, Some(true));
-    }
 }

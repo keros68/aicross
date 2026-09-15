@@ -342,8 +342,6 @@ export const commands = {
   saveUserPresets: (presets: GraphPreset[]) =>
     invoke<void>('save_user_presets', { presets }),
   saveGraph: (graph: ConversationGraph) => invoke<void>('save_graph', { graph }),
-  adoptGraphNode: (graphId: string, nodeId: string, adopted: boolean) =>
-    invoke<ConversationGraph>('adopt_graph_node', { graphId, nodeId, adopted }),
   loadGraph: (id: string) => invoke<ConversationGraph | null>('load_graph', { id }),
   listGraphs: () => invoke<GraphMeta[]>('list_graphs'),
   loadRoles: () => invoke<RoleSettings>('load_roles'),
@@ -363,6 +361,8 @@ export const commands = {
   cancelDispatchNode: (runId: string, nodeId: string) =>
     invoke<boolean>('cancel_dispatch_node', { runId, nodeId }),
   listConsoleRuns: () => invoke<ConsoleRun[]>('list_console_runs'),
+  consoleRunUpdate: (update: ConsoleRunUpdate) => invoke<void>('console_run_update', { update }),
+  consoleActionAck: (requestId: string, error?: string) => invoke<void>('console_action_ack', { requestId, error }),
 
   // ── 蜂群（TASK-08，引擎在另一工作树实现）──────────
   // 只读核对拆分清单：脏树 / 范围重叠 / glob 没匹配到文件。
@@ -633,19 +633,48 @@ export interface ConsoleRunNode {
   role: string;
   agent: string;
   model: string;
-  status: 'running' | 'done' | 'failed';
+  status: string;
   text_excerpt: string;
   artifacts_dir: string;
+  quota_resets_at?: string | null;
 }
 
 export interface ConsoleRun {
   run_id: string;
   graph_id: string;
   project: string;
-  status: 'running' | 'done' | 'failed';
+  status: 'running' | 'done' | 'failed' | 'rejected';
   nodes: ConsoleRunNode[];
   leftover?: string[];
   started_at: string;
+  reason?: string;
+  in_flight_node_ids?: string[];
+}
+
+export interface ConsoleRunUpdate {
+  run_id: string;
+  graph_id: string;
+  status: ConsoleRun['status'];
+  nodes: ConsoleRunNode[];
+  leftover: string[];
+  in_flight_node_ids: string[];
+  reason: string;
+}
+
+export interface ConsoleDispatchEvent {
+  run_id: string;
+  project: string;
+  text: string;
+  preset?: string;
+  targets?: import('./graph/types').Target[];
+  attachments?: string[];
+}
+
+export interface ConsoleActionEvent {
+  request_id: string;
+  action: 'adopt' | 'cancel';
+  run_id: string;
+  node_id?: string;
 }
 
 export interface ConsoleRunsEvent {
@@ -660,6 +689,16 @@ export async function onConsoleRunsChanged(
 ): Promise<() => void> {
   const { listen } = await import('@tauri-apps/api/event');
   return listen<ConsoleRunsEvent>('console-runs-changed', (event) => cb(event.payload));
+}
+
+export async function onConsoleDispatch(cb: (event: ConsoleDispatchEvent) => void): Promise<() => void> {
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<ConsoleDispatchEvent>('aicross:console-dispatch', (event) => cb(event.payload));
+}
+
+export async function onConsoleAction(cb: (event: ConsoleActionEvent) => void): Promise<() => void> {
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<ConsoleActionEvent>('aicross:console-action', (event) => cb(event.payload));
 }
 
 // Codex-compatible plugin marketplace (a cloned git repo) + its plugins.

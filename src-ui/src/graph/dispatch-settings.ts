@@ -5,6 +5,7 @@ export interface UiDispatchSettings extends DispatchSettings {
   classificationModel: string;
   // 蜂群一次最多几件（TASK-08）：与并发上限同一处，默认 4，也是解析清单时的截断线。
   swarmLimit: number;
+  consoleRunLimit: number;
 }
 
 export const DEFAULT_DISPATCH_SETTINGS: UiDispatchSettings = {
@@ -13,6 +14,7 @@ export const DEFAULT_DISPATCH_SETTINGS: UiDispatchSettings = {
   maxRequests: 8,
   classificationModel: '',
   swarmLimit: 4,
+  consoleRunLimit: 3,
   redact: true,
   writeProjectDispatch: true,
   ccSwitchPath: '',
@@ -50,6 +52,9 @@ export function loadDispatchSettings(): UiDispatchSettings {
       swarmLimit: Number.isFinite(parsed.swarmLimit)
         ? Math.max(1, Math.min(4, Number(parsed.swarmLimit)))
         : 4,
+      consoleRunLimit: Number.isFinite(parsed.consoleRunLimit)
+        ? Math.max(1, Math.min(3, Number(parsed.consoleRunLimit)))
+        : 3,
       redact: parsed.redact !== false,
       writeProjectDispatch: parsed.writeProjectDispatch !== false,
       ccSwitchPath: typeof parsed.ccSwitchPath === 'string' ? parsed.ccSwitchPath : '',
