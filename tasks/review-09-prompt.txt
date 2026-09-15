@@ -1,0 +1,10 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 ui/phase9 分支。本期是 TASK-09「资源页美化与冒烟口径」：ResourceModel.verification 四态（native/unverified/verified/failed）与旧库推断、verify_on_first_use 在 run_one 首次派发前对第三方模型自动验证、左栏资源 tab 重做（字母徽标、单行模型 + 状态标记、来源路径进悬停）、接入页三态、下拉与 G1 提示、手册。先读 docs/PRODUCT.md 的「视觉纪律」与「资源冒烟口径（09-15 定案）」、tasks/TASK-09-resources-ui-and-smoke.md、AGENTS.md、tasks/REPORT-09.md，再读改动：src/resources.rs、src/dispatch.rs（只看 verify_on_first_use 接线段）、src/orchestration.rs（测试改动）、src-ui/src/components/resources/（ResourcesTab.tsx、ResourcesOverlay.tsx、AgentBadge.tsx、VerificationMark.tsx、resources.css）、src-ui/src/resources/（types.ts、model-picker.ts、__tests__/）、src-ui/src/components/center/graph/DispatchOverlay.tsx（提示段）、src-ui/src/graph/types.ts、docs/MANUAL.md。不读 node_modules、target、dist、port、src/channels/。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套。
+1. 需求完整性：对照任务书契约与实现 1–6 逐条核对；旧库缺字段的三态推断；原生判定是否应同时要求 provider 为空（claude 经 cc-switch 换端点应算第三方，自动验证）。
+2. 逻辑正确性：verify_on_first_use 只对 unverified 动手、失败不自动重试、通过后第二次不再验；冒烟期间不持锁但写回时的并发与同一模型被两路同时首次派发的竞态；失败节点的 status/error/runner_note 口径；detected() 排序变化对 G1 下拉与既有测试的影响。
+3. 安全：自动验证发的短请求不带项目材料；密钥不进日志/留痕；验证结果写回不越界。
+4. 代码质量与契约：只追加、旧字段保留；server.rs 未动是否意味着前端没有新命令依赖；第 2–8 期路径无回归（run_one、对账、回滚、心跳、蜂群不在本分支）。
+5. 视觉纪律与可访问性：徽标对比度、色相在单色主题下是否刺眼、状态胶囊只给异常、悬停提示是否可用键盘触达、来源路径不再进正文；文案中性简短。
+6. 测试：报告里的测试是否真实存在且断言目标行为；最该补的 3 个。
+最后单独回答：是否可交付？一句话 + 缺项列表（按严重度排序）。

@@ -1754,6 +1754,39 @@ fn run_fallback(
     result
 }
 
+#[cfg(test)]
+thread_local! {
+    /// 首次验证的测试替身。测试里默认不碰用户真实的 resources.json：没装替身
+    /// 就按 Skipped 放行，要验接线的那条测试自己装。
+    static FIRST_USE_STUB: std::cell::RefCell<Option<crate::resources::FirstUseVerification>> =
+        const { std::cell::RefCell::new(None) };
+    /// 替身收到的 (agent, provider, model)，按调用顺序记下来：钉住「键传对了」
+    /// 和「验过的第二次不再验」（修正轮 R1，原来替身把三个参数直接丢掉）。
+    static FIRST_USE_CALLS: std::cell::RefCell<Vec<(String, String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn first_use_verification(
+    agent: &str,
+    provider: &str,
+    model: &str,
+    cancel_key: &str,
+) -> crate::resources::FirstUseVerification {
+    #[cfg(test)]
+    {
+        let _ = cancel_key;
+        FIRST_USE_CALLS.with(|cell| {
+            cell.borrow_mut()
+                .push((agent.to_string(), provider.to_string(), model.to_string()))
+        });
+        FIRST_USE_STUB
+            .with(|cell| cell.borrow().clone())
+            .unwrap_or(crate::resources::FirstUseVerification::Skipped)
+    }
+    #[cfg(not(test))]
+    crate::resources::verify_on_first_use(agent, provider, model, Some(cancel_key))
+}
+
 fn run_one_attempt(
     run_id: &str,
     project: &Path,
@@ -1776,12 +1809,47 @@ fn run_one_attempt(
     }
     let isolation = channels::isolation_for(&node.agent, blind).to_string();
     let timeout = Duration::from_secs(settings.timeout_secs.clamp(1, 3600));
+    // 09-15 口径：第三方端点的模型第一次被派发到时，先真发一个短请求核对真身，
+    // 结果记进资源库。失败即本节点失败、不自动重试（用户到接入页手动重验）；
+    // 原生 CLI（官方端点的 claude / codex / kimi）与验过 / 验失败过的直接跳过。
+    //
+    // 修正轮 R1：整段移到取项目写锁、建 worktree、回滚、快照、备料之前——
+    // 一次验证最长 60s，期间不该占着项目写锁让同项目其它单写者节点陪等，
+    // 验证失败也不该留下一个白建的 worktree 和一份白铺的隔离目录。
+    let mut verify_error = String::new();
+    let mut verify_note = String::new();
+    if is_cancelled(&cancel_key) {
+        verify_error = "派发已取消".to_string();
+    } else {
+        match first_use_verification(&node.agent, &node.provider, &node.model, &cancel_key) {
+            crate::resources::FirstUseVerification::Skipped => {}
+            crate::resources::FirstUseVerification::NotInStore => {
+                append_runner_note(&mut verify_note, "资源库无此条目，未做首次验证");
+            }
+            crate::resources::FirstUseVerification::Verified => {
+                append_runner_note(&mut verify_note, "首次派发已验证真身");
+            }
+            crate::resources::FirstUseVerification::Failed(reason) => {
+                append_runner_note(&mut verify_note, "首次派发自动验证");
+                verify_error = format!("首次验证失败：{reason}");
+            }
+            crate::resources::FirstUseVerification::Cancelled => {
+                append_runner_note(&mut verify_note, "首次派发自动验证，验证中已取消");
+                verify_error = "派发已取消".to_string();
+            }
+        }
+        // 验证窗口内点了叫停：这次不派发（原来验证完照样往下走）。
+        if verify_error.is_empty() && is_cancelled(&cancel_key) {
+            verify_error = "派发已取消".to_string();
+        }
+    }
+    let verified = verify_error.is_empty();
     let mut worktree_warning = String::new();
     let mut worktree_path = None;
     let mut uses_single_writer = node.write == "单写者";
     let workdir = if blind {
         run_root.join(&node.node_id)
-    } else if node.write == "worktree" {
+    } else if node.write == "worktree" && verified {
         let path = run_root.join(&node.node_id).join("wt");
         match create_worktree(project, &path, timeout) {
             Ok(()) => {
@@ -1797,7 +1865,7 @@ fn run_one_attempt(
     } else {
         project.to_path_buf()
     };
-    let (_write_guard, write_lock_error) = if uses_single_writer {
+    let (_write_guard, write_lock_error) = if uses_single_writer && verified {
         match acquire_project_write(project, timeout, &cancel_key) {
             Ok(guard) => (Some(guard), None),
             Err(error) => (None, Some(error)),
@@ -1805,7 +1873,7 @@ fn run_one_attempt(
     } else {
         (None, None)
     };
-    let (rollback_note, rollback_error) = if write_lock_error.is_none() && node.rollback_before && uses_single_writer {
+    let (rollback_note, rollback_error) = if verified && write_lock_error.is_none() && node.rollback_before && uses_single_writer {
         match rollback_node_changes_core(project, run_id, &node.node_id) {
             Ok(summary) => (summary.note, None),
             Err(error) => (String::new(), Some(format!("回滚上次改动失败：{error}"))),
@@ -1813,7 +1881,8 @@ fn run_one_attempt(
     } else {
         (String::new(), None)
     };
-    let (before_snapshot, snapshot_error) = if write_lock_error.is_none()
+    let (before_snapshot, snapshot_error) = if verified
+        && write_lock_error.is_none()
         && !blind
         && node.write != "只读"
     {
@@ -1829,7 +1898,13 @@ fn run_one_attempt(
     let session_dir = dispatch_data_root()
         .map(|root| root.join("sessions").join(safe_name(&node.agent)))
         .ok();
-    let prepared = prepare_outbound(&node, settings.redact, &workdir, blind);
+    // 首次验证没过就不铺材料：REQUEST.md / diff.patch / changed 白铺一份，
+    // 节点还是 error。
+    let prepared = if verified {
+        prepare_outbound(&node, settings.redact, &workdir, blind)
+    } else {
+        Ok(("(未发送)".to_string(), Vec::new(), 0))
+    };
     let effective_session =
         if channels::normalize_agent(&node.agent) == "pi" && node.session_id.is_empty() {
             Uuid::new_v4().to_string()
@@ -1864,12 +1939,19 @@ fn run_one_attempt(
     let mut status = "error".to_string();
     let mut runner = "oneshot".to_string();
     let mut runner_note = rollback_note;
+    if !verify_note.is_empty() {
+        append_runner_note(&mut runner_note, &verify_note);
+    }
     let mut oneshot_session = effective_session.clone();
     let mut oneshot_outbound = outbound.clone();
-    let mut error = write_lock_error
-        .or(rollback_error)
-        .or(snapshot_error)
-        .unwrap_or(preparation_error);
+    let mut error = if verified {
+        write_lock_error
+            .or(rollback_error)
+            .or(snapshot_error)
+            .unwrap_or(preparation_error)
+    } else {
+        verify_error
+    };
     if error.is_empty() && is_cancelled(&cancel_key) {
         error = "派发已取消".into();
     }
@@ -3160,6 +3242,193 @@ mod tests {
         assert_eq!(result.status, "ok", "{}", result.error);
         let (_, _, calls, repeated, last_tool) = activity.snapshot();
         assert_eq!((calls, repeated, last_tool), (0, 0, String::new()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-09：`verification == "unverified"` 的第三方目标首次派发前先验证；
+    /// 验证失败的节点直接判 error，通道一次都不该跑（stub 不留痕迹）。
+    #[test]
+    fn task09_first_use_verification_failure_fails_node_before_channel() {
+        let root = std::env::temp_dir().join(format!("aicross-task09-verify-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let marker = root.join("channel_ran.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(
+            &stub,
+            format!(
+                "import pathlib\npathlib.Path(r'{}').write_text('ran')\nprint('stub answer')\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = "stub".into();
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            ..DispatchSettings::default()
+        };
+        FIRST_USE_STUB.with(|cell| {
+            *cell.borrow_mut() = Some(crate::resources::FirstUseVerification::Failed(
+                "响应模型不符：请求 glm-4.7，响应 zai/glm-4.5".into(),
+            ))
+        });
+        let failed = run_one("verify-fail", &project, &root.join("runs"), &log_dir, &settings, request.clone());
+        FIRST_USE_STUB.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(failed.status, "error");
+        assert!(failed.error.starts_with("首次验证失败："), "{}", failed.error);
+        assert!(failed.runner_note.contains("首次派发自动验证"), "{}", failed.runner_note);
+        assert!(!marker.exists(), "验证失败的节点不该进通道");
+
+        // 同一条路径验证通过时照常派发，runner_note 记一笔。
+        if channels::resolve_binary("python", None).is_ok() {
+            FIRST_USE_STUB.with(|cell| {
+                *cell.borrow_mut() = Some(crate::resources::FirstUseVerification::Verified)
+            });
+            let ok = run_one("verify-ok", &project, &root.join("runs"), &log_dir, &settings, request);
+            FIRST_USE_STUB.with(|cell| *cell.borrow_mut() = None);
+            assert_eq!(ok.status, "ok", "{}", ok.error);
+            assert!(ok.runner_note.contains("首次派发已验证真身"), "{}", ok.runner_note);
+            assert!(marker.exists());
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 修正轮 R1-3/4：首次验证跑在取项目写锁、建 worktree、备料之前。
+    /// 测试握着同一项目的写锁，验证失败的节点必须直接返回「首次验证失败」，
+    /// 而不是先在写锁上等到超时；worktree 目录也不该被建出来。
+    #[test]
+    fn r1_first_use_verification_runs_before_write_lock_and_worktree() {
+        let root = std::env::temp_dir().join(format!("aicross-r1-lock-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let marker = root.join("channel_ran.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(
+            &stub,
+            format!(
+                "import pathlib\npathlib.Path(r'{}').write_text('ran')\nprint('stub answer')\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = "stub".into();
+        request.model = "glm-4.7".into();
+        request.visibility = "共享".into();
+        request.write = "worktree".into();
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            timeout_secs: 2,
+            ..DispatchSettings::default()
+        };
+        // 同项目的写锁被别人占着：没有「验证在前」这条，单写者退路会先在这里等到超时。
+        let held = acquire_project_write(&project, Duration::from_secs(2), "holder").expect("lock");
+        FIRST_USE_STUB.with(|cell| {
+            *cell.borrow_mut() = Some(crate::resources::FirstUseVerification::Failed(
+                "响应模型不符：请求 glm-4.7，响应 zai/glm-4.5".into(),
+            ))
+        });
+        FIRST_USE_CALLS.with(|cell| cell.borrow_mut().clear());
+        let failed = run_one("r1-lock", &project, &run_root, &log_dir, &settings, request.clone());
+        FIRST_USE_STUB.with(|cell| *cell.borrow_mut() = None);
+        drop(held);
+        assert_eq!(failed.status, "error");
+        assert!(failed.error.starts_with("首次验证失败："), "{}", failed.error);
+        assert!(!marker.exists(), "验证失败的节点不该进通道");
+        assert!(
+            !run_root.join(&request.node_id).join("wt").exists(),
+            "验证失败不该白建 worktree"
+        );
+        // 替身收到的是节点的真实目标三元组（原来替身把三个参数直接丢掉）。
+        let calls = FIRST_USE_CALLS.with(|cell| cell.borrow().clone());
+        assert_eq!(
+            calls,
+            vec![("cc-switch".to_string(), "stub".to_string(), "glm-4.7".to_string())]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 修正轮 R1-3：验证窗口内点了叫停——该节点按「已取消」返回，不进通道。
+    #[test]
+    fn r1_cancel_during_first_use_verification_stops_the_node() {
+        let root = std::env::temp_dir().join(format!("aicross-r1-cancel-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let marker = root.join("channel_ran.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(
+            &stub,
+            format!(
+                "import pathlib\npathlib.Path(r'{}').write_text('ran')\nprint('stub answer')\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = "stub".into();
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            ..DispatchSettings::default()
+        };
+        FIRST_USE_STUB.with(|cell| {
+            *cell.borrow_mut() = Some(crate::resources::FirstUseVerification::Cancelled)
+        });
+        let cancelled = run_one("r1-cancel", &project, &root.join("runs"), &log_dir, &settings, request);
+        FIRST_USE_STUB.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(cancelled.status, "error");
+        assert_eq!(cancelled.error, "派发已取消");
+        assert!(
+            cancelled.runner_note.contains("验证中已取消"),
+            "{}",
+            cancelled.runner_note
+        );
+        assert!(!marker.exists(), "取消的节点不该进通道");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 修正轮 R1-2：资源库里没有这一条时照常派发，但留痕写明「没验」——
+    /// 和「原生跳过」分得开。
+    #[test]
+    fn r1_first_use_not_in_store_dispatches_with_note() {
+        if channels::resolve_binary("python", None).is_err() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-r1-nostore-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, "print('stub answer')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = "stub".into();
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            ..DispatchSettings::default()
+        };
+        FIRST_USE_STUB.with(|cell| {
+            *cell.borrow_mut() = Some(crate::resources::FirstUseVerification::NotInStore)
+        });
+        let result = run_one("r1-nostore", &project, &root.join("runs"), &log_dir, &settings, request);
+        FIRST_USE_STUB.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert!(
+            result.runner_note.contains("资源库无此条目，未做首次验证"),
+            "{}",
+            result.runner_note
+        );
         let _ = fs::remove_dir_all(root);
     }
 

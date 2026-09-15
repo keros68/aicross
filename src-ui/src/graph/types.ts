@@ -98,7 +98,7 @@ export interface Stage {
   nodes: Target[]; // 同阶段并行，阶段间串行
 }
 
-// 已接入模型（对应 Rust list_dispatchable_models 返回的 ResourceModel 子集，字段全量保留以兼容）
+// 可派发模型（对应 Rust list_dispatchable_models 返回的 ResourceModel 子集，字段全量保留以兼容）
 export interface DispatchableModel {
   id: string;
   agent: string;
@@ -108,6 +108,8 @@ export interface DispatchableModel {
   tier: string;
   thinking: string;
   status: string;
+  // 09-15 口径：native / unverified / verified / failed（旧图的缓存可能没有）。
+  verification?: string;
   source: string;
   smoked_at: string;
   smoke_model: string;

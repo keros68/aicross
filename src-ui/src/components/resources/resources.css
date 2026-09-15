@@ -1,5 +1,94 @@
-/* 资源接入（TASK-07）：左栏「资源」tab + 全屏接入页。
+/* 资源接入（TASK-07；TASK-09 改版）：左栏「资源」tab + 全屏接入页。
    主题变量沿用 global.css（--bg-panel/--bg-card/--text-1..3/--accent/--green/--red）。 */
+
+/* ── agent 字母徽标与验证标记（TASK-09；修正轮 R1 改色源与字号） ─────────
+   厂商色只做小面积标识（PRODUCT.md 视觉纪律）：色相由 AgentBadge 从
+   graph/vendor.ts 取，按 --agent-tone 内联传进来，这里只做薄底与描边。
+   字母本身走 --text-1——全饱和色相在浅色主题上做小号文字到不了 4.5:1。 */
+
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: color-mix(in srgb, var(--agent-tone, var(--text-3)) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent-tone, var(--text-3)) 40%, transparent);
+  color: var(--text-1);
+}
+
+.agent-badge-sm {
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+}
+
+.agent-badge-md {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+
+/* 「已验证」的绿点是左栏 verified 的唯一可见标识，浅色主题的 --green
+   （#34c759）对面板底色只有 2.2:1，这里给一个够对比度的专用值。 */
+:root {
+  --verify-green: var(--green);
+}
+
+[data-theme="light"] {
+  --verify-green: #1f7a3d;
+}
+
+.verify-dot-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.verify-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--text-3);
+}
+
+.verify-verified .verify-dot {
+  background: var(--verify-green);
+}
+
+.verify-text {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* 胶囊只给异常状态（视觉纪律）：四态里只有「验证失败」配胶囊。 */
+.verify-pill {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--red);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+
+.resources-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* ── 左栏 tab ─────────────────────────────────────────────────────────── */
 
@@ -12,7 +101,7 @@
 
 .resources-error {
   margin: 8px;
-  padding: 6px 8px;
+  padding: 8px;
   border: 1px solid var(--red);
   border-radius: var(--radius-xs);
   color: var(--red);
@@ -24,7 +113,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 6px;
+  padding: 4px;
 }
 
 .resources-empty {
@@ -53,9 +142,9 @@
 .resource-agent-summary {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
-  padding: 5px 6px;
+  padding: 4px 8px;
   background: none;
   border: none;
   border-radius: var(--radius-xs);
@@ -67,6 +156,14 @@
 
 .resource-agent-summary:hover {
   background: var(--bg-hover);
+}
+
+/* 左栏两种行都是键盘可达的按钮，给出可见焦点环。强度对齐 GraphTab 的既有
+   约定：2px 不透明强调色，不用半透明的 --border-focus（深色主题下看不见）。 */
+.resource-agent-summary:focus-visible,
+.resource-model-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .resource-caret {
@@ -85,11 +182,13 @@
 .resource-agent-version {
   margin-left: auto;
   color: var(--text-3);
+  font-family: var(--font-mono);
   font-size: 11px;
+  opacity: 0.75;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 45%;
+  max-width: 40%;
 }
 
 .resource-model-list {
@@ -98,11 +197,10 @@
 
 .resource-model-row {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  padding: 4px 6px;
+  padding: 4px 8px;
   background: none;
   border: none;
   border-radius: var(--radius-xs);
@@ -123,27 +221,21 @@
   background: none;
 }
 
+/* 模型 ID 是结构性文字：等宽字，长名截断而不是把状态标记挤出行外。 */
 .resource-model-id {
+  flex: 1;
+  min-width: 0;
   color: var(--text-1);
+  font-family: var(--font-mono);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 100%;
-}
-
-.resource-model-source {
-  color: var(--text-3);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
 }
 
 .resource-manage-link {
   flex-shrink: 0;
-  padding: 8px 10px;
+  padding: 8px 12px;
   background: none;
   border: none;
   border-top: 1px solid var(--border);
@@ -186,6 +278,12 @@
   font-size: 13px;
 }
 
+.resources-count {
+  margin: -8px 0 16px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
 .resources-detect-all {
   margin-left: 12px;
   vertical-align: middle;
@@ -216,11 +314,11 @@
   margin: 0 0 16px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .resources-hint {
-  padding: 8px 10px;
+  padding: 8px 12px;
   border: 1px solid var(--border-input);
   border-radius: var(--radius-xs);
   background: var(--accent-bg);
@@ -252,20 +350,6 @@
   gap: 8px;
 }
 
-.agent-card-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: var(--radius-xs);
-  background: var(--accent-bg);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
 .agent-card-name {
   font-size: 13px;
   font-weight: 600;
@@ -281,7 +365,7 @@
 }
 
 .detection.detected {
-  color: var(--green);
+  color: var(--verify-green);
 }
 
 .detection.missing {
@@ -290,6 +374,7 @@
 
 .agent-card-version {
   color: var(--text-3);
+  font-family: var(--font-mono);
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -299,7 +384,7 @@
 .agent-card-models {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-height: 24px;
 }
 
@@ -315,7 +400,7 @@
 }
 
 .agent-card-model {
-  padding: 6px 8px;
+  padding: 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
 }
@@ -327,60 +412,55 @@
 }
 
 .agent-card-model-id {
+  min-width: 0;
+  font-family: var(--font-mono);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.resource-status {
+.agent-card-model-state {
   margin-left: auto;
-  padding: 1px 6px;
-  border-radius: var(--radius-xs);
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
-}
-
-.resource-status.connected {
-  color: var(--green);
-  background: color-mix(in srgb, var(--green) 12%, transparent);
-}
-
-.resource-status.pending {
-  color: var(--accent);
-  background: var(--accent-bg);
-}
-
-.resource-status.failed {
-  color: var(--red);
-  background: color-mix(in srgb, var(--red) 12%, transparent);
-}
-
-.resource-status.disconnected {
-  color: var(--text-3);
-  background: var(--bg-hover);
 }
 
 .agent-card-model-detail {
   margin-top: 4px;
 }
 
-.agent-card-model-detail summary {
+/* 修正轮 R1：这个按钮原来没有任何规则，浏览器按原生控件渲染（灰底、凹陷边框、
+   系统字体），夹在卡片里很突兀；旧的 <details><summary> 规则一并删掉。 */
+.agent-card-detail-toggle {
+  padding: 0;
+  background: none;
+  border: none;
   color: var(--text-3);
   font-size: 11px;
   cursor: pointer;
 }
 
+.agent-card-detail-toggle:hover {
+  color: var(--text-2);
+}
+
+.agent-card-detail-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .agent-card-model-fields {
   display: flex;
   gap: 8px;
-  margin: 6px 0;
+  margin: 8px 0;
 }
 
 .agent-card-model-fields label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   color: var(--text-3);
   font-size: 11px;
 }
@@ -391,7 +471,7 @@
   border-radius: var(--radius-xs);
   color: var(--text-1);
   font-size: 11px;
-  padding: 2px 4px;
+  padding: 2px 8px;
 }
 
 .agent-card-model-meta {
@@ -409,7 +489,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 
 .row-action {

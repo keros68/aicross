@@ -103,15 +103,24 @@ export function parseSend(
   const m = raw.match(/@([^\s@]+)/);
   const text = (m ? raw.replace(m[0], '') : raw).trim();
   if (!m) return { text };
-  const ref = m[1];
+  // `#provider` 后缀（修正轮 R1）：`@agent/模型` 表达不了 provider，pi 同名
+  // 模型挂在多个 provider 下时，光靠 agent+id 会落到清单里的第一条，不一定是
+  // 用户点的那一条。模型 id 里不会出现 `#`，切在最后一个 `#` 上。
+  const hash = m[1].lastIndexOf('#');
+  const ref = hash >= 0 ? m[1].slice(0, hash) : m[1];
+  const wantProvider = hash >= 0 ? m[1].slice(hash + 1) : '';
   const slash = ref.indexOf('/');
+  const matchesProvider = (mm: DispatchableModel) =>
+    wantProvider === '' || mm.provider === wantProvider;
   let hit: DispatchableModel | undefined;
   if (slash >= 0) {
     const agent = ref.slice(0, slash);
     const model = ref.slice(slash + 1);
-    hit = models.find((mm) => mm.agent === agent && mm.id === model);
+    hit = models.find((mm) => mm.agent === agent && mm.id === model && matchesProvider(mm));
   } else {
-    const cands = models.filter((mm) => mm.id === ref || `${mm.agent}/${mm.id}` === ref);
+    const cands = models.filter(
+      (mm) => (mm.id === ref || `${mm.agent}/${mm.id}` === ref) && matchesProvider(mm),
+    );
     if (cands.length === 1) hit = cands[0];
   }
   if (hit) {

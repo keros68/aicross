@@ -1250,17 +1250,26 @@ mod tests {
                     {"id": "m2", "agent": "claude", "status": "未接入"},
                     {"id": "m3", "agent": "claude", "status": "已接入", "note": "缺字段容忍"}
                 ]
+            }, {
+                "id": "pi", "name": "pi", "kind": "cli",
+                "detected": true, "version": "1.0",
+                "models": [
+                    {"id": "p-new", "agent": "pi", "provider": "zai", "status": "待冒烟"},
+                    {"id": "p-bad", "agent": "pi", "provider": "zai", "status": "冒烟失败"},
+                    {"id": "p-ok", "agent": "pi", "provider": "zai", "status": "已接入"}
+                ]
             }]
         });
         fs::write(root.join("resources.json"), store.to_string()).unwrap();
         let result = dispatchable_from(&root);
         assert_eq!(result.error, None);
-        // 08b 起：派发清单列出全部探测到的模型，已接入排前，未冒烟的靠状态后缀区分。
+        // 08b 起派发清单列出全部探测到的模型；09-15 起排序按 verification：
+        // 原生（claude 三条不论旧 status）与已验证在前，未验证次之，验证失败垫底。
         let ids: Vec<&str> = result.models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids.len(), 3);
-        assert_eq!(&ids[..2], ["m1", "m3"]);
-        assert_eq!(ids[2], "m2");
-        assert_eq!(result.models[2].status, "未接入");
+        assert_eq!(ids, ["m1", "m2", "m3", "p-ok", "p-new", "p-bad"]);
+        assert_eq!(result.models[1].status, "未接入");
+        assert_eq!(result.models[1].verification, "native");
+        assert_eq!(result.models[4].verification, "unverified");
         // m1/m2 缺了一大堆字段也能解析，缺字段落成空串
         assert_eq!(result.models[0].vendor, "");
     }

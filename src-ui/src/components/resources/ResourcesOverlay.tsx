@@ -1,6 +1,10 @@
-// 接入页（TASK-07）：全屏覆盖层，与「讲解」ExplainOverlay 同形态。
-// agent 卡片网格：标记、名称、版本、检测状态、全部模型与状态；
-// 卡底「探测 / 冒烟 / 手动输入」。冒烟通过（已接入）的模型才进左栏。
+// 接入页（TASK-07；09-15 换冒烟口径）：全屏覆盖层，与「讲解」ExplainOverlay
+// 同形态。agent 卡片网格：字母徽标、名称、版本、检测状态、全部模型与验证档位；
+// 卡底「探测 / 验证 / 手动输入」。
+//
+// 09-15 口径：原生 CLI（claude / codex / kimi）的模型读清单即可用，不给「验证」
+// 按钮；第三方端点的模型显示未验证 / 已验证 / 验证失败三态，首次派发时引擎自动
+// 验一次，用户也可以在这里手动重验。
 // cc-switch 降级为发现提示：只显示「cc-switch 里有 X，建议加进 pi」。
 
 import { useEffect, useState } from 'react';
@@ -8,10 +12,11 @@ import { createPortal } from 'react-dom';
 import { commands, isTauri } from '../../tauri';
 import { loadDispatchSettings } from '../../graph/dispatch-settings';
 import {
-  agentMark,
   errorText,
   groupModelsByProvider,
   parseCommandArgs,
+  unverifiedSummaryText,
+  verificationOf,
   type AddManualAgentRequest,
   type CcSwitchHint,
   type ResourceAgent,
@@ -21,6 +26,8 @@ import {
   type ResourceStore,
 } from '../../resources/types';
 import { notifyResourcesChanged } from '../../resources/mention';
+import { AgentBadge } from './AgentBadge';
+import { VerificationMark } from './VerificationMark';
 import './resources.css';
 
 const vendors = ['Anthropic', 'OpenAI', 'Moonshot', 'Zhipu', 'DeepSeek', 'MiniMax', 'Alibaba', 'StepFun', '其他'];
@@ -105,22 +112,20 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const smokeAgent = async (agent: ResourceAgent) => {
-    if (agent.models.length === 0) {
-      setNotes((value) => ({ ...value, [agent.id]: '没有可冒烟的模型' }));
-      return;
-    }
+  // 整卡重验：按钮只挂在第三方 agent 的卡片上（原生卡片不渲染它），
+  // 后端仍走同一个 smoke_agent_models 命令。
+  const verifyAgent = async (agent: ResourceAgent) => {
     setBusy(`smoke-agent:${agent.id}`);
-    setNotes((value) => ({ ...value, [agent.id]: '冒烟中…' }));
+    setNotes((value) => ({ ...value, [agent.id]: '验证中…' }));
     try {
       const result = await commands.smokeAgentModels(agent.id);
       finishOperation(result);
       setNotes((value) => ({
         ...value,
-        [agent.id]: result.errors.length ? '冒烟完成，有失败项' : '冒烟完成',
+        [agent.id]: result.errors.length ? '验证完成，有失败项' : '验证完成',
       }));
     } catch (value) {
-      const message = `冒烟失败：${errorText(value)}`;
+      const message = `验证失败：${errorText(value)}`;
       setError(message);
       setNotes((notesValue) => ({ ...notesValue, [agent.id]: message }));
     } finally {
@@ -128,9 +133,9 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const smokeModel = async (model: ResourceModel) => {
+  const verifyModel = async (model: ResourceModel) => {
     setBusy(`smoke:${model.agent}:${model.provider}:${model.id}`);
-    setNotes((value) => ({ ...value, [model.agent]: '冒烟中…' }));
+    setNotes((value) => ({ ...value, [model.agent]: '验证中…' }));
     try {
       const value = await commands.smokeResourceModel({
         agent_id: model.agent,
@@ -139,10 +144,10 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
       });
       setStore(value);
       setError('');
-      setNotes((notesValue) => ({ ...notesValue, [model.agent]: `${model.id} 冒烟完成` }));
+      setNotes((notesValue) => ({ ...notesValue, [model.agent]: `${model.id} 验证完成` }));
       notifyResourcesChanged();
     } catch (value) {
-      const message = `冒烟失败：${errorText(value)}`;
+      const message = `验证失败：${errorText(value)}`;
       setError(message);
       setNotes((notesValue) => ({ ...notesValue, [model.agent]: message }));
     } finally {
@@ -201,7 +206,8 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
         </button>
         <h1>接入资源</h1>
         <p className="resources-lead">
-          检测本机已安装的 agent，冒烟通过后加入左栏可派发清单。
+          检测本机已安装的 agent。原生 CLI 的模型读清单即可用；第三方端点的模型
+          首次派发时自动验证真身。
           <button
             className="res-btn resources-detect-all"
             type="button"
@@ -211,6 +217,9 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
             {busy === 'detect:all' ? '探测中…' : '全部探测'}
           </button>
         </p>
+        {store && unverifiedSummaryText(store) !== '' && (
+          <p className="resources-count">{unverifiedSummaryText(store)}</p>
+        )}
         {error && <div className="resources-error">{error}</div>}
         {hints.length > 0 && (
           <div className="resources-hints">
@@ -231,8 +240,8 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
                 busy={busy}
                 note={notes[agent.id] || ''}
                 onDetect={detect}
-                onSmokeAgent={smokeAgent}
-                onSmokeModel={smokeModel}
+                onVerifyAgent={verifyAgent}
+                onVerifyModel={verifyModel}
                 onUpdate={updateModel}
                 onRemove={removeModel}
                 onManual={() => setModelAgent(agent.id)}
@@ -286,8 +295,8 @@ function AgentCard({
   busy,
   note,
   onDetect,
-  onSmokeAgent,
-  onSmokeModel,
+  onVerifyAgent,
+  onVerifyModel,
   onUpdate,
   onRemove,
   onManual,
@@ -296,8 +305,8 @@ function AgentCard({
   busy: string | null;
   note: string;
   onDetect: (agent: ResourceAgent) => Promise<void>;
-  onSmokeAgent: (agent: ResourceAgent) => Promise<void>;
-  onSmokeModel: (model: ResourceModel) => Promise<void>;
+  onVerifyAgent: (agent: ResourceAgent) => Promise<void>;
+  onVerifyModel: (model: ResourceModel) => Promise<void>;
   onUpdate: (
     model: ResourceModel,
     patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note'>>,
@@ -308,11 +317,13 @@ function AgentCard({
   const groups = groupModelsByProvider(agent.models);
   const [openDetails, setOpenDetails] = useState<Record<string, boolean>>({});
   const detecting = busy === `detect:${agent.id}`;
-  const smokingAgent = busy === `smoke-agent:${agent.id}`;
+  const verifyingAgent = busy === `smoke-agent:${agent.id}`;
+  // 原生 agent 的模型不验证，整卡与单条都不给「验证」按钮。
+  const hasThirdParty = agent.models.some((model) => verificationOf(model) !== 'native');
   return (
     <article className="agent-card">
       <div className="agent-card-head">
-        <span className="agent-card-mark">{agentMark(agent.id)}</span>
+        <AgentBadge agentId={agent.id} size="md" />
         <span className="agent-card-name">{agent.name || agent.id}</span>
         <span className={`detection ${agent.detected ? 'detected' : 'missing'}`}>
           {agent.detected ? '已检测' : '未检测'}
@@ -326,7 +337,8 @@ function AgentCard({
             {group.label && <div className="agent-card-group">{group.label}</div>}
             {group.models.map((model) => {
               const key = `${model.agent}:${model.provider}:${model.id}`;
-              const smoking = busy === `smoke:${key}`;
+              const verification = verificationOf(model);
+              const verifying = busy === `smoke:${key}`;
               const updating = busy === `update:${key}`;
               const removing = busy === `remove:${key}`;
               return (
@@ -335,7 +347,9 @@ function AgentCard({
                     <span className="agent-card-model-id" title={model.id}>
                       {model.id}
                     </span>
-                    <StatusTag status={model.status} />
+                    <span className="agent-card-model-state">
+                      <VerificationMark verification={verification} showLabel />
+                    </span>
                   </div>
                   <div className="agent-card-model-detail">
                     <button type="button" className="agent-card-detail-toggle" onClick={() => setOpenDetails((current) => ({ ...current, [key]: !current[key] }))}>详情</button>
@@ -377,28 +391,30 @@ function AgentCard({
                     </div>
                     {model.smoked_at && (
                       <div className="agent-card-model-meta">
-                        最近冒烟：{model.smoked_at}
+                        最近验证：{model.smoked_at}
                         {model.smoke_model ? `（${model.smoke_model}）` : ''}
                       </div>
                     )}
                     {model.meta && <div className="agent-card-model-meta">{model.meta}</div>}
                     {model.smoke_failure && (
                       <div className="agent-card-model-meta failure">
-                        冒烟失败：{model.smoke_failure}
+                        验证失败：{model.smoke_failure}
                       </div>
                     )}
                     {model.note && (
                       <div className="agent-card-model-meta">备注：{model.note}</div>
                     )}
                     <div className="agent-card-model-actions">
-                      <button
-                        className="row-action"
-                        type="button"
-                        disabled={busy !== null}
-                        onClick={() => void onSmokeModel(model)}
-                      >
-                        {smoking ? '冒烟中…' : model.status === '已接入' ? '重新冒烟' : '冒烟'}
-                      </button>
+                      {verification !== 'native' && (
+                        <button
+                          className="row-action"
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() => void onVerifyModel(model)}
+                        >
+                          {verifying ? '验证中…' : verification === 'unverified' ? '验证' : '重新验证'}
+                        </button>
+                      )}
                       <button
                         className="row-action danger"
                         type="button"
@@ -427,33 +443,22 @@ function AgentCard({
         >
           {detecting ? '探测中…' : '探测'}
         </button>
-        <button
-          className="res-btn"
-          type="button"
-          disabled={busy !== null || agent.models.length === 0}
-          onClick={() => void onSmokeAgent(agent)}
-        >
-          {smokingAgent ? '冒烟中…' : '冒烟'}
-        </button>
+        {hasThirdParty && (
+          <button
+            className="res-btn"
+            type="button"
+            disabled={busy !== null}
+            onClick={() => void onVerifyAgent(agent)}
+          >
+            {verifyingAgent ? '验证中…' : '全部验证'}
+          </button>
+        )}
         <button className="res-btn" type="button" disabled={busy !== null} onClick={onManual}>
           手动输入
         </button>
       </div>
     </article>
   );
-}
-
-function StatusTag({ status }: { status: string }) {
-  const normalized = status || '未接入';
-  const className =
-    normalized === '已接入'
-      ? 'connected'
-      : normalized === '冒烟失败'
-        ? 'failed'
-        : normalized === '待冒烟'
-          ? 'pending'
-          : 'disconnected';
-  return <span className={`resource-status ${className}`}>{normalized}</span>;
 }
 
 function ResourceModelDialog({

@@ -10,6 +10,8 @@ export interface ResourceModel {
   tier: string;
   thinking: string;
   status: string;
+  // 09-15 口径的四态。旧库里没有这个字段，读到空串时由 verificationOf 推断。
+  verification: string;
   source: string;
   smoked_at: string;
   smoke_model: string;
@@ -68,40 +70,122 @@ export interface AddManualAgentRequest {
 // ── 纯函数（vitest 覆盖） ────────────────────────────────────────────────
 
 export const STATUS_CONNECTED = '已接入';
-export const STATUS_PENDING = '待冒烟';
+export const STATUS_FAILED = '冒烟失败';
 
-/** 左栏只列已接入模型，按 agent 分组；没有已接入模型的 agent 不出现。 */
-export function connectedByAgent(store: ResourceStore): ResourceAgent[] {
+/** 09-15 口径的四态，与 Rust 的 `ResourceModel::verification` 一一对应。 */
+export type Verification = 'native' | 'unverified' | 'verified' | 'failed';
+
+/**
+ * 原生 CLI：自家模型清单说有就是有，不冒烟。与 Rust 的 NATIVE_AGENTS 对齐。
+ * 只用于旧库 / fixture 里 `verification` 为空时的兜底：端点判定（claude 挂
+ * `ANTHROPIC_BASE_URL` 就不算原生）只在后端做，后端填进来的字段优先。
+ */
+const NATIVE_AGENTS = ['claude', 'codex', 'kimi'];
+
+const VERIFICATIONS: Verification[] = ['native', 'unverified', 'verified', 'failed'];
+
+/**
+ * 模型的验证档位。后端会把这个字段补全，这里再兜一次底：旧库或手写 fixture
+ * 里 `verification` 为空时按 agent + 旧 `status` 推断，映射与 Rust 的
+ * `inferred_verification` 一致。
+ */
+export function verificationOf(
+  model: Pick<ResourceModel, 'agent' | 'status' | 'verification'>,
+): Verification {
+  const value = (model.verification || '').trim() as Verification;
+  if (VERIFICATIONS.includes(value)) return value;
+  if (NATIVE_AGENTS.includes(model.agent.trim().toLowerCase())) return 'native';
+  if (model.status === STATUS_CONNECTED) return 'verified';
+  if (model.status === STATUS_FAILED) return 'failed';
+  return 'unverified';
+}
+
+/** 状态词。原生模型不给词——常态不该占一行文字（视觉纪律）。 */
+export function verificationLabel(verification: Verification): string {
+  if (verification === 'unverified') return '未验证';
+  if (verification === 'verified') return '已验证';
+  if (verification === 'failed') return '验证失败';
+  return '原生';
+}
+
+/**
+ * G1 里给这个目标的一句话提示；常态返回空串（不占一行）。
+ * 未验证是第三方模型的初始状态（本机 pi 几十条都是），是常态不是异常——
+ * 走 `dispatch-reason`（text-3），红字只留给 failed（修正轮 R1）。
+ */
+export function verificationHint(
+  verification: Verification | undefined,
+): { text: string; tone: 'reason' | 'warning' } | null {
+  if (verification === 'unverified') {
+    return { text: '该模型未验证，首次派发会先发一个短请求核对真身。', tone: 'reason' };
+  }
+  if (verification === 'failed') {
+    return { text: '该模型上次验证失败，可在接入页手动重验。', tone: 'warning' };
+  }
+  return null;
+}
+
+const VERIFICATION_ORDER: Record<Verification, number> = {
+  native: 0,
+  verified: 1,
+  unverified: 2,
+  failed: 3,
+};
+
+/**
+ * 左栏列全部已探测模型（09-15 起不再只列冒烟通过的），按 agent 分组；
+ * 组内排序：原生 → 已验证 → 未验证 → 验证失败，同档按模型名。
+ * 没有模型的 agent 不出现——未检测到的 CLI 在接入页里管。
+ */
+export function modelsByAgent(store: ResourceStore): ResourceAgent[] {
   return store.agents
+    .filter((agent) => agent.models.length > 0)
     .map((agent) => ({
       ...agent,
-      models: agent.models.filter((model) => model.status === STATUS_CONNECTED),
-    }))
-    .filter((agent) => agent.models.length > 0);
+      models: [...agent.models].sort(
+        (a, b) =>
+          VERIFICATION_ORDER[verificationOf(a)] - VERIFICATION_ORDER[verificationOf(b)] ||
+          a.provider.localeCompare(b.provider) ||
+          a.id.localeCompare(b.id),
+      ),
+    }));
 }
 
-/** 栏底汇总：待冒烟数 + 未接入数（状态为空或「未接入」）。 */
-export function resourceSummary(store: ResourceStore): { pending: number; disconnected: number } {
-  let pending = 0;
-  let disconnected = 0;
+/**
+ * 组内挂在多个 provider 下的同名模型 id。左栏这些行要带 provider 后缀：
+ * 两行文字一模一样时，用户点哪一行都说不清自己选了哪个端点（修正轮 R1）。
+ */
+export function ambiguousModelIds(models: ResourceModel[]): Set<string> {
+  const providers = new Map<string, Set<string>>();
+  for (const model of models) {
+    const seen = providers.get(model.id) ?? new Set<string>();
+    seen.add(model.provider);
+    providers.set(model.id, seen);
+  }
+  return new Set([...providers.entries()].filter(([, set]) => set.size > 1).map(([id]) => id));
+}
+
+/** 左栏模型行的显示名：同名多 provider 时带 provider 后缀。 */
+export function modelRowLabel(model: ResourceModel, ambiguous: Set<string>): string {
+  return ambiguous.has(model.id) && model.provider.trim() !== ''
+    ? `${model.id} · ${model.provider}`
+    : model.id;
+}
+
+/** 接入页统计：只数未验证的第三方条目，原生不计。 */
+export function unverifiedCount(store: ResourceStore): number {
+  let count = 0;
   for (const agent of store.agents) {
     for (const model of agent.models) {
-      if (model.status === STATUS_PENDING) pending += 1;
-      else if (!model.status || model.status === '未接入') disconnected += 1;
+      if (verificationOf(model) === 'unverified') count += 1;
     }
   }
-  return { pending, disconnected };
+  return count;
 }
 
-export function resourceSummaryText(store: ResourceStore): string {
-  const { pending, disconnected } = resourceSummary(store);
-  return [
-    pending ? `${pending} 个待冒烟` : '',
-    disconnected ? `${disconnected} 个未接入` : '',
-    '管理 →',
-  ]
-    .filter(Boolean)
-    .join(' · ');
+export function unverifiedSummaryText(store: ResourceStore): string {
+  const count = unverifiedCount(store);
+  return count ? `${count} 个未验证（首次派发时自动验证）` : '';
 }
 
 /** 接入页卡片里的模型按 provider 分组（无 provider 的并成一组，不显示组头）。 */
@@ -116,9 +200,28 @@ export function groupModelsByProvider(
   return [...groups.entries()].map(([label, grouped]) => ({ label, models: grouped }));
 }
 
-/** 卡片左上角标记：agent id 前两位字母数字大写。 */
+/** 字母徽标上的字：agent id 前两位字母数字大写。 */
 export function agentMark(id: string): string {
   return id.replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || 'AI';
+}
+
+/**
+ * 左栏模型行的悬停提示：provider、来源路径、最近验证时间与真身、失败原因
+ * 都收在这里。09-15 起这些不再进行内正文——左栏宽度有限，每行顶一条
+ * `读:C:\Users\…` 会把模型名挤没。
+ *
+ * 修正轮 R1：同一段文本也挂进行的 `aria-describedby`，键盘用户读得到
+ * （title 在 WebView2 里只响应 hover）。
+ */
+export function modelHint(model: ResourceModel): string {
+  const lines = [model.id];
+  if (model.provider.trim() !== '') lines.push(`provider：${model.provider}`);
+  lines.push(model.source || '来源未记录');
+  if (model.smoked_at) {
+    lines.push(`最近验证：${model.smoked_at}${model.smoke_model ? `（${model.smoke_model}）` : ''}`);
+  }
+  if (model.smoke_failure) lines.push(`失败原因：${model.smoke_failure}`);
+  return lines.join('\n');
 }
 
 /** 启动参数文本 → argv（支持单双引号；引号未闭合抛错）。 */

@@ -25,6 +25,10 @@ const BY_AGENT: Record<string, string> = {
   qwen: '#6336E7',
   grok: '#A8A8A8',
   kimicode: '#6E56CF',
+  // 资源页的 agent 徽标也从这里取色（修正轮 R1）：同一个 agent 在对话图上的
+  // 色点与资源页的徽标必须同色，否则「一眼看出这段是谁跑的」就不成立。
+  kimi: '#6E56CF',
+  pi: '#4F9D69',
 };
 
 export const UNKNOWN_VENDOR_COLOR = '#8c8c8c';

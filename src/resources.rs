@@ -1,5 +1,6 @@
-//! 资源接入：探测本机 agent CLI 的可用模型，合并进 `~/.aicross/resources.json`，
-//! 冒烟通过（status = 已接入）的模型才进入派发清单（`connected()`）。
+//! 资源接入：探测本机 agent CLI 的可用模型，合并进 `~/.aicross/resources.json`。
+//! 09-15 口径起派发清单列全部已探测模型（`detected()`），第三方端点的模型在
+//! 第一次被派发到时由引擎自动验证一次（`verify_on_first_use`）。
 //!
 //! 数据契约沿用第 1 期（port/src-tauri-old/src/resources.rs）；冒烟与派发
 //! 共用第 3 期 channels 的 argv 构造与真身核对，进程执行走 process.rs。
@@ -12,7 +13,7 @@
 
 use crate::channels;
 use crate::paths::aicross_root;
-use crate::process::{run_process, version_for, ProcessResult};
+use crate::process::{run_process, run_process_registered, version_for, ProcessResult};
 use chrono::{Local, SecondsFormat};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -31,6 +32,19 @@ const STATUS_CONNECTED: &str = "已接入";
 const STATUS_FAILED: &str = "冒烟失败";
 const MISSING_MARKER: &str = "未在事实源中";
 const SMOKE_PROMPT: &str = "只回复 OK";
+
+/// 09-15 口径的四态（写进 `ResourceModel::verification`，前端按它显示状态点）。
+/// 旧的 `status` 字段保留不删：接入页的详情里还要看「最近冒烟」那一段。
+pub const VERIFICATION_NATIVE: &str = "native";
+pub const VERIFICATION_UNVERIFIED: &str = "unverified";
+pub const VERIFICATION_VERIFIED: &str = "verified";
+pub const VERIFICATION_FAILED: &str = "failed";
+
+/// 原生 CLI：自家模型清单说有就是有，不冒烟，只在 agent 级别探一次。
+/// 「原生」= 原生 agent **且**没走第三方端点（修正轮 R1）：claude 挂了
+/// `ANTHROPIC_BASE_URL`（或 settings.json 的 env）就按第三方走自动验证，
+/// 静默降级正是在这条路上高发。判定见 `is_native_model`。
+const NATIVE_AGENTS: [&str; 3] = ["claude", "codex", "kimi"];
 
 /// 内置 agent：(id, 显示名)。二进制名与 id 相同。
 const BUILTIN_AGENTS: [(&str, &str); 4] = [
@@ -82,6 +96,10 @@ pub struct ResourceModel {
     pub thinking: String,
     #[serde(default)]
     pub status: String,
+    /// 09-15 口径：native / unverified / verified / failed。旧库缺这个字段，
+    /// `ensure_verification` 按 agent + 旧 `status` 推断后补上。
+    #[serde(default)]
+    pub verification: String,
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -214,7 +232,76 @@ pub fn load(path: &Path) -> Result<ResourceStore, String> {
     if store.version != 1 {
         return Err(format!("resources.json 版本不受支持：{}", store.version));
     }
+    let mut store = store;
+    ensure_verification(&mut store);
     Ok(store)
+}
+
+/// agent id 是不是原生三家。大小写不敏感——手工添加的 agent 写成 `Codex`
+/// 时，前端（`toLowerCase`）和这里必须判成同一档。
+fn is_native_agent(agent: &str) -> bool {
+    NATIVE_AGENTS
+        .iter()
+        .any(|native| native.eq_ignore_ascii_case(agent.trim()))
+}
+
+/// 第三方端点判定。目前只覆盖 claude（进程环境 `ANTHROPIC_BASE_URL` 或
+/// `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL`）——codex 的
+/// `model_provider` 与 kimi 的 `config.toml` base_url 本期没有事实源读法，
+/// 暂不覆盖，手册里写明这一点。
+fn third_party_endpoint(agent: &str) -> bool {
+    agent.trim().eq_ignore_ascii_case("claude") && claude_third_party_endpoint()
+}
+
+/// 「原生」的完整判据：原生 agent 且没走第三方端点。
+/// 这条同时是 `verification == "native"` 的不变式——接入页按它决定给不给
+/// 「验证」按钮，引擎按它决定跳不跳过首次验证。
+fn is_native_model(agent: &str) -> bool {
+    is_native_agent(agent) && !third_party_endpoint(agent)
+}
+
+/// 旧库没有 `verification` 时的推断：原生一律 native；其余按旧 `status`
+/// 映射——已接入 → verified、冒烟失败 → failed、其余 → unverified。
+fn inferred_verification(agent: &str, status: &str) -> &'static str {
+    if is_native_model(agent) {
+        VERIFICATION_NATIVE
+    } else {
+        match status {
+            STATUS_CONNECTED => VERIFICATION_VERIFIED,
+            STATUS_FAILED => VERIFICATION_FAILED,
+            _ => VERIFICATION_UNVERIFIED,
+        }
+    }
+}
+
+/// 补齐 / 校正 `verification`：
+/// - 空字段按 agent + 旧 `status` 推断；
+/// - `native` 与「原生 agent 且官方端点」必须一致：claude 换到第三方端点后，
+///   库里存着的 `native` 要降回按 status 推断的档（否则永远不自动验证）；
+///   换回官方端点后再回到 native。
+///
+/// 除这条不变式外不改已有值：用户手动重验过的 verified / failed 不被覆盖。
+/// `model.agent` 可能还没回填（`ensure_agents` 才做），用 agent.id 兜底。
+fn ensure_verification(store: &mut ResourceStore) {
+    for agent in &mut store.agents {
+        let owner = agent.id.clone();
+        for model in &mut agent.models {
+            let agent_id = if model.agent.trim().is_empty() {
+                owner.clone()
+            } else {
+                model.agent.clone()
+            };
+            let native = is_native_model(&agent_id);
+            let current = model.verification.trim();
+            if current.is_empty() || native != (current == VERIFICATION_NATIVE) {
+                model.verification = if native {
+                    VERIFICATION_NATIVE.to_string()
+                } else {
+                    inferred_verification(&agent_id, &model.status).to_string()
+                };
+            }
+        }
+    }
 }
 
 /// 命令层读取：文件不存在视为空仓库；存在但损坏则报错，绝不覆盖原文件。
@@ -285,9 +372,9 @@ fn store_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// 派发清单：已接入模型。cc-switch 在本期不再是可派发通道，一律排除。
-// 08b 起派发清单改列全部探测到的模型（`detected`）；`connected` 留作「已接入」语义的
-// 查询入口（测试与后续预设角色默认值用），暂无生产调用。
+/// 旧口径的「已接入」清单（status == 已接入）。cc-switch 一律排除。
+// 08b 起派发清单改列全部探测到的模型（`detected`），左栏资源 tab 走 `get_resources`
+// 直接拿整库；`connected` 只留作「已接入」语义的查询入口，暂无生产调用。
 #[allow(dead_code)]
 pub fn connected(path: &Path) -> Result<Vec<ResourceModel>, String> {
     Ok(load(path)?
@@ -300,10 +387,11 @@ pub fn connected(path: &Path) -> Result<Vec<ResourceModel>, String> {
 
 /// 供界面挑模型用的清单：**不按冒烟状态过滤**，已接入 / 待冒烟 / 冒烟失败都给，
 /// 只排除 cc-switch（已降级为发现提示，不产生可派发条目）。
-/// 和 `connected()` 的分工：`connected()` 是「可派发清单」的语义（左栏资源 tab、
-/// 预设角色默认值用它）；这个是「本机探测到什么」的语义，节点面板和 `@` 弹层用它，
-/// 界面自己按 status 打后缀。
-/// 排序：已接入 → 待冒烟 → 冒烟失败 → 其它，同状态内 agent → provider → id。
+/// 和 `connected()` 的分工：`connected()` 只是旧的「已接入」查询入口，没有生产
+/// 调用；这个是「本机探测到什么」的语义，节点面板、`@` 弹层和 G1 用它，
+/// 界面自己按 verification 打后缀。
+/// 排序（09-15 起按 verification 而不是旧 status）：原生 / 已验证 → 未验证
+/// → 验证失败，同一档内 agent → provider → id。
 pub fn detected(path: &Path) -> Result<Vec<ResourceModel>, String> {
     let mut models: Vec<ResourceModel> = load(path)?
         .agents
@@ -312,8 +400,8 @@ pub fn detected(path: &Path) -> Result<Vec<ResourceModel>, String> {
         .filter(|model| model.agent != "cc-switch")
         .collect();
     models.sort_by(|a, b| {
-        status_rank(&a.status)
-            .cmp(&status_rank(&b.status))
+        verification_rank(&a.verification)
+            .cmp(&verification_rank(&b.verification))
             .then_with(|| a.agent.cmp(&b.agent))
             .then_with(|| a.provider.cmp(&b.provider))
             .then_with(|| a.id.cmp(&b.id))
@@ -321,11 +409,11 @@ pub fn detected(path: &Path) -> Result<Vec<ResourceModel>, String> {
     Ok(models)
 }
 
-fn status_rank(status: &str) -> u8 {
-    match status {
-        STATUS_CONNECTED => 0,
-        STATUS_PENDING => 1,
-        STATUS_FAILED => 2,
+fn verification_rank(verification: &str) -> u8 {
+    match verification {
+        VERIFICATION_NATIVE | VERIFICATION_VERIFIED => 0,
+        VERIFICATION_UNVERIFIED => 1,
+        VERIFICATION_FAILED => 2,
         _ => 3,
     }
 }
@@ -358,6 +446,7 @@ pub fn ensure_agents(store: &mut ResourceStore) {
             model.agent.clone_from(&agent.id);
         }
     }
+    ensure_verification(&mut *store);
 }
 
 // ── 二进制解析 ────────────────────────────────────────────────────────────
@@ -1021,6 +1110,7 @@ fn detected_model(
         tier: String::new(),
         thinking: thinking.to_string(),
         status: STATUS_PENDING.to_string(),
+        verification: inferred_verification(agent, STATUS_PENDING).to_string(),
         source: source.to_string(),
         smoked_at: String::new(),
         smoke_model: String::new(),
@@ -1124,6 +1214,7 @@ pub fn add_model(
     }) {
         return Err("手动输入失败：该模型已存在".to_string());
     }
+    let verification = inferred_verification(&request.agent_id, STATUS_PENDING).to_string();
     agent.models.push(ResourceModel {
         id: id.to_string(),
         agent: request.agent_id,
@@ -1141,6 +1232,7 @@ pub fn add_model(
         tier: request.tier.trim().to_string(),
         thinking: "未知".to_string(),
         status: STATUS_PENDING.to_string(),
+        verification,
         source: format!("申报({})", Local::now().format("%Y-%m-%d")),
         smoked_at: String::new(),
         smoke_model: String::new(),
@@ -1201,18 +1293,38 @@ struct SmokeSuccess {
 /// ~/.claude/settings.json 的 env.ANTHROPIC_BASE_URL（用户常在 settings
 /// 里配置，不经过控制台进程环境，只看进程环境会漏判）。
 fn claude_third_party_endpoint() -> bool {
-    let from_env = std::env::var("ANTHROPIC_BASE_URL")
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    if from_env {
-        return true;
+    // 测试构建里不读开发机的环境变量与 ~/.claude/settings.json：判据由
+    // `set_claude_third_party` 显式给，默认「官方端点」。
+    #[cfg(test)]
+    {
+        CLAUDE_THIRD_PARTY.with(|cell| cell.get())
     }
-    home_file(&[".claude", "settings.json"])
-        .ok()
-        .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|contents| claude_base_url_from_settings(&contents))
-        .map(|url| !url.trim().is_empty())
-        .unwrap_or(false)
+    #[cfg(not(test))]
+    {
+        let from_env = std::env::var("ANTHROPIC_BASE_URL")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        if from_env {
+            return true;
+        }
+        home_file(&[".claude", "settings.json"])
+            .ok()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|contents| claude_base_url_from_settings(&contents))
+            .map(|url| !url.trim().is_empty())
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// 测试里的 claude 端点判据（修正轮 R1）。
+    static CLAUDE_THIRD_PARTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn set_claude_third_party(value: bool) {
+    CLAUDE_THIRD_PARTY.with(|cell| cell.set(value));
 }
 
 fn claude_base_url_from_settings(contents: &str) -> Option<String> {
@@ -1224,10 +1336,22 @@ fn claude_base_url_from_settings(contents: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// 手动冒烟：不进进程注册表（接入页有自己的 busy 态，没有叫停入口）。
+fn run_smoke(model: &ResourceModel) -> Result<SmokeSuccess, String> {
+    run_smoke_registered(model, None)
+}
+
 /// 冒烟：argv 与真身核对完全复用 channels（盲跑 blind=true，prompt 固定
 /// 「只回复 OK」），进程执行走 process.rs。成功返回响应里的模型真身
 /// （identity），失败返回脱敏后的原因。
-fn run_smoke(model: &ResourceModel) -> Result<SmokeSuccess, String> {
+///
+/// `registry_key` 是派发节点的取消键：首次派发自动验证时传进来，`cancel_registered`
+/// 才杀得掉这次冒烟进程（修正轮 R1：原来走无注册的 `run_process`，用户点了
+/// 「叫停」冒烟照跑完，随后真实请求照样发出去）。
+fn run_smoke_registered(
+    model: &ResourceModel,
+    registry_key: Option<&str>,
+) -> Result<SmokeSuccess, String> {
     let session_dir = aicross_root().ok().map(|root| root.join("sessions").join("smoke"));
     if let Some(dir) = &session_dir {
         let _ = fs::create_dir_all(dir);
@@ -1247,12 +1371,13 @@ fn run_smoke(model: &ResourceModel) -> Result<SmokeSuccess, String> {
         false, // 冒烟只读，不给写工具（第 4 期新增 writable 参数）
     )?;
     let temp = std::env::temp_dir();
-    let result = run_process(
+    let result = run_process_registered(
         &invocation.program,
         &invocation.args,
         invocation.input.as_deref(),
         Duration::from_secs(60),
         Some(&temp),
+        registry_key,
     )?;
     match channels::parse_output(&model.agent, &model.provider, &model.id, &result) {
         Ok(output) => {
@@ -1292,15 +1417,26 @@ fn route_alias_marker(model: &ResourceModel, identity: &str) -> Option<String> {
 
 /// 把一次冒烟结果写进 store：成功 → 已接入 + 真身 + 可选 meta 标记；
 /// 失败 → 冒烟失败 + 脱敏原因。
+/// `verification` 跟着结果走，但原生模型恒为 native——原生模型不按冒烟
+/// 结果改档（界面上也不给「验证」按钮），冒烟结果只落在 status 与详情里。
+/// 「原生」按 `is_native_model` 判：claude 挂第三方端点时它是第三方，冒烟
+/// 成败会真的写进 verified / failed。
 fn apply_smoke_outcome(
     store: &mut ResourceStore,
     request: &ResourceModelKey,
     outcome: Result<SmokeSuccess, String>,
 ) -> Result<(), String> {
+    let native = is_native_model(&request.agent_id);
     let target = find_model_mut(store, &request.agent_id, &request.provider, &request.id)?;
     match outcome {
         Ok(success) => {
             target.status = STATUS_CONNECTED.to_string();
+            target.verification = if native {
+                VERIFICATION_NATIVE
+            } else {
+                VERIFICATION_VERIFIED
+            }
+            .to_string();
             target.smoked_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
             target.smoke_model = success.identity;
             target.smoke_failure.clear();
@@ -1310,6 +1446,12 @@ fn apply_smoke_outcome(
         }
         Err(error) => {
             target.status = STATUS_FAILED.to_string();
+            target.verification = if native {
+                VERIFICATION_NATIVE
+            } else {
+                VERIFICATION_FAILED
+            }
+            .to_string();
             target.smoked_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
             target.smoke_model.clear();
             target.smoke_failure = safe_summary(&error);
@@ -1322,6 +1464,210 @@ fn smoke_one_in_place(store: &mut ResourceStore, request: &ResourceModelKey) -> 
     let model = find_model(store, &request.agent_id, &request.provider, &request.id)?.clone();
     let outcome = run_smoke(&model);
     apply_smoke_outcome(store, request, outcome)
+}
+
+/// 首次派发自动验证的结果（引擎按它决定继续派发还是直接判失败）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FirstUseVerification {
+    /// 不需要动手：原生模型、验过的、验失败过的。
+    Skipped,
+    /// 资源库里没有这一条（或库读不出来）：本次不验证，留痕写明，不挡派发。
+    /// 与 `Skipped` 分开，事后才分得清「原生跳过」和「库里没这条所以没验」。
+    NotInStore,
+    /// 本次真发了一个短请求并核对了真身，结果已写回资源库。
+    Verified,
+    /// 本次验证失败（或验过了但结果写不回资源库），附脱敏后的原因。
+    Failed(String),
+    /// 验证窗口内用户点了叫停：不写库、不继续派发。
+    Cancelled,
+}
+
+/// 第三方端点首次派发前的自动验证（09-15 定案）。只有 `verification ==
+/// "unverified"` 才动手，判据与写回完全复用手动冒烟那一套。
+///
+/// 失败的不自动重试：这一条派发按失败返回，用户到接入页手动重验。
+/// 资源库里没这一条时返回 `NotInStore` 放行——自动验证是加固，不该把「还没
+/// 接入过资源」的用户挡在派发之外，但留痕里要说清没验。
+///
+/// `cancel_key` 是派发节点的取消键：冒烟进程按它注册，用户点「叫停」时
+/// `cancel_registered` 杀得掉；冒烟返回后再查一次，取消了就不写库、按
+/// `Cancelled` 返回。
+///
+/// 测试构建里 dispatch 走线程局部替身、不碰用户真实的 resources.json，
+/// 这个入口因此在 `cargo test` 下无调用者。
+#[cfg_attr(test, allow(dead_code))]
+pub fn verify_on_first_use(
+    agent: &str,
+    provider: &str,
+    model: &str,
+    cancel_key: Option<&str>,
+) -> FirstUseVerification {
+    match store_path() {
+        Ok(path) => verify_on_first_use_at(
+            &path,
+            agent,
+            provider,
+            model,
+            |target| run_smoke_registered(target, cancel_key),
+            || cancel_key.map(crate::dispatch::is_cancelled).unwrap_or(false),
+        ),
+        Err(_) => FirstUseVerification::NotInStore,
+    }
+}
+
+fn key_of(model: &ResourceModel) -> ResourceModelKey {
+    ResourceModelKey {
+        agent_id: model.agent.clone(),
+        id: model.id.clone(),
+        provider: model.provider.clone(),
+    }
+}
+
+/// 首次验证的目标解析结果。
+enum FirstUseTarget {
+    Hit(ResourceModelKey),
+    Missing,
+    /// provider 为空且同名模型挂在多个 provider 下，其中还有没验过的：
+    /// 验哪一个都可能不是真正要派的那一个，只能报错。
+    Ambiguous(Vec<String>),
+}
+
+/// 目标解析。先按 (agent, provider, id) 精确找；provider 为空时退到 agent + id
+/// ——节点面板选模型不写 provider、旧图的 Target 也可能没有，精确匹配必然落空，
+/// 原来会在这里静默跳过（G1 已经承诺「首次派发会先验证真身」，却一个请求都不发）。
+fn resolve_first_use_target(
+    store: &ResourceStore,
+    agent: &str,
+    provider: &str,
+    id: &str,
+) -> FirstUseTarget {
+    let exact = ResourceModelKey {
+        agent_id: agent.to_string(),
+        id: id.to_string(),
+        provider: provider.to_string(),
+    };
+    if find_model(store, &exact.agent_id, &exact.provider, &exact.id).is_ok() {
+        return FirstUseTarget::Hit(exact);
+    }
+    if !provider.trim().is_empty() {
+        return FirstUseTarget::Missing;
+    }
+    let candidates: Vec<&ResourceModel> = store
+        .agents
+        .iter()
+        .flat_map(|owner| owner.models.iter())
+        .filter(|model| model.agent.eq_ignore_ascii_case(agent.trim()) && model.id == id)
+        .collect();
+    match candidates.len() {
+        0 => FirstUseTarget::Missing,
+        1 => FirstUseTarget::Hit(key_of(candidates[0])),
+        _ => {
+            // 全都不是「未验证」时不需要动手，随便挑一条走到 Skipped 就行。
+            if candidates
+                .iter()
+                .all(|model| model.verification != VERIFICATION_UNVERIFIED)
+            {
+                return FirstUseTarget::Hit(key_of(candidates[0]));
+            }
+            FirstUseTarget::Ambiguous(
+                candidates
+                    .iter()
+                    .map(|model| {
+                        if model.provider.trim().is_empty() {
+                            "(默认)".to_string()
+                        } else {
+                            model.provider.clone()
+                        }
+                    })
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// 进程级「验证中」表：同一 (agent, provider, id) 同时只允许一路在验证。
+/// 两路并发首派时第二路等第一路写完库再读状态——既不重复发短请求，也不会
+/// 出现一成一败按写回顺序覆盖的情况。
+fn first_use_gate(key: &ResourceModelKey) -> Arc<Mutex<()>> {
+    static GATES: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let id = format!("{}\u{1}{}\u{1}{}", key.agent_id, key.provider, key.id);
+    let table = GATES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard
+        .entry(id)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+fn verify_on_first_use_at(
+    path: &Path,
+    agent: &str,
+    provider: &str,
+    model: &str,
+    smoke: impl FnOnce(&ResourceModel) -> Result<SmokeSuccess, String>,
+    cancelled: impl Fn() -> bool,
+) -> FirstUseVerification {
+    // 读一次拿目标就放锁：一次冒烟最长 60s，整段持锁会把界面的读资源也堵住。
+    let key = {
+        let _guard = store_lock();
+        let Ok(store) = load_or_default(path) else {
+            return FirstUseVerification::NotInStore;
+        };
+        match resolve_first_use_target(&store, agent, provider, model) {
+            FirstUseTarget::Hit(key) => key,
+            FirstUseTarget::Missing => return FirstUseVerification::NotInStore,
+            FirstUseTarget::Ambiguous(providers) => {
+                return FirstUseVerification::Failed(format!(
+                    "{agent}/{model} 在多个 provider 下都有（{}）且未全部验证，无法确定要验的端点：请在节点面板选定带 provider 的条目",
+                    providers.join(" / ")
+                ))
+            }
+        }
+    };
+    // 「验证中」表：拿到闸门再重读一次状态，第二路在这里看到第一路的结果。
+    let gate = first_use_gate(&key);
+    let _inflight = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let target = {
+        let _guard = store_lock();
+        let Ok(store) = load_or_default(path) else {
+            return FirstUseVerification::NotInStore;
+        };
+        match find_model(&store, &key.agent_id, &key.provider, &key.id) {
+            Ok(found) => found.clone(),
+            Err(_) => return FirstUseVerification::NotInStore,
+        }
+    };
+    if target.verification != VERIFICATION_UNVERIFIED {
+        return FirstUseVerification::Skipped;
+    }
+    let outcome = smoke(&target);
+    // 冒烟期间点了叫停：进程已经被 cancel_registered 杀掉，这次结果不算数，
+    // 不写库（免得把「被杀」记成验证失败），节点按「已取消」返回。
+    if cancelled() {
+        return FirstUseVerification::Cancelled;
+    }
+    let failure = outcome.as_ref().err().map(|error| safe_summary(error));
+    let persisted = {
+        let _guard = store_lock();
+        match load_or_default(path) {
+            Ok(mut store) => apply_smoke_outcome(&mut store, &key, outcome)
+                .and_then(|()| save_store(path, &store)),
+            Err(error) => Err(error),
+        }
+    };
+    // 写回失败不吞：库里还是 unverified，下次派发会再冒一次烟，「失败不自动
+    // 重试」在这条路径上就不成立了。让这次派发失败并写明原因。
+    if let Err(error) = persisted {
+        let reason = safe_summary(&error);
+        return FirstUseVerification::Failed(match failure {
+            Some(failure) => format!("{failure}；验证结果写回资源库也失败：{reason}"),
+            None => format!("验证通过，但结果写回资源库失败：{reason}"),
+        });
+    }
+    match failure {
+        Some(reason) => FirstUseVerification::Failed(reason),
+        None => FirstUseVerification::Verified,
+    }
 }
 
 // ── 杂项 ──────────────────────────────────────────────────────────────────
@@ -1954,9 +2300,10 @@ mod tests {
     }
 
     /// `detected()` 与 `connected()` 的分工：前者给界面挑模型用，不按冒烟状态过滤，
-    /// 但仍然排除 cc-switch；排序是已接入 → 待冒烟 → 冒烟失败，同状态内 agent/provider/id。
+    /// 但仍然排除 cc-switch；排序（09-15 起按 verification）是原生 / 已验证 →
+    /// 未验证 → 验证失败，同一档内 agent/provider/id。
     #[test]
-    fn detected_keeps_unsmoked_drops_cc_switch_and_sorts_by_status() {
+    fn detected_keeps_unverified_drops_cc_switch_and_sorts_by_verification() {
         let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
@@ -1980,7 +2327,7 @@ mod tests {
             .iter()
             .map(|m| (m.agent.as_str(), m.id.as_str()))
             .collect();
-        // 已接入在前；待冒烟按 provider(moon<zai) → id；冒烟失败垫底；cc-switch 不出现
+        // 原生（codex）在前；未验证按 provider(moon<zai) → id；验证失败垫底；cc-switch 不出现
         assert_eq!(
             listed,
             vec![
@@ -2016,6 +2363,7 @@ mod tests {
                     tier: "高".to_string(),
                     thinking: "未知".to_string(),
                     status: STATUS_CONNECTED.to_string(),
+                    verification: VERIFICATION_NATIVE.to_string(),
                     source: "读:old".to_string(),
                     smoked_at: "2026-01-01".to_string(),
                     smoke_model: "old-model".to_string(),
@@ -2073,6 +2421,7 @@ mod tests {
                     tier: String::new(),
                     thinking: "未知".to_string(),
                     status: STATUS_PENDING.to_string(),
+                    verification: VERIFICATION_NATIVE.to_string(),
                     source: "读:old".to_string(),
                     smoked_at: String::new(),
                     smoke_model: String::new(),
@@ -2314,6 +2663,398 @@ mod tests {
             find_model(&on_disk, "pi", "p", "b").expect("b on disk").status,
             STATUS_FAILED
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // ── TASK-09：verification 三态与首次派发自动验证 ──────────────────────
+
+    /// 旧库（没有 verification 字段）按 agent + 旧 status 推断：原生三家一律
+    /// native，第三方按已接入 / 冒烟失败 / 其余映射成 verified / failed /
+    /// unverified；旧字段本身不动。
+    #[test]
+    fn task09_legacy_store_infers_verification_three_ways() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[
+                {"id":"codex","name":"Codex","models":[{"id":"gpt","agent":"codex","status":"待冒烟"}]},
+                {"id":"claude","name":"Claude","models":[{"id":"fable","agent":"claude","status":"冒烟失败"}]},
+                {"id":"kimi","name":"Kimi","models":[{"id":"k3","agent":"kimi","status":"已接入"}]},
+                {"id":"pi","name":"pi","models":[
+                    {"id":"ok","agent":"pi","provider":"zai","status":"已接入"},
+                    {"id":"bad","agent":"pi","provider":"zai","status":"冒烟失败"},
+                    {"id":"new","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let store = load(&path).expect("legacy store");
+        let verification = |agent: &str, provider: &str, id: &str| {
+            find_model(&store, agent, provider, id)
+                .expect(id)
+                .verification
+                .clone()
+        };
+        assert_eq!(verification("codex", "", "gpt"), VERIFICATION_NATIVE);
+        assert_eq!(verification("claude", "", "fable"), VERIFICATION_NATIVE);
+        assert_eq!(verification("kimi", "", "k3"), VERIFICATION_NATIVE);
+        assert_eq!(verification("pi", "zai", "ok"), VERIFICATION_VERIFIED);
+        assert_eq!(verification("pi", "zai", "bad"), VERIFICATION_FAILED);
+        assert_eq!(verification("pi", "zai", "new"), VERIFICATION_UNVERIFIED);
+        // 旧字段保留不删
+        assert_eq!(
+            find_model(&store, "claude", "", "fable").expect("fable").status,
+            STATUS_FAILED
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 原生模型不走首次验证：冒烟函数一次都不该被调用。
+    #[test]
+    fn task09_verify_on_first_use_never_smokes_native_models() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"codex","name":"Codex","models":[
+                {"id":"gpt","agent":"codex","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let calls = std::cell::Cell::new(0u32);
+        let outcome = verify_on_first_use_at(
+            &path,
+            "codex",
+            "",
+            "gpt",
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(SmokeSuccess { identity: "gpt".into(), meta_marker: None })
+            },
+            || false,
+        );
+        assert_eq!(outcome, FirstUseVerification::Skipped);
+        assert_eq!(calls.get(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 第三方首次派发验证失败：返回 Failed 并把 failed 写回资源库；
+    /// 再派发一次不重试（failed 不是 unverified），冒烟函数只被调一次。
+    #[test]
+    fn task09_first_use_failure_persists_and_does_not_retry() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let calls = std::cell::Cell::new(0u32);
+        let smoke = |_: &ResourceModel| -> Result<SmokeSuccess, String> {
+            calls.set(calls.get() + 1);
+            Err("401: invalid api key".to_string())
+        };
+        let first = verify_on_first_use_at(&path, "pi", "zai", "glm-4.7", smoke, || false);
+        assert!(matches!(first, FirstUseVerification::Failed(ref reason) if reason.contains("401")));
+        let stored = load(&path).expect("store");
+        let model = find_model(&stored, "pi", "zai", "glm-4.7").expect("model");
+        assert_eq!(model.verification, VERIFICATION_FAILED);
+        assert_eq!(model.status, STATUS_FAILED);
+        let second = verify_on_first_use_at(&path, "pi", "zai", "glm-4.7", smoke, || false);
+        assert_eq!(second, FirstUseVerification::Skipped);
+        assert_eq!(calls.get(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 第三方首次派发验证通过：写 verified，第二次派发不再验证。
+    #[test]
+    fn task09_first_use_success_is_verified_once_only() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let calls = std::cell::Cell::new(0u32);
+        let smoke = |_: &ResourceModel| -> Result<SmokeSuccess, String> {
+            calls.set(calls.get() + 1);
+            Ok(SmokeSuccess { identity: "zai/glm-4.7".into(), meta_marker: None })
+        };
+        assert_eq!(
+            verify_on_first_use_at(&path, "pi", "zai", "glm-4.7", smoke, || false),
+            FirstUseVerification::Verified
+        );
+        let stored = load(&path).expect("store");
+        let model = find_model(&stored, "pi", "zai", "glm-4.7").expect("model");
+        assert_eq!(model.verification, VERIFICATION_VERIFIED);
+        assert_eq!(model.smoke_model, "zai/glm-4.7");
+        assert_eq!(
+            verify_on_first_use_at(&path, "pi", "zai", "glm-4.7", smoke, || false),
+            FirstUseVerification::Skipped
+        );
+        assert_eq!(calls.get(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 修正轮 R1-1：claude 挂第三方端点就不算原生——旧库里存着的 native 要
+    /// 降回 unverified，首次派发真的会验证；换回官方端点再回到 native、不验证。
+    #[test]
+    fn r1_claude_on_third_party_endpoint_is_not_native() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let raw = r#"{"version":1,"agents":[{"id":"claude","name":"Claude Code","models":[
+            {"id":"sonnet","agent":"claude","status":"待冒烟","verification":"native"}]}]}"#;
+
+        set_claude_third_party(true);
+        fs::write(&path, raw).unwrap();
+        let store = load(&path).expect("store");
+        let model = find_model(&store, "claude", "", "sonnet").expect("model");
+        assert_eq!(model.verification, VERIFICATION_UNVERIFIED, "第三方端点的 claude 不是原生");
+        let calls = std::cell::Cell::new(0u32);
+        let outcome = verify_on_first_use_at(
+            &path,
+            "claude",
+            "",
+            "sonnet",
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(SmokeSuccess { identity: "sonnet".into(), meta_marker: None })
+            },
+            || false,
+        );
+        assert_eq!(outcome, FirstUseVerification::Verified);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            find_model(&load(&path).unwrap(), "claude", "", "sonnet").unwrap().verification,
+            VERIFICATION_VERIFIED,
+            "第三方端点的 claude 冒烟结果要落进 verified"
+        );
+
+        set_claude_third_party(false);
+        fs::write(&path, raw).unwrap();
+        let store = load(&path).expect("store");
+        assert_eq!(
+            find_model(&store, "claude", "", "sonnet").unwrap().verification,
+            VERIFICATION_NATIVE
+        );
+        let calls = std::cell::Cell::new(0u32);
+        let outcome = verify_on_first_use_at(
+            &path,
+            "claude",
+            "",
+            "sonnet",
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(SmokeSuccess { identity: "sonnet".into(), meta_marker: None })
+            },
+            || false,
+        );
+        assert_eq!(outcome, FirstUseVerification::Skipped);
+        assert_eq!(calls.get(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 修正轮 R1-1：agent id 大小写不影响原生判定（前端是 toLowerCase）。
+    #[test]
+    fn r1_native_agent_match_is_case_insensitive() {
+        set_claude_third_party(false);
+        assert!(is_native_model("Codex"));
+        assert!(is_native_model(" KIMI "));
+        assert!(!is_native_model("pi"));
+    }
+
+    /// 修正轮 R1-2：provider 为空时退到 agent + id 匹配，真的会验证（原来精确
+    /// 匹配落空 → 静默 Skipped，G1 承诺了却一个请求都不发），结果写回原条目。
+    #[test]
+    fn r1_first_use_verifies_when_provider_is_empty() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let calls = std::cell::Cell::new(0u32);
+        let outcome = verify_on_first_use_at(
+            &path,
+            "pi",
+            "",
+            "glm-4.7",
+            |target| {
+                calls.set(calls.get() + 1);
+                assert_eq!(target.provider, "zai", "要验的是库里那一条的端点");
+                Ok(SmokeSuccess { identity: "zai/glm-4.7".into(), meta_marker: None })
+            },
+            || false,
+        );
+        assert_eq!(outcome, FirstUseVerification::Verified);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            find_model(&load(&path).unwrap(), "pi", "zai", "glm-4.7").unwrap().verification,
+            VERIFICATION_VERIFIED
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 修正轮 R1-2：provider 为空且同名模型挂在多个 provider 下——验哪一个都
+    /// 可能不是要派的那一个，返回失败并写明原因，不静默放行。
+    /// 库里根本没这一条时返回 NotInStore（放行，但留痕说明没验）。
+    #[test]
+    fn r1_first_use_reports_ambiguous_provider_and_missing_entry() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"},
+                {"id":"glm-4.7","agent":"pi","provider":"bigmodel","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let ambiguous = verify_on_first_use_at(
+            &path,
+            "pi",
+            "",
+            "glm-4.7",
+            |_| panic!("provider 不确定时不该发请求"),
+            || false,
+        );
+        match ambiguous {
+            FirstUseVerification::Failed(reason) => {
+                assert!(reason.contains("多个 provider"), "{reason}");
+                assert!(reason.contains("zai"), "{reason}");
+            }
+            other => panic!("期望 Failed，实际 {other:?}"),
+        }
+        let missing = verify_on_first_use_at(
+            &path,
+            "pi",
+            "",
+            "没有这一条",
+            |_| panic!("库里没有就不该发请求"),
+            || false,
+        );
+        assert_eq!(missing, FirstUseVerification::NotInStore);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 修正轮 R1-3：验证窗口内点了叫停——不写库（免得把「被杀」记成验证失败），
+    /// 返回 Cancelled 让节点按「已取消」结束。
+    #[test]
+    fn r1_first_use_cancelled_does_not_write_store() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let outcome = verify_on_first_use_at(
+            &path,
+            "pi",
+            "zai",
+            "glm-4.7",
+            |_| Err("进程已终止".to_string()),
+            || true,
+        );
+        assert_eq!(outcome, FirstUseVerification::Cancelled);
+        let stored = load(&path).unwrap();
+        let model = find_model(&stored, "pi", "zai", "glm-4.7").unwrap();
+        assert_eq!(model.verification, VERIFICATION_UNVERIFIED, "取消不该改档");
+        assert!(model.smoke_failure.is_empty(), "取消不该记失败原因");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 修正轮 R1-4：同一模型两路并发首派只冒烟一次——第二路等第一路写完库
+    /// 再读状态，拿到 Skipped，不会各发一次短请求、也不会按写回顺序互相覆盖。
+    #[test]
+    fn r1_concurrent_first_use_smokes_only_once() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let calls = Arc::clone(&calls);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    verify_on_first_use_at(
+                        &path,
+                        "pi",
+                        "zai",
+                        "glm-4.7",
+                        |_| {
+                            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(120));
+                            Ok(SmokeSuccess { identity: "zai/glm-4.7".into(), meta_marker: None })
+                        },
+                        || false,
+                    )
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap()).collect();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1, "只该冒烟一次");
+        assert!(outcomes.contains(&FirstUseVerification::Verified), "{outcomes:?}");
+        assert!(outcomes.contains(&FirstUseVerification::Skipped), "{outcomes:?}");
+        assert_eq!(
+            find_model(&load(&path).unwrap(), "pi", "zai", "glm-4.7").unwrap().verification,
+            VERIFICATION_VERIFIED
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 修正轮 R1-4：写回失败不吞——库里还是 unverified，下次会再冒一次烟，
+    /// 「失败不自动重试」就不成立了，所以这次派发按失败返回并写明原因。
+    #[test]
+    fn r1_first_use_write_back_failure_fails_the_dispatch() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let removed = path.clone();
+        let outcome = verify_on_first_use_at(
+            &path,
+            "pi",
+            "zai",
+            "glm-4.7",
+            move |_| {
+                // 冒烟期间条目被删（用户在接入页移除 / 库被换掉）：写回会落空。
+                fs::remove_file(&removed).unwrap();
+                Ok(SmokeSuccess { identity: "zai/glm-4.7".into(), meta_marker: None })
+            },
+            || false,
+        );
+        match outcome {
+            FirstUseVerification::Failed(reason) => {
+                assert!(reason.contains("写回资源库失败"), "{reason}")
+            }
+            other => panic!("期望 Failed，实际 {other:?}"),
+        }
         let _ = fs::remove_dir_all(root);
     }
 

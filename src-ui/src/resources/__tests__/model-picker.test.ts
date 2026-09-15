@@ -12,7 +12,7 @@ import {
 } from '../model-picker';
 
 function model(partial: Partial<PickableModel>): PickableModel {
-  return { id: '', agent: '', provider: '', status: '已接入', ...partial };
+  return { id: '', agent: '', provider: '', status: '', verification: 'verified', ...partial };
 }
 
 describe('modelGroupLabel', () => {
@@ -32,25 +32,31 @@ describe('modelGroupLabel', () => {
 });
 
 describe('modelStatusSuffix / modelOptionLabel', () => {
-  it('已接入不加后缀', () => {
-    const m = model({ agent: 'claude', id: 'fable', status: '已接入' });
-    expect(modelStatusSuffix(m)).toBe('');
-    expect(modelOptionLabel(m)).toBe('claude/fable');
-  });
-
-  it('待冒烟与冒烟失败都点明状态', () => {
-    expect(modelOptionLabel(model({ agent: 'pi', id: 'glm-4.6', status: '待冒烟' }))).toBe(
-      'pi/glm-4.6（待冒烟）',
-    );
-    expect(modelOptionLabel(model({ agent: 'pi', id: 'glm-4.6', status: '冒烟失败' }))).toBe(
-      'pi/glm-4.6（冒烟失败）',
+  it('原生与已验证都不加后缀', () => {
+    const native = model({ agent: 'claude', id: 'fable', verification: 'native' });
+    expect(modelStatusSuffix(native)).toBe('');
+    expect(modelOptionLabel(native)).toBe('claude/fable');
+    expect(modelOptionLabel(model({ agent: 'pi', id: 'glm-4.6', verification: 'verified' }))).toBe(
+      'pi/glm-4.6',
     );
   });
 
-  it('status 为空（老 store 没写过这个字段）当作不加后缀，不显示空括号', () => {
-    expect(modelOptionLabel(model({ agent: 'kimi', id: 'kimi-code/k3', status: '' }))).toBe(
-      'kimi/kimi-code/k3',
+  it('未验证与验证失败都点明', () => {
+    expect(modelOptionLabel(model({ agent: 'pi', id: 'glm-4.6', verification: 'unverified' }))).toBe(
+      'pi/glm-4.6（未验证）',
     );
+    expect(modelOptionLabel(model({ agent: 'pi', id: 'glm-4.6', verification: 'failed' }))).toBe(
+      'pi/glm-4.6（验证失败）',
+    );
+  });
+
+  it('老 store 没写过 verification 时按 agent + 旧 status 推断', () => {
+    expect(
+      modelOptionLabel(model({ agent: 'kimi', id: 'kimi-code/k3', status: '待冒烟', verification: '' })),
+    ).toBe('kimi/kimi-code/k3');
+    expect(
+      modelOptionLabel(model({ agent: 'pi', id: 'glm-4.6', status: '待冒烟', verification: '' })),
+    ).toBe('pi/glm-4.6（未验证）');
   });
 });
 
@@ -58,8 +64,8 @@ describe('groupPickableModels', () => {
   const models = [
     model({ agent: 'codex', id: 'gpt-5.6-luna' }),
     model({ agent: 'pi', provider: 'zai-coding-cn', id: 'glm-5.3-flash' }),
-    model({ agent: 'pi', provider: 'zai-coding-cn', id: 'glm-4.6', status: '待冒烟' }),
-    model({ agent: 'pi', provider: 'moonshot', id: 'kimi-k2', status: '待冒烟' }),
+    model({ agent: 'pi', provider: 'zai-coding-cn', id: 'glm-4.6', verification: 'unverified' }),
+    model({ agent: 'pi', provider: 'moonshot', id: 'kimi-k2', verification: 'unverified' }),
   ];
 
   it('按 agent · provider 归组，同一 agent 的不同 provider 各成一组', () => {
@@ -70,7 +76,7 @@ describe('groupPickableModels', () => {
     ]);
   });
 
-  it('保持传入顺序，不二次排序（后端已按状态 + agent + provider + id 排好）', () => {
+  it('保持传入顺序，不二次排序（后端已按 verification + agent + provider + id 排好）', () => {
     const zai = groupPickableModels(models).find((g) => g.label === 'pi · zai-coding-cn');
     expect(zai?.models.map((m) => m.id)).toEqual(['glm-5.3-flash', 'glm-4.6']);
   });
