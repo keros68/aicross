@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addWindowsPathEntry, consoleInflightCount, consoleTabPlan, mergeConsoleCommit, removeWindowsPathEntry, selectConsoleGraph } from '../console-channel';
+import { addWindowsPathEntry, consoleCancelTargets, consoleInflightCount, consoleTabPlan, mergeConsoleCommit, removeWindowsPathEntry, selectConsoleGraph } from '../console-channel';
 import { newGraph } from '../graph/types';
 import { startPipelineHeadless } from '../graph/dispatch';
 import type { TerminalSession } from '../store/app-state';
@@ -90,5 +90,14 @@ describe('console commit merges onto the latest graph (R1 review 1)', () => {
     const merged = mergeConsoleCommit(latest, previous, next);
     expect(merged.nodes.a.reply?.status).toBe('done');
     expect(merged.nodes.b.user.text).toBe('旁边（用户改过）');
+  });
+});
+
+describe('console cancel targets (R1 review N1)', () => {
+  it('unions the summary in-flight ids with pending nodes on the graph', () => {
+    const base = newGraph('D:/proj');
+    const graph = { ...base, nodes: { ...base.nodes, a: { ...base.nodes[base.root], id: 'a', parents: [base.root], reply: { status: 'pending', text: '' } }, b: { ...base.nodes[base.root], id: 'b', parents: [base.root], reply: { status: 'done', text: 'x' } } } } as typeof base;
+    expect(consoleCancelTargets({ in_flight_node_ids: ['b'] }, graph).sort()).toEqual(['a', 'b']);
+    expect(consoleCancelTargets({ in_flight_node_ids: [] }, undefined)).toEqual([]);
   });
 });

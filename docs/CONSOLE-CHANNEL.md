@@ -76,7 +76,7 @@ Rust 只校验并中继请求；前端用与确认派发相同的 `stamp()`、G1
       "role": "验证",
       "agent": "pi",
       "model": "deepseek-v4",
-      "status": "running",
+      "status": "pending",
       "text_excerpt": "",
       "artifacts_dir": ""
     }

@@ -99,8 +99,11 @@ export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: C
   const selected = consolePreset(event, presetFile.presets);
   if (!selected) { await reject(`找不到预设：${event.preset ?? 'builtin-economy'}`); return; }
   const preset = presetWithRoleDefaults(selected, roles);
-  const base = selectConsoleGraph(context.getState(), event.project) ?? newGraph(event.project);
-  const material = appendConsoleMaterial({ ...base, project: event.project, source: 'console' }, event.text, event.attachments ?? []);
+  const existing = selectConsoleGraph(context.getState(), event.project);
+  const base = existing ?? newGraph(event.project);
+  // R1 复审 N3：只有新建的图标「来自总指挥」，续写用户自己的图保留原来源。
+  const graphSource = existing ? existing.source : ('console' as const);
+  const material = appendConsoleMaterial({ ...base, project: event.project, source: graphSource }, event.text, event.attachments ?? []);
   let graph = stamp(material.graph, material.nodeId, preset, settings.swarmLimit);
   const before = new Set(Object.keys(material.graph.nodes));
   const created = Object.keys(graph.nodes).filter((id) => !before.has(id));
@@ -131,17 +134,24 @@ export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: C
   // R1 复审 1：流水线持有的是自己的快照，每次落图先合到 store 里的最新图上，
   // 只覆盖本次真正改动的节点——运行期间用户在同一张图上的编辑不会被整图回写抹掉。
   let committed: Graph = graph;
+  // R1 复审 N1：在飞清单在阶段开始时记下、结果落图后清空；每次落图回报都带着它，
+  // 否则执行期间摘要里的在飞恒为空，`aicross cancel` 与「N 路在飞」都不工作。
+  let inFlight: string[] = [];
   const commit = (next: Graph) => {
     const latest = context.getState().graphs[graph.id] ?? committed;
-    graph = { ...mergeConsoleCommit(latest, committed, next), project: event.project, source: 'console' };
+    graph = { ...mergeConsoleCommit(latest, committed, next), project: event.project, source: graphSource };
     graph = { ...graph, updated_at: new Date().toISOString() };
     committed = graph;
     context.dispatch({ type: 'SET_GRAPH', graph });
     void io.saveGraph(graph)
-      .then(() => io.consoleRunUpdate({ run_id: event.run_id, graph_id: graph.id, status: 'running', nodes: nodeSummary(graph, allRunIds), leftover: leftoverNodes(graph).flatMap((node) => node.leftover?.items ?? []), in_flight_node_ids: [], reason: '' }))
+      .then(() => io.consoleRunUpdate({ run_id: event.run_id, graph_id: graph.id, status: 'running', nodes: nodeSummary(graph, allRunIds), leftover: leftoverNodes(graph).flatMap((node) => node.leftover?.items ?? []), in_flight_node_ids: inFlight, reason: '' }))
       .catch((error) => console.warn('[graph] 保存失败', error));
     return graph;
   };
+  // R1 复审 N2：准备阶段超过 5 秒时 Rust 已把 run 判成 rejected 并给 CLI 回了 503，
+  // 这时不能再起流水线（模型会真跑而 skill 侧已按失败回退）。
+  const current = (await io.listConsoleRuns()).find((run) => run.run_id === event.run_id);
+  if (current && current.status !== 'running') return;
   graph = { ...graph, updated_at: new Date().toISOString() };
   context.dispatch({ type: 'SET_GRAPH', graph });
   await io.saveGraph(graph);
@@ -172,9 +182,10 @@ export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: C
       onPreview: () => {},
       onStage: (request) => {
         request.nodes.forEach((node) => allRunIds.add(node.nodeId));
-        void io.consoleRunUpdate({ run_id: event.run_id, graph_id: graph.id, status: 'running', nodes: nodeSummary(graph, allRunIds), leftover: [], in_flight_node_ids: request.nodes.map((node) => node.nodeId), reason: '' });
+        inFlight = request.nodes.map((node) => node.nodeId);
+        void io.consoleRunUpdate({ run_id: event.run_id, graph_id: graph.id, status: 'running', nodes: nodeSummary(graph, allRunIds), leftover: [], in_flight_node_ids: inFlight, reason: '' });
       },
-      onResults: (results) => results.forEach((result) => allRunIds.add(result.nodeId)),
+      onResults: (results) => { results.forEach((result) => allRunIds.add(result.nodeId)); inFlight = []; },
     },
     onError: (active, collected, message, working) => failedNodesWithoutResults(active, collected, message).map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', runner: 'unknown', workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null, fallbackFrom: '', fallbackTo: '', fallbackSkipped: '' })),
   });
@@ -183,6 +194,18 @@ export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: C
   const status = pipeline.error || statuses.includes('failed') ? 'failed' : 'done';
   await io.saveGraph(graph);
   await io.consoleRunUpdate({ run_id: event.run_id, graph_id: graph.id, status, nodes: nodeSummary(graph, allRunIds), leftover: leftoverNodes(graph).flatMap((node) => node.leftover?.items ?? []), in_flight_node_ids: [], reason: pipeline.error });
+}
+
+// 取消的目标 = 摘要里的在飞节点 ∪ 图上仍 pending 的节点（R1 复审 N1）：
+// 摘要可能落后一拍，图上的 pending 才是引擎正在跑的。纯函数，可测。
+export function consoleCancelTargets(run: { in_flight_node_ids?: string[] }, graph: Graph | undefined): string[] {
+  const ids = new Set(run.in_flight_node_ids ?? []);
+  if (graph) {
+    for (const node of Object.values(graph.nodes)) {
+      if (node.reply?.status === 'pending') ids.add(node.id);
+    }
+  }
+  return [...ids];
 }
 
 export async function runConsoleAction(event: ConsoleActionEvent, context: ConsoleChannelContext, io: ChannelCommands = commands): Promise<void> {
@@ -197,7 +220,8 @@ export async function runConsoleAction(event: ConsoleActionEvent, context: Conso
       context.dispatch({ type: 'SET_GRAPH', graph: next });
       await io.saveGraph(next);
     } else if (run.status === 'running') {
-      await Promise.all((run.in_flight_node_ids ?? []).map((nodeId) => io.cancelDispatchNode(run.run_id, nodeId)));
+      const targets = consoleCancelTargets(run, context.getState().graphs[run.graph_id]);
+      await Promise.all(targets.map((nodeId) => io.cancelDispatchNode(run.run_id, nodeId)));
       await io.consoleRunUpdate({ run_id: run.run_id, graph_id: run.graph_id, status: 'failed', nodes: run.nodes.map((node) => node.status === 'running' ? { ...node, status: 'failed', text_excerpt: '派发已取消' } : node), leftover: run.leftover ?? [], in_flight_node_ids: [], reason: '派发已取消' });
     }
     await io.consoleActionAck(event.request_id);

@@ -302,6 +302,11 @@ fn reject_run(run_id: &str, reason: &str) {
 fn apply_run_update(update: ConsoleRunUpdate) -> Result<ConsoleRun, String> {
     let mut values = runs().lock().map_err(|_| "运行状态不可用".to_string())?;
     let run = values.get_mut(&update.run_id).ok_or_else(|| format!("找不到 run：{}", update.run_id))?;
+    // R1 复审 N2：终态（rejected / done / failed）的 run 不接受再被改回 running，
+    // 否则 5 秒超时后迟到的前端回报会把已回 503 的 run 翻成运行中。
+    if matches!(run.status.as_str(), "rejected" | "done" | "failed") && update.status == "running" {
+        return Ok(run.clone());
+    }
     run.graph_id = update.graph_id;
     run.status = update.status;
     run.nodes = update.nodes;
@@ -514,6 +519,19 @@ mod tests {
         let values = runs().lock().unwrap();
         assert_eq!(values.len(), RUN_LIMIT);
         assert!(!values.contains_key("r000"));
+    }
+
+    #[test]
+    fn terminal_run_ignores_late_running_update() {
+        let _guard = test_guard();
+        clear_runs();
+        insert_run(run("late", "running", "1")).unwrap();
+        reject_run("late", "前端回执超时");
+        let update = ConsoleRunUpdate { run_id: "late".into(), graph_id: "g".into(), status: "running".into(), nodes: vec![], leftover: vec![], in_flight_node_ids: vec!["n1".into()], reason: String::new() };
+        let snapshot = apply_run_update(update).unwrap();
+        assert_eq!(snapshot.status, "rejected");
+        assert!(snapshot.in_flight_node_ids.is_empty());
+        assert_eq!(snapshot.reason, "前端回执超时");
     }
 
     #[test]
