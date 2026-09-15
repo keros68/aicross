@@ -8,16 +8,20 @@ import orchestrationPanelSource from '../../components/right/orchestration/Orche
 import manualSource from '../../../../docs/MANUAL.md?raw';
 import explainSource from '../../components/right/orchestration/ExplainOverlay.tsx?raw';
 import settingsSource from '../../components/common/SettingsModal.tsx?raw';
+import dispatchOverlaySource from '../../components/center/graph/DispatchOverlay.tsx?raw';
 import {
   appendCorrectionRound,
   appendLeftover,
+  applyDispatchResults,
   applyRoleDefaults,
   buildNodeRequest,
   dispatchableNodeIds,
   leftoverItems,
   leftoverLine,
   leftoverNodes,
+  isFixRoundExecution,
   nodeStatusLabel,
+  pinnedLabelOf,
   presetWithRoleDefaults,
   reducePipelineStep,
   reviewMaterialValidationOf,
@@ -410,5 +414,73 @@ describe('TASK-12 审查材料附带验证输出', () => {
       expect(lines.at(-2)).toContain(CONTRACT_FOCUS);
       expect(lines.at(-1)).toContain(RED_TEST_FOCUS);
     }
+  });
+});
+
+describe('TASK-13 红绿核对', () => {
+  it('修正轮请求追加 fixRound，普通执行请求不追加', () => {
+    const parts: NodeRequestParts = {
+      models: [], prompt: '修正', materials: [], currentMessage: '', originalRequest: '需求',
+      upstreamArtifacts: [artifacts], sessionId: '', previousRunner: '', rollback: false, stage: 2,
+    };
+    const ordinary = buildNodeRequest('e1', target({ write: '单写者' }), parts);
+    expect('fixRound' in ordinary).toBe(false);
+    const correction = buildNodeRequest('e2', target({ write: '单写者' }), { ...parts, fixRound: true });
+    expect(correction.fixRound).toBe(true);
+    expect(JSON.parse(JSON.stringify(correction)).fixRound).toBe(true);
+  });
+
+  it('两种 reducePipelineStep 修正节点都识别为修正轮', () => {
+    const accepted = appendCorrectionRound(pipeline(1), 'a1');
+    expect(isFixRoundExecution(accepted.graph, accepted.executionId!)).toBe(true);
+
+    const g = graph([
+      node('r', []),
+      node('e', ['r'], { reply: { status: 'done', text: 'done', artifacts }, target: target({ write: '单写者' }) }),
+      node('a', ['e'], { reply: { status: 'draft', text: '' }, target: target({ role: '验收', visibility: '盲' }) }),
+    ]);
+    const retry = reducePipelineStep(g, [validationFailure('e')], {}, 1);
+    const retryNode = Object.values(retry.graph.nodes).find((n) => !g.nodes[n.id] && n.target?.role === '执行')!;
+    expect(isFixRoundExecution(retry.graph, retryNode.id)).toBe(true);
+    expect(isFixRoundExecution(g, 'e')).toBe(false);
+  });
+
+  it('未钉住按验证未通过计入上限，修正提示词以补失败测试收尾', () => {
+    const g = graph([
+      node('r', []),
+      node('e', ['r'], { reply: { status: 'done', text: 'done', artifacts }, target: target({ write: '单写者' }) }),
+      node('a', ['e'], { reply: { status: 'draft', text: '' }, target: target({ role: '验收', visibility: '盲' }) }),
+    ]);
+    const unpinned: BackendNodeResult = {
+      ...acceptResult('e', '已修复'),
+      pinned: 'unpinned',
+      pinnedNote: '回退修复后测试仍通过：新增测试没有钉住这个修复',
+    };
+    const first = reducePipelineStep(g, [unpinned], {}, 1);
+    expect(first.continueRunning).toBe(true);
+    const retry = Object.values(first.graph.nodes).find((n) => !g.nodes[n.id] && n.target?.role === '执行')!;
+    expect(first.validationRetries[retry.id]).toBe(1);
+    expect(retry.user.text.endsWith('上一轮修复回退后测试仍通过，请补能失败的测试')).toBe(true);
+
+    const capped = reducePipelineStep(g, [unpinned], { e: 1 }, 1);
+    expect(capped.continueRunning).toBe(false);
+    expect(capped.graph.nodes.a.reply?.skipped_reason).toBe('上游验证未通过');
+  });
+
+  it('红绿结论进入 Reply 供下游验收读取，三态标签固定', () => {
+    const g = graph([node('r', []), node('e', ['r'], { reply: { status: 'pending', text: '' }, target: target({ write: '单写者' }) })]);
+    const next = applyDispatchResults(g, [{
+      ...acceptResult('e', '实现完成'),
+      pinned: 'unpinned',
+      pinnedNote: '回退修复后测试仍通过：新增测试没有钉住这个修复',
+    }]);
+    expect(next.nodes.e.reply?.text).toContain('[红绿核对]\n测试未钉住：回退修复后测试仍通过');
+    expect(pinnedLabelOf('pinned')).toBe('测试已钉住');
+    expect(pinnedLabelOf('unpinned')).toBe('测试未钉住');
+    expect(pinnedLabelOf('skipped')).toBe('未核对');
+    expect(pinnedLabelOf(undefined)).toBeNull();
+    expect(dispatchOverlaySource).toContain('pinnedLabelOf(result.pinned)');
+    expect(dispatchOverlaySource).toContain("result.pinned === 'unpinned' && result.pinnedNote");
+    expect(dispatchOverlaySource).toContain("result.pinned === 'unpinned' ? ' unpinned' : ''");
   });
 });

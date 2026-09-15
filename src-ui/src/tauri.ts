@@ -492,6 +492,8 @@ export interface DispatchNodeRequest {
   rollbackBefore?: boolean;
   // TASK-12 契约：为真时引擎在盲目录物化后、派发前跑验证命令，输出落 VALIDATION.txt。
   reviewMaterialValidation?: boolean;
+  // TASK-13 契约：修正轮执行节点在验证通过后自动做红绿核对。
+  fixRound?: boolean;
 }
 
 export interface DispatchStageRequest {
@@ -535,6 +537,9 @@ export interface DispatchNodeResult {
   error: string;
   artifacts: import('./graph/types').ReplyArtifacts | null;
   validationOutput: string;
+  // TASK-13：红绿核对结论与说明；普通节点缺省。
+  pinned?: 'pinned' | 'unpinned' | 'skipped';
+  pinnedNote?: string;
   // TASK-05B：结果由备选重跑产生时带主/备路由（"agent/model"），否则空串
   fallbackFrom: string;
   fallbackTo: string;

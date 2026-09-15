@@ -21,10 +21,12 @@ import {
   graphStage,
   groupResultsByStage,
   leftoverNodes,
+  isFixRoundExecution,
   isSmallEconomyTask,
   needsChainThinking,
   neutralDisputeSummary,
   pickOne,
+  pinnedLabelOf,
   quotaBlockedNodeIds,
   failedNodesWithoutResults,
   redraftNode,
@@ -212,6 +214,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         previousRunner: restartNodes.has(id) ? '' : continuationRunner(sourceGraph, id) ?? '',
         rollback: rollbackNodes.has(id),
         stage: graphStage(sourceGraph, id),
+        fixRound: isFixRoundExecution(sourceGraph, id),
       });
     }),
   });
@@ -752,7 +755,14 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 <section key={result.nodeId} className={`dispatch-result-card${adopted ? ' adopted' : ''}`}>
                   <div className="dispatch-result-head">
                     <span>{node?.target?.agent}/{node?.target?.model}{node?.target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</span>
-                    <span>{resultStatus(result.status)}</span>
+                    <span className="dispatch-result-status">
+                      <span>{resultStatus(result.status)}</span>
+                      {pinnedLabelOf(result.pinned) && (
+                        <span className={`dispatch-pin-status${result.pinned === 'unpinned' ? ' unpinned' : ''}`}>
+                          {pinnedLabelOf(result.pinned)}
+                        </span>
+                      )}
+                    </span>
                   </div>
                   {result.truncated && <div className="dispatch-warning">输出已截断</div>}
                   {result.tokensIn > 50_000 && <div className="dispatch-warning">输入超过 50k tokens</div>}
@@ -760,6 +770,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   {result.runnerNote?.includes('额度用尽') && <div className="dispatch-reason">{result.runnerNote}</div>}
                   <QuotaResetLine resetsAt={result.quotaResetsAt} />
                   <FallbackSkippedLine result={result} />
+                  {result.pinned === 'unpinned' && result.pinnedNote && <div className="dispatch-pin-note">{result.pinnedNote}</div>}
                   <div className="dispatch-result-text">{result.text || result.error}</div>
                   {result.artifacts && (
                     <details className="dispatch-artifacts">

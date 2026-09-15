@@ -132,6 +132,9 @@ pub struct DispatchNodeRequest {
     /// TASK-12：为真时引擎在盲目录物化后、派发前跑一遍验证命令，输出落 VALIDATION.txt。
     #[serde(default)]
     pub review_material_validation: bool,
+    /// TASK-13：修正轮执行节点在验证通过后自动做红绿核对。
+    #[serde(default)]
+    pub fix_round: bool,
 }
 
 /// 备选目标（图契约 Target.fallback 的三字段 + R2 追加的下发 vendor；camelCase 由外层结构继承）。
@@ -232,6 +235,11 @@ pub struct DispatchNodeResult {
     pub error: String,
     pub artifacts: Option<DispatchArtifacts>,
     pub validation_output: String,
+    /// TASK-13：红绿核对结论；普通节点不返回这两个追加字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_note: Option<String>,
     /// TASK-05B：本结果由备选重跑产生时，主目标与备选目标的 "agent/model"。
     #[serde(default)]
     pub fallback_from: String,
@@ -386,6 +394,9 @@ struct DispatchRecord {
     /// TASK-12：盲目录里是否附了 VALIDATION.txt（审查材料附带验证输出）。
     #[serde(default)]
     validation_attached: bool,
+    /// TASK-13：红绿核对结论；非修正轮为空。
+    #[serde(default)]
+    pinned: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     swarm_item: Option<u32>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -2665,8 +2676,182 @@ fn run_validation(command: &str, cwd: &Path, timeout: Duration) -> Result<String
 }
 
 fn successful_validation_output(node: &DispatchNodeRequest, used_worktree: bool) -> Option<&'static str> {
-    (node.role == "执行" && used_worktree)
+    (node.role == "执行" && used_worktree && !node.fix_round)
         .then_some("worktree 节点未跑验证命令，采纳合并后再验")
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RedGreenOutcome {
+    pinned: String,
+    note: String,
+    validation_output: String,
+    validation_failed: bool,
+}
+
+fn remove_empty_snapshot_parents(root: &Path, target: &Path) {
+    let mut current = target.parent();
+    while let Some(directory) = current {
+        if directory == root || !directory.starts_with(root) {
+            break;
+        }
+        let empty = fs::read_dir(directory).is_ok_and(|mut entries| entries.next().is_none());
+        if !empty || fs::remove_dir(directory).is_err() {
+            break;
+        }
+        current = directory.parent();
+    }
+}
+
+fn restore_snapshot_paths(
+    root: &Path,
+    snapshot: &DirectorySnapshot,
+    paths: &[String],
+) -> Result<(), String> {
+    let root_canonical = root.canonicalize().map_err(|error| format!("核对目录不可用：{error}"))?;
+    for path in paths {
+        let relative = safe_relative_path(path).ok_or_else(|| format!("核对路径不安全：{path}"))?;
+        let target = root.join(relative);
+        if let Ok(metadata) = fs::symlink_metadata(&target) {
+            if is_link_or_junction(&metadata) {
+                return Err(format!("核对路径是链接，未恢复：{path}"));
+            }
+        }
+        match snapshot.get(path) {
+            Some(file) => {
+                let bytes = file.bytes.as_deref().ok_or_else(|| format!("核对快照未保存文件内容：{path}"))?;
+                let parent = target.parent().ok_or_else(|| format!("核对路径没有父目录：{path}"))?;
+                fs::create_dir_all(parent).map_err(|error| format!("创建核对恢复目录失败：{error}"))?;
+                let parent_canonical = parent.canonicalize().map_err(|error| format!("核对恢复目录不可用：{error}"))?;
+                if !parent_canonical.starts_with(&root_canonical) {
+                    return Err(format!("核对恢复路径超出工作目录：{path}"));
+                }
+                fs::write(&target, bytes).map_err(|error| format!("恢复核对后文件失败 {path}：{error}"))?;
+            }
+            None => {
+                if target.is_file() {
+                    fs::remove_file(&target).map_err(|error| format!("移除核对后新增文件失败 {path}：{error}"))?;
+                    remove_empty_snapshot_parents(root, &target);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn red_green_check(
+    project: &Path,
+    workdir: &Path,
+    before_dir: &str,
+    before: &DirectorySnapshot,
+    after: &DirectorySnapshot,
+    command: &str,
+    timeout: Duration,
+) -> RedGreenOutcome {
+    let changed = changed_snapshot_paths(before, after);
+    if before_dir.trim().is_empty() {
+        return RedGreenOutcome {
+            pinned: "skipped".into(),
+            note: "缺少派发前快照，未做红绿核对".into(),
+            ..RedGreenOutcome::default()
+        };
+    }
+    if changed.iter().any(|path| after.get(path).is_some_and(|file| file.bytes.is_none())) {
+        return RedGreenOutcome {
+            pinned: "skipped".into(),
+            note: "本次改动含未保存内容的文件，未做红绿核对".into(),
+            ..RedGreenOutcome::default()
+        };
+    }
+    let before_root = PathBuf::from(before_dir);
+    let before_root = if before_root.is_absolute() { before_root } else { project.join(before_root) };
+    if !before_root.is_dir() {
+        return RedGreenOutcome {
+            pinned: "skipped".into(),
+            note: "派发前快照不存在，未做红绿核对".into(),
+            ..RedGreenOutcome::default()
+        };
+    }
+    if fs::read_to_string(before_root.join(".skipped")).is_ok_and(|value| !value.trim().is_empty()) {
+        return RedGreenOutcome {
+            pinned: "skipped".into(),
+            note: "派发前快照不完整，未做红绿核对".into(),
+            ..RedGreenOutcome::default()
+        };
+    }
+
+    let rollback = match restore_before_dir(workdir, &before_root) {
+        Ok(summary) if summary.skipped.is_empty() => {
+            for path in changed.iter().filter(|path| !before.contains_key(*path)) {
+                remove_empty_snapshot_parents(workdir, &workdir.join(path));
+            }
+            Ok(())
+        }
+        Ok(summary) => Err(format!("{}，未做红绿核对", summary.note)),
+        Err(error) => Err(format!("临时回退修复失败：{error}")),
+    };
+    if let Err(note) = rollback {
+        let _ = restore_snapshot_paths(workdir, after, &changed);
+        return RedGreenOutcome { pinned: "skipped".into(), note, ..RedGreenOutcome::default() };
+    }
+
+    let red = run_validation(command, workdir, timeout);
+    let restored = restore_snapshot_paths(workdir, after, &changed);
+    if let Err(error) = restored {
+        return RedGreenOutcome {
+            pinned: "skipped".into(),
+            note: "红绿核对恢复后验证未通过".into(),
+            validation_output: error,
+            validation_failed: true,
+        };
+    }
+    let green = run_validation(command, workdir, timeout);
+    let final_restore = restore_snapshot_paths(workdir, after, &changed);
+    if let Err(error) = final_restore {
+        return RedGreenOutcome {
+            pinned: "skipped".into(),
+            note: "红绿核对恢复后验证未通过".into(),
+            validation_output: error,
+            validation_failed: true,
+        };
+    }
+
+    let red_timed_out = red.as_ref().is_err_and(|error| error.starts_with("验证命令超时"));
+    let green_timed_out = green.as_ref().is_err_and(|error| error.starts_with("验证命令超时"));
+    let validation_output = format!(
+        "[回退修复后]\n{}\n\n[恢复修复后]\n{}",
+        red.as_ref().map(|value| value.as_str()).unwrap_or_else(|error| error.as_str()),
+        green.as_ref().map(|value| value.as_str()).unwrap_or_else(|error| error.as_str()),
+    );
+    if red_timed_out || green_timed_out {
+        return RedGreenOutcome {
+            pinned: "skipped".into(),
+            note: "红绿核对验证命令超时，未核对".into(),
+            validation_output,
+            validation_failed: false,
+        };
+    }
+    if green.is_err() {
+        return RedGreenOutcome {
+            pinned: "skipped".into(),
+            note: "红绿核对恢复后验证未通过".into(),
+            validation_output,
+            validation_failed: true,
+        };
+    }
+    if red.is_ok() {
+        return RedGreenOutcome {
+            pinned: "unpinned".into(),
+            note: "回退修复后测试仍通过：新增测试没有钉住这个修复".into(),
+            validation_output,
+            validation_failed: false,
+        };
+    }
+    RedGreenOutcome {
+        pinned: "pinned".into(),
+        note: "回退修复后测试失败，恢复后测试通过".into(),
+        validation_output,
+        validation_failed: false,
+    }
 }
 
 fn redact_artifacts(value: &mut DispatchArtifacts) -> usize {
@@ -3459,9 +3644,10 @@ fn run_one_attempt(
     }
     let mut artifacts = None;
     let mut before_dir = String::new();
+    let mut snapshots_for_red_green = None;
     if let Some(before) = before_snapshot {
         let built = snapshot_directory(&workdir).and_then(|after| {
-            if uses_single_writer && entered_channel {
+            if entered_channel {
                 match persist_before_snapshot_with_note(project, log_dir, run_id, &node.node_id, &before, &after) {
                     Ok(saved) => {
                         before_dir = saved.path;
@@ -3470,11 +3656,13 @@ fn run_one_attempt(
                     Err(error) => append_runner_note(&mut runner_note, &format!("保存派发前快照失败：{error}")),
                 }
             }
-            artifact_diff_for_project(project, run_root, &before, &after, timeout)
+            let built = artifact_diff_for_project(project, run_root, &before, &after, timeout);
+            snapshots_for_red_green = Some((before, after));
+            built
         });
         match built {
             Ok(mut value) => {
-                value.worktree = worktree_path;
+                value.worktree = worktree_path.clone();
                 value.before_dir = before_dir.clone();
                 let summary = safe_trace(&channel_output.text)
                     .chars()
@@ -3497,6 +3685,53 @@ fn run_one_attempt(
                 error = snapshot_error;
             }
         }
+    }
+
+    let mut pinned = None;
+    let mut pinned_note = None;
+    let should_check_red_green = status == "ok"
+        && node.fix_round
+        && node.role == "执行"
+        && matches!(node.write.as_str(), "单写者" | "worktree")
+        && !settings.validation_command.trim().is_empty();
+    if should_check_red_green {
+        let red_green_guard = if worktree_path.is_some() {
+            acquire_project_write(&workdir, timeout, &cancel_key).ok()
+        } else {
+            None
+        };
+        let outcome = if worktree_path.is_some() && red_green_guard.is_none() {
+            RedGreenOutcome {
+                pinned: "skipped".into(),
+                note: "红绿核对未取得节点写锁，未核对".into(),
+                ..RedGreenOutcome::default()
+            }
+        } else if let Some((before, after)) = snapshots_for_red_green.as_ref() {
+            red_green_check(
+                project,
+                &workdir,
+                &before_dir,
+                before,
+                after,
+                &settings.validation_command,
+                timeout,
+            )
+        } else {
+            RedGreenOutcome {
+                pinned: "skipped".into(),
+                note: "缺少派发前快照，未做红绿核对".into(),
+                ..RedGreenOutcome::default()
+            }
+        };
+        if !outcome.validation_output.is_empty() {
+            validation_output = outcome.validation_output.clone();
+        }
+        if outcome.validation_failed {
+            status = "validation_failed".into();
+            error = outcome.note.clone();
+        }
+        pinned = Some(outcome.pinned);
+        pinned_note = Some(outcome.note);
     }
 
     annotate_kimi_metadata(&node.agent, &mut channel_output, &mut runner_note);
@@ -3556,6 +3791,7 @@ fn run_one_attempt(
         fallback_skipped: fallback_skipped.clone(),
         before_dir,
         validation_attached,
+        pinned: pinned.clone().unwrap_or_default(),
         swarm_item: None,
         merge_result: String::new(),
     };
@@ -3601,6 +3837,8 @@ fn run_one_attempt(
         error,
         artifacts,
         validation_output: safe_trace(&validation_output),
+        pinned,
+        pinned_note: pinned_note.map(|note| safe_trace(&note)),
         fallback_from: String::new(),
         fallback_to: String::new(),
         fallback_skipped,
@@ -5046,6 +5284,7 @@ mod tests {
             fallback: None,
             rollback_before: false,
             review_material_validation: false,
+            fix_round: false,
         }
     }
 
@@ -5322,6 +5561,7 @@ mod tests {
             fallback_skipped: String::new(),
             before_dir: String::new(),
             validation_attached: false,
+            pinned: String::new(),
             swarm_item: Some(2),
             merge_result: "merged".into(),
         };
@@ -5954,6 +6194,7 @@ mod tests {
             fallback_skipped: "可写节点".into(),
             before_dir: String::new(),
             validation_attached: false,
+            pinned: String::new(),
             swarm_item: Some(2),
             merge_result: "merged".into(),
         };
@@ -7545,6 +7786,7 @@ mod tests {
             fallback: None,
             rollback_before: false,
             review_material_validation: false,
+            fix_round: false,
         }
     }
 
@@ -8372,5 +8614,229 @@ mod tests {
             assert!(tail[0].contains(CONTRACT), "{text}");
             assert!(tail[1].contains(RED_TEST), "{text}");
         }
+    }
+
+    fn task13_repo(tag: &str) -> (PathBuf, PathBuf, DirectorySnapshot) {
+        let root = std::env::temp_dir().join(format!("aicross-red-green-{tag}-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        test_git(&project, &["init"]);
+        test_git(&project, &["config", "user.name", "aicross test"]);
+        test_git(&project, &["config", "user.email", "aicross@example.invalid"]);
+        fs::write(project.join("function.txt"), b"1\n").unwrap();
+        fs::write(project.join("baseline.test"), b"baseline\n").unwrap();
+        test_git(&project, &["add", "function.txt", "baseline.test"]);
+        test_git(&project, &["commit", "-m", "base"]);
+        let before = snapshot_directory(&project).unwrap();
+        (root, project, before)
+    }
+
+    fn task13_persist_before(project: &Path, before: &DirectorySnapshot, after: &DirectorySnapshot, node: &str) -> String {
+        let log = project.join(".dispatch");
+        persist_before_snapshot(project, &log, "run-13", node, before, after).unwrap()
+    }
+
+    #[cfg(windows)]
+    fn task13_strict_command() -> String {
+        "if ((Get-Content function.txt -Raw).Trim() -ne '2' -or -not (Test-Path regression.test)) { exit 1 }".into()
+    }
+
+    #[cfg(not(windows))]
+    fn task13_strict_command() -> String {
+        "test \"$(cat function.txt)\" = 2 && test -f regression.test".into()
+    }
+
+    #[cfg(windows)]
+    fn task13_baseline_command() -> String {
+        "if (-not (Test-Path baseline.test)) { exit 1 }".into()
+    }
+
+    #[cfg(not(windows))]
+    fn task13_baseline_command() -> String {
+        "test -f baseline.test".into()
+    }
+
+    #[cfg(windows)]
+    fn task13_timeout_command() -> String {
+        "Start-Sleep -Seconds 2".into()
+    }
+
+    #[cfg(not(windows))]
+    fn task13_timeout_command() -> String {
+        "sleep 2".into()
+    }
+
+    fn task13_failure_command() -> String {
+        "exit 1".into()
+    }
+
+    fn task13_file_bytes(root: &Path) -> HashMap<String, Vec<u8>> {
+        snapshot_directory(root).unwrap().into_iter()
+            .filter_map(|(path, file)| file.bytes.map(|bytes| (path, bytes)))
+            .collect()
+    }
+
+    #[test]
+    fn task13_changed_function_with_regression_test_is_pinned() {
+        if !require_git("task13_changed_function_with_regression_test_is_pinned") { return; }
+        let (root, project, before) = task13_repo("pinned");
+        fs::write(project.join("function.txt"), b"2\n").unwrap();
+        fs::write(project.join("regression.test"), b"expects 2\n").unwrap();
+        let after = snapshot_directory(&project).unwrap();
+        let before_dir = task13_persist_before(&project, &before, &after, "pinned");
+        let outcome = red_green_check(&project, &project, &before_dir, &before, &after, &task13_strict_command(), Duration::from_secs(5));
+        assert_eq!(outcome.pinned, "pinned", "{outcome:?}");
+        assert!(!outcome.validation_failed, "{outcome:?}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task13_changed_function_without_regression_test_is_unpinned() {
+        if !require_git("task13_changed_function_without_regression_test_is_unpinned") { return; }
+        let (root, project, before) = task13_repo("unpinned");
+        fs::write(project.join("function.txt"), b"2\n").unwrap();
+        let after = snapshot_directory(&project).unwrap();
+        let before_dir = task13_persist_before(&project, &before, &after, "unpinned");
+        let outcome = red_green_check(&project, &project, &before_dir, &before, &after, &task13_baseline_command(), Duration::from_secs(5));
+        assert_eq!(outcome.pinned, "unpinned", "{outcome:?}");
+        assert_eq!(outcome.note, "回退修复后测试仍通过：新增测试没有钉住这个修复");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task13_missing_before_snapshot_is_skipped() {
+        if !require_git("task13_missing_before_snapshot_is_skipped") { return; }
+        let (root, project, before) = task13_repo("missing");
+        fs::write(project.join("function.txt"), b"2\n").unwrap();
+        let after = snapshot_directory(&project).unwrap();
+        let outcome = red_green_check(&project, &project, "missing.before", &before, &after, &task13_baseline_command(), Duration::from_secs(5));
+        assert_eq!(outcome.pinned, "skipped", "{outcome:?}");
+        assert!(!outcome.validation_failed);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task13_red_green_restores_exact_bytes_and_leaves_unrelated_file_alone() {
+        if !require_git("task13_red_green_restores_exact_bytes_and_leaves_unrelated_file_alone") { return; }
+        let (root, project, _) = task13_repo("restore");
+        fs::write(project.join("unrelated.bin"), [0_u8, 1, 2, 255]).unwrap();
+        let before = snapshot_directory(&project).unwrap();
+        fs::write(project.join("function.txt"), b"2\r\n").unwrap();
+        fs::write(project.join("regression.test"), b"expects 2\n").unwrap();
+        let after = snapshot_directory(&project).unwrap();
+        let before_dir = task13_persist_before(&project, &before, &after, "restore");
+        let expected = task13_file_bytes(&project);
+        let outcome = red_green_check(&project, &project, &before_dir, &before, &after, &task13_strict_command(), Duration::from_secs(5));
+        assert_eq!(outcome.pinned, "pinned", "{outcome:?}");
+        assert_eq!(task13_file_bytes(&project), expected);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task13_red_green_timeout_is_skipped_and_restored() {
+        if !require_git("task13_red_green_timeout_is_skipped_and_restored") { return; }
+        let (root, project, before) = task13_repo("timeout");
+        fs::write(project.join("function.txt"), b"2\n").unwrap();
+        let after = snapshot_directory(&project).unwrap();
+        let before_dir = task13_persist_before(&project, &before, &after, "timeout");
+        let expected = task13_file_bytes(&project);
+        let outcome = red_green_check(&project, &project, &before_dir, &before, &after, &task13_timeout_command(), Duration::from_millis(50));
+        assert_eq!(outcome.pinned, "skipped", "{outcome:?}");
+        assert!(!outcome.validation_failed);
+        assert_eq!(task13_file_bytes(&project), expected);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task13_restored_validation_failure_changes_status_outcome() {
+        if !require_git("task13_restored_validation_failure_changes_status_outcome") { return; }
+        let (root, project, before) = task13_repo("green-failed");
+        fs::write(project.join("function.txt"), b"2\n").unwrap();
+        let after = snapshot_directory(&project).unwrap();
+        let before_dir = task13_persist_before(&project, &before, &after, "green-failed");
+        let expected = task13_file_bytes(&project);
+        let outcome = red_green_check(&project, &project, &before_dir, &before, &after, &task13_failure_command(), Duration::from_secs(5));
+        assert_eq!(outcome.pinned, "skipped", "{outcome:?}");
+        assert!(outcome.validation_failed, "{outcome:?}");
+        assert_eq!(outcome.note, "红绿核对恢复后验证未通过");
+        assert_eq!(task13_file_bytes(&project), expected);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task13_wire_defaults_and_frontmatter_are_append_only() {
+        let mut value = serde_json::to_value(node(Vec::new())).unwrap();
+        assert_eq!(value["fixRound"], false);
+        value.as_object_mut().unwrap().remove("fixRound");
+        assert!(!serde_json::from_value::<DispatchNodeRequest>(value).unwrap().fix_round);
+        let result = DispatchNodeResult { pinned: Some("pinned".into()), pinned_note: Some("ok".into()), ..DispatchNodeResult::default() };
+        let result_json = serde_json::to_value(result).unwrap();
+        assert_eq!(result_json["pinned"], "pinned");
+        assert_eq!(result_json["pinnedNote"], "ok");
+        let record = DispatchRecord { pinned: "unpinned".into(), ..DispatchRecord::default() };
+        assert!(serialize_frontmatter(&record).unwrap().contains("pinned: unpinned"));
+    }
+
+    fn task13_engine_run(tag: &str, write: &str, add_test: bool, validation_command: String) -> (PathBuf, PathBuf, DispatchNodeResult) {
+        let (root, project, _) = task13_repo(tag);
+        let stub = root.join("cc_switch_stub.py");
+        let regression = if add_test {
+            "pathlib.Path('regression.test').write_text('expects 2\\n', encoding='utf-8')\n"
+        } else {
+            ""
+        };
+        fs::write(
+            &stub,
+            format!("import pathlib\npathlib.Path('function.txt').write_text('2\\n', encoding='utf-8')\n{regression}print('stub answer')\nprint('input=2 cache_read=0 output=1')\n"),
+        ).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = "stub".into();
+        request.role = "执行".into();
+        request.visibility = "共享".into();
+        request.write = write.into();
+        request.fix_round = true;
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            validation_command,
+            timeout_secs: 10,
+            write_project_dispatch: true,
+            ..DispatchSettings::default()
+        };
+        let run_root = root.join("runs");
+        let log_dir = project.join(".dispatch");
+        let result = run_one("run-13-engine", &project, &run_root, &log_dir, &settings, request);
+        (root, project, result)
+    }
+
+    #[test]
+    fn task13_engine_single_writer_fix_without_test_returns_unpinned_record() {
+        if !require_git("task13_engine_single_writer_fix_without_test_returns_unpinned_record") { return; }
+        let (root, project, result) = task13_engine_run("engine-unpinned", "单写者", false, task13_baseline_command());
+        assert_eq!((result.status.as_str(), result.pinned.as_deref()), ("ok", Some("unpinned")), "{}", result.error);
+        assert_eq!(fs::read_to_string(project.join("function.txt")).unwrap().trim(), "2");
+        assert!(result.frontmatter.contains("pinned: unpinned"), "{}", result.frontmatter);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task13_engine_worktree_fix_with_test_runs_and_restores_inside_worktree() {
+        if !require_git("task13_engine_worktree_fix_with_test_runs_and_restores_inside_worktree") { return; }
+        let (root, project, result) = task13_engine_run("engine-worktree", "worktree", true, task13_strict_command());
+        assert_eq!((result.status.as_str(), result.pinned.as_deref()), ("ok", Some("pinned")), "{}", result.error);
+        let worktree = PathBuf::from(result.artifacts.as_ref().and_then(|value| value.worktree.as_deref()).expect("应返回 worktree"));
+        assert_eq!(fs::read_to_string(worktree.join("function.txt")).unwrap().trim(), "2");
+        assert!(worktree.join("regression.test").is_file());
+        assert_eq!(fs::read(project.join("function.txt")).unwrap(), b"1\n");
+        assert!(result.frontmatter.contains("pinned: pinned"), "{}", result.frontmatter);
+        let _ = run_process_registered(
+            Path::new("git"),
+            &["worktree".into(), "remove".into(), "--force".into(), worktree.to_string_lossy().into_owned()],
+            None,
+            Duration::from_secs(10),
+            Some(&project),
+            None,
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }
