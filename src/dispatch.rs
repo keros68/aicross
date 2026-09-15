@@ -3275,7 +3275,8 @@ fn run_one_with_activity(
     let mut candidates = Vec::new();
     if let Some(fallback) = node.fallback.clone().filter(|item| !item.agent.trim().is_empty() && !item.model.trim().is_empty()) {
         let exhausted_until = resource_quota_until(&fallback.agent, &fallback.provider, &fallback.model);
-        candidates.push((fallback, true, exhausted_until));
+        let login = resource_model_login(&fallback.agent, &fallback.provider, &fallback.model);
+        candidates.push((fallback, true, exhausted_until, login));
     }
     for model in configured {
         candidates.push((FallbackSpec {
@@ -3283,16 +3284,17 @@ fn run_one_with_activity(
             provider: model.provider.clone(),
             model: model.id.clone(),
             vendor: model.vendor.clone(),
-        }, false, model.quota_exhausted_until.clone()));
+        }, false, model.quota_exhausted_until.clone(), model.login.clone()));
     }
     let primary_key = crate::resources::resource_model_key(&node.agent, &node.provider, &node.model);
     let mut seen = HashSet::from([primary_key]);
-    candidates.retain(|(candidate, _, _)| seen.insert(crate::resources::resource_model_key(&candidate.agent, &candidate.provider, &candidate.model)));
+    candidates.retain(|(candidate, _, _, _)| seen.insert(crate::resources::resource_model_key(&candidate.agent, &candidate.provider, &candidate.model)));
 
     let mut result = primary;
     let mut resources_changed = result.resources_changed;
     let mut previous_route = route_name(&node.agent, &node.provider, &node.model);
     let mut quota_notes = Vec::new();
+    let mut login_skip_notes = Vec::new();
     let mut quota_resets = Vec::new();
     let mut attempt_index = 0_u32;
     let mut current_attempt_rolled_back = false;
@@ -3300,7 +3302,7 @@ fn run_one_with_activity(
         quota_notes.push(format!("主 {previous_route} 额度用尽"));
         if let Some(value) = result.quota_resets_at.clone() { quota_resets.push(value); }
     }
-    for (candidate, is_explicit, exhausted_until) in candidates {
+    for (candidate, is_explicit, exhausted_until, login) in candidates {
         let eligible = if writable {
             result.status == "quota_exhausted"
         } else if is_explicit {
@@ -3326,6 +3328,10 @@ fn run_one_with_activity(
             }
         }
         let next_route = route_name(&candidate.agent, &candidate.provider, &candidate.model);
+        if login == crate::resources::ResourceLogin::LoggedOut {
+            login_skip_notes.push(format!("跳过 {next_route}（未登录）"));
+            continue;
+        }
         if quota_until_active(exhausted_until.as_deref()) {
             if let Some(value) = exhausted_until {
                 quota_resets.push(value.clone());
@@ -3362,6 +3368,12 @@ fn run_one_with_activity(
     }
     if !quota_notes.is_empty() {
         append_runner_note(&mut result.runner_note, &quota_notes.join(" → "));
+    }
+    if !login_skip_notes.is_empty() {
+        append_runner_note(&mut result.runner_note, &login_skip_notes.join(" → "));
+        if result.fallback_to.is_empty() {
+            result.fallback_skipped = "未登录".into();
+        }
     }
     if result.status == "quota_exhausted" {
         result.quota_resets_at = earliest_reset(quota_resets);
@@ -3526,6 +3538,18 @@ fn resource_fallback_models(agent: &str, provider: &str, model: &str) -> Vec<cra
     }
     #[cfg(not(test))]
     crate::resources::fallback_models(agent, provider, model).unwrap_or_default()
+}
+
+fn resource_model_login(agent: &str, provider: &str, model: &str) -> crate::resources::ResourceLogin {
+    #[cfg(test)]
+    {
+        return RESOURCE_MODELS_STUB.with(|cell| cell.borrow().as_ref().and_then(|models| {
+            models.iter().find(|item| item.agent == agent && item.provider == provider && item.id == model)
+                .map(|item| item.login.clone())
+        }).unwrap_or_default());
+    }
+    #[cfg(not(test))]
+    crate::resources::login_status(agent, provider, model).unwrap_or_default()
 }
 
 fn resource_quota_until(agent: &str, provider: &str, model: &str) -> Option<String> {
@@ -7433,6 +7457,42 @@ mod tests {
             .map(|entry| fs::read_to_string(entry.path()).unwrap()).collect::<Vec<_>>();
         assert!(records.iter().any(|body| body.contains("attempt: 备\nattempt_index: 1")));
         assert!(records.iter().any(|body| body.contains("attempt: 备\nattempt_index: 2")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task17_r1_logged_out_fallback_is_skipped_and_recorded() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-login-fallback-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let marker = root.join("calls.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nf=pathlib.Path(r'{}')\nf.write_text((f.read_text() if f.exists() else '')+p+'\\n')\nprint('usage limit reached', file=sys.stderr)\nsys.exit(1)\n",
+            marker.display()
+        )).unwrap();
+        let mut primary = crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: "p0".into(), id: "main".into(), ..Default::default()
+        };
+        primary.fallback_order = vec!["cc-switch/p1/logged-out".into()];
+        let logged_out = crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: "p1".into(), id: "logged-out".into(),
+            login: crate::resources::ResourceLogin::LoggedOut, ..Default::default()
+        };
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![primary, logged_out]));
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "只读".into();
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("login-fallback", &project, &root.join("runs"), &log_dir, &settings, request);
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(fs::read_to_string(&marker).unwrap().lines().collect::<Vec<_>>(), ["p0"]);
+        assert_eq!(result.status, "quota_exhausted");
+        assert_eq!(result.fallback_skipped, "未登录");
+        assert!(result.runner_note.contains("跳过 cc-switch/logged-out（未登录）"), "{}", result.runner_note);
         let _ = fs::remove_dir_all(root);
     }
 

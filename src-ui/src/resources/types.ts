@@ -269,7 +269,8 @@ export function providerGroups(models: ResourceModel[]): ProviderGroup[] {
 /**
  * pi 的 provider 分组：只有已登录正常显示；未登录和未检查的 provider 都合成
  * 一行，避免其下大批未验证模型把资源页和左栏拉长。一个 provider 的模型共用
- * 登录状态，若旧数据不一致，以最保守的未登录优先。
+ * 登录状态。组内只要有已登录模型就保留正常列，其余行单独标记；
+ * 全部未检查时才收入「未检查」桶。
  */
 export function splitPiProviderGroups(models: ResourceModel[]): {
   shown: ProviderGroup[];
@@ -281,11 +282,24 @@ export function splitPiProviderGroups(models: ResourceModel[]): {
   const unknown: ProviderGroup[] = [];
   for (const group of providerGroups(models)) {
     const states = group.models.map(loginOf);
-    if (states.includes('logged_out')) loggedOut.push(group);
-    else if (states.includes('unknown')) unknown.push(group);
-    else shown.push(group);
+    if (states.includes('logged_in')) shown.push(group);
+    else if (states.every((state) => state === 'unknown')) unknown.push(group);
+    else loggedOut.push(group);
   }
   return { shown, loggedOut, unknown };
+}
+
+export function providerLoginOf(models: ResourceModel[]): Login {
+  const states = models.map(loginOf);
+  if (states.includes('logged_in')) return 'logged_in';
+  if (states.every((state) => state === 'unknown')) return 'unknown';
+  return 'logged_out';
+}
+
+export function loginCheckHint(models: ResourceModel[]): string {
+  return models.some((model) => loginOf(model) === 'unknown' && !!model.login_checked_at)
+    ? '登录状态未检查'
+    : '';
 }
 
 /** 未登录 provider 的折叠行文本。这一行本身就是展开按钮。 */

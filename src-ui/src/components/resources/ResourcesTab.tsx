@@ -12,6 +12,7 @@ import { agentDisplayName } from '../../resources/agent-display';
 import {
   errorText,
   groupKey,
+  loginCheckHint,
   loggedOutProvidersToggleLabel,
   loginLabel,
   loginOf,
@@ -19,6 +20,7 @@ import {
   modelPickTarget,
   modelSecondaryId,
   modelsByAgent,
+  providerLoginOf,
   providerGroups,
   showsGroupHeads,
   splitUnverified,
@@ -313,6 +315,7 @@ function ResourceModelGroups({
           {unknownOpen && unknown.map((group) => (
             <div className="resource-logged-out-provider" key={group.provider}>
               <span>{group.provider}</span>
+              {loginCheckHint(group.models) && <span>{loginCheckHint(group.models)}</span>}
               <button
                 type="button"
                 className="row-action"
@@ -359,7 +362,7 @@ function ResourceModelGroup({
       {showHead && group.provider !== '' && (
         <div className="resource-group-head">
           <span className="resource-group-name">{group.provider}</span>
-          {showLogin && <span className="resource-group-login">{loginLabel(loginOf(group.models[0]))}</span>}
+          {showLogin && <span className="resource-group-login">{loginLabel(providerLoginOf(group.models))}</span>}
           <span className="resource-group-count">{group.models.length}</span>
         </div>
       )}
@@ -437,6 +440,9 @@ function ResourceModelRow({
       >
         <span className="resource-model-id">{model.id}</span>
         {secondary !== '' && <span className="resource-model-resolved">{secondary}</span>}
+        {agentId === 'pi' && loginOf(model) !== 'logged_in' && (
+          <span className="resource-group-login">{loginLabel(loginOf(model))}</span>
+        )}
         <VerificationMark verification={verificationOf(model)} />
       </button>
       <span className="resources-sr-only" id={hintId}>

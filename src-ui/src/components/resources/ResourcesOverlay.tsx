@@ -13,8 +13,10 @@ import { commands, isTauri } from '../../tauri';
 import { loadDispatchSettings } from '../../graph/dispatch-settings';
 import {
   errorText,
+  loginCheckHint,
   modelSecondaryId,
   parseCommandArgs,
+  providerLoginOf,
   providerGroups,
   showsGroupHeads,
   quotaExhaustedLabel,
@@ -387,14 +389,16 @@ export function FallbackOrderEditor({
           <option value="">选择模型</option>
           {candidates.map((item) => (
             <option key={resourceModelKey(item)} value={resourceModelKey(item)}>
-              {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}
+              {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}{loginOf(item) === 'logged_out' ? '（未登录）' : ''}
             </option>
           ))}
         </select>
       </label>
       {order.map((key, index) => {
         const item = byKey.get(key);
-        const label = item ? `${item.agent}/${item.provider ? `${item.provider}/` : ''}${item.id}` : key;
+        const label = item
+          ? `${item.agent}/${item.provider ? `${item.provider}/` : ''}${item.id}${loginOf(item) === 'logged_out' ? '（未登录）' : ''}`
+          : key;
         return (
           <div className="fallback-order-row" key={key}>
             <span>{index + 1}. {label}</span>
@@ -485,7 +489,7 @@ export function AgentCard({
             {withHeads && group.provider !== '' && (
               <div className="agent-card-group">
                 <span className="agent-card-group-name">{group.provider}</span>
-                {agent.id === 'pi' && <span className="agent-card-group-login">{loginLabel(loginOf(group.models[0]))}</span>}
+                {agent.id === 'pi' && <span className="agent-card-group-login">{loginLabel(providerLoginOf(group.models))}</span>}
                 <span className="agent-card-group-count">{group.models.length}</span>
               </div>
             )}
@@ -509,6 +513,9 @@ export function AgentCard({
                     <span className="agent-card-model-state">
                       <VerificationMark verification={verification} showLabel />
                     </span>
+                    {agent.id === 'pi' && loginOf(model) !== 'logged_in' && (
+                      <span className="agent-card-group-login">{loginLabel(loginOf(model))}</span>
+                    )}
                     {quotaExhaustedLabel(model) && (
                       <span className="agent-card-model-quota">{quotaExhaustedLabel(model)}</span>
                     )}
@@ -642,6 +649,7 @@ export function AgentCard({
             {unknownOpen && unknown.map((group) => (
               <div className="agent-card-logged-out-provider" key={group.provider}>
                 <span>{group.provider}</span>
+                {loginCheckHint(group.models) && <span>{loginCheckHint(group.models)}</span>}
                 <button
                   type="button"
                   className="row-action"
