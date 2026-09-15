@@ -61,6 +61,45 @@
     z-index: 2;
 }
 
+/* 目录行（TASK-10）：目录按钮 + 「在此启动总指挥」。没存过默认时只有前者，
+   这个 flex 容器对单个子元素与改动前等价（按钮自己带左右外边距）。 */
+.workspace-dir-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.workspace-dir-row .workspace-dir-btn {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+    margin-right: 0;
+}
+
+.workspace-commander-btn {
+    flex-shrink: 0;
+    height: 34px;
+    margin: 0 16px 4px 0;
+    padding: 0 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-family: var(--font);
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: all 0.15s;
+    box-sizing: border-box;
+}
+
+.workspace-commander-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-1);
+    border-color: var(--accent);
+}
+
 .workspace-dir-btn {
     display: flex;
     align-items: center;

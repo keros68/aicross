@@ -3,6 +3,7 @@
 import { createContext, useContext, useReducer } from 'react';
 import type { ReactNode } from 'react';
 import type { Graph } from '../graph/types';
+import type { CommanderSettings } from '../commander/types';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -146,6 +147,17 @@ export interface TerminalSession {
   /// which spawns the tool with its `--resume <token>` flag instead of a
   /// fresh launch. Cleared on any subsequent SET_TERMINAL_TOOL.
   resumeToken?: string;
+  /// 这一次启动追加的 argv（TASK-10 总指挥的 `--model …`）。TierTerminal 的
+  /// mount effect 把它传给 tierTerminalStart，后端接在工具设置 `extra_args`
+  /// 之后。与 resumeToken 一样属于「本次启动」，任何一次 SET_TERMINAL_TOOL
+  /// 都会重设它——换工具不该继承上一个工具的参数。
+  extraArgs?: string[];
+  /// 总指挥 tab 的标题（`agent · 模型 · 目录名`）。和 toolTitle 分开存：
+  /// toolTitle 是 CLI 自己用 OSC 改的，一旦 CLI 报了标题就该让它赢。
+  commanderTitle?: string;
+  /// 总指挥启动成功后要保存的默认。随本次启动留在 tab 上，避免在 PTY
+  /// 真正创建成功前提前写 commander.json。
+  commanderSettings?: CommanderSettings;
   isHidden?: boolean;
   agentStatus?: AgentStatus;
   gambitDraft?: string;    // Unsent textarea content, preserved across tab switches
@@ -331,7 +343,8 @@ type Action =
   | { type: 'CLOSE_TERMINAL'; id: string }
   | { type: 'REORDER_TERMINAL'; sessionId: string; beforeId: string | null }
   | { type: 'SET_ACTIVE_TERMINAL'; id: string | null }
-  | { type: 'SET_TERMINAL_TOOL'; id: string; tool: ToolType; toolData?: string; resumeToken?: string }
+  | { type: 'SET_TERMINAL_TOOL'; id: string; tool: ToolType; toolData?: string; resumeToken?: string; extraArgs?: string[]; commanderTitle?: string; commanderSettings?: CommanderSettings }
+  | { type: 'CONSUME_COMMANDER_SETTINGS'; id: string }
   | { type: 'SET_TERMINAL_HIDDEN'; id: string; isHidden: boolean }
   | { type: 'RESTART_TERMINAL'; id: string; newId: string }
   | { type: 'OPEN_HYPER_AGENT_TAB' }
@@ -465,7 +478,14 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_TERMINAL_TOOL':
       return {
         ...state,
-        terminals: state.terminals.map(t => t.id === action.id ? { ...t, tool: action.tool, toolData: action.toolData, resumeToken: action.resumeToken, toolTitle: undefined } : t)
+        terminals: state.terminals.map(t => t.id === action.id ? { ...t, tool: action.tool, toolData: action.toolData, resumeToken: action.resumeToken, extraArgs: action.extraArgs, commanderTitle: action.commanderTitle, commanderSettings: action.commanderSettings, toolTitle: undefined } : t)
+      };
+    case 'CONSUME_COMMANDER_SETTINGS':
+      return {
+        ...state,
+        terminals: state.terminals.map(t =>
+          t.id === action.id ? { ...t, commanderSettings: undefined } : t
+        )
       };
     case 'SET_TERMINAL_HIDDEN':
       return {

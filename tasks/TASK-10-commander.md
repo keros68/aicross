@@ -5,7 +5,7 @@
 ## 契约（只追加）
 
 - `~/.aicross/commander.json`：`{ version: 1, agent: "claude"|"codex"|"kimi"|"pi", provider: string, model: string, cwd: string, updated_at: string }`。
-- 启动参数映射（前端纯函数 `commanderArgs(agent, provider, model) -> string[]`）：claude → `["--model", model]`；codex → `["-m", model]`；kimi → `["--model", model]`；pi → `["--provider", provider, "--model", model]`；再追加工具设置的 `extra_args`。空模型 → 不加模型参数。
+- 启动参数映射（前端纯函数 `commanderArgs(agent, provider, model) -> string[]`）：claude → `["--model", model]`；codex → `["-m", model]`；kimi → `["--model", model]`；pi → `["--provider", provider, "--model", model]`。先追加工具设置的 `extra_args`，再追加 `commanderArgs`；重复旗标以本次启动为准。空模型 → 不加模型参数。
 
 ## 实现
 

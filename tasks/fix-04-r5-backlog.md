@@ -36,3 +36,9 @@
 24. 验证脏路径 note 未走 20 条截断。（DS 4）
 25. 临时补丁文件在系统 temp（含项目 diff），进程被强杀时残留；改落 `.dispatch/` 或加启动清理。（DS 5）
 26. 入口脏检查不过滤排除目录，批中验证留下的 `__pycache__` 会让下一批入口整批 skipped；plan 侧 `check_swarm_plan` 的 status 也未带 `-uall`。（DS 6/9、GLM 4）
+## TASK-10 R1 复审剩余（09-15，两家都判可交付；低危，择期）
+
+27. 损坏的 commander.json 拒写后前端 `.catch(() => {})` 吞错，快照不消费，每次重启 tab 反复重试且无提示；给保存失败一个可见提示。（GLM 1）
+28. 启动器目录选择器 `pickFolder` 不置 `seeded`，晚到的默认可能覆盖用户刚选的目录。（GLM 2 / DS 6 同类）
+29. `graphViewTabs` 按 session id 索引，RESTART_TERMINAL 换 id 后标记丢失、关 tab 不清理；空白 tab 换目录会翻回启动器。（GLM 3 / DS 5）
+30. 保存默认按闭包捕获的旧 id 消费，保存在途时换目录会把旧快照留在新 id 上（窗口几毫秒）。（DS 4）

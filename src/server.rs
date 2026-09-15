@@ -558,6 +558,10 @@ async fn tier_terminal_start(
     cwd: Option<String>,
     resume_token: Option<String>,
     shell: Option<String>,
+    // TASK-10 总指挥：这一次启动要额外追加的 argv（如 `--model fable`）。
+    // 与工具设置里的 `extra_args` 是两回事——那个是每次都加的常驻配置，
+    // 这个只属于本次启动，不落盘。None / 空数组 = 与改动前完全一致。
+    extra_args: Option<Vec<String>>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -571,7 +575,7 @@ async fn tier_terminal_start(
     tauri::async_runtime::spawn_blocking(move || {
         tier_terminal_start_blocking(
             session_id, tool, tool_data, cols, rows,
-            theme_mode, locale, cwd, resume_token, shell, app, terminal_session,
+            theme_mode, locale, cwd, resume_token, shell, extra_args, app, terminal_session,
         )
     })
     .await
@@ -589,6 +593,7 @@ fn tier_terminal_start_blocking(
     cwd: Option<String>,
     resume_token: Option<String>,
     shell: Option<String>,
+    extra_args: Option<Vec<String>>,
     app: tauri::AppHandle,
     terminal_session: terminal::SharedSession,
 ) -> Result<(), String> {
@@ -790,6 +795,16 @@ fn tier_terminal_start_blocking(
         _ => (cmd, args),
     };
 
+    // ── Per-launch extra args (TASK-10 总指挥) ─────────────────────────────
+    // The launcher picks agent + model per launch, so the model flag can't
+    // live in ~/.aicross/tools.json (that file is the always-on config, and
+    // writing the model into it would leak this launch's choice into every
+    // later one). It goes last so the user's own tools.json extra_args still
+    // precede it, matching "the later flag wins" for every CLI here.
+    // Empty strings are dropped — an empty argv element is never meaningful
+    // and CLIs differ on whether they error or silently misparse it.
+    let args = append_per_launch_args(args, extra_args);
+
     // If a session with the same ID already exists (e.g. restart-in-place),
     // forcefully kill and remove it before spawning a fresh one.
     {
@@ -850,6 +865,16 @@ fn tier_terminal_start_blocking(
     }
 
     Ok(())
+}
+
+fn append_per_launch_args(
+    mut configured_args: Vec<String>,
+    per_launch_args: Option<Vec<String>>,
+) -> Vec<String> {
+    if let Some(extra) = per_launch_args {
+        configured_args.extend(extra.into_iter().filter(|arg| !arg.trim().is_empty()));
+    }
+    configured_args
 }
 
 
@@ -3958,6 +3983,8 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::channels::acp::release_acp_pool,
             crate::orchestration::load_premises,
             crate::orchestration::save_premises,
+            crate::orchestration::load_commander,
+            crate::orchestration::save_commander,
         ])
         .setup(|app| {
             // Seed bundled skills (screenshot, vibeid) into
@@ -4307,6 +4334,25 @@ mod resume_cwd_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task10_r1_per_launch_args_follow_config_and_drop_empty_values() {
+        let configured = vec!["--model".to_string(), "configured".to_string()];
+        let per_launch = Some(vec![
+            "".to_string(),
+            "   ".to_string(),
+            "--model".to_string(),
+            "picked".to_string(),
+        ]);
+        assert_eq!(
+            append_per_launch_args(configured, per_launch),
+            vec!["--model", "configured", "--model", "picked"]
+        );
+        assert_eq!(
+            append_per_launch_args(vec!["built-in".into()], None),
+            vec!["built-in"]
+        );
+    }
 
     /// Build a temp Drizzle-schema SQLite db (the `session` + `message` shape
     /// `find_drizzle_sessions_sqlite` reads), seeded with one parent session,
