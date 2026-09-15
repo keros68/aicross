@@ -63,3 +63,7 @@
 - 未修改 `src/channels/`、`src/dispatch.rs`、`src/terminal.rs`；未修改 `src-ui/src/tauri.ts`，未运行 `cargo fmt`。
 - 未启动桌面窗口，未发送真实 CLI 或模型请求。
 - 未 commit，未 push。
+
+## 复审后补记（编排者）
+
+GLM 复审判可交付，DeepSeek 判可交付但有未闭合项（`tasks/review-10-r1-*.md`）。编排者直接修了 DeepSeek 第 1/2 条：对话图 tab 的标题只在 `toolData` 为空时按启动器 / 对话图判，已开图但标题为空的仍显示「对话图」（抽 `graphTabTitle` 纯函数 + 测试）；工具探测失败时也发布「已扫描」快照，启动器不再永久「探测中」。两家剩余低危项记入 `tasks/fix-04-r5-backlog.md` 第 27–30 条。

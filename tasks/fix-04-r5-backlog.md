@@ -27,3 +27,10 @@
 18. ~~已做（TASK-06 B6）~~ 盲父节点 → 同目标共享子节点仍会继承 session/runner（continuationSession 只查子节点），靠池键含 blind + ForeignSession 兜住，无测试（05A R3 复审 DS 3）。
 19. ~~已做（TASK-06 B5）~~ 前提附件手输按逗号分隔，含逗号的路径会被拆坏；校验只在设置页保存时做，手改 premises.json 不会在抽查前拦（05B R2 复审）。
 20. ~~已做（TASK-06 A5）~~ ACP 队列恰满 8MB 时截断标记自身也进不了队列，丢行不留痕（process.rs 预留失败分支，极边缘）；取消/并发用例在池里留活进程属测试卫生（05A R3 复审 DS 4/5）。
+
+## TASK-10 R1 复审剩余（09-15，两家都判可交付；低危，择期）
+
+27. 损坏的 commander.json 拒写后前端 `.catch(() => {})` 吞错，快照不消费，每次重启 tab 反复重试且无提示；给保存失败一个可见提示。（GLM 1）
+28. 启动器目录选择器 `pickFolder` 不置 `seeded`，晚到的默认可能覆盖用户刚选的目录。（GLM 2 / DS 6 同类）
+29. `graphViewTabs` 按 session id 索引，RESTART_TERMINAL 换 id 后标记丢失、关 tab 不清理；空白 tab 换目录会翻回启动器。（GLM 3 / DS 5）
+30. 保存默认按闭包捕获的旧 id 消费，保存在途时换目录会把旧快照留在新 id 上（窗口几毫秒）。（DS 4）
