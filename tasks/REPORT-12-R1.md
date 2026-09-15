@@ -32,3 +32,7 @@
 - 未运行 `cargo fmt`，未改 `src/terminal.rs`、`src/server.rs` 或 `src-ui/src/tauri.ts`。
 - `src/dispatch.rs` 的产品代码改动收敛在阶段结束清缓存、`run_one_attempt` 的准备状态接线，以及新建的验证缓存 / 附加函数；未改 `run_one_with_activity` 的备选循环与 artifacts 逻辑。
 - 未新增契约字段；TASK-12 既有契约保持只追加。
+
+## 复审后补记（编排者，8d6b80b）
+
+两家复审（`tasks/review-12-r1-*.md`）都判可交付。DeepSeek 新发现 A（右栏「应用」仍可把预设盖在遗留节点上）编排者直接修：`applyPreset` 的目标经 `continuationNodeId` 回退到来源验收节点，测试补源码接线断言；B（盲审模式文案「由执行节点跑验证命令」与引擎不符）改成「派盲审前引擎先跑一次验证命令，输出随盲节点一起附上」；D 两条 Rust 测试补 `#[cfg(not(windows))]` 命令。剩余低危记入 `tasks/fix-04-r5-backlog.md` 第 37–40 条。
