@@ -68,6 +68,12 @@ describe('TASK-18 模式做减法', () => {
     expect(presetSelectShouldClose({ type: 'keydown', key: 'Enter' } as KeyboardEvent)).toBe(false);
   });
 
+  it('没有预设时不渲染空组头，只显示「无可用预设」', () => {
+    const html = renderToStaticMarkup(<PresetGroups presets={[]} onSelect={() => {}} />);
+    expect(html).toContain('无可用预设');
+    expect(html).not.toContain('基础模式');
+  });
+
   it('图上盖预设菜单复用同一分组组件', () => {
     expect(graphTabSource).toContain('<PresetGroups');
     expect(graphTabSource).toContain('className="graph-stamp-menu"');

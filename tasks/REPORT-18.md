@@ -113,3 +113,7 @@ vite v8.0.7 building client environment for production...
 - 未发真机请求。
 - 未运行 `cargo fmt`。
 - 未 commit，未 push。
+
+## 复审后补记（编排者）
+
+两家盲审（`tasks/review-18-*.md`）都判可交付但有未闭合项，共同点是右栏下拉换成 `<details>` 后没有 Esc / 点外关闭、「更多模式」展开态不复位；编排者直接修（`presetSelectShouldClose` 纯函数 + document 监听，关闭时把更多模式折回），补讲解页经济模式的修正轮一句，空预设时不渲染空组头，选中项断言改成真断言。可访问性（listbox 角色混排）、规划项只在右栏出现、盖预设菜单源码断言偏弱 记入 backlog。

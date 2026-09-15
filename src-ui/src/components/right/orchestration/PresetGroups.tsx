@@ -48,6 +48,9 @@ export function PresetGroups({ presets, onSelect, selectedId, includeFuture = fa
     </button>
   ));
 
+  if (presets.length === 0) {
+    return <div className="preset-groups"><div className="preset-group-item" aria-disabled="true">无可用预设</div></div>;
+  }
   return (
     <div className="preset-groups" role="listbox">
       <div className="preset-group-label">基础模式</div>
