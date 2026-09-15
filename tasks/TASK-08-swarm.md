@@ -17,6 +17,7 @@
 3. `merge_swarm_items`：按契约实现，全程走 `run_process_registered`，取项目写锁；每步失败都返回可读 note，不 panic；测试用临时 git 仓库 + 两个 worktree：① 两件顺序合并成功且各一个 commit；② 第二件冲突 → abort、第一件仍在；③ 验证命令失败 → reset 回第一件；④ 脏树 → 全 skipped。
 4. `fixtures/prompts/split.txt` + 角色默认：`fill_role_defaults` 对 `拆分` 用「出方案」的默认目标、`write=只读`、`visibility=共享`。
 5. `server.rs` 注册两条命令。
+6. **内置预设 `builtin-swarm`（Rust 侧）**：`orchestration.rs` 内置清单加一条「蜂群模式」——一个节点：role `拆分`、`write=只读`、`visibility=共享`、目标留空由 `fill_role_defaults` 按「出方案」填；内置总数 5→6，既有断言同步；`PRESET_NODE_TEXTS` 的前端文本由 B 侧配。补测试。
 
 验证：`cargo check` 零 warning、`cargo test`、`cd src-ui && npx vitest run --configLoader native --pool threads`、`cd src-ui && npm run build`。不跑 `cargo fmt`、保持文件原有换行（`server.rs` CRLF、其余 Rust LF）；不动 `src/channels/`；不起窗口、不发真机请求、不 commit、不 push。报告写 `tasks/REPORT-08A.md`。
 
