@@ -413,7 +413,7 @@ fn builtin_presets() -> Vec<Preset> {
     // 删增节点在图界面进行）。结果屏每张卡有「选它」= adopted + 设为后续列末端。
     let arena = Preset {
         id: "builtin-arena".into(),
-        name: "擂台".into(),
+        name: "擂台模式".into(),
         builtin: true,
         stages: vec![Stage {
             nodes: (0..3)
@@ -431,7 +431,7 @@ fn builtin_presets() -> Vec<Preset> {
     // 写进各节点 user.text（PRESET_NODE_TEXTS，不加 Target 字段）。
     let jury = Preset {
         id: "builtin-jury".into(),
-        name: "评审团".into(),
+        name: "评审模式".into(),
         builtin: true,
         stages: vec![Stage {
             nodes: (0..3)
@@ -688,7 +688,7 @@ fn dispatchable_from(root: &Path) -> DispatchableModels {
         Err(_) if !path.exists() => {
             return DispatchableModels {
                 models: Vec::new(),
-                error: Some("未找到 resources.json，尚未接入资源".to_string()),
+                error: Some("未找到 resources.json".to_string()),
             }
         }
         Err(error) => DispatchableModels {
@@ -1513,7 +1513,7 @@ mod tests {
         assert!(result.models.is_empty());
         assert_eq!(
             result.error.as_deref(),
-            Some("未找到 resources.json，尚未接入资源")
+            Some("未找到 resources.json")
         );
     }
 

@@ -52,7 +52,7 @@ const RESUME_FLUSH_SYNC = 256 * 1024; // 256 KB
 /** One-time in-order warning when the 2MB cap is hit. Pushed as a chunk so it
  *  lands at the correct position (where drops started) in the buffer. */
 const DROP_WARNING =
-  '\r\n\x1b[33m[aicross: 后台输出积压超过 2MB,已丢弃部分历史输出。切回此 tab 查看实时输出,完整对话见 session 文件]\x1b[0m\r\n';
+  '\r\n\x1b[33m[aicross: 后台输出积压超过 2MB，已丢弃部分历史输出。切回此 tab 查看实时输出，完整对话见 session 文件]\x1b[0m\r\n';
 
 // ── Per-session state ────────────────────────────────────────────────────────
 

@@ -312,7 +312,7 @@ describe('B5 G3 逐件合并', () => {
   it('B5 结果行：已并入 / 冲突待裁决 / 测试红 / 已跳过', () => {
     expect(swarmResultLine(result({ commit: 'abc1234' }))).toBe('第 1 件：已并入 abc1234');
     expect(swarmResultLine(result({ item: 2, result: 'conflict', note: 'D:/wt/2' }))).toBe('第 2 件：冲突待裁决 · D:/wt/2');
-    expect(swarmResultLine(result({ item: 3, result: 'test_failed', note: '已回滚' }))).toBe('第 3 件：测试红 · 已回滚');
+    expect(swarmResultLine(result({ item: 3, result: 'test_failed', note: '已回滚' }))).toBe('第 3 件：验收未通过 · 已回滚');
     expect(swarmResultLine(result({ item: 4, result: 'skipped', note: '无改动' }))).toBe('第 4 件：已跳过 · 无改动');
   });
 
@@ -479,7 +479,7 @@ describe('R1 修正轮', () => {
       mergeRow({ nodeId: 'a', item: 1, commit: 'aaa' }),
       mergeRow({ nodeId: 'b', item: 2, result: 'conflict', note: 'D:/wt/2' }),
       mergeRow({ nodeId: 'c', item: 3, result: 'test_failed', note: '已回滚' }),
-    ])).toBe('已并入 1 件，冲突 1 件，测试红 1 件');
+    ])).toBe('已并入 1 件，冲突 1 件，验收未通过 1 件');
   });
 
   it('R1-4 蜂群卡片不出「选它」，未并入不给「采纳」，已并入不给「重派」', () => {

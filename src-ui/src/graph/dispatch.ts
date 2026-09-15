@@ -353,7 +353,7 @@ export function nodeStatusLabel(node: GraphNode): string | null {
   if (node.reply?.skipped_reason) return '已跳过';
   if (node.reply?.status === 'failed') {
     if (node.reply.error_kind === 'identity_mismatch') return '真身不符';
-    if (node.reply.error_kind === 'validation_failed') return '验证失败';
+    if (node.reply.error_kind === 'validation_failed') return '验证命令未通过';
     return '失败';
   }
   // 对账判「未知」的节点（R1-10）：draft 但正文是那句说明，节点卡要看得出来，
@@ -472,7 +472,7 @@ function disputeExcerpt(text: string, limit = 200): string {
 
 export function neutralDisputeSummary(graph: Graph, aId: string, bId: string): string {
   const take = (id: string) => disputeExcerpt(graph.nodes[id]?.reply?.text ?? '');
-  return `【甲方】认为：${take(aId)}；【乙方】认为：${take(bId)}。请独立裁决，给出你的结论与理由。`;
+  return `【甲方】认为：${take(aId)}；【乙方】认为：${take(bId)}。请独立裁决，给出结论与理由。`;
 }
 
 // 仲裁建节点：盲发第三家（隔离目录、只拷共同材料祖先的用户消息与附件、强制只读，
@@ -804,7 +804,7 @@ export const RECONCILE_TEXT_LIMIT = 64 * 1024;
 
 export function clampReconcileText(text: string): string {
   if (text.length <= RECONCILE_TEXT_LIMIT) return text;
-  return `${text.slice(0, RECONCILE_TEXT_LIMIT)}\n…（正文超过 ${RECONCILE_TEXT_LIMIT} 字符已截断，完整内容见留痕文件）`;
+  return `${text.slice(0, RECONCILE_TEXT_LIMIT)}\n…（正文超过 ${RECONCILE_TEXT_LIMIT} 字符已截断，完整内容见派发记录）`;
 }
 
 function reconcileRunner(runner?: string): Reply['runner'] | undefined {
@@ -904,8 +904,8 @@ export function reconcileUiAfter(
     graphId,
     needsReview,
     note: summary?.exists
-      ? `已按留痕对账 ${summary.nodes.length} 个节点${needsReview.length > 0 ? `，${needsReview.length} 个待核对` : ''}`
-      : '未能对账，按上次的待派节点重跑',
+      ? `已按派发记录核对 ${summary.nodes.length} 个节点${needsReview.length > 0 ? `，${needsReview.length} 个待核对` : ''}`
+      : '未能核对，按上次的待派节点重跑',
   };
 }
 

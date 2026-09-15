@@ -11,7 +11,7 @@ import { findModel, validateNode } from '../../../graph/validate';
 import { depthMap } from '../../../graph/layout';
 import { commitGraph, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
-import { nodeLabel } from '../../../graph/label';
+import { nodeLabel, presetDisplayName } from '../../../graph/label';
 import { NodePanel } from './NodePanel';
 import { PresetBuilder } from './PresetBuilder';
 import { ExplainOverlay } from './ExplainOverlay';
@@ -21,11 +21,14 @@ import { withSwarmPreset } from '../../../graph/swarm';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import './OrchestrationPanel.css';
 
-// 后置期次的模式：下拉里置灰 + 标期次，不实现（TASK-02 A8）。
+// 规划中的模式：下拉里置灰 + 标「规划中」，不实现（TASK-02 A8）。
 // 擂台/评审团/仲裁/前提抽查/主备/顾问已在 TASK-05B 落地（前两个是这里的真预设，
 // 后四个分别是结果屏动作、设置页、G1 备选、/advise 输入）。
 // 蜂群在 TASK-08 落地，从这份名单里挪走，改由 withSwarmPreset 兜底。
-const FUTURE_PRESETS = ['红蓝', '群聊'];
+const FUTURE_PRESETS = [
+  { id: 'redblue', name: '红蓝模式（规划中）' },
+  { id: 'chat', name: '群聊模式（规划中）' },
+];
 
 export function OrchestrationPanel() {
   const { state, dispatch } = useAppState();
@@ -42,6 +45,7 @@ export function OrchestrationPanel() {
   const [panelNode, setPanelNode] = useState<string | null>(null);
   const [roles, setRoles] = useState<{ planning: Target; execution: Target; acceptance: Target } | null>(null);
 
+  const userPresetCount = presets.filter((p) => !p.builtin).length;
   const focus = state.graphFocus;
   const graph: Graph | undefined = focus ? state.graphs[focus.graphId] : undefined;
   const focusNode = graph && focus ? graph.nodes[focus.nodeId] : undefined;
@@ -141,7 +145,7 @@ export function OrchestrationPanel() {
     recordStamp(
       graph.id,
       Object.keys(g2.nodes).filter((id) => !before.has(id)),
-      preset.name,
+      presetDisplayName(preset, userPresetCount),
     );
     commit(g2);
     setGhost(null);
@@ -220,13 +224,12 @@ export function OrchestrationPanel() {
           {selectedPresetId === '' && <option value="">选择预设</option>}
           {presets.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.name}
-              {p.builtin ? '' : '（我的）'}
+              {presetDisplayName(p, userPresetCount)}
             </option>
           ))}
           {FUTURE_PRESETS.map((n) => (
-            <option key={n} disabled value={`future-${n}`}>
-              {n} · 后续期次
+            <option key={n.id} disabled value={`future-${n.id}`}>
+              {n.name}
             </option>
           ))}
         </select>
@@ -283,7 +286,7 @@ export function OrchestrationPanel() {
           </div>
         )}
         {modelsError && models.length === 0 && (
-          <div className="orch-note">尚未接入资源（{modelsError}）</div>
+          <div className="orch-note">未接入资源（{modelsError}）</div>
         )}
       </div>
 

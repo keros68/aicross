@@ -35,7 +35,7 @@ export function firstRunSteps(facts: FirstRunFacts): FirstRunStep[] {
     {
       key: 'folder',
       action: '打开目录',
-      hint: '选一个工作目录，派发留痕写在它的 .dispatch/ 里。',
+      hint: '选一个工作目录，派发记录写在它的 .dispatch/ 里。',
       done: !!facts.folderPath,
     },
     {

@@ -465,7 +465,8 @@ export function swarmRecordedResult(node?: GraphNode): SwarmItemState {
   if (last === '') return node?.reply?.adopted === true ? 'merged' : 'pending';
   if (last.includes(SWARM_MERGED_TEXT)) return 'merged';
   if (last.includes('冲突待裁决')) return 'conflict';
-  if (last.includes('测试红')) return 'test_failed';
+  // 09-15 改名前的图写的是「测试红」，旧记录照样识别
+  if (last.includes('验收未通过') || last.includes('测试红')) return 'test_failed';
   if (last.includes('已跳过')) return 'skipped';
   return 'pending';
 }
@@ -552,7 +553,7 @@ export function swarmResultLine(result: SwarmMergeResult): string {
   const tail = result.note ? ` · ${result.note}` : '';
   if (result.result === 'merged') return `${head}：${SWARM_MERGED_TEXT} ${result.commit || '（无 commit）'}`;
   if (result.result === 'conflict') return `${head}：冲突待裁决${tail}`;
-  if (result.result === 'test_failed') return `${head}：测试红${tail}`;
+  if (result.result === 'test_failed') return `${head}：验收未通过${tail}`;
   return `${head}：已跳过${tail}`;
 }
 
@@ -567,7 +568,7 @@ export function swarmMergeSummary(results: SwarmMergeResult[]): string {
   const labels: [SwarmMergeResult['result'], string][] = [
     ['merged', SWARM_MERGED_TEXT],
     ['conflict', '冲突'],
-    ['test_failed', '测试红'],
+    ['test_failed', '验收未通过'],
     ['skipped', '跳过'],
   ];
   return labels

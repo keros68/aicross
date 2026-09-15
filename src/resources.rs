@@ -1291,23 +1291,23 @@ pub fn add_model(
 ) -> Result<ResourceStore, String> {
     let id = request.id.trim();
     if id.is_empty() {
-        return Err("手动输入失败：模型 ID 不能为空".to_string());
+        return Err("手动接入失败：模型 ID 不能为空".to_string());
     }
     let Some(agent) = store
         .agents
         .iter_mut()
         .find(|agent| agent.id == request.agent_id)
     else {
-        return Err(format!("手动输入失败：未知 agent：{}", request.agent_id));
+        return Err(format!("手动接入失败：未知 agent：{}", request.agent_id));
     };
     let provider = request.provider.trim();
     if request.agent_id == "pi" && provider.is_empty() {
-        return Err("手动输入失败：pi 模型必须填写 provider".to_string());
+        return Err("手动接入失败：pi 模型必须填写 provider".to_string());
     }
     if agent.models.iter().any(|model| {
         model.id == id && model.provider == provider && model.agent == request.agent_id
     }) {
-        return Err("手动输入失败：该模型已存在".to_string());
+        return Err("手动接入失败：该模型已存在".to_string());
     }
     let verification = inferred_verification(&request.agent_id, STATUS_PENDING).to_string();
     let resolved_id = resolved_id_for(&request.agent_id, id);
@@ -2083,7 +2083,7 @@ fn smoke_agent_models_at(
                 let model = find_model(&store, &key.agent_id, &key.provider, &key.id)?;
                 if model.status == STATUS_FAILED {
                     errors.push(format!(
-                        "冒烟 {}/{} 失败：{}",
+                        "验证 {}/{} 失败：{}",
                         key.agent_id, key.id, model.smoke_failure
                     ));
                 }
@@ -2150,7 +2150,7 @@ pub async fn add_manual_agent(request: AddManualAgentRequest) -> Result<Resource
         let name = request.name.trim();
         let binary = request.binary.trim();
         if name.is_empty() || binary.is_empty() {
-            return Err("手动添加失败：名称和二进制名不能为空".to_string());
+            return Err("手动接入失败：名称和二进制名不能为空".to_string());
         }
         let id = format!("manual-{}", Uuid::new_v4());
         crate::tool_config::set(
@@ -2184,14 +2184,14 @@ pub async fn add_manual_agent(request: AddManualAgentRequest) -> Result<Resource
         })
     })
     .await
-    .map_err(|error| format!("手动添加任务失败：{error}"))?
+    .map_err(|error| format!("手动接入任务失败：{error}"))?
 }
 
 #[tauri::command]
 pub async fn smoke_resource_model(request: ResourceModelKey) -> Result<ResourceStore, String> {
     tauri::async_runtime::spawn_blocking(move || smoke_resource_model_at(&store_path()?, request))
         .await
-        .map_err(|error| format!("冒烟任务失败：{error}"))?
+        .map_err(|error| format!("验证任务失败：{error}"))?
 }
 
 #[tauri::command]
@@ -2200,7 +2200,7 @@ pub async fn smoke_agent_models(agent_id: String) -> Result<ResourceOperation, S
         smoke_agent_models_at(&store_path()?, &agent_id, run_smoke)
     })
     .await
-    .map_err(|error| format!("冒烟任务失败：{error}"))?
+    .map_err(|error| format!("验证任务失败：{error}"))?
 }
 
 #[cfg(test)]

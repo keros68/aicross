@@ -128,7 +128,7 @@ export function verificationHint(
     return { text: '该模型未验证，首次派发会先发一个短请求核对真身。', tone: 'reason' };
   }
   if (verification === 'failed') {
-    return { text: '该模型上次验证失败，可在接入页手动重验。', tone: 'warning' };
+    return { text: '该模型上次验证失败，可在接入页重新验证。', tone: 'warning' };
   }
   return null;
 }

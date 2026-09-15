@@ -19,8 +19,8 @@ function presetNodeText(target: Target, swarmLimit: number): string {
 // （fixtures/prompts/split.txt），再补一行本次件数上限，见 presetNodeText。
 export const PRESET_NODE_TEXTS: Record<string, string[]> = {
   'builtin-jury': [
-    '你是评审团的安全评审。只从安全视角审查这批材料：指出风险、暴露面与缓释建议。',
-    '你是评审团的性能评审。只从性能视角审查这批材料：指出瓶颈、复杂度与改进建议。',
+    '安全评审：只从安全视角审查这批材料，指出风险、暴露面与缓释建议。',
+    '性能评审：只从性能视角审查这批材料，指出瓶颈、复杂度与改进建议。',
     '',
   ],
 };

@@ -337,7 +337,7 @@ export function SettingsModal() {
         premises: premiseFile.premises.map((p) =>
           p.id === premise.id ? { ...p, last_graph_id: graph.id } : p),
       });
-      setPremiseNote(`已建图「${graph.title}」：到中栏对话图起始页打开并派发，结论回本页自动并列`);
+      setPremiseNote(`已建图「${graph.title}」，在中栏对话图起始页打开并派发；结论自动回到本页`);
     }).catch((err) => setPremiseNote(String(err)));
   };
 
@@ -648,9 +648,9 @@ export function SettingsModal() {
                       value={dispatchSettings.classificationModel}
                       placeholder="默认取已接入的低档模型"
                       disabled
-                      title="归类动作尚未接入"
+                      title="归类未接入"
                     />
-                    <span>尚未接入，当前不可用</span>
+                    <span>未接入，当前不可用</span>
                   </label>
                   <label className="settings-dispatch-field settings-dispatch-wide">
                     <span>cc_switch.py 路径</span>
@@ -692,8 +692,8 @@ export function SettingsModal() {
                   {acpProbeError && <span>探测失败：{acpProbeError}</span>}
                 </div>
                 <button onClick={() => { setAcpAdapters(null); setAcpProbeError(''); }}>重新探测</button>
-                <span>当前只有 Kimi 使用长驻运行；Claude Code 与 Codex 仅探测适配器。ACP 下只读节点允许读类请求，拒绝写入与执行；一次性 Kimi 不受此策略限制。</span>
-                <div className="settings-section-label">外发与留痕</div>
+                <span>当前只有 Kimi 长驻运行，Claude Code 与 Codex 仅探测适配器。长驻下只读节点只允许读类请求；一次性 Kimi 不受限。</span>
+                <div className="settings-section-label">外发与记录</div>
                 <div className="settings-key-row">
                   <button
                     className={`settings-key-card${dispatchSettings.redact ? ' active' : ''}`}
@@ -708,7 +708,7 @@ export function SettingsModal() {
                     onClick={() => setDispatchOption('writeProjectDispatch', !dispatchSettings.writeProjectDispatch)}
                     aria-pressed={dispatchSettings.writeProjectDispatch}
                   >
-                    <span className="settings-key-combo">项目留痕</span>
+                    <span className="settings-key-combo">派发记录</span>
                     <span className="settings-key-sub">{dispatchSettings.writeProjectDispatch ? '写入 .dispatch/' : '只写运行目录'}</span>
                   </button>
                 </div>
@@ -725,7 +725,7 @@ export function SettingsModal() {
                     onChange={(e) => setPremiseDraft(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addPremise(); }}
                   />
-                  <button onClick={addPremise}>添加</button>
+                  <button onClick={addPremise}>记录</button>
                 </div>
                 <div className="settings-section-label">抽查目标（已排除三个角色所用厂商）</div>
                 <div className="settings-dispatch-grid">

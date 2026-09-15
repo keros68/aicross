@@ -5,7 +5,7 @@
 // 09-15 口径：原生 CLI（claude / codex / kimi）的模型读清单即可用，不给「验证」
 // 按钮；第三方端点的模型显示未验证 / 已验证 / 验证失败三态，首次派发时引擎自动
 // 验一次，用户也可以在这里手动重验。
-// cc-switch 降级为发现提示：只显示「cc-switch 里有 X，建议加进 pi」。
+// cc-switch 降级为发现提示：只显示「cc-switch 里有 X，建议接入 pi」。
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -228,7 +228,7 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
             {hints.map((hint) => (
               <div className="resources-hint" key={hint.name}>
                 cc-switch 里有 {hint.name}（{hint.models.length} 个模型
-                {hint.has_token ? '' : '，未配置密钥'}），建议加进 pi
+                {hint.has_token ? '' : '，未配置密钥'}），建议接入 pi
               </div>
             ))}
           </div>
@@ -255,7 +255,7 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
         </div>
         <div className="resources-footer">
           <button className="res-btn" type="button" onClick={() => setManualAgentOpen(true)}>
-            手动添加 agent
+            手动接入 agent
           </button>
         </div>
         {store && modelAgent && (
@@ -483,7 +483,7 @@ export function AgentCard({
           </button>
         )}
         <button className="res-btn" type="button" disabled={busy !== null} onClick={onManual}>
-          手动输入
+          手动接入模型
         </button>
       </div>
     </article>
@@ -529,13 +529,13 @@ function ResourceModelDialog({
         }),
       );
     } catch (error) {
-      onError(`添加资源失败：${errorText(error)}`);
+      onError(`接入模型失败：${errorText(error)}`);
     } finally {
       setSaving(false);
     }
   };
   return (
-    <ResourceDialog title={`手动输入：${agentName || agentId}`} onClose={onClose}>
+    <ResourceDialog title={`手动接入模型：${agentName || agentId}`} onClose={onClose}>
       <label className="res-field">
         模型 ID
         <input
@@ -582,7 +582,7 @@ function ResourceModelDialog({
           onChange={(event) => setValue({ ...value, note: event.target.value })}
         />
       </label>
-      <ResourceDialogActions onClose={onClose} onSave={save} saving={saving} label="添加" />
+      <ResourceDialogActions onClose={onClose} onSave={save} saving={saving} label="接入" />
     </ResourceDialog>
   );
 }
@@ -615,13 +615,13 @@ function ManualAgentDialog({
         }),
       );
     } catch (error) {
-      onError(`添加 agent 失败：${errorText(error)}`);
+      onError(`接入 agent 失败：${errorText(error)}`);
     } finally {
       setSaving(false);
     }
   };
   return (
-    <ResourceDialog title="手动添加 agent" onClose={onClose}>
+    <ResourceDialog title="手动接入 agent" onClose={onClose}>
       <label className="res-field">
         名称
         <input
@@ -645,7 +645,7 @@ function ManualAgentDialog({
           onChange={(event) => setArgsText(event.target.value)}
         />
       </label>
-      <ResourceDialogActions onClose={onClose} onSave={save} saving={saving} label="添加" />
+      <ResourceDialogActions onClose={onClose} onSave={save} saving={saving} label="接入" />
     </ResourceDialog>
   );
 }

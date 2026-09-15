@@ -780,9 +780,9 @@ fn append_swarm_records(project: &Path, log_dir: &Path, run_id: &str, results: &
     for result in results {
         if let Err(error) = append_swarm_record(project, log_dir, run_id, result) {
             if result.note.is_empty() {
-                result.note = format!("写入合并留痕失败：{error}");
+                result.note = format!("写入合并记录失败：{error}");
             } else {
-                result.note.push_str(&format!("；写入合并留痕失败：{error}"));
+                result.note.push_str(&format!("；写入合并记录失败：{error}"));
             }
         }
     }
@@ -1390,9 +1390,9 @@ fn merge_swarm_items_core(
         }
         if let Err(error) = append_swarm_record(project, &log_dir, run_id, &result) {
             if result.note.is_empty() {
-                result.note = format!("写入合并留痕失败：{error}");
+                result.note = format!("写入合并记录失败：{error}");
             } else {
-                result.note.push_str(&format!("；写入合并留痕失败：{error}"));
+                result.note.push_str(&format!("；写入合并记录失败：{error}"));
             }
         }
         results.push(result);
@@ -1413,7 +1413,7 @@ fn merge_swarm_items_core(
     }
     for result in &mut overflow {
         if let Err(error) = append_swarm_record(project, &log_dir, run_id, result) {
-            result.note.push_str(&format!("；写入合并留痕失败：{error}"));
+            result.note.push_str(&format!("；写入合并记录失败：{error}"));
         }
     }
     results.append(&mut overflow);
@@ -1488,13 +1488,13 @@ pub fn inspect_dispatch_state(project_dir: String) -> Result<DispatchStateSummar
 
 fn parse_record_file(path: &Path) -> Result<(DispatchRecord, String, Option<DispatchArtifacts>), String> {
     let content = fs::read_to_string(path)
-        .map_err(|error| format!("读取派发留痕失败 {}：{error}", path.display()))?;
-    let rest = content.strip_prefix("---\n").ok_or_else(|| "留痕缺少 frontmatter".to_string())?;
-    let (yaml, body) = rest.split_once("\n---\n").ok_or_else(|| "留痕 frontmatter 未结束".to_string())?;
+        .map_err(|error| format!("读取派发记录失败 {}：{error}", path.display()))?;
+    let rest = content.strip_prefix("---\n").ok_or_else(|| "派发记录缺少 frontmatter".to_string())?;
+    let (yaml, body) = rest.split_once("\n---\n").ok_or_else(|| "派发记录 frontmatter 未结束".to_string())?;
     let record: DispatchRecord = serde_yaml::from_str(yaml)
-        .map_err(|error| format!("解析留痕 frontmatter 失败：{error}"))?;
+        .map_err(|error| format!("解析派发记录 frontmatter 失败：{error}"))?;
     if record.schema != "aicross-dispatch/1" {
-        return Err(format!("不支持的留痕 schema：{}", record.schema));
+        return Err(format!("不支持的派发记录 schema：{}", record.schema));
     }
     let section = |heading: &str| {
         let marker = format!("## {heading}");
@@ -1536,10 +1536,10 @@ pub fn reconcile_dispatch_state(project_dir: String) -> Result<ReconcileSummary,
         let mut matched_key = None;
         if dispatch.is_dir() {
             let mut paths = fs::read_dir(&dispatch)
-                .map_err(|error| format!("读取留痕目录失败：{error}"))?
+                .map_err(|error| format!("读取派发记录目录失败：{error}"))?
                 .map(|entry| entry.map(|value| value.path()))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| format!("读取留痕目录项失败：{error}"))?;
+                .map_err(|error| format!("读取派发记录目录项失败：{error}"))?;
             paths.sort();
             for path in paths {
                 if path.file_name().and_then(|name| name.to_str()) == Some("STATE.md")
@@ -3555,7 +3555,7 @@ fn project_path(value: &str) -> Result<PathBuf, String> {
 }
 
 fn ensure_log_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path).map_err(|error| format!("创建留痕目录失败：{error}"))?;
+    fs::create_dir_all(path).map_err(|error| format!("创建派发记录目录失败：{error}"))?;
     let ignore = path.join(".gitignore");
     if !ignore.exists() {
         fs::write(&ignore, "*\n")
@@ -3565,7 +3565,7 @@ fn ensure_log_dir(path: &Path) -> Result<(), String> {
 }
 
 fn serialize_frontmatter(record: &DispatchRecord) -> Result<String, String> {
-    let yaml = serde_yaml::to_string(record).map_err(|error| format!("序列化留痕失败：{error}"))?;
+    let yaml = serde_yaml::to_string(record).map_err(|error| format!("序列化派发记录失败：{error}"))?;
     Ok(format!("---\n{yaml}---"))
 }
 
@@ -4917,7 +4917,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let path = root.join("record.md");
         fs::write(&path, "---\nschema: aicross-dispatch/999\nnode: legacy\n---\n\n## 回复正文\n\nok\n").unwrap();
-        assert!(parse_record_file(&path).unwrap_err().contains("不支持的留痕 schema"));
+        assert!(parse_record_file(&path).unwrap_err().contains("不支持的派发记录 schema"));
         let _ = fs::remove_dir_all(root);
     }
 
