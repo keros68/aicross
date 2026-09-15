@@ -1,4 +1,5 @@
 import type { DispatchSettings } from '../tauri';
+import { DEFAULT_FIX_ROUND_LIMIT, FIX_ROUND_LIMIT_MAX } from './dispatch.ts';
 
 export interface UiDispatchSettings extends DispatchSettings {
   classificationModel: string;
@@ -17,9 +18,18 @@ export const DEFAULT_DISPATCH_SETTINGS: UiDispatchSettings = {
   ccSwitchPath: '',
   validationCommand: '',
   acpEnabled: false,
+  fixRoundLimit: DEFAULT_FIX_ROUND_LIMIT,
 };
 
 const KEY = 'aicross-dispatch-settings';
+
+export function fixRoundLimitFromInput(value: string): number {
+  if (value.trim() === '') return DEFAULT_FIX_ROUND_LIMIT;
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? Math.max(0, Math.min(FIX_ROUND_LIMIT_MAX, Math.floor(parsed)))
+    : DEFAULT_FIX_ROUND_LIMIT;
+}
 
 export function loadDispatchSettings(): UiDispatchSettings {
   try {
@@ -45,6 +55,10 @@ export function loadDispatchSettings(): UiDispatchSettings {
       ccSwitchPath: typeof parsed.ccSwitchPath === 'string' ? parsed.ccSwitchPath : '',
       validationCommand: typeof parsed.validationCommand === 'string' ? parsed.validationCommand : '',
       acpEnabled: parsed.acpEnabled === true,
+      // 修正轮上限（TASK-12）：0 = 不派修正轮，到顶直接生成遗留节点。
+      fixRoundLimit: Number.isFinite(parsed.fixRoundLimit)
+        ? Math.max(0, Math.min(FIX_ROUND_LIMIT_MAX, Math.floor(Number(parsed.fixRoundLimit))))
+        : DEFAULT_FIX_ROUND_LIMIT,
     };
   } catch {
     return { ...DEFAULT_DISPATCH_SETTINGS };

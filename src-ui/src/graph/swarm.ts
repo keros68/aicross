@@ -42,6 +42,7 @@ export function swarmWireSettings(settings: UiDispatchSettings): SwarmSettings {
     validationCommand: settings.validationCommand,
     acpEnabled: settings.acpEnabled,
     swarmLimit: settings.swarmLimit,
+    fixRoundLimit: settings.fixRoundLimit,
   };
 }
 

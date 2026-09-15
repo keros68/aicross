@@ -14,7 +14,7 @@ import { childrenOf, stamp } from '../../../graph/stamp';
 import { swarmPendingMergeStage, withSwarmPreset } from '../../../graph/swarm';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import { findModel, validateNode } from '../../../graph/validate';
-import { latestLeaf, layersOf, normalizeNodeKinds, pathTo, sameBranch } from '../../../graph/layout';
+import { continuationNodeId, latestLeaf, layersOf, normalizeNodeKinds, pathTo, sameBranch } from '../../../graph/layout';
 import { appendTurn, defaultTurnTarget, fillRoot, parseSend, removeDraftNode } from '../../../graph/mutate';
 import { commitGraph, presetNameOf, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
@@ -225,9 +225,9 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     setPrevGraph(graph);
     if (graph) {
       setColumns((cols) => {
-        const valid = cols.filter((id) => graph.nodes[id]);
+        const valid = cols.filter((id) => graph.nodes[id]).map((id) => continuationNodeId(graph, id));
         if (valid.length === 0) return [latestLeaf(graph)];
-        return valid.length === cols.length ? cols : valid;
+        return valid.length === cols.length && valid.every((id, index) => id === cols[index]) ? cols : valid;
       });
     }
   }
@@ -383,7 +383,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     if (!graph) return;
     const raw = (drafts[colIdx] ?? '').trim();
     if (raw === '') return;
-    const endId = columns[colIdx];
+    const endId = continuationNodeId(graph, columns[colIdx]);
     const endNode = endId ? graph.nodes[endId] : undefined;
     if (!endNode) return;
     // /advise @agent/model 问题 → 顾问节点（盲、只读、只要方案不要执行）
@@ -573,6 +573,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
           <div className="graph-node-row">
             {node.target?.role && <span className="graph-node-role">{node.target.role}</span>}
             {node.kind === 'accept' && <span className="graph-node-role">汇合</span>}
+            {node.leftover && <span className="graph-node-role">{node.leftover.items.length} 条未闭合</span>}
             {status && <span className="graph-node-status">{status}</span>}
             {disconnected && <span className="hint-capsule">未接入</span>}
           </div>
@@ -585,12 +586,12 @@ export function GraphTab({ session }: { session: TerminalSession }) {
                 重派
               </button>
             )}
-            {node.reply?.status === 'draft' && childrenOf(graph, id).length === 0 && (
+            {(node.leftover || node.reply?.status === 'draft') && childrenOf(graph, id).length === 0 && (
               <button className="graph-mini-btn" onClick={(e) => { e.stopPropagation(); commit(removeDraftNode(graph, id)); }}>
                 删除
               </button>
             )}
-            <button
+            {!node.leftover && <button
               className="graph-mini-btn graph-stamp-trigger"
               onClick={(e) => {
                 e.stopPropagation();
@@ -598,8 +599,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               }}
             >
               分叉
-            </button>
-            <button
+            </button>}
+            {!node.leftover && <button
               className="graph-mini-btn"
               onClick={(e) => {
                 e.stopPropagation();
@@ -613,7 +614,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               }}
             >
               盖预设
-            </button>
+            </button>}
           </div>
         )}
       </div>
@@ -650,7 +651,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   // ── 聊天面板 ────────────────────────────────────────────────────────────
   const renderTurn = (node: GraphNode) => {
     const hasUser = node.user.text !== '' || node.user.attachments.length > 0;
-    const showReplySlot = node.kind !== 'material';
+    // 遗留节点（TASK-12）只有清单，没有回复槽。
+    const showReplySlot = node.kind !== 'material' && !node.leftover;
     return (
       <div
         key={node.id}
@@ -664,6 +666,9 @@ export function GraphTab({ session }: { session: TerminalSession }) {
             {node.user.text !== '' && <div className="graph-msg-text">{node.user.text}</div>}
             {node.user.attachments.length > 0 && (
               <div className="graph-msg-att">附件：{node.user.attachments.join('、')}</div>
+            )}
+            {node.leftover && (
+              <div className="graph-msg-text graph-leftover">{node.leftover.items.join('\n')}</div>
             )}
           </div>
         )}

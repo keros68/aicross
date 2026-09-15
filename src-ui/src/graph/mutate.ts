@@ -96,11 +96,11 @@ export function updateNodeUserText(graph: Graph, nodeId: string, text: string): 
   };
 }
 
-// 删除一个没有子节点的 draft 节点（擂台调路数用）。守卫：节点存在、是 draft、
-// 没有任何节点以它为父；不满足返回原图。
+// 删除一个没有子节点的 draft 节点（擂台调路数用）或遗留节点。守卫：节点存在、
+// 属于上述两类且没有任何节点以它为父；不满足返回原图。
 export function removeDraftNode(graph: Graph, nodeId: string): Graph {
   const node = graph.nodes[nodeId];
-  if (!node || node.reply?.status !== 'draft') return graph;
+  if (!node || (!node.leftover && node.reply?.status !== 'draft')) return graph;
   if (Object.values(graph.nodes).some((other) => other.parents.includes(nodeId))) return graph;
   const nodes = { ...graph.nodes };
   delete nodes[nodeId];

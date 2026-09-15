@@ -21,8 +21,8 @@ import { attachmentDraftState, buildPremiseCheckGraph, matchPremiseResults, prem
 import { modelStatusSuffix } from '../../resources/model-picker';
 import { FontPicker } from './FontPicker';
 import { THEME_COLORS, LANGUAGES, TASK_VIEW_MODES } from '../../lib/personalization';
-import { loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } from '../../graph/dispatch-settings';
-import { ROLE_PROMPT_TEMPLATES } from '../../graph/dispatch';
+import { fixRoundLimitFromInput, loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } from '../../graph/dispatch-settings';
+import { FIX_ROUND_LIMIT_MAX, ROLE_PROMPT_TEMPLATES } from '../../graph/dispatch';
 import './SettingsModal.css';
 
 type Section = 'appearance' | 'terminal' | 'roles' | 'dispatch' | 'premises' | 'tasks' | 'language' | 'feedback';
@@ -641,6 +641,17 @@ export function SettingsModal() {
                       value={dispatchSettings.maxRequests}
                       onChange={(e) => setDispatchOption('maxRequests', Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
                     />
+                  </label>
+                  <label className="settings-dispatch-field">
+                    <span>修正轮上限</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={FIX_ROUND_LIMIT_MAX}
+                      value={dispatchSettings.fixRoundLimit}
+                      onChange={(e) => setDispatchOption('fixRoundLimit', fixRoundLimitFromInput(e.target.value))}
+                    />
+                    <span>到上限后未闭合的条目生成遗留节点，不再派修正。验证命令未通过的重派与修正轮共用此上限；验证未通过到顶时该验收标「已跳过」。</span>
                   </label>
                   <label className="settings-dispatch-field settings-dispatch-wide">
                     <span>归类模型</span>

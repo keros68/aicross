@@ -71,6 +71,7 @@
 .dispatch-records pre { max-height: 260px; overflow: auto; padding: 12px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-xs); white-space: pre-wrap; }
 .dispatch-empty { color: var(--text-3); font-size: 13px; }
 .dispatch-reason { margin-top: 4px; color: var(--text-3); font-size: 11px; }
+.dispatch-leftover { margin: 6px 0 0; padding-left: 20px; font-size: 12px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
 .dispatch-collapsed { position: fixed; right: 20px; bottom: 20px; z-index: 12000; display: inline-flex; align-items: center; height: 36px; padding: 0 16px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--bg-app); color: var(--text-1); box-shadow: 0 8px 28px rgba(0,0,0,.3); }
 .dispatch-artifacts { margin-top: 12px; color: var(--text-2); font-size: 12px; }
 .dispatch-artifacts pre, .dispatch-result-card details pre { max-height: 240px; overflow: auto; padding: 8px; background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-xs); white-space: pre-wrap; }
@@ -502,6 +503,13 @@
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 遗留清单（TASK-12）：只读，条目按行 */
+.graph-leftover {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-2);
 }
 
 .graph-msg-att {
