@@ -4,7 +4,7 @@ import graphTabSource from '../../components/center/graph/GraphTab.tsx?raw';
 import orchestrationPanelSource from '../../components/right/orchestration/OrchestrationPanel.tsx?raw';
 import manual from '../../../../docs/MANUAL.md?raw';
 import { ExplainContent } from '../../components/right/orchestration/ExplainOverlay.tsx';
-import { PresetGroups, PresetSelect } from '../../components/right/orchestration/PresetGroups.tsx';
+import { PresetGroups, PresetSelect, presetSelectShouldClose } from '../../components/right/orchestration/PresetGroups.tsx';
 import { presetGroupOf } from '../label.ts';
 import type { Preset } from '../types.ts';
 
@@ -37,7 +37,8 @@ describe('TASK-18 模式做减法', () => {
     const html = renderToStaticMarkup(
       <PresetSelect presets={PRESETS} selectedId="builtin-economy" onSelect={() => {}} />,
     );
-    expect(html).toContain('经济模式');
+    expect(html).toMatch(/<summary class="orch-preset-select"[^>]*>经济模式<\/summary>/);
+    expect(html).toMatch(/aria-selected="true"[^>]*>经济模式<\/button>/);
     expect(html.indexOf('基础模式')).toBeLessThan(html.indexOf('自定义模式'));
     expect(html.indexOf('自定义模式')).toBeLessThan(html.indexOf('更多模式'));
     expect(html).toMatch(/<details class="preset-more">/);
@@ -56,6 +57,15 @@ describe('TASK-18 模式做减法', () => {
     }
     expect(html).toMatch(/disabled=""[^>]*>红蓝模式（规划中）<\/button>/);
     expect(html).toMatch(/disabled=""[^>]*>群聊模式（规划中）<\/button>/);
+  });
+
+  it('右栏下拉：Esc 或点到下拉之外关闭，点在下拉内不关（R1 复审 1）', () => {
+    const inside = { type: 'mousedown', target: { closest: (sel: string) => (sel.includes('.preset-select') ? {} : null) } } as unknown as MouseEvent;
+    const outside = { type: 'mousedown', target: { closest: () => null } } as unknown as MouseEvent;
+    expect(presetSelectShouldClose(inside)).toBe(false);
+    expect(presetSelectShouldClose(outside)).toBe(true);
+    expect(presetSelectShouldClose({ type: 'keydown', key: 'Escape' } as KeyboardEvent)).toBe(true);
+    expect(presetSelectShouldClose({ type: 'keydown', key: 'Enter' } as KeyboardEvent)).toBe(false);
   });
 
   it('图上盖预设菜单复用同一分组组件', () => {

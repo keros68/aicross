@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Preset } from '../../../graph/types.ts';
 import { presetDisplayName, presetGroupOf } from '../../../graph/label.ts';
 import './PresetGroups.css';
@@ -71,6 +71,14 @@ export function PresetGroups({ presets, onSelect, selectedId, includeFuture = fa
   );
 }
 
+// 右栏下拉的关闭判定（R1 复审 1）：Esc 或点到 .preset-select 之外就收起，
+// 与图上盖预设菜单的 stampMenuShouldClose 同一口径。纯函数，可测。
+export function presetSelectShouldClose(event: KeyboardEvent | MouseEvent): boolean {
+  if (event.type === 'keydown') return (event as KeyboardEvent).key === 'Escape';
+  const target = event.target as { closest?: (selector: string) => unknown } | null;
+  return !target?.closest?.('.preset-select');
+}
+
 interface PresetSelectProps {
   presets: Preset[];
   selectedId: string;
@@ -81,6 +89,24 @@ export function PresetSelect({ presets, selectedId, onSelect }: PresetSelectProp
   const rootRef = useRef<HTMLDetailsElement>(null);
   const selected = presets.find((preset) => preset.id === selectedId);
   const userPresetCount = presets.filter((preset) => !preset.builtin).length;
+  // 收起时把「更多模式」也折回去（R1 复审 2）：下次打开仍是默认折叠。
+  const close = () => {
+    const root = rootRef.current;
+    if (!root) return;
+    root.removeAttribute('open');
+    root.querySelector('details.preset-more')?.removeAttribute('open');
+  };
+  useEffect(() => {
+    const onEvent = (event: KeyboardEvent | MouseEvent) => {
+      if (rootRef.current?.open && presetSelectShouldClose(event)) close();
+    };
+    document.addEventListener('mousedown', onEvent);
+    document.addEventListener('keydown', onEvent);
+    return () => {
+      document.removeEventListener('mousedown', onEvent);
+      document.removeEventListener('keydown', onEvent);
+    };
+  }, []);
 
   return (
     <details className="preset-select" ref={rootRef}>
@@ -94,7 +120,7 @@ export function PresetSelect({ presets, selectedId, onSelect }: PresetSelectProp
           includeFuture
           onSelect={(preset) => {
             onSelect(preset);
-            rootRef.current?.removeAttribute('open');
+            close();
           }}
         />
       </div>
