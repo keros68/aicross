@@ -5620,7 +5620,7 @@ mod tests {
         let status = HashMap::from([
             ("a".into(), "运行中".into()),
             ("b".into(), "失败".into()),
-            ("c".into(), "验证失败".into()),
+            ("c".into(), "验证命令未通过".into()),
         ]);
         let failed = [
             DispatchNodeResult {
