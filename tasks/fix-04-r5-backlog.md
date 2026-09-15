@@ -94,3 +94,7 @@
 56. `detect_into` 的 pi 分支已成生产死代码且保留「不刷登录」旧语义，日后恢复会无声回归；清理或注明。（GLM）
 57. 引擎跳过未登录备选的说明只加在返回结果上，不进主尝试留痕；引擎每候选各读一次库取 login。（GLM）
 58. `status:"ready"` 但退出码非 0 判未登录而非未检查（有意取舍，仅记口径）。（GLM）
+
+## 安装包（09-15 夜）
+
+59. WiX PATH 片段（`windows/fragments/path.wxs`）在 light 阶段失败（candle 已过）：Environment 组件可能缺 KeyPath / 与 tauri 生成的 main.wxs 冲突；MSI 暂不能出包，NSIS 不受影响。修好前可在 tauri.conf.json 里去掉 fragmentPaths/componentRefs 出 MSI。
