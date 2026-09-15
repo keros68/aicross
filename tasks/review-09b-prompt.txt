@@ -1,0 +1,9 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 ui/phase9b 分支。本期 TASK-09b：品牌标志（simple-icons CC0 路径内联 SVG）、ResourceModel.resolved_id（Claude 别名→真实 ID 表 + 冒烟/首派真身覆盖）、左栏按 provider 分小组 + 未验证折叠 + 单状态点、正文字体与密度、接入页同步。先读 docs/PRODUCT.md「视觉纪律」「资源冒烟口径」、tasks/TASK-09b-resources-polish.md、tasks/REPORT-09b.md，再读改动：src/resources.rs（resolved_id 段）、src-ui/src/components/resources/（brand-marks.ts、AgentBadge.tsx、VerificationMark.tsx、ResourcesTab.tsx、ResourcesOverlay.tsx、resources.css）、src-ui/src/resources/（types.ts、model-picker.ts、__tests__/）、docs/MANUAL.md。不读 node_modules、target、dist、port、src/channels/、src/dispatch.rs。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套。
+1. 需求完整性：契约与实现 1–6 逐条；旧库补齐只填空不覆盖；真身覆盖与失败不抹。
+2. 逻辑正确性：分组键与排序稳定；折叠状态在重渲染/换 agent 时不串；单 provider 不出组头；点击模型行插入的 @ 引用仍带正确 provider；resolved_id 与 id 相同时不重复显示；pi 真身取模型半段的边界（含 provider 前缀的形态）。
+3. 安全与许可：SVG 路径来源与许可注明；内联 SVG 无脚本；不引运行时依赖；OpenAI 标志已被 simple-icons 下架（许可原因）——评估在私用桌面工具内的风险并给建议。
+4. 视觉纪律与可访问性：标志/状态点对比度（深浅主题）、焦点环、`aria-label`、悬停键盘可达、字号 ≥ 11px、间距 4 的倍数；胶囊只给异常。
+5. 代码质量与契约：只追加；旧字段保留；第 2–8 期路径无回归；测试真实存在且断言目标行为；最该补的 3 个。
+最后单独回答：是否可交付？一句话 + 缺项列表（按严重度排序）。

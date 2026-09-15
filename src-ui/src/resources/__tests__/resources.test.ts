@@ -7,6 +7,7 @@ import {
   parseCommandArgs,
   providerGroups,
   resolvedIdOf,
+  showsGroupHeads,
   splitUnverified,
   unverifiedCount,
   unverifiedSummaryText,
@@ -28,6 +29,7 @@ function model(partial: Partial<import('../types').ResourceModel>): import('../t
     status: '',
     verification: '',
     resolved_id: '',
+    resolved_source: '',
     source: '',
     smoked_at: '',
     smoke_model: '',
@@ -137,7 +139,7 @@ describe('providerGroups', () => {
     expect(groups[1].models.map((m) => m.id)).toEqual(['a', 'b']);
   });
 
-  it('只有一个 provider（原生 agent 的 provider 全是空串）时不分组', () => {
+  it('只有一个 provider 时也只有一组；原生 agent 那一组的 provider 是空串', () => {
     const groups = providerGroups([
       model({ id: 'fable', provider: '' }),
       model({ id: 'opus', provider: '' }),
@@ -145,8 +147,38 @@ describe('providerGroups', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].provider).toBe('');
     expect(groups[0].models).toHaveLength(2);
-    // 同一个 provider 的多条也不该长出组头
-    expect(providerGroups([model({ id: 'a', provider: 'zai' })])[0].provider).toBe('');
+  });
+
+  // 修正轮 R1（DS 3）：单 provider 时不再把名字抹成空串——抹空之后单 provider
+  // 的 pi 在左栏和接入页都看不到自己挂在哪个端点上。
+  it('单 provider 的组保留 provider 名，只是不渲染组头', () => {
+    const groups = providerGroups([
+      model({ id: 'a', provider: 'bigmodel' }),
+      model({ id: 'b', provider: 'bigmodel' }),
+    ]);
+    expect(groups.map((g) => g.provider)).toEqual(['bigmodel']);
+    expect(showsGroupHeads(groups)).toBe(false);
+    expect(groupKey('pi', groups[0].provider)).toBe('pi/bigmodel');
+  });
+
+  it('两组以上才渲染组头', () => {
+    expect(showsGroupHeads([])).toBe(false);
+    expect(
+      showsGroupHeads(
+        providerGroups([model({ id: 'a', provider: 'zai' }), model({ id: 'b', provider: 'bigmodel' })]),
+      ),
+    ).toBe(true);
+  });
+
+  // 后端 detected() 按字节序排 provider；组序固定 'en'，不跟系统 locale 走，
+  // 否则左栏与下拉/后端的顺序可能对不上（DS 2）。
+  it('组序不跟随系统 locale', () => {
+    const groups = providerGroups([
+      model({ id: 'a', provider: 'Zai' }),
+      model({ id: 'b', provider: 'bigmodel' }),
+      model({ id: 'c', provider: 'apex' }),
+    ]);
+    expect(groups.map((g) => g.provider)).toEqual(['apex', 'bigmodel', 'Zai']);
   });
 
   it('没有模型时不出空组', () => {

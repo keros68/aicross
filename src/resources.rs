@@ -107,6 +107,12 @@ pub struct ResourceModel {
     /// 按 `CLAUDE_ALIAS_IDS` 补上。
     #[serde(default)]
     pub resolved_id: String,
+    /// `resolved_id` 是哪来的（修正轮 R1）：`alias-table` = 本地静态别名表算出来的，
+    /// `identity` = 冒烟 / 首次派发核对到的真身。旧库缺这个字段，空值按
+    /// `alias-table` 处理。作用是让别名表的修正能传播到旧库：静态值可以被新表
+    /// 覆盖，实测真身不行——没有这个字段就分不清库里那一串是算的还是量的。
+    #[serde(default)]
+    pub resolved_source: String,
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -293,6 +299,10 @@ fn inferred_verification(agent: &str, status: &str) -> &'static str {
 /// claude 别名 → 真实模型 ID（TASK-09b）。claude 的事实源是 `--help` 里的别名
 /// 举例，拿不到完整 ID，这张表是唯一的本地事实源；写表日期见
 /// `CLAUDE_STATIC_TABLE_DATE`，过期由冒烟/派发核对真身后覆盖。
+/// `ResourceModel::resolved_source` 的两个取值。空串等同前者。
+pub const RESOLVED_SOURCE_ALIAS_TABLE: &str = "alias-table";
+pub const RESOLVED_SOURCE_IDENTITY: &str = "identity";
+
 const CLAUDE_ALIAS_IDS: [(&str, &str); 4] = [
     ("fable", "claude-fable-5-1"),
     ("opus", "claude-opus-5"),
@@ -315,31 +325,44 @@ fn resolved_id_for(agent: &str, id: &str) -> String {
 
 /// 冒烟/派发核对到的真身 → `resolved_id`。pi 的真身带 provider 前缀
 /// （`zai/glm-4.7`），`resolved_id` 只要模型那一半。
+///
+/// 前缀比对大小写不敏感（修正轮 R1，DS 10）：端点回报的 provider 写法与
+/// models-store 里的名字常有 `Zai` / `zai` 这类差别，大小写敏感会让整串
+/// `Zai/glm-4.7` 进界面，次文本里再冒出一个 provider 名。前缀不符或
+/// provider 为空时原样返回——宁可多一段前缀，也不瞎切模型名。
 fn resolved_id_from_identity(identity: &str, provider: &str) -> String {
     let identity = identity.trim();
     let provider = provider.trim();
     if !provider.is_empty() {
-        if let Some(rest) = identity.strip_prefix(&format!("{provider}/")) {
-            return rest.to_string();
+        let prefix = format!("{provider}/");
+        if identity.len() > prefix.len()
+            && identity[..prefix.len()].eq_ignore_ascii_case(&prefix)
+        {
+            return identity[prefix.len()..].to_string();
         }
     }
     identity.to_string()
 }
 
-/// 补齐 `resolved_id`：旧库里没有这个字段，空值按别名表推断。
-/// 非空值不覆盖——冒烟核对到的真身比静态表可信。
+/// 补齐 / 校正 `resolved_id`（修正轮 R1）：
+/// - `resolved_source == identity`（冒烟核对到的真身）一律不动；
+/// - 其余（空字段的旧库、静态表算出来的值）按当前别名表重算，
+///   于是下一版修正别名表时旧库跟着更新——原来「非空就不覆盖」把静态值
+///   也一并保护起来，修了表也传播不下去（DS 7）。
 fn ensure_resolved_id(store: &mut ResourceStore) {
     for agent in &mut store.agents {
         let owner = agent.id.clone();
         for model in &mut agent.models {
-            if model.resolved_id.trim().is_empty() {
-                let agent_id = if model.agent.trim().is_empty() {
-                    owner.clone()
-                } else {
-                    model.agent.clone()
-                };
-                model.resolved_id = resolved_id_for(&agent_id, &model.id);
+            if model.resolved_source.trim() == RESOLVED_SOURCE_IDENTITY {
+                continue;
             }
+            let agent_id = if model.agent.trim().is_empty() {
+                owner.clone()
+            } else {
+                model.agent.clone()
+            };
+            model.resolved_id = resolved_id_for(&agent_id, &model.id);
+            model.resolved_source = RESOLVED_SOURCE_ALIAS_TABLE.to_string();
         }
     }
 }
@@ -1175,6 +1198,7 @@ fn detected_model(
         status: STATUS_PENDING.to_string(),
         verification: inferred_verification(agent, STATUS_PENDING).to_string(),
         resolved_id: resolved_id_for(agent, id),
+        resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
         source: source.to_string(),
         smoked_at: String::new(),
         smoke_model: String::new(),
@@ -1217,8 +1241,11 @@ fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: 
             model.smoke_model.clone_from(&existing.smoke_model);
             model.smoke_failure.clone_from(&existing.smoke_failure);
             // 冒烟核对到的真身比别名静态表可信：重新探测不许把它退回静态值。
-            if !existing.resolved_id.trim().is_empty() {
+            // 判据是来源而不是「非空」——静态值也非空，按非空保护会让别名表的
+            // 修正传播不到旧库（修正轮 R1，DS 7）。
+            if existing.resolved_source.trim() == RESOLVED_SOURCE_IDENTITY {
                 model.resolved_id.clone_from(&existing.resolved_id);
+                model.resolved_source.clone_from(&existing.resolved_source);
             }
             if !existing.vendor.trim().is_empty() {
                 model.vendor.clone_from(&existing.vendor);
@@ -1303,6 +1330,7 @@ pub fn add_model(
         status: STATUS_PENDING.to_string(),
         verification,
         resolved_id,
+        resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
         source: format!("申报({})", Local::now().format("%Y-%m-%d")),
         smoked_at: String::new(),
         smoke_model: String::new(),
@@ -1513,6 +1541,7 @@ fn apply_smoke_outcome(
             let resolved = resolved_id_from_identity(&success.identity, &request.provider);
             if !resolved.is_empty() {
                 target.resolved_id = resolved;
+                target.resolved_source = RESOLVED_SOURCE_IDENTITY.to_string();
             }
             target.smoke_model = success.identity;
             target.smoke_failure.clear();
@@ -2441,6 +2470,7 @@ mod tests {
                     status: STATUS_CONNECTED.to_string(),
                     verification: VERIFICATION_NATIVE.to_string(),
                     resolved_id: "old-model".to_string(),
+                    resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
                     source: "读:old".to_string(),
                     smoked_at: "2026-01-01".to_string(),
                     smoke_model: "old-model".to_string(),
@@ -2500,6 +2530,7 @@ mod tests {
                     status: STATUS_PENDING.to_string(),
                     verification: VERIFICATION_NATIVE.to_string(),
                     resolved_id: "same".to_string(),
+                    resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
                     source: "读:old".to_string(),
                     smoked_at: String::new(),
                     smoke_model: String::new(),
@@ -2762,8 +2793,9 @@ mod tests {
         assert_eq!(resolved_id_for("codex", "gpt-5.1-codex"), "gpt-5.1-codex");
     }
 
-    /// 旧库（没有 resolved_id 字段）读进来时补齐：claude 别名按表，其余等于 id；
-    /// 库里已有的非空值不被静态表覆盖。
+    /// 旧库（没有 resolved_id 字段）读进来时补齐：claude 别名按表，其余等于 id。
+    /// 修正轮 R1：判据从「非空就不覆盖」换成「看 `resolved_source`」——没有来源
+    /// 标记的旧值算静态值，别名表修正后跟着更新；标了 `identity` 的实测真身不动。
     #[test]
     fn task09b_legacy_store_backfills_resolved_id() {
         let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
@@ -2774,23 +2806,30 @@ mod tests {
             r#"{"version":1,"agents":[
                 {"id":"claude","name":"Claude","models":[
                     {"id":"fable","agent":"claude","status":"待冒烟"},
-                    {"id":"opus","agent":"claude","status":"待冒烟","resolved_id":"claude-opus-5-2"}]},
+                    {"id":"opus","agent":"claude","status":"待冒烟","resolved_id":"claude-opus-5-2"},
+                    {"id":"sonnet","agent":"claude","status":"待冒烟",
+                     "resolved_id":"claude-sonnet-5-20260901","resolved_source":"identity"}]},
                 {"id":"pi","name":"pi","models":[
                     {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
         )
         .unwrap();
         let store = load(&path).expect("legacy store");
-        let resolved = |agent: &str, provider: &str, id: &str| {
-            find_model(&store, agent, provider, id)
-                .expect(id)
-                .resolved_id
-                .clone()
+        let model = |agent: &str, provider: &str, id: &str| {
+            find_model(&store, agent, provider, id).expect(id).clone()
         };
-        assert_eq!(resolved("claude", "", "fable"), "claude-fable-5-1");
-        // 库里存着的真身（上一次冒烟核对出来的）优先于静态表
-        assert_eq!(resolved("claude", "", "opus"), "claude-opus-5-2");
+        let fable = model("claude", "", "fable");
+        assert_eq!(fable.resolved_id, "claude-fable-5-1");
+        assert_eq!(fable.resolved_source, RESOLVED_SOURCE_ALIAS_TABLE);
+        // 没有来源标记的旧值算静态值：按当前别名表重算，修表能传播到旧库
+        let opus = model("claude", "", "opus");
+        assert_eq!(opus.resolved_id, "claude-opus-5");
+        assert_eq!(opus.resolved_source, RESOLVED_SOURCE_ALIAS_TABLE);
+        // 标了 identity 的实测真身一个字节不动
+        let sonnet = model("claude", "", "sonnet");
+        assert_eq!(sonnet.resolved_id, "claude-sonnet-5-20260901");
+        assert_eq!(sonnet.resolved_source, RESOLVED_SOURCE_IDENTITY);
         // 非别名模型：resolved_id == id
-        assert_eq!(resolved("pi", "zai", "glm-4.7"), "glm-4.7");
+        assert_eq!(model("pi", "zai", "glm-4.7").resolved_id, "glm-4.7");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2816,10 +2855,9 @@ mod tests {
             Ok(SmokeSuccess { identity: "claude-fable-5-1-20260901".into(), meta_marker: None }),
         )
         .unwrap();
-        assert_eq!(
-            find_model(&store, "claude", "", "fable").unwrap().resolved_id,
-            "claude-fable-5-1-20260901"
-        );
+        let verified = find_model(&store, "claude", "", "fable").unwrap();
+        assert_eq!(verified.resolved_id, "claude-fable-5-1-20260901");
+        assert_eq!(verified.resolved_source, RESOLVED_SOURCE_IDENTITY);
         apply_smoke_outcome(&mut store, &key, Err("端点不可达".into())).unwrap();
         assert_eq!(
             find_model(&store, "claude", "", "fable").unwrap().resolved_id,
@@ -2855,11 +2893,12 @@ mod tests {
         assert_eq!(saved.smoke_model, "deepseek/deepseek-flash");
     }
 
-    /// 重新探测不许把冒烟核对出来的真身退回静态表。
+    /// 重新探测不许把冒烟核对出来的真身退回静态表；静态值则按当前别名表刷新。
     #[test]
     fn task09b_redetect_keeps_verified_resolved_id() {
         let mut existing = detected_model("fable", "claude", "", "Anthropic", "官方订阅", "未知", "读:old", "");
         existing.resolved_id = "claude-fable-5-1-20260901".to_string();
+        existing.resolved_source = RESOLVED_SOURCE_IDENTITY.to_string();
         let mut store = ResourceStore {
             version: 1,
             agents: vec![fixture_agent("claude", vec![existing])],
@@ -2869,10 +2908,103 @@ mod tests {
             "claude",
             vec![detected_model("fable", "claude", "", "Anthropic", "官方订阅", "未知", "读:new", "")],
         );
+        let kept = find_model(&store, "claude", "", "fable").unwrap();
+        assert_eq!(kept.resolved_id, "claude-fable-5-1-20260901");
+        assert_eq!(kept.resolved_source, RESOLVED_SOURCE_IDENTITY);
+    }
+
+    /// 修正轮 R1（DS 7）：`resolved_source` 把「静态表算的」与「实测量的」分开。
+    /// 静态值可以被修正后的别名表覆盖，实测真身不行——没有这个字段，
+    /// 一旦写库就永久压过静态表，改了别名表也传播不到旧库。
+    #[test]
+    fn task09b_resolved_source_lets_alias_table_fix_reach_old_stores() {
+        // 库里是上一版别名表算出来的过时值，没冒烟过
+        let mut stale = detected_model("opus", "claude", "", "Anthropic", "官方订阅", "未知", "读:old", "");
+        stale.resolved_id = "claude-opus-4-9".to_string();
+        assert_eq!(stale.resolved_source, RESOLVED_SOURCE_ALIAS_TABLE);
+        // 同一条被冒烟核对过，来源标成 identity
+        let mut measured = detected_model("sonnet", "claude", "", "Anthropic", "官方订阅", "未知", "读:old", "");
+        measured.resolved_id = "claude-sonnet-5-20260901".to_string();
+        measured.resolved_source = RESOLVED_SOURCE_IDENTITY.to_string();
+        let mut store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("claude", vec![stale, measured])],
+        };
+
+        ensure_resolved_id(&mut store);
+
+        let opus = find_model(&store, "claude", "", "opus").unwrap();
+        assert_eq!(opus.resolved_id, "claude-opus-5", "静态值该被当前别名表覆盖");
+        let sonnet = find_model(&store, "claude", "", "sonnet").unwrap();
         assert_eq!(
-            find_model(&store, "claude", "", "fable").unwrap().resolved_id,
-            "claude-fable-5-1-20260901"
+            sonnet.resolved_id, "claude-sonnet-5-20260901",
+            "实测真身不许被静态表压回去"
         );
+    }
+
+    /// 修正轮 R1（GLM「最该补的测试 1」）：手动录入这条路径原来零测试，
+    /// 把 `resolved_id` / `resolved_source` 那两行删掉现有测试也全绿。
+    #[test]
+    fn task09b_add_model_resolves_claude_alias() {
+        let store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("claude", Vec::new())],
+        };
+        let store = add_model(
+            store,
+            ResourceModelRequest {
+                agent_id: "claude".to_string(),
+                id: "sonnet".to_string(),
+                provider: String::new(),
+                vendor: "Anthropic".to_string(),
+                tier: String::new(),
+                note: String::new(),
+            },
+        )
+        .expect("manual claude alias");
+        let added = find_model(&store, "claude", "", "sonnet").expect("sonnet");
+        assert_eq!(added.resolved_id, "claude-sonnet-5");
+        assert_eq!(added.resolved_source, RESOLVED_SOURCE_ALIAS_TABLE);
+
+        // 非别名的手动条目：resolved_id == id
+        let store = add_model(
+            store,
+            ResourceModelRequest {
+                agent_id: "claude".to_string(),
+                id: "claude-opus-5".to_string(),
+                provider: String::new(),
+                vendor: "Anthropic".to_string(),
+                tier: String::new(),
+                note: String::new(),
+            },
+        )
+        .expect("manual full id");
+        let full = find_model(&store, "claude", "", "claude-opus-5").expect("opus");
+        assert_eq!(full.resolved_id, "claude-opus-5");
+    }
+
+    /// 修正轮 R1（DS 10）：真身前缀剥离的边界。原来只测了「前缀与 provider
+    /// 完全同形」一条，大小写不同 / 前缀不符 / provider 为空都没钉住。
+    #[test]
+    fn task09b_resolved_id_from_identity_strips_only_matching_prefix() {
+        // 同形：剥掉
+        assert_eq!(resolved_id_from_identity("zai/glm-4.7", "zai"), "glm-4.7");
+        // 大小写不同：照样剥（端点回报的写法与 models-store 常不一致）
+        assert_eq!(resolved_id_from_identity("Zai/glm-4.7", "zai"), "glm-4.7");
+        assert_eq!(resolved_id_from_identity("zai/glm-4.7", "ZAI"), "glm-4.7");
+        // 前缀不符：原样返回，不瞎切
+        assert_eq!(
+            resolved_id_from_identity("bigmodel/glm-4.7", "zai"),
+            "bigmodel/glm-4.7"
+        );
+        // provider 为空（旧库 / 手写条目）：不剥
+        assert_eq!(resolved_id_from_identity("zai/glm-4.7", ""), "zai/glm-4.7");
+        // 根本没有前缀
+        assert_eq!(resolved_id_from_identity("glm-4.7", "zai"), "glm-4.7");
+        // 只有前缀没有模型名：整串留着，切完是空的更没法用
+        assert_eq!(resolved_id_from_identity("zai/", "zai"), "zai/");
+        // 空真身
+        assert_eq!(resolved_id_from_identity("  ", "zai"), "");
     }
 
     // ── TASK-09：verification 三态与首次派发自动验证 ──────────────────────

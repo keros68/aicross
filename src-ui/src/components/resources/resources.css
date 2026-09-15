@@ -3,9 +3,14 @@
 
 /* ── agent 品牌徽标与验证标记（TASK-09；TASK-09b 换成官方标志） ───────────
    标志本体是内联 SVG（路径数据与许可见 brand-marks.ts），按 currentColor 填。
-   厂商色只做小面积标识（PRODUCT.md 视觉纪律）：色相由 AgentBadge 从
-   graph/vendor.ts 取，按 --agent-tone 内联传进来。没有收录标志的 agent 退回
-   字形（pi → π）或字母，形状仍是同一个 18px 方槽，行高不会因家而异。 */
+   厂商色只做小面积标识（PRODUCT.md 视觉纪律）。没有收录标志的 agent 退回
+   字形（pi → π）或字母，形状仍是同一个 18px 方槽，行高不会因家而异。
+
+   修正轮 R1（DS A1）：已知四家的 --agent-tone 写在**样式表**里，不再由
+   AgentBadge 内联传。内联自定义属性在层叠里压过样式表规则（作者样式表 <
+   内联），而浅色主题的压暗规则命中的是同一个元素，永远压不过它自己的
+   style 属性——那一套色等于没写。内联只留给未收录的 agent（手动添加的），
+   它们没有主题分档。 */
 
 .agent-badge {
   display: inline-flex;
@@ -40,6 +45,26 @@
   height: 20px;
 }
 
+/* 深色主题的一套：claude / codex / pi 直接用 graph/vendor.ts 的厂商原色，
+   对话图上的色点与这里的徽标同色。kimi 的原色 #6E56CF 对最亮的深色面板
+   （teal #102b30）只有 2.76:1，提亮到同色相的 #8574E0（3.95:1）——色相不变，
+   「一眼看出是谁跑的」仍成立（修正轮 R1，DS A3）。 */
+.agent-badge-claude {
+  --agent-tone: #D97757;
+}
+
+.agent-badge-codex {
+  --agent-tone: #10A37F;
+}
+
+.agent-badge-kimi {
+  --agent-tone: #8574E0;
+}
+
+.agent-badge-pi {
+  --agent-tone: #4F9D69;
+}
+
 /* 浅色主题各一套色（任务书要求）：vendor.ts 的原色是按深色底挑的，
    #D97757 / #10A37F 这类在白底上做 18px 实心图形到不了 3:1（WCAG 非文字
    对比度）。这里只压暗，不换色相——和对话图上的色点仍是同一家的颜色。 */
@@ -60,9 +85,14 @@
 }
 
 /* 「已验证」的绿点是左栏 verified 的唯一可见标识，浅色主题的 --green
-   （#34c759）对面板底色只有 2.2:1，这里给一个够对比度的专用值。 */
+   （#34c759）对面板底色只有 2.2:1，这里给一个够对比度的专用值。
+   「未验证」的灰点同理走 --verify-gray：本轮把状态文字删掉之后点成了唯一
+   标识，而 --text-3 在 cappuccino 只有 2.06:1、obsidian 2.74、moss 2.98，
+   都低于 WCAG 1.4.11 的非文字 3:1；--text-2 最低一档（cappuccino）是
+   3.88:1，16 套主题全过（修正轮 R1，DS A2）。 */
 :root {
   --verify-green: var(--green);
+  --verify-gray: var(--text-2);
 }
 
 [data-theme="light"] {
@@ -84,7 +114,7 @@
   width: 6px;
   height: 6px;
   border-radius: var(--radius-pill);
-  background: var(--text-3);
+  background: var(--verify-gray);
 }
 
 /* 左栏里点是独立元素（没有 .verify-dot-wrap 外壳），色按自身 class 走；
@@ -282,12 +312,15 @@
   background: var(--bg-hover);
 }
 
-.resource-model-row:disabled {
+/* 没开对话图时这一行点了没用，但仍要能 Tab 到、能被读屏念出原因，所以用
+   aria-disabled 而不是 disabled（disabled 按钮不可聚焦，读屏整行跳过，
+   部分浏览器连 title 都不弹）——修正轮 R1，DS A5。 */
+.resource-model-row[aria-disabled='true'] {
   opacity: 0.45;
   cursor: default;
 }
 
-.resource-model-row:disabled:hover {
+.resource-model-row[aria-disabled='true']:hover {
   background: none;
 }
 
@@ -378,7 +411,7 @@
 
 .resources-page h1 {
   margin: 0 0 8px;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 600;
 }
 
@@ -732,7 +765,7 @@
   background: var(--bg-panel);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .res-dialog h2 {

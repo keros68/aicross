@@ -22,6 +22,31 @@ Code original to aicross — the multi-vendor resource inventory, fact-source
 detection, model smoke verification and dispatch orchestration — is
 copyright the aicross contributors and likewise AGPL-3.0-or-later.
 
+--------------------------------------------------------------------------------
+THIRD-PARTY ASSETS ADDED BY AICROSS
+--------------------------------------------------------------------------------
+
+  - Agent brand marks in src-ui/src/components/resources/brand-marks.ts
+      Source:  Simple Icons (https://github.com/simple-icons/simple-icons)
+      License: CC0-1.0 (icon path data; see the upstream LICENSE.md)
+      Files:   icons/anthropic.svg @ master   -> BRAND_MARKS.claude
+               icons/kimi.svg      @ master   -> BRAND_MARKS.kimi
+               icons/openai.svg    @ tag 13.21.0 -> BRAND_MARKS.codex
+      Read on: 2026-09-15. Path data is copied verbatim, not reshaped.
+      Note:    The OpenAI mark was removed from Simple Icons master in
+               simple-icons#13944 (2025-11-29, closes #12739) because the
+               upstream project now only ships marks it has brand-owner
+               permission for. The CC0 grant on the 13.21.0 snapshot is
+               irrevocable, so the copy used here stays CC0; the concern is
+               trademark, not copyright, and is covered by the nominative
+               fair use section below. To drop it entirely, delete the
+               BRAND_MARKS.codex entry — the badge falls back to letters.
+
+  - Trademarks shown by these marks (Anthropic, OpenAI, Moonshot AI / Kimi)
+      remain the property of their owners. aicross uses them only to label
+      which third-party CLI a row belongs to, at 18px, next to the agent's
+      own name, with no claim of affiliation or endorsement.
+
 ================================================================================
 UPSTREAM NOTICE (Coffee CLI) — reproduced unchanged
 ================================================================================

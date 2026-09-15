@@ -3,7 +3,7 @@
 
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { AgentCard } from '../../components/resources/ResourcesOverlay';
+import { AgentCard, AgentCardModelMeta } from '../../components/resources/ResourcesOverlay';
 import { BRAND_MARKS } from '../../components/resources/brand-marks';
 import type { ResourceAgent, ResourceModel } from '../types';
 
@@ -19,6 +19,7 @@ function model(partial: Partial<ResourceModel>): ResourceModel {
     status: '',
     verification: '',
     resolved_id: '',
+    resolved_source: '',
     source: '读:fixture',
     smoked_at: '',
     smoke_model: '',
@@ -85,5 +86,50 @@ describe('AgentCard（接入页）', () => {
 
     const single = card(agent('claude', 'Claude Code', [model({ agent: 'claude', id: 'fable' })]));
     expect(single).not.toContain('agent-card-group-name');
+
+    // 修正轮 R1（DS 3）：单 provider 的 pi 也不出组头
+    const onePi = card(
+      agent('pi', 'pi', [
+        model({ agent: 'pi', provider: 'bigmodel', id: 'glm-4.6' }),
+        model({ agent: 'pi', provider: 'bigmodel', id: 'glm-4.5' }),
+      ]),
+    );
+    expect(onePi).not.toContain('agent-card-group-name');
+  });
+});
+
+// 修正轮 R1（DS 3）：单 provider 不出组头，provider 名不能跟着消失——
+// 详情块里单列一行。详情默认收着，所以直接渲染这一段。
+describe('AgentCardModelMeta（接入页详情）', () => {
+  it('provider 单列一行，原生 agent（provider 为空）不出这一行', () => {
+    const third = renderToStaticMarkup(
+      <AgentCardModelMeta model={model({ agent: 'pi', provider: 'bigmodel', id: 'glm-4.6' })} />,
+    );
+    expect(third).toContain('provider：bigmodel');
+    expect(third).toContain('读:fixture');
+
+    const native = renderToStaticMarkup(
+      <AgentCardModelMeta model={model({ agent: 'claude', id: 'fable' })} />,
+    );
+    expect(native).not.toContain('provider：');
+  });
+
+  it('来源、最近验证、失败原因与备注仍在', () => {
+    const markup = renderToStaticMarkup(
+      <AgentCardModelMeta
+        model={model({
+          agent: 'pi',
+          provider: 'zai',
+          id: 'glm-4.5',
+          smoked_at: '2026-09-15T10:02:00+08:00',
+          smoke_model: 'zai/glm-4.5',
+          smoke_failure: '401: invalid api key',
+          note: '手动加的',
+        })}
+      />,
+    );
+    expect(markup).toContain('最近验证：2026-09-15T10:02:00+08:00（zai/glm-4.5）');
+    expect(markup).toContain('验证失败：401: invalid api key');
+    expect(markup).toContain('备注：手动加的');
   });
 });

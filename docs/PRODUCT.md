@@ -233,7 +233,7 @@ fable-5 → [gpt-5.6 | kimi-2.7 | deepseek-v4-flash] → glm-5.3
 - **第三方（pi 的各 provider、cc-switch 端点）**：清单里的模型显示「未验证」，**第一次派发到它时引擎先冒烟一次**（真发一个短请求、比对响应体 model / 真身）并把结果记进资源库：通过 → 「已验证」；失败 → 「验证失败」并把这次派发按失败返回、不再自动重试。用户仍可在接入页手动重验。
 - 左栏资源列出全部已探测模型（不再只列冒烟通过的），按 agent 分组，行内只放模型名 + 状态点（原生无点；第三方 未验证/已验证/失败），来源路径与时间挪到悬停提示；agent 行带图标与版本弱化显示。（**09-15 修正**：原定「统一风格字母徽标，不用商标图」被用户推翻，改用官方品牌标志：路径数据取 simple-icons（CC0-1.0）内联成 SVG，Claude → Anthropic、Codex → OpenAI、Kimi → Kimi；pi 无公开标志，用 π 字形，未收录的 agent 退回字母。色相仍只做小面积标识，深浅主题各一套。）「N 个待冒烟 · 管理」链接改成「管理接入 →」。
 - **09-15 第二轮（用户原话「现在很乱」）**：多 provider 的 agent（pi）在 agent 下再按 provider 分小组，组头 = provider 名 + 计数，组内模型名不再带 `· provider` 后缀；组内未验证的默认折成一行「未验证 N 个 · 展开」，已验证 / 验证失败常显；状态只留一个点（verified 绿、failed 红、unverified 灰），不再跟文字，状态词进悬停与 `aria-label`。原生 agent 无小组。
-- **别名的真身**：claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，`ResourceModel.resolved_id` 记它们对应的真实模型 ID，行内主文本给别名、次文本弱化给真身；两者相同的模型只显示一次。静态表只是起点，冒烟 / 首次派发核对到响应体 `model` 后以实测值覆盖。
+- **别名的真身**：claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，`ResourceModel.resolved_id` 记它们对应的真实模型 ID，行内主文本给别名、次文本弱化给真身；两者相同的模型只显示一次。静态表只是起点：**第三方端点**（pi 的各 provider、挂了 `ANTHROPIC_BASE_URL` 的 claude）冒烟 / 首次派发核对到响应体 `model` 后以实测值覆盖，`resolved_source` 记这一串是算的（`alias-table`）还是量的（`identity`），别名表修正后只重算前者。**原生端点**（官方订阅下的 claude）不冒烟，没有覆盖路径，真身以静态表为准，表漂了只能改表（09-15 修正轮 R1，GLM 审查 1）。
 - 派发下拉与 G1 的模型清单沿用 TASK-08b 的「全部探测模型」口径，状态后缀改成这套三态。
 ## 顺序
 

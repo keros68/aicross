@@ -4,20 +4,22 @@
 // （CC0-1.0），来源与许可写在 `brand-marks.ts` 的文件头；SVG 内联，不引任何
 // 图标运行时依赖。没有收录标志的 agent 退回字形（pi → π）或字母。
 //
-// 色相仍从 `graph/vendor.ts` 取——同一个 agent 在对话图上的色点与这里的徽标
-// 必须同色。深浅主题各一套：深色主题用 vendor 原色（内联 --agent-tone），
-// 浅色主题在 resources.css 里按 `.agent-badge-<slug>` 压暗，小图形在白底上
-// 才够 3:1（WCAG 非文字对比度）。
+// 色相与对话图上的厂商色点同源（`graph/vendor.ts`）。已知四家的色由
+// `resources.css` 按 `.agent-badge-<slug>` 给，深浅主题各一套——**不能**内联，
+// 内联自定义属性在层叠里压过样式表，浅色主题的压暗规则会整条失效（修正轮
+// R1，DS A1）。未收录的 agent 没有主题分档，仍内联 vendor 原色兜底。
 
 import type { CSSProperties } from 'react';
 import { vendorColor } from '../../graph/vendor';
 import { agentMark } from '../../resources/types';
-import { agentEmblem } from './brand-marks';
+import { agentEmblem, hasCssTone } from './brand-marks';
 
 export function AgentBadge({ agentId, size = 'sm' }: { agentId: string; size?: 'sm' | 'md' }) {
   const emblem = agentEmblem(agentId, agentMark(agentId));
   const className = `agent-badge agent-badge-${size} agent-badge-${emblem.slug} agent-badge-${emblem.kind}`;
-  const style = { '--agent-tone': vendorColor(agentId) } as CSSProperties;
+  const style = hasCssTone(emblem.slug)
+    ? undefined
+    : ({ '--agent-tone': vendorColor(agentId) } as CSSProperties);
   if (emblem.kind === 'mark') {
     return (
       <span className={className} style={style} aria-hidden="true">

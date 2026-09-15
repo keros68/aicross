@@ -16,6 +16,10 @@ export interface ResourceModel {
   // 别名，只看别名看不出跑的是哪个模型。后端补齐；旧 fixture 读到空串时由
   // resolvedIdOf 退回 id。
   resolved_id: string;
+  // `resolved_id` 是哪来的（修正轮 R1）：`alias-table` = 本地静态别名表算的，
+  // `identity` = 冒烟 / 首次派发核对到的真身。空串按 `alias-table` 处理。
+  // 界面不显示它，它的用处是「别名表修正后旧库能不能被覆盖」。
+  resolved_source: string;
   source: string;
   smoked_at: string;
   smoke_model: string;
@@ -189,7 +193,7 @@ export function unverifiedSummaryText(store: ResourceStore): string {
 }
 
 export interface ProviderGroup {
-  /** 组标题用的 provider 名；空串表示这个 agent 不分组，不渲染组头。 */
+  /** 这一组的 provider 名（原生 agent 是空串）。是否渲染组头看 `showsGroupHeads`。 */
   provider: string;
   models: ResourceModel[];
 }
@@ -198,9 +202,13 @@ export interface ProviderGroup {
  * 按 provider 分小组（TASK-09b）。pi 底下几十条模型混在一起没法看，分组之后
  * 组内不再需要 `· provider` 后缀——组头已经说了是哪个端点。
  *
- * 只有一个 provider（原生 agent 的 provider 全是空串）时返回单个无名组：
- * 一个组挂一个组头是纯噪声。组按 provider 名排序，输入顺序在组内保留
+ * 组按 provider 名排序（固定 `'en'`，不跟随系统 locale——后端 `detected()` 用
+ * 的是字节序，跟着系统走会让左栏与下拉对不上），输入顺序在组内保留
  * （`modelsByAgent` 已按 验证档 → provider → id 排过）。
+ *
+ * 修正轮 R1（DS 3）：只有一个 provider 时**照样**带上它的名字，不再抹成空串。
+ * 抹空会让单 provider 的 pi 在左栏和接入页都看不到自己挂在哪个端点上；
+ * 「不出组头」是渲染判据（`showsGroupHeads`），不是数据判据。
  */
 export function providerGroups(models: ResourceModel[]): ProviderGroup[] {
   const groups = new Map<string, ResourceModel[]>();
@@ -208,12 +216,17 @@ export function providerGroups(models: ResourceModel[]): ProviderGroup[] {
     const provider = model.provider.trim();
     groups.set(provider, [...(groups.get(provider) ?? []), model]);
   }
-  if (groups.size <= 1) {
-    return models.length === 0 ? [] : [{ provider: '', models }];
-  }
   return [...groups.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => left.localeCompare(right, 'en'))
     .map(([provider, grouped]) => ({ provider, models: grouped }));
+}
+
+/**
+ * 要不要渲染组头。一个组挂一个组头是纯噪声（原生 agent 更是一个空名组），
+ * 单组时 provider 改走行悬停（左栏）与详情块（接入页）。
+ */
+export function showsGroupHeads(groups: ProviderGroup[]): boolean {
+  return groups.length > 1;
 }
 
 /**
@@ -235,6 +248,19 @@ export function splitUnverified(models: ResourceModel[]): {
 /** 折叠行的文字。这一行本身就是展开按钮。 */
 export function unverifiedToggleLabel(count: number, expanded: boolean): string {
   return `未验证 ${count} 个 · ${expanded ? '收起' : '展开'}`;
+}
+
+/**
+ * 点一行模型时交给 `insertMention` 的三段（修正轮 R1，DS 2）。
+ * provider 是 `@agent/模型#provider` 里的 `#provider`，掉了就分不清同名模型
+ * 挂在哪个端点上——这是 TASK-09b 要保住的旧行为，单拎成纯函数好钉住。
+ * `model.agent` 可能没回填（旧库），用所在 agent 的 id 兜底。
+ */
+export function modelPickTarget(
+  model: Pick<ResourceModel, 'agent' | 'id' | 'provider'>,
+  agentId: string,
+): { agent: string; model: string; provider: string } {
+  return { agent: model.agent || agentId, model: model.id, provider: model.provider };
 }
 
 /** 小组的折叠键：同一个 provider 名可能挂在两个 agent 下，必须带 agent。 */
