@@ -937,7 +937,7 @@ fn parse_kimi_config(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
             "kimi",
             "",
             "Moonshot",
-            "Kimi Code",
+            AGENT_NAME_KIMI,
             if capabilities.contains(&"thinking") {
                 "支持"
             } else {

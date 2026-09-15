@@ -11,8 +11,10 @@ import { CommanderLauncher, type CommanderLaunchArgs } from './CommanderLauncher
 import { commanderArgs, commanderIdentifierError, commanderToolId } from '../../commander/args';
 import {
   commanderStartedCallback,
-  commanderAutoStart,
-  markCommanderLauncherOpened,
+  commanderDefaultAvailable,
+  commanderNewTabLaunch,
+  commanderTabTransition,
+  type CommanderTabState,
   commanderTabTitle,
   graphTabTitle,
   otherInstalledCommanderClis,
@@ -25,6 +27,7 @@ import {
 } from '../../commander/launch-request';
 import { emptyCommanderSettings, type CommanderSettings } from '../../commander/types';
 import { agentDisplayName } from '../../resources/agent-display';
+import { AgentBadge } from '../resources/AgentBadge';
 import { ToolConfigModal } from './ToolConfigModal';
 import { ContributionHeatmap } from './ContributionHeatmap';
 import { ErrorBoundary } from '../common/ErrorBoundary';
@@ -571,19 +574,19 @@ export function CenterPanel() {
   // Built-in inline SVG icons keyed by agent id. Used when catalog entry id matches;
   // otherwise falls back to entry.icon URL.
   const BUILTIN_ICONS: Record<string, React.ReactNode> = {
-    claude: <SvgClaude />,
+    claude: <AgentBadge agentId="claude" size="lg" />,
     opencode: <SvgOpenCode />,
     mimocode: <SvgMimo />,
     openclaw: <SvgOpenClaw />,
-    codex: <SvgCodex />,
+    codex: <AgentBadge agentId="codex" size="lg" />,
     grok: <SvgGrok />,
     antigravity: <SvgAntigravity />,
     qwen: <SvgQwen />,
     hermes: <SvgHermes />,
-    pi: <SvgPi />,
+    pi: <AgentBadge agentId="pi" size="lg" />,
     crush: <SvgCrush />,
     aider: <SvgAider />,
-    kimicode: <SvgKimi />,
+    kimicode: <AgentBadge agentId="kimicode" size="lg" />,
     goose: <SvgGoose />,
     copilot: <SvgCopilot />,
   };
@@ -922,20 +925,6 @@ export function CenterPanel() {
     };
   }, [newTabMenuOpen]);
 
-  const handleAddTab = (kind: 'commander' | 'terminal' | 'graph') => {
-    const folderPath = terminals.find(t => t.id === activeTerminalId)?.folderPath ?? null;
-    const id = crypto.randomUUID();
-    const session = kind === 'terminal'
-      ? { id, tool: 'terminal' as ToolType, folderPath }
-      : createDefaultGraphSession(folderPath, id);
-    dispatch({
-      type: 'ADD_TERMINAL',
-      session,
-    });
-    if (kind === 'graph') setGraphViewTabs(prev => ({ ...prev, [id]: true }));
-    setNewTabMenuOpen(false);
-  };
-
   // External launch (`coffee-cli launch --tool <id> [--cwd <dir>]`) — reached
   // from the cold-start drain (takePendingLaunch) and the warm-start
   // single-instance forward ('launch-request' event). Reuses an idle
@@ -1157,7 +1146,7 @@ export function CenterPanel() {
     cwd?: string,
     // TASK-10：只属于这一次启动的附加 argv 与 tab 标题。工具设置里的
     // `extra_args` 不受影响——后端先加那个，再加这个。
-    launch?: { extraArgs?: string[]; title?: string; settings?: CommanderSettings },
+    launch?: { extraArgs?: string[]; title?: string; profile?: Pick<CommanderSettings, 'agent' | 'provider' | 'model'>; settings?: CommanderSettings },
   ) => {
     // Concurrent multi-agent Tabs are now supported as of the per-pane
     // MCP / per-pane system-prompt rework: each pane has its own MCP
@@ -1182,6 +1171,7 @@ export function CenterPanel() {
         toolData,
         extraArgs: launch?.extraArgs,
         commanderTitle: launch?.title,
+        commanderProfile: launch?.profile,
         commanderSettings: launch?.settings,
       });
     }
@@ -1205,7 +1195,8 @@ export function CenterPanel() {
     };
     const launch = {
       extraArgs: commanderArgs(args.agent, args.provider, args.model),
-      title: commanderTabTitle(args.agent, args.model, cwd === '' ? null : cwd),
+      title: commanderTabTitle(args.agent, args.provider, args.model, cwd === '' ? null : cwd),
+      profile: { agent: args.agent, provider: args.provider, model: args.model },
       settings,
     };
     if (openNewTab) {
@@ -1217,6 +1208,7 @@ export function CenterPanel() {
           folderPath: cwd === '' ? null : cwd,
           extraArgs: launch.extraArgs,
           commanderTitle: launch.title,
+          commanderProfile: launch.profile,
           commanderSettings: settings,
         },
       });
@@ -1228,21 +1220,38 @@ export function CenterPanel() {
     });
   };
 
-  // 有有效默认时，空白总指挥 tab 不停在启动器。探测未完成、没有默认或默认 CLI
-  // 不在本机时仍留在启动器，用户可以改选；每个 tab 只自动起一次，避免异步状态
-  // 刷新时重复创建 PTY。
-  const autoLaunchedCommanderTabs = useRef(new Set<string>());
+  const handleAddTab = (kind: 'commander' | 'terminal' | 'graph') => {
+    const folderPath = terminals.find(t => t.id === activeTerminalId)?.folderPath ?? null;
+    if (kind === 'commander') {
+      const launch = commanderNewTabLaunch(commanderDefaults, toolsInstalled, toolsScanned, folderPath);
+      if (launch !== null) {
+        launchCommander(launch, true);
+        setNewTabMenuOpen(false);
+        return;
+      }
+    }
+    const id = crypto.randomUUID();
+    const session = kind === 'terminal'
+      ? { id, tool: 'terminal' as ToolType, folderPath }
+      : createDefaultGraphSession(folderPath, id);
+    dispatch({ type: 'ADD_TERMINAL', session });
+    if (kind === 'graph') setGraphViewTabs(prev => ({ ...prev, [id]: true }));
+    setNewTabMenuOpen(false);
+  };
+
+  // 冷启动首 tab 在默认与探测结果到齐后可直启。启动器一旦真正显示，
+  // 该 tab 即进入 launcher 状态，后到的默认或探测变化不再接管。
+  const commanderTabState = useRef<CommanderTabState>({});
   useEffect(() => {
     if (!activeSession || !isEmptyGraphSession(activeSession) || graphViewTabs[activeSession.id]) return;
-    if (!commanderAutoStart(commanderDefaults, toolsInstalled, toolsScanned)) return;
-    if (autoLaunchedCommanderTabs.current.has(activeSession.id) || commanderDefaults === null) return;
-    autoLaunchedCommanderTabs.current.add(activeSession.id);
-    launchCommander({
-      agent: commanderDefaults.agent as CommanderLaunchArgs['agent'],
-      provider: commanderDefaults.provider,
-      model: commanderDefaults.model,
-      cwd: commanderDefaults.cwd || activeSession.folderPath || '',
+    const launch = commanderNewTabLaunch(commanderDefaults, toolsInstalled, toolsScanned, activeSession.folderPath);
+    const next = commanderTabTransition(commanderTabState.current, {
+      type: 'availability',
+      tabId: activeSession.id,
+      available: launch !== null,
     });
+    commanderTabState.current = next.state;
+    if (next.shouldLaunch && launch !== null) launchCommander(launch);
   }, [
     activeSession,
     commanderDefaults,
@@ -1488,7 +1497,15 @@ export function CenterPanel() {
           // overrides the cwd basename when the tool has set a non-empty one.
           // 总指挥标题（`agent · 模型 · 目录名`）排在中间：CLI 自己报了标题就
           // 让它赢，没报时比光显示目录名多说两件事。
-          const title = session.toolTitle?.trim() || session.commanderTitle?.trim() || baseTitle;
+          const liveCommanderTitle = session.commanderProfile
+            ? commanderTabTitle(
+                session.commanderProfile.agent,
+                session.commanderProfile.provider,
+                session.commanderProfile.model,
+                session.folderPath,
+              )
+            : session.commanderTitle?.trim();
+          const title = session.toolTitle?.trim() || liveCommanderTitle || baseTitle;
           const isDragging = tabDrag?.sessionId === session.id;
 
           // Sibling shift: while a different tab is being dragged, this
@@ -1680,6 +1697,10 @@ export function CenterPanel() {
               // 那时 graphId 仍是空串，GraphTab 照样给开始视图。
               <div className="graph-shell">
                 {isEmptyGraphSession(t) && !graphViewTabs[t.id] ? (
+                  commanderDefaults === null || !toolsScanned || (
+                    commanderDefaultAvailable(commanderDefaults, toolsInstalled, toolsScanned)
+                    && commanderTabState.current[t.id] === undefined
+                  ) ? null :
                   <ErrorBoundary key={`commander-${t.id}`} fallbackLabel="总指挥启动器出错">
                     <CommanderLauncher
                       installed={toolsInstalled}
@@ -1687,6 +1708,13 @@ export function CenterPanel() {
                       otherClis={otherInstalledCommanderClis(BUILTIN_AI_CLI_FALLBACK, toolsInstalled)}
                       defaults={commanderDefaults}
                       folderPath={t.folderPath}
+                      onShown={() => {
+                        const next = commanderTabTransition(commanderTabState.current, {
+                          type: 'launcher-shown',
+                          tabId: t.id,
+                        });
+                        commanderTabState.current = next.state;
+                      }}
                       onLaunch={launchCommander}
                       onOpenTerminal={() => selectTool('terminal', undefined, lastCwdByTool['terminal'] ?? t.folderPath ?? undefined)}
                       onOpenGraph={() => setGraphViewTabs(prev => ({ ...prev, [t.id]: true }))}
@@ -1706,18 +1734,26 @@ export function CenterPanel() {
             ) : (
               <ErrorBoundary key={`err-${t.id}-${t.restartKey || 0}`} fallbackLabel="Tier Terminal Error">
                 <div className="commander-session">
-                  {t.commanderTitle && (
+                  {(t.commanderProfile || t.commanderTitle) && (
                     <div className="commander-session-line">
-                      <span>{t.commanderTitle}</span>
+                      <span>{t.commanderProfile
+                        ? commanderTabTitle(t.commanderProfile.agent, t.commanderProfile.provider, t.commanderProfile.model, t.folderPath)
+                        : t.commanderTitle}</span>
                       <button
                         type="button"
                         className="commander-change"
                         onClick={() => {
+                          const next = commanderTabTransition(commanderTabState.current, {
+                            type: 'changed',
+                            tabId: t.id,
+                          });
+                          commanderTabState.current = next.state;
                           setGraphViewTabs((previous) => ({ ...previous, [t.id]: false }));
                           dispatch({
                             type: 'SET_TERMINAL_TOOL',
                             id: t.id,
-                            ...markCommanderLauncherOpened(t.id, autoLaunchedCommanderTabs.current),
+                            tool: 'graph',
+                            toolData: '',
                           });
                         }}
                       >

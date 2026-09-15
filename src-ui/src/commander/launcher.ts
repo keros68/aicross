@@ -101,16 +101,27 @@ export function commanderDefaultLine(settings: CommanderSettings | null): string
   if (!settings || !isCommanderAgent(settings.agent)) return null;
   const parts = ['启动总指挥', commanderAgentLabel(settings.agent)];
   const model = settings.model.trim();
-  if (model !== '') parts.push(model);
+  if (model !== '') {
+    const provider = settings.provider.trim();
+    parts.push(settings.agent === 'pi' && provider !== '' ? `${provider} / ${model}` : model);
+  }
   parts.push(cwdName(settings.cwd) || COMMANDER_NO_CWD);
   return parts.join(' · ');
 }
 
-/** tab 标题：`agent 显示名 · 模型 · 目录名`。模型留空时省掉中间那段。 */
-export function commanderTabTitle(agent: string, model: string, cwd: string | null): string {
+/** tab 标题：`agent 显示名 · 模型 · 目录名`。pi 的模型段带 provider。 */
+export function commanderTabTitle(
+  agent: string,
+  provider: string,
+  model: string,
+  cwd: string | null,
+): string {
   const parts = [commanderAgentLabel(agent)];
   const trimmed = model.trim();
-  if (trimmed !== '') parts.push(trimmed);
+  if (trimmed !== '') {
+    const providerName = provider.trim();
+    parts.push(agent === 'pi' && providerName !== '' ? `${providerName} / ${trimmed}` : trimmed);
+  }
   parts.push(cwdName(cwd) || COMMANDER_NO_CWD);
   return parts.join(' · ');
 }
@@ -201,26 +212,44 @@ export function commanderDefaultAvailable(
 }
 
 /** 新总指挥 tab 的首屏判定：默认完整、探测完成且 CLI 已安装就直接启动。 */
-export function commanderAutoStart(
+export function commanderNewTabLaunch(
   settings: CommanderSettings | null,
   installed: Record<string, boolean>,
   toolsScanned: boolean,
-): boolean {
-  return commanderDefaultAvailable(settings, installed, toolsScanned);
+  folderPath: string | null,
+): { agent: CommanderAgent; provider: string; model: string; cwd: string } | null {
+  if (!commanderDefaultAvailable(settings, installed, toolsScanned) || settings === null) return null;
+  return {
+    agent: settings.agent as CommanderAgent,
+    provider: settings.provider,
+    model: settings.model,
+    cwd: folderPath || settings.cwd,
+  };
 }
 
-/** 会话上方「更改」回到空白总指挥启动器的最小 tab 补丁。 */
-export function commanderLauncherToolPatch(): { tool: 'graph'; toolData: string } {
-  return { tool: 'graph', toolData: '' };
-}
+export type CommanderTabStatus = 'started' | 'launcher' | 'changed';
+export type CommanderTabState = Readonly<Record<string, CommanderTabStatus>>;
+export type CommanderTabAction =
+  | { type: 'availability'; tabId: string; available: boolean }
+  | { type: 'launcher-shown'; tabId: string }
+  | { type: 'changed'; tabId: string };
 
-/** 用户主动点「更改」后，本 tab 保持启动器，不让默认自动启动立刻覆盖选择。 */
-export function markCommanderLauncherOpened(
-  tabId: string,
-  autoLaunchedTabs: Set<string>,
-): { tool: 'graph'; toolData: string } {
-  autoLaunchedTabs.add(tabId);
-  return commanderLauncherToolPatch();
+/**
+ * 空白总指挥 tab 的一次性状态机。只有尚未显示启动器的 tab
+ * 能被可用默认启动；已显示启动器或点过「更改」的 tab 不再被接管。
+ */
+export function commanderTabTransition(
+  state: CommanderTabState,
+  action: CommanderTabAction,
+): { state: CommanderTabState; shouldLaunch: boolean } {
+  const current = state[action.tabId];
+  if (action.type === 'availability') {
+    if (!action.available || current !== undefined) return { state, shouldLaunch: false };
+    return { state: { ...state, [action.tabId]: 'started' }, shouldLaunch: true };
+  }
+  if (current === 'started' && action.type === 'launcher-shown') return { state, shouldLaunch: false };
+  const status = action.type === 'changed' ? 'changed' : 'launcher';
+  return { state: { ...state, [action.tabId]: status }, shouldLaunch: false };
 }
 
 export function openCommanderCli(tool: string, onOpen: (tool: string) => void): void {

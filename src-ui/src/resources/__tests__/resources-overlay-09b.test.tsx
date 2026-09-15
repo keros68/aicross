@@ -8,7 +8,6 @@ import manualSource from '../../../../docs/MANUAL.md?raw';
 import appSource from '../../App.tsx?raw';
 import { AgentCard, AgentCardModelMeta, FallbackOrderEditor, moveFallbackOrder, quotaClearVisible } from '../../components/resources/ResourcesOverlay';
 import resourcesOverlaySource from '../../components/resources/ResourcesOverlay.tsx?raw';
-import { BRAND_MARKS } from '../../components/resources/brand-marks';
 import resourcesBridgeSource from '../mention.ts?raw';
 import type { ResourceAgent, ResourceModel } from '../types';
 import { QuotaResetLine } from '../../components/center/graph/DispatchBits';
@@ -62,8 +61,8 @@ function card(value: ResourceAgent) {
 describe('AgentCard（接入页）', () => {
   it('卡片用与左栏同一套品牌标志', () => {
     const markup = card(agent('claude', 'Claude Code', [model({ agent: 'claude', id: 'fable' })]));
-    expect(markup).toContain('agent-badge-md agent-badge-claude agent-badge-mark');
-    expect(markup).toContain(BRAND_MARKS.claude.path);
+    expect(markup).toContain('agent-badge-md agent-badge-claude agent-badge-image');
+    expect(markup).toContain('src="/icons/tools/claude.svg"');
   });
 
   it('Claude 卡片显示别名 + 真实 ID；两者相同的模型只显示一次', () => {

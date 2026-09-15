@@ -19,3 +19,10 @@ export function agentDisplayName(agentId: string, fallback?: string): string {
   const canonical = DISPLAY_NAME_ALIASES[id] ?? id;
   return AGENT_DISPLAY_NAMES[canonical as keyof typeof AGENT_DISPLAY_NAMES] ?? fallback ?? agentId;
 }
+
+/** 用户可见的 agent/model 坐标；机器 id 仍保留在数据与裁决上下文中。 */
+export function agentModelDisplay(agentId: string, model: string, provider = ''): string {
+  const agent = agentDisplayName(agentId, agentId);
+  const route = provider === '' ? model : `${provider}/${model}`;
+  return `${agent}/${route}`;
+}

@@ -6,7 +6,7 @@
 //
 // 挑什么、显示成什么字都在 `commander/launcher.ts` 的纯函数里，这个文件只画。
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { AgentBadge } from '../resources/AgentBadge';
 import { commands, isTauri } from '../../tauri';
 import type { DispatchableModel } from '../../graph/types';
@@ -52,6 +52,8 @@ interface Props {
   defaults: CommanderSettings | null;
   /** 当前工作区目录，作为目录的初值。 */
   folderPath: string | null;
+  /** 启动器首次进入布局时登记该 tab，防止晚到默认接管。 */
+  onShown?: () => void;
   onLaunch: (args: CommanderLaunchArgs) => void;
   onOpenTerminal: () => void;
   onOpenGraph: () => void;
@@ -120,11 +122,13 @@ export function CommanderLauncher({
   otherClis,
   defaults,
   folderPath,
+  onShown,
   onLaunch,
   onOpenTerminal,
   onOpenGraph,
   onOpenTool,
 }: Props) {
+  useLayoutEffect(() => { onShown?.(); }, [onShown]);
   const agents = useMemo(() => availableCommanderAgents(installed), [installed]);
   const [models, setModels] = useState<DispatchableModel[]>([]);
   const [modelsLoaded, setModelsLoaded] = useState(false);

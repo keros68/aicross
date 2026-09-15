@@ -28,8 +28,14 @@
   display: block;
 }
 
+.agent-badge img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
 /* 字母兜底：没有标志时给一个薄底方块，免得标识看着像正文。 */
-.agent-badge-glyph,
 .agent-badge-letters {
   border-radius: var(--radius-xs);
   font-family: var(--font-mono);
@@ -43,6 +49,11 @@
 .agent-badge-md {
   width: 20px;
   height: 20px;
+}
+
+.agent-badge-lg {
+  width: 100%;
+  height: 100%;
 }
 
 /* 深色主题的一套：claude / codex / pi 直接用 graph/vendor.ts 的厂商原色，
