@@ -17,6 +17,9 @@ import {
   swarmCardActions,
   swarmChildItems,
   swarmCheckItems,
+  swarmLimitLine,
+  swarmWireSettings,
+  SWARM_SPLIT_PROMPT,
   swarmGate,
   swarmGenerateNotice,
   swarmMergeErrorResults,
@@ -33,7 +36,6 @@ import {
   withSwarmPreset,
   SWARM_BACKEND_MISSING_NOTE,
   SWARM_CHECK_FAILED_TEXT,
-  SWARM_CHECK_FALLBACK,
   SWARM_CHECKING_TEXT,
   SWARM_DIRTY_TEXT,
   SWARM_LIMIT_DEFAULT,
@@ -43,7 +45,7 @@ import {
   SWARM_PROCEED_TEXT,
   type SwarmCheckState,
 } from '../swarm.ts';
-import { PRESET_NODE_TEXTS, stamp, swarmSplitText } from '../stamp.ts';
+import { PRESET_NODE_TEXTS, stamp } from '../stamp.ts';
 import { contextPartsOf, serializeContext } from '../context.ts';
 import { applyRoleDefaults, presetWithRoleDefaults } from '../dispatch.ts';
 import { updateNodeSwarm } from '../mutate.ts';
@@ -101,10 +103,10 @@ describe('B1 契约：Node.swarm 与两条命令', () => {
     expect(updateNodeSwarm(graph, 'a', { item: 9, files: [], accept: '' })).toBe(graph);
   });
 
-  it('B1 后端未接通时两条命令 reject，回退值就是契约里那两个形状', async () => {
-    await expect(commands.checkSwarmPlan('D:/p', [{ item: 1, files: ['a/**'] }])).rejects.toThrow();
-    await expect(commands.mergeSwarmItems('D:/p', 'run', [], '')).rejects.toThrow();
-    expect(SWARM_CHECK_FALLBACK).toEqual({ dirty: false, overlaps: [], unmatched: [] });
+  it('B1 后端未接通时两条命令 reject，回退值就是契约里那个形状', async () => {
+    const wire = swarmWireSettings(DEFAULT_DISPATCH_SETTINGS);
+    await expect(commands.checkSwarmPlan('D:/p', [{ item: 1, files: ['a/**'] }], wire)).rejects.toThrow();
+    await expect(commands.mergeSwarmItems('D:/p', 'run', [], '', wire)).rejects.toThrow();
     expect(swarmMergeFallback([{ nodeId: 'a', item: 1, worktree: 'D:/wt/1', accept: '' }])).toEqual([
       { nodeId: 'a', item: 1, result: 'skipped', commit: '', note: SWARM_BACKEND_MISSING_NOTE, testOutput: '' },
     ]);
@@ -120,11 +122,12 @@ describe('B2 内置预设「蜂群模式」', () => {
     expect(created[0].kind).toBe('turn');
     expect(created[0].parents).toEqual([graph.root]);
     expect(created[0].target).toMatchObject({ role: '拆分', visibility: '共享', write: '只读' });
-    // 节点文本就是拆分要求：不改文件、清单 JSON、范围不重叠、上限
-    expect(created[0].user.text).toContain('不要改任何文件');
-    expect(created[0].user.text).toContain('不得重叠');
+    // 节点文本就是冻结的拆分提示词（split.txt）加一行本次上限，不在 TS 里另写一份
+    expect(created[0].user.text.startsWith(SWARM_SPLIT_PROMPT)).toBe(true);
+    expect(created[0].user.text).toContain('不修改文件');
     expect(created[0].user.text).toContain('```');
-    expect(PRESET_NODE_TEXTS['builtin-swarm']).toHaveLength(1);
+    expect(created[0].user.text.endsWith(swarmLimitLine(4))).toBe(true);
+    expect(PRESET_NODE_TEXTS['builtin-swarm']).toBeUndefined();
   });
 
   it('B2 拆分角色的默认是共享 / 只读，目标按「出方案」填', () => {
@@ -301,8 +304,8 @@ describe('B5 G3 逐件合并', () => {
   it('B5 送给引擎的件按件号排序，带 worktree 与本件验收命令', () => {
     const graph = mkGraph([mkSwarmNode('b', 2), mkSwarmNode('a', 1)]);
     expect(swarmMergeItems(graph, ['b', 'a'])).toEqual([
-      { nodeId: 'a', node_id: 'a', item: 1, worktree: 'D:/wt/1', accept: 'pytest tests/test_1.py' },
-      { nodeId: 'b', node_id: 'b', item: 2, worktree: 'D:/wt/2', accept: 'pytest tests/test_2.py' },
+      { nodeId: 'a', item: 1, worktree: 'D:/wt/1', title: '', accept: 'pytest tests/test_1.py' },
+      { nodeId: 'b', item: 2, worktree: 'D:/wt/2', title: '', accept: 'pytest tests/test_2.py' },
     ]);
   });
 
@@ -326,7 +329,7 @@ describe('B5 G3 逐件合并', () => {
     expect(next.nodes.c.reply?.adopted).toBeUndefined();
   });
 
-  it('B5 引擎返回 node_id / test_output 或 camelCase 都收得住', () => {
+  it('B5 引擎返回 node_id / test_output 或 camelCase 都收得住（旧引擎兼容）', () => {
     const rows = normalizeSwarmMergeResults([
       { node_id: 'a', item: 1, result: 'merged', commit: 'aaa', note: '', test_output: '' },
       { nodeId: 'b', item: 2, result: 'test_failed', commit: '', note: '已回滚', testOutput: 'FAILED' },
@@ -374,7 +377,7 @@ describe('R1 修正轮', () => {
       id: 'split',
       kind: 'turn',
       parents: ['root'],
-      user: { text: swarmSplitText(), attachments: [] },
+      user: { text: [SWARM_SPLIT_PROMPT, swarmLimitLine()].join('\n\n'), attachments: [] },
       reply: { status: 'done', text: replyText },
       target: { agent: 'claude', model: 'opus', role: '拆分', thinking: '高', visibility: '共享', write: '只读' },
       created_at: '2026-09-15T10:00:00Z',
@@ -486,8 +489,8 @@ describe('R1 修正轮', () => {
     expect(swarmCardActions(graph.nodes.a)).toEqual({ showPickOne: false, showAdopt: false, showRetry: true, note: '' });
     const merged = mergeRow({ nodeId: 'a', item: 1, commit: 'aaa' });
     expect(swarmCardActions(graph.nodes.a, merged)).toEqual({ showPickOne: false, showAdopt: true, showRetry: false, note: '已并入' });
-    // 合并写回 adopted 之后，不带本次结果也认得出已并入
-    expect(swarmCardActions(applySwarmMerge(graph, [merged]).nodes.a)).toMatchObject({ showAdopt: true, showRetry: false, note: '已并入' });
+    // 合并写回 adopted 之后，不带本次结果也认得出已并入；已采纳的件不再给按钮（08C-6）
+    expect(swarmCardActions(applySwarmMerge(graph, [merged]).nodes.a)).toMatchObject({ showAdopt: false, showRetry: false, note: '已并入' });
     expect(swarmCardActions(graph.nodes.a, mergeRow({ result: 'test_failed', note: '已回滚' })))
       .toMatchObject({ showAdopt: false, showRetry: true });
   });
@@ -519,14 +522,13 @@ describe('R1 修正轮', () => {
     expect(source.match(/withSwarmPreset\(f\.presets\)/g)).toHaveLength(2);
   });
 
-  it('R1-7 拆分提示词按设置的件数上限拼「最多 N 件」', () => {
-    expect(swarmSplitText(2)).toContain('最多 2 件');
-    expect(swarmSplitText()).toContain(`最多 ${SWARM_LIMIT_DEFAULT} 件`);
-    expect(PRESET_NODE_TEXTS['builtin-swarm'][0]).toContain(`最多 ${SWARM_LIMIT_DEFAULT} 件`);
+  it('R1-7 拆分提示词按设置的件数上限补「本次上限 N 件」', () => {
+    expect(swarmLimitLine(2)).toBe('本次上限 2 件。');
+    expect(swarmLimitLine()).toBe(`本次上限 ${SWARM_LIMIT_DEFAULT} 件。`);
     const graph = newGraph();
     const stamped = stamp(graph, graph.root, BUILTIN_SWARM_PRESET, 2);
     const created = Object.values(stamped.nodes).filter((node) => node.id !== graph.root);
-    expect(created[0].user.text).toContain('最多 2 件');
+    expect(created[0].user.text).toContain('本次上限 2 件');
     // 同一个上限也是解析时的截断线与提示里的数
     const five = ['```json', JSON.stringify({ items: [1, 2, 3].map((n) => ({ title: `第${n}`, files: [`s${n}/**`] })) }), '```'].join('\n');
     const plan = parseSwarmPlan(five, 2)!;
@@ -553,13 +555,6 @@ describe('R1 修正轮', () => {
     expect(prompt).not.toContain('tests/**');
     // 拆分回复（整份清单）不进上下文
     expect(contextPartsOf(outcome.graph, first.id).some((part) => part.source === 'reply')).toBe(false);
-  });
-
-  it('R1-GLM1 合并请求同时带 nodeId 与 node_id，A 侧选哪种命名都收得住', () => {
-    const graph = mkGraph([mkSwarmNode('a', 1)]);
-    const sent = swarmMergeItems(graph, ['a'])[0];
-    expect(sent.nodeId).toBe('a');
-    expect(sent.node_id).toBe('a');
   });
 
   it('R1-GLM4 蜂群件不进第三方仲裁的候选', () => {

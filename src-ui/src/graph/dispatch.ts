@@ -413,6 +413,8 @@ export function pickOne(graph: Graph, nodeId: string): Graph {
   const rivals = Object.values(graph.nodes)
     .filter((other) =>
       other.id !== nodeId &&
+      // 蜂群件不是擂台对手（08C-6）：清掉它的 adopted 会让已并入的件重回待合并清单。
+      !other.swarm &&
       other.kind === node.kind &&
       (other.target?.role ?? '') === (node.target?.role ?? '') &&
       other.parents.length === node.parents.length &&

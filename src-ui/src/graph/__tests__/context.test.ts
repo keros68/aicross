@@ -94,7 +94,9 @@ describe('contextOf', () => {
     ]);
   });
 
-  it('指定上游：用户消息全留，模型回复只留 upstreams 列表里的节点', () => {
+  // 08C-7：用户消息也只留点名的上游与本节点，不再全留——否则中间节点的
+  // 提示词（如蜂群的拆分要求）会跟着进下游每个节点的 prompt。
+  it('指定上游：用户消息与模型回复都只留 upstreams 列表里的节点，加自己', () => {
     const g = mkGraph([
       mkNode('root', 'material', [], '根消息'),
       mkNode('A', 'turn', ['root'], '问A', { reply: done('答A') }),
@@ -103,10 +105,8 @@ describe('contextOf', () => {
     ]);
     const ctx = contextOf(g, 'C');
     expect(ctx).toEqual([
-      { text: '根消息', attachments: [] },
       { text: '问A', attachments: [] },
       { text: '答A', attachments: [] },
-      { text: '问B', attachments: [] },
       { text: '问C', attachments: [] },
     ]);
   });

@@ -98,7 +98,11 @@ export function contextPartsOf(graph: Graph, nodeId: string): ContextPart[] {
   for (const id of pathIds) {
     const n = graph.nodes[id];
     if (!n) continue;
-    if (hasUserContent(n)) {
+    // 指定上游只带点名的那些节点（08C-7）：用户消息也照这条走，不再无条件全留。
+    // 蜂群件的上游就是根材料，拆分节点的用户消息（「只读材料，不要改任何文件」）
+    // 以前会跟着进每件的 prompt。
+    const keepUser = visibility !== '指定上游' || id === nodeId || upstreams.has(id);
+    if (keepUser && hasUserContent(n)) {
       out.push({
         key: `${id}:user`,
         nodeId: id,
