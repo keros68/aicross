@@ -1,6 +1,6 @@
 // 界面侧的图变更纯函数：新建 turn 子节点、根节点填第一句。都不改原图。
 
-import type { DispatchableModel, Graph, GraphNode, Target } from './types.ts';
+import type { DispatchableModel, Graph, GraphNode, SwarmItem, Target } from './types.ts';
 import { cloneTarget, defaultThinking, newNodeId, roleDefaults } from './types.ts';
 
 // 「执行」角色的默认 Target（模型留空，由界面填）。
@@ -70,6 +70,20 @@ export function updateNodeFallback(graph: Graph, nodeId: string, fallback: Targe
   const node = graph.nodes[nodeId];
   if (!node?.target) return graph;
   return updateNodeTarget(graph, nodeId, { ...node.target, fallback });
+}
+
+// 写回节点的蜂群清单条目（TASK-08：G1 判重叠后用户在节点面板改 files/accept）。
+// 节点上没有 swarm 字段时不凭空补，返回原图。
+export function updateNodeSwarm(graph: Graph, nodeId: string, swarm: SwarmItem): Graph {
+  const node = graph.nodes[nodeId];
+  if (!node?.swarm) return graph;
+  return {
+    ...graph,
+    nodes: {
+      ...graph.nodes,
+      [nodeId]: { ...node, swarm: { ...swarm, files: [...swarm.files] } },
+    },
+  };
 }
 
 // 写回节点用户消息文本（节点面板编辑框；draft 可编辑、非 draft 只读由界面控制）。

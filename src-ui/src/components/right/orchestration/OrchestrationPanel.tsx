@@ -17,12 +17,15 @@ import { PresetBuilder } from './PresetBuilder';
 import { ExplainOverlay } from './ExplainOverlay';
 import { RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { nodeStatusLabel, presetWithRoleDefaults } from '../../../graph/dispatch';
+import { withSwarmPreset } from '../../../graph/swarm';
+import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import './OrchestrationPanel.css';
 
 // 后置期次的模式：下拉里置灰 + 标期次，不实现（TASK-02 A8）。
 // 擂台/评审团/仲裁/前提抽查/主备/顾问已在 TASK-05B 落地（前两个是这里的真预设，
 // 后四个分别是结果屏动作、设置页、G1 备选、/advise 输入）。
-const FUTURE_PRESETS = ['红蓝', '群聊', '蜂群'];
+// 蜂群在 TASK-08 落地，从这份名单里挪走，改由 withSwarmPreset 兜底。
+const FUTURE_PRESETS = ['红蓝', '群聊'];
 
 export function OrchestrationPanel() {
   const { state, dispatch } = useAppState();
@@ -47,7 +50,7 @@ export function OrchestrationPanel() {
     if (!isTauri) return;
     commands
       .listPresets()
-      .then((f) => setPresets(f.presets))
+      .then((f) => setPresets(withSwarmPreset(f.presets)))
       .catch(() => {});
   };
 
@@ -68,12 +71,14 @@ export function OrchestrationPanel() {
       .listPresets()
       .then((f) => {
         if (dead) return;
-        setPresets(f.presets);
+        // 引擎侧没有蜂群预设时前端兜一份（TASK-08 B-2，同 id 以后端那份为准）
+        const all = withSwarmPreset(f.presets);
+        setPresets(all);
         // 默认选中经济模式（产品的主线预设），没有则第一个
         setSelectedPresetId((cur) => {
           if (cur !== '') return cur;
-          const economy = f.presets.find((p) => p.id === 'builtin-economy');
-          return (economy ?? f.presets[0])?.id ?? '';
+          const economy = all.find((p) => p.id === 'builtin-economy');
+          return (economy ?? all[0])?.id ?? '';
         });
       })
       .catch(() => {});
@@ -131,7 +136,8 @@ export function OrchestrationPanel() {
     const before = new Set(Object.keys(graph.nodes));
     // 擂台跳过角色默认填充：三路目标留空，G1 确认屏逐家选（不然会填成同一家）
     const effective = roles ? presetWithRoleDefaults(preset, roles) : preset;
-    const g2 = stamp(graph, focus.nodeId, effective);
+    // 拆分节点的「最多 N 件」跟着设置里的蜂群件数上限走（R1-7）。
+    const g2 = stamp(graph, focus.nodeId, effective, loadDispatchSettings().swarmLimit);
     recordStamp(
       graph.id,
       Object.keys(g2.nodes).filter((id) => !before.has(id)),

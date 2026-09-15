@@ -2,6 +2,8 @@
 // react-dom/server 做组件级断言，不只停在纯函数层。
 
 import { fallbackSkippedLineOf, idleHint, rollbackHintOf, runningDetailOf, writableFallbackHintOf, type BackendNodeResult, type ProgressSnapshot } from '../../../graph/dispatch';
+import { swarmResultLine, type SwarmGateState } from '../../../graph/swarm';
+import type { SwarmMergeResult } from '../../../tauri';
 import type { Target } from '../../../graph/types';
 import { verificationHint, type Verification } from '../../../resources/types';
 
@@ -85,5 +87,52 @@ export function PickOneButton({ visible, adopted, onPick }: { visible: boolean; 
     <button disabled={adopted} onClick={onPick}>
       {adopted ? '已选中' : '选它'}
     </button>
+  );
+}
+
+// G1 确认屏：蜂群清单闸门（TASK-08 B-4）。重叠与脏树是阻断，用警告样式；
+// 「正在核对」与 glob 没匹配到文件只提示，走常规灰字。核对不了（命令失败）时
+// 也阻断，但给一个「仍要派发」的选择（R1-1）。
+export function SwarmGateNotice(
+  { gate, proceed, onProceed }: {
+    gate: SwarmGateState;
+    proceed?: boolean;
+    onProceed?: (value: boolean) => void;
+  },
+) {
+  if (gate.reasons.length === 0 && gate.hints.length === 0) return null;
+  return (
+    <div className="dispatch-swarm-gate">
+      {gate.reasons.map((reason) => (
+        <div key={reason} className="dispatch-warning">{reason}</div>
+      ))}
+      {gate.hints.map((hint) => (
+        <div key={hint} className="dispatch-reason">{hint}</div>
+      ))}
+      {gate.canProceed && onProceed && (
+        <label className="dispatch-swarm-proceed">
+          <input
+            type="checkbox"
+            checked={proceed === true}
+            onChange={(event) => onProceed(event.target.checked)}
+          />
+          仍要派发
+        </label>
+      )}
+    </div>
+  );
+}
+
+// G3 结果屏：逐件合并结果的一行（TASK-08 B-5）。测试红时把输出折起来放在行下。
+export function SwarmMergeRow({ result }: { result: SwarmMergeResult }) {
+  return (
+    <div className="dispatch-swarm-row">
+      <div className={result.result === 'merged' ? 'dispatch-reason' : 'dispatch-warning'}>
+        {swarmResultLine(result)}
+      </div>
+      {result.testOutput !== '' && (
+        <details><summary>验收输出</summary><pre>{result.testOutput}</pre></details>
+      )}
+    </div>
   );
 }

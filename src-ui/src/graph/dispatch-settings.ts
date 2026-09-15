@@ -2,6 +2,8 @@ import type { DispatchSettings } from '../tauri';
 
 export interface UiDispatchSettings extends DispatchSettings {
   classificationModel: string;
+  // 蜂群一次最多几件（TASK-08）：与并发上限同一处，默认 4，也是解析清单时的截断线。
+  swarmLimit: number;
 }
 
 export const DEFAULT_DISPATCH_SETTINGS: UiDispatchSettings = {
@@ -9,6 +11,7 @@ export const DEFAULT_DISPATCH_SETTINGS: UiDispatchSettings = {
   concurrency: 3,
   maxRequests: 8,
   classificationModel: '',
+  swarmLimit: 4,
   redact: true,
   writeProjectDispatch: true,
   ccSwitchPath: '',
@@ -34,6 +37,9 @@ export function loadDispatchSettings(): UiDispatchSettings {
         ? Math.max(1, Math.min(100, Number(parsed.maxRequests)))
         : 8,
       classificationModel: typeof parsed.classificationModel === 'string' ? parsed.classificationModel : '',
+      swarmLimit: Number.isFinite(parsed.swarmLimit)
+        ? Math.max(1, Math.min(4, Number(parsed.swarmLimit)))
+        : 4,
       redact: parsed.redact !== false,
       writeProjectDispatch: parsed.writeProjectDispatch !== false,
       ccSwitchPath: typeof parsed.ccSwitchPath === 'string' ? parsed.ccSwitchPath : '',

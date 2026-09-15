@@ -7,13 +7,14 @@ import { createPortal } from 'react-dom';
 import type {
   DispatchableModel,
   Graph,
+  SwarmItem,
   Target,
   Thinking,
   VisibilityKind,
   WriteMode,
 } from '../../../graph/types';
 import { roleDefaults } from '../../../graph/types';
-import { defaultTurnTarget, updateNodeTarget, updateNodeUserText } from '../../../graph/mutate';
+import { defaultTurnTarget, updateNodeSwarm, updateNodeTarget, updateNodeUserText } from '../../../graph/mutate';
 import { ancestorsOf } from '../../../graph/layout';
 import { validateNode } from '../../../graph/validate';
 import { nodeLabel } from '../../../graph/label';
@@ -28,7 +29,7 @@ import {
 } from '../../../resources/model-picker';
 import './OrchestrationPanel.css';
 
-const ROLES = ['出方案', '执行', '验收', '验证', '顾问', '仲裁'];
+const ROLES = ['出方案', '拆分', '执行', '验收', '验证', '顾问', '仲裁'];
 const THINKINGS: Thinking[] = ['关', '低', '中', '高'];
 const VISIBILITIES: VisibilityKind[] = ['共享', '盲', '指定上游'];
 const WRITES: WriteMode[] = ['只读', '单写者', 'worktree'];
@@ -268,6 +269,51 @@ export function TargetEditor({ target, models, ancestors, hints, onChange }: Tar
   );
 }
 
+// 蜂群清单条目编辑（TASK-08 B-4）：G1 判出范围重叠后，用户在这里改 files
+// 直到不重叠。文件范围一行一条 glob——受控 textarea 不能边打边过滤空行，
+// 原文留在本组件的局部状态里，写回图时才拆行去空。非 draft 节点只读。
+export function SwarmEditor(
+  { swarm, editable, onChange }: { swarm: SwarmItem; editable: boolean; onChange: (next: SwarmItem) => void },
+) {
+  const [filesText, setFilesText] = useState(swarm.files.join('\n'));
+  const commitFiles = (text: string) => {
+    setFilesText(text);
+    onChange({ ...swarm, files: text.split('\n').map((line) => line.trim()).filter((line) => line !== '') });
+  };
+  return (
+    <>
+      <div className="te-row">
+        <label>文件范围</label>
+        {editable ? (
+          <textarea
+            rows={3}
+            aria-label="文件范围"
+            value={filesText}
+            placeholder="一行一条 glob，如 src/a/**"
+            onChange={(e) => commitFiles(e.target.value)}
+          />
+        ) : (
+          <div className="te-note te-readonly">{swarm.files.join('、') || '未声明'}</div>
+        )}
+      </div>
+      <div className="te-row">
+        <label>验收命令</label>
+        {editable ? (
+          <input
+            aria-label="验收命令"
+            value={swarm.accept}
+            placeholder="可空，空则用设置里的验证命令"
+            onChange={(e) => onChange({ ...swarm, accept: e.target.value })}
+          />
+        ) : (
+          <div className="te-note te-readonly">{swarm.accept || '用设置里的验证命令'}</div>
+        )}
+      </div>
+      <div className="te-note">第 {swarm.item} 件，合并按件号顺序进行。</div>
+    </>
+  );
+}
+
 interface NodePanelProps {
   graph: Graph;
   nodeId: string;
@@ -331,6 +377,13 @@ export function NodePanel({ graph, nodeId, models, onCommit, onClose }: NodePane
                   <div className="te-note te-readonly">{node.user.text}</div>
                 )}
               </div>
+            )}
+            {node.swarm && (
+              <SwarmEditor
+                swarm={node.swarm}
+                editable={node.reply?.status === 'draft'}
+                onChange={(next) => onCommit(updateNodeSwarm(graph, nodeId, next))}
+              />
             )}
             <TargetEditor
               target={node.target ?? defaultTurnTarget()}
