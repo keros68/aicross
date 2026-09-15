@@ -129,3 +129,7 @@ test result: ok. 336 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; f
 ```
 
 退出码 0，无空白错误。另以字节检查确认 `src/dispatch.rs` 为 0 个 CRLF、仅 LF，未发生换行风格翻面。
+
+## 复审后补记（编排者，763b21b）
+
+DeepSeek 复审第 1 条：恢复后复核未过滤排除目录，验证命令留下的 `__pycache__` 之类被当成「恢复失败」，`test_failed` 被降成 `skipped` 并整批停下。编排者在 `restore_swarm_paths` 的复核里加 `!excluded_swarm_path` 过滤（与逐件脏检查同口径），新增 `task08d_r1_validation_red_with_cache_residue_stays_test_failed`（真造 `__pycache__` 残留 + exit 9，断言 `test_failed` 且后件 `merged`）。回退该过滤后此测试红，恢复后绿；`cargo test` 337 passed / 0 failed / 11 ignored。GLM 复审（`tasks/review-08d-r1-glm.md`）核过该提交判正确。两家复审剩余低危项记入 `tasks/fix-04-r5-backlog.md` 第 21–26 条。
