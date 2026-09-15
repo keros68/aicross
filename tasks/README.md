@@ -31,7 +31,7 @@
    - 审查员没有 shell，「测试能否红」是静态推演，主线程要自己验（见 6）。
 5. **修正轮**：两份审查合成 `tasks/fix-NN-r1.md`（标出两家共同 / 各自独有；编排者已核实的条目注明；「不改」项写原因），派 codex sol。**只做一轮复审。** 复审新出的中等项若改动小，主线程直接修并附回归测试；低危进 `tasks/fix-04-r5-backlog.md` 编号续排，不派第三轮。
 6. **自己验能不能红**：修正轮新增的关键测试，把修复暂时回退再跑一次，红了才算数（08D-R1 这样验过一次）。
-7. **合并**：实现者不 commit，由主线程在其分支提交（提交信息带 Co-Authored-By 与 Claude-Session 两行）→ `git merge --no-edit <branch>` 到 main → 合并后再跑一遍第 3 步 → `git push origin main`（用户已授权直接推）。审查文件归档到 `tasks/review-NN-*.md`，报告补记主线程的追加改动。
+7. **合并**：实现者不 commit，由主线程在其分支提交（提交信息带 Co-Authored-By 与 Claude-Session 两行）→ `git merge --no-edit <branch>` 到 main → 合并后再跑一遍第 3 步 → `git push origin main`（用户已授权直接推）。合并命令和后续的 `git add -A && git commit` 不要写在同一条 `&&` 链里：合并冲突时 add -A 会把带冲突标记的文件直接提交（09-15 在 MANUAL.md 上发生过一次）；先看 `git status` 有没有 UU，再解决、再提交。审查文件归档到 `tasks/review-NN-*.md`，报告补记主线程的追加改动。
 8. **窗口真跑**（只有主线程能做，抓的是测试与审查都不覆盖的那类问题）：dev 窗口 `npx --yes -p @tauri-apps/cli@2 tauri dev`（根目录，日志落 scratchpad）；写仓库或跑 build/vitest 会触发重建，重建期间不操作窗口；kimi-cu 坐标空间 image 1568×882 / ax 2018×1135；输入用 `set_value` + 点击 + Enter。按任务书的清单逐项核，发现的缺口直接修在 main 或开小任务。
 9. **记录**：每次状态变化写 `D:\work\agentteam\PROGRESS.md`（Current / Completed / Next / Blocker）；产品决定写 `docs/PRODUCT.md`；新规则写 `AGENTS.md`。上下文被压缩后靠这三处 + `tasks/` 接手，不靠记忆。
 
