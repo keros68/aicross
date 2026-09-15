@@ -47,3 +47,10 @@
 
 31. 总指挥 PTY 继承了宿主环境里的 `CLAUDE_CODE_CHILD_SESSION` 标记（开发窗口从 Claude Code 会话里起时出现，Claude Code 提示 transcript saving off）：起总指挥时清掉 `CLAUDE_CODE_*` 之类宿主会话变量，用户从 Claude Code 里启动 aicross 时也不受影响。
 32. 总指挥 tab 标题被 CLI 的 OSC 标题（「Claude Code」）盖掉，看不到 `agent · 模型 · 目录名`；改成 commanderTitle 优先、OSC 标题进悬停。
+
+## TASK-14 R1 复审剩余（09-15，两家都判可交付；低危，择期）
+
+33. 额度回滚失败只改返回前端的结果，该次尝试的派发记录 frontmatter/runner_note 里没有「回滚失败」。（GLM 2）
+34. `resets \d` 仍会命中「server resets 3 connections」；无 reset/retry 语义时 ISO 兜底取正文第一个时间戳。（GLM 3）
+35. `status 429`（空格无冒号）与 `HTTP/1.1 429` 不识别，方向是漏判。（GLM 4）
+36. G1 收敛的「手动改过」集合不含「待核对」分区的勾选；provider 为空的目标写回额度会静默落空（与首次验证按 agent+id 命中不一致）。（DS 5/6）
