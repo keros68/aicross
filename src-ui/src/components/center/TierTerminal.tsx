@@ -413,6 +413,12 @@ interface TierTerminalProps {
    *  effect passes it to tierTerminalStart, which spawns the tool with
    *  `--resume <token>` instead of a fresh launch. */
   resumeToken?: string;
+  /** 这一次启动追加的 argv（TASK-10 总指挥的 `--model …`）。挂载时随
+   *  tierTerminalStart 一起发给后端，后端接在工具设置 `extra_args` 之后。
+   *  不传 = 与 TASK-10 之前完全一致。 */
+  extraArgs?: string[];
+  /** PTY 创建成功后的通知。总指挥用它在确认启动成功后保存默认。 */
+  onStarted?: () => void;
   hasBg?: boolean;
   bgUrl?: string;
   bgType?: 'image' | 'video' | 'none';
@@ -430,7 +436,7 @@ interface TierTerminalProps {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 function TierTerminalImpl({
-  sessionId, tool, toolName, theme, lang, isActive, toolData, folderPath, resumeToken, hasBg, bgUrl, bgType, termColorScheme, termFont,
+  sessionId, tool, toolName, theme, lang, isActive, toolData, folderPath, resumeToken, extraArgs, onStarted, hasBg, bgUrl, bgType, termColorScheme, termFont,
 }: TierTerminalProps) {
   // Raw shells (local terminal / remote SSH) have no TUI painting its own
   // caret — the xterm cursor is the only input-position indicator, so these
@@ -1290,7 +1296,8 @@ function TierTerminalImpl({
       const initialRows = term.rows || 24;
 
         try {
-          await commands.tierTerminalStart(sessionId, tool, initialCols, initialRows, theme, lang, toolData, folderPath ?? undefined, resumeToken, appStateRef.current.defaultShell);
+          await commands.tierTerminalStart(sessionId, tool, initialCols, initialRows, theme, lang, toolData, folderPath ?? undefined, resumeToken, appStateRef.current.defaultShell, extraArgs);
+          if (mounted) onStarted?.();
         } catch (err) {
           // Resume / launch validation failures (missing cwd, bad token
           // format, binary not on PATH) land here. The upstream CLI's own

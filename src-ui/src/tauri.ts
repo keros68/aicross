@@ -95,6 +95,8 @@ import type {
 import type { ReconcileSummary, RollbackSummary } from './graph/dispatch';
 export type { ReconcileSummary, RollbackSummary };
 
+import type { CommanderSettings } from './commander/types';
+
 // 资源接入契约类型的正式来源是 resources/types.ts（与 Rust resources.rs 镜像）。
 import type {
   AddManualAgentRequest,
@@ -140,8 +142,8 @@ export const commands = {
   windowClose: () => invoke<void>('window_close'),
 
   // Tier Terminal API
-  tierTerminalStart: (sessionId: string, tool: string | null, cols: number, rows: number, themeMode: string, locale?: string, toolData?: string, cwd?: string, resumeToken?: string, shell?: string) =>
-    invoke<void>('tier_terminal_start', { sessionId, tool, toolData: toolData ?? null, cols, rows, themeMode, locale: locale ?? null, cwd: cwd ?? null, resumeToken: resumeToken ?? null, shell: shell ?? null }),
+  tierTerminalStart: (sessionId: string, tool: string | null, cols: number, rows: number, themeMode: string, locale?: string, toolData?: string, cwd?: string, resumeToken?: string, shell?: string, extraArgs?: string[]) =>
+    invoke<void>('tier_terminal_start', { sessionId, tool, toolData: toolData ?? null, cols, rows, themeMode, locale: locale ?? null, cwd: cwd ?? null, resumeToken: resumeToken ?? null, shell: shell ?? null, extraArgs: extraArgs ?? null }),
   tierTerminalInput: (sessionId: string, data: string) =>
     invoke<void>('tier_terminal_input', { sessionId, data }),
   /** Raw write to PTY — does NOT trigger agent-status detection.
@@ -349,6 +351,9 @@ export const commands = {
     invoke<{ version: 1; premises: import('./graph/premise').Premise[] }>('load_premises'),
   savePremises: (file: { version: 1; premises: import('./graph/premise').Premise[] }) =>
     invoke<void>('save_premises', { file }),
+  loadCommander: () => invoke<CommanderSettings>('load_commander'),
+  saveCommander: (settings: CommanderSettings) =>
+    invoke<void>('save_commander', { settings }),
   previewDispatch: (request: DispatchStageRequest) =>
     invoke<DispatchPreview>('preview_dispatch', { request }),
   dispatchGraphStage: (request: DispatchStageRequest) =>

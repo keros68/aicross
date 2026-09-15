@@ -558,6 +558,10 @@ async fn tier_terminal_start(
     cwd: Option<String>,
     resume_token: Option<String>,
     shell: Option<String>,
+    // TASK-10 总指挥：这一次启动要额外追加的 argv（如 `--model fable`）。
+    // 与工具设置里的 `extra_args` 是两回事——那个是每次都加的常驻配置，
+    // 这个只属于本次启动，不落盘。None / 空数组 = 与改动前完全一致。
+    extra_args: Option<Vec<String>>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -571,7 +575,7 @@ async fn tier_terminal_start(
     tauri::async_runtime::spawn_blocking(move || {
         tier_terminal_start_blocking(
             session_id, tool, tool_data, cols, rows,
-            theme_mode, locale, cwd, resume_token, shell, app, terminal_session,
+            theme_mode, locale, cwd, resume_token, shell, extra_args, app, terminal_session,
         )
     })
     .await
@@ -589,6 +593,7 @@ fn tier_terminal_start_blocking(
     cwd: Option<String>,
     resume_token: Option<String>,
     shell: Option<String>,
+    extra_args: Option<Vec<String>>,
     app: tauri::AppHandle,
     terminal_session: terminal::SharedSession,
 ) -> Result<(), String> {
@@ -788,6 +793,23 @@ fn tier_terminal_start_blocking(
         // Synthetic / pane-internal tools (remote / multi-agent)
         // intentionally bypass user override.
         _ => (cmd, args),
+    };
+
+    // ── Per-launch extra args (TASK-10 总指挥) ─────────────────────────────
+    // The launcher picks agent + model per launch, so the model flag can't
+    // live in ~/.aicross/tools.json (that file is the always-on config, and
+    // writing the model into it would leak this launch's choice into every
+    // later one). It goes last so the user's own tools.json extra_args still
+    // precede it, matching "the later flag wins" for every CLI here.
+    // Empty strings are dropped — an empty argv element is never meaningful
+    // and CLIs differ on whether they error or silently misparse it.
+    let args: Vec<String> = match extra_args {
+        Some(extra) => {
+            let mut args = args;
+            args.extend(extra.into_iter().filter(|a| !a.trim().is_empty()));
+            args
+        }
+        None => args,
     };
 
     // If a session with the same ID already exists (e.g. restart-in-place),
@@ -3958,6 +3980,8 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::channels::acp::release_acp_pool,
             crate::orchestration::load_premises,
             crate::orchestration::save_premises,
+            crate::orchestration::load_commander,
+            crate::orchestration::save_commander,
         ])
         .setup(|app| {
             // Seed bundled skills (screenshot, vibeid) into

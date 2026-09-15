@@ -262,6 +262,43 @@ impl Default for RoleSettings {
     }
 }
 
+// ── 总指挥默认（TASK-10；`~/.aicross/commander.json`） ──────────────────────
+
+/// 上一次启动总指挥用的 agent / 模型 / 目录。字段名是 snake_case 跨期契约，
+/// 前端 `commander/types.ts` 与之逐字段对应。模型留空 = 启动时不加模型参数。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CommanderSettings {
+    #[serde(default = "commander_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub agent: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+fn commander_version() -> u32 {
+    1
+}
+
+impl Default for CommanderSettings {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            agent: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            cwd: String::new(),
+            updated_at: String::new(),
+        }
+    }
+}
+
 // ── 前提台账（TASK-05B 前提抽查；`~/.aicross/premises.json`，不动图契约） ──
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -472,6 +509,30 @@ fn save_premises_in(root: &Path, file: &PremiseFile) -> Result<(), String> {
         }
     }
     write_json_atomic(&path, file)
+}
+
+fn commander_path(root: &Path) -> PathBuf {
+    root.join("commander.json")
+}
+
+/// 缺失、解析失败或 version != 1 都返回空默认（agent 为空），前端据此判「还没有
+/// 默认」——首屏不显示一键行。与 premises 一样，读侧绝不改文件本身。
+fn commander_from(root: &Path) -> CommanderSettings {
+    fs::read_to_string(commander_path(root))
+        .ok()
+        .and_then(|text| serde_json::from_str::<CommanderSettings>(&text).ok())
+        .filter(|settings| settings.version == 1)
+        .unwrap_or_default()
+}
+
+fn save_commander_in(root: &Path, settings: &CommanderSettings) -> Result<(), String> {
+    if settings.version != 1 {
+        return Err(format!(
+            "总指挥默认 version 只支持 1，收到 {}",
+            settings.version
+        ));
+    }
+    write_json_atomic(&commander_path(root), settings)
 }
 
 fn roles_from(root: &Path) -> RoleSettings {
@@ -759,6 +820,18 @@ pub fn load_roles() -> RoleSettings {
 #[tauri::command]
 pub fn save_roles(settings: RoleSettings) -> Result<(), String> {
     save_roles_in(&aicross_root()?, &settings)
+}
+
+#[tauri::command]
+pub fn load_commander() -> CommanderSettings {
+    aicross_root()
+        .map(|root| commander_from(&root))
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn save_commander(settings: CommanderSettings) -> Result<(), String> {
+    save_commander_in(&aicross_root()?, &settings)
 }
 
 #[tauri::command]
@@ -1139,6 +1212,59 @@ mod tests {
         assert_eq!(economy.stages[0].nodes[0].model, "glm-5.3-flash");
         assert_eq!(economy.stages[1].nodes[0].write, "单写者");
         assert_eq!(economy.stages[2].nodes[0].model, "kimi-code/k3-256k");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task10_commander_roundtrip_and_missing_field_defaults() {
+        let root = temp_root("commander");
+        // 没有文件 → 空默认（agent 为空即「还没有默认」）
+        assert_eq!(commander_from(&root), CommanderSettings::default());
+        assert_eq!(commander_from(&root).version, 1);
+
+        let settings = CommanderSettings {
+            version: 1,
+            agent: "claude".into(),
+            provider: String::new(),
+            model: "fable".into(),
+            cwd: r"D:\work\aicross".into(),
+            updated_at: "2026-09-15T10:00:00Z".into(),
+        };
+        save_commander_in(&root, &settings).unwrap();
+        assert_eq!(commander_from(&root), settings);
+
+        // 缺字段落成默认值；version 缺失时按当前契约版本 1 读。
+        fs::write(root.join("commander.json"), r#"{"version":1,"agent":"pi"}"#).unwrap();
+        let partial = commander_from(&root);
+        assert_eq!(partial.agent, "pi");
+        assert_eq!(
+            (
+                partial.provider.as_str(),
+                partial.model.as_str(),
+                partial.cwd.as_str(),
+                partial.updated_at.as_str()
+            ),
+            ("", "", "", "")
+        );
+        fs::write(root.join("commander.json"), r#"{"agent":"codex"}"#).unwrap();
+        let without_version = commander_from(&root);
+        assert_eq!(without_version.version, 1);
+        assert_eq!(without_version.agent, "codex");
+
+        // version != 1 / 解析失败 → 空默认，文件不动
+        fs::write(root.join("commander.json"), r#"{"version":2,"agent":"codex"}"#).unwrap();
+        assert_eq!(commander_from(&root), CommanderSettings::default());
+        fs::write(root.join("commander.json"), "not json").unwrap();
+        assert_eq!(commander_from(&root), CommanderSettings::default());
+        assert_eq!(
+            fs::read_to_string(root.join("commander.json")).unwrap(),
+            "not json"
+        );
+
+        // 写侧拒绝非 1 的 version
+        let bad = CommanderSettings { version: 2, ..CommanderSettings::default() };
+        assert!(save_commander_in(&root, &bad).is_err());
+
         let _ = fs::remove_dir_all(root);
     }
 

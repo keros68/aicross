@@ -7,6 +7,15 @@ import { GraphTab } from './graph/GraphTab';
 // 技能面板按需载入（TASK-05 C 拆包）：它是启动页里的一个次级 tab。
 const SkillsPanel = lazy(() => import('./SkillsPanel').then((m) => ({ default: m.SkillsPanel })));
 import { FourSplitGrid } from './FourSplitGrid';
+import { CommanderLauncher, type CommanderLaunchArgs } from './CommanderLauncher';
+import { commanderArgs, commanderToolId } from '../../commander/args';
+import { commanderTabTitle } from '../../commander/launcher';
+import {
+  announceCommanderDefaults,
+  COMMANDER_LAUNCH_EVENT,
+  type CommanderLaunchDetail,
+} from '../../commander/launch-request';
+import { emptyCommanderSettings, type CommanderSettings } from '../../commander/types';
 import { ToolConfigModal } from './ToolConfigModal';
 import { ContributionHeatmap } from './ContributionHeatmap';
 import { ErrorBoundary } from '../common/ErrorBoundary';
@@ -708,8 +717,14 @@ export function CenterPanel() {
     try { const r = localStorage.getItem('coffee:recent-folders'); return r ? JSON.parse(r) : []; } catch { return []; }
   });
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; tool: ToolType } | null>(null);
-  const [graphTerminalMenuOpen, setGraphTerminalMenuOpen] = useState(false);
-  const graphTerminalMenuRef = useRef<HTMLDetailsElement>(null);
+  // 总指挥默认（TASK-10）：应用启动读一次，启动成功后写回。读不到 / 没存过时
+  // `agent` 为空串，启动器据此不显示一键行。
+  const [commanderDefaults, setCommanderDefaults] = useState<CommanderSettings | null>(null);
+  const [newTabMenuOpen, setNewTabMenuOpen] = useState(false);
+  const newTabMenuRef = useRef<HTMLDivElement>(null);
+  // 空白 tab 上用户点了「对话图」的那些 tab —— 只影响这一个 tab 的这一屏，
+  // 不进持久化状态：它是「用户刚才点了哪个次级入口」，不是会话的属性。
+  const [graphViewTabs, setGraphViewTabs] = useState<Record<string, boolean>>({});
   const pushRecentFolder = (folder: string) => {
     setRecentFolders(prev => {
       const next = [folder, ...prev.filter(f => f !== folder)].slice(0, 8);
@@ -782,27 +797,6 @@ export function CenterPanel() {
   const isLaunchpadMode = activeSession && activeSession.tool === null;
   const isToolPickerMode = Boolean(isLaunchpadMode || isEmptyGraphSession(activeSession));
 
-  useEffect(() => {
-    if (!graphTerminalMenuOpen) return;
-    if (state.settingsOpen || !isEmptyGraphSession(activeSession)) {
-      setGraphTerminalMenuOpen(false);
-      return;
-    }
-    const onDown = (event: MouseEvent) => {
-      if (graphTerminalMenuRef.current && !graphTerminalMenuRef.current.contains(event.target as Node)) {
-        setGraphTerminalMenuOpen(false);
-      }
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setGraphTerminalMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [activeSession, graphTerminalMenuOpen, state.settingsOpen]);
   // Mirrored into a ref so the window-foreground rescan (which has [] deps and
   // can't see the latest value otherwise) can skip work while in a terminal tab.
   const isToolPickerModeRef = useRef(isToolPickerMode);
@@ -894,12 +888,36 @@ export function CenterPanel() {
   }, [toast?.id]);
 
 
-  const handleAddTab = () => {
+  useEffect(() => {
+    if (!newTabMenuOpen) return;
+    const onDown = (event: MouseEvent) => {
+      if (newTabMenuRef.current && !newTabMenuRef.current.contains(event.target as Node)) {
+        setNewTabMenuOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setNewTabMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [newTabMenuOpen]);
+
+  const handleAddTab = (kind: 'commander' | 'terminal' | 'graph') => {
     const folderPath = terminals.find(t => t.id === activeTerminalId)?.folderPath ?? null;
+    const id = crypto.randomUUID();
+    const session = kind === 'terminal'
+      ? { id, tool: 'terminal' as ToolType, folderPath }
+      : createDefaultGraphSession(folderPath, id);
     dispatch({
       type: 'ADD_TERMINAL',
-      session: createDefaultGraphSession(folderPath),
+      session,
     });
+    if (kind === 'graph') setGraphViewTabs(prev => ({ ...prev, [id]: true }));
+    setNewTabMenuOpen(false);
   };
 
   // External launch (`coffee-cli launch --tool <id> [--cwd <dir>]`) — reached
@@ -1117,7 +1135,14 @@ export function CenterPanel() {
     return label.length > 30 ? '\u2026' + label.slice(-28) : label;
   };
 
-  const selectTool = (tool: ToolType, toolData?: string, cwd?: string) => {
+  const selectTool = (
+    tool: ToolType,
+    toolData?: string,
+    cwd?: string,
+    // TASK-10：只属于这一次启动的附加 argv 与 tab 标题。工具设置里的
+    // `extra_args` 不受影响——后端先加那个，再加这个。
+    launch?: { extraArgs?: string[]; title?: string; settings?: CommanderSettings },
+  ) => {
     // Concurrent multi-agent Tabs are now supported as of the per-pane
     // MCP / per-pane system-prompt rework: each pane has its own MCP
     // listener (different port), Claude panes write zero workspace
@@ -1134,9 +1159,111 @@ export function CenterPanel() {
         });
         pushRecentFolder(cwd);
       }
-      dispatch({ type: 'SET_TERMINAL_TOOL', id: activeTerminalId, tool, toolData });
+      dispatch({
+        type: 'SET_TERMINAL_TOOL',
+        id: activeTerminalId,
+        tool,
+        toolData,
+        extraArgs: launch?.extraArgs,
+        commanderTitle: launch?.title,
+        commanderSettings: launch?.settings,
+      });
     }
   };
+
+  // ── 总指挥（TASK-10）──────────────────────────────────────────────────
+  // 启动走的就是上面的 selectTool / TierTerminal 那条 PTY 路径，这里只多做
+  // 两件事：把 `commanderArgs` 算出来的 argv 交给这一次启动，并把待保存的
+  // 默认挂到 tab 上。TierTerminal 确认 PTY 创建成功后才调用 save_commander。
+  const launchCommander = (args: CommanderLaunchArgs, openNewTab = false) => {
+    const tool = commanderToolId(args.agent);
+    if (tool === null) return;
+    const cwd = args.cwd.trim();
+    const settings: CommanderSettings = {
+      ...emptyCommanderSettings(),
+      agent: args.agent,
+      provider: args.provider,
+      model: args.model,
+      cwd,
+      updated_at: new Date().toISOString(),
+    };
+    const launch = {
+      extraArgs: commanderArgs(args.agent, args.provider, args.model),
+      title: commanderTabTitle(args.agent, args.model, cwd === '' ? null : cwd),
+      settings,
+    };
+    if (openNewTab) {
+      dispatch({
+        type: 'ADD_TERMINAL',
+        session: {
+          id: crypto.randomUUID(),
+          tool: tool as ToolType,
+          folderPath: cwd === '' ? null : cwd,
+          extraArgs: launch.extraArgs,
+          commanderTitle: launch.title,
+          commanderSettings: settings,
+        },
+      });
+      if (cwd !== '') pushRecentFolder(cwd);
+      return;
+    }
+    selectTool(tool as ToolType, undefined, cwd === '' ? undefined : cwd, {
+      ...launch,
+    });
+  };
+
+  const rememberCommander = (settings: CommanderSettings) => {
+    if (!isTauri) {
+      setCommanderDefaults(settings);
+      announceCommanderDefaults();
+      return;
+    }
+    commands.saveCommander(settings).then(() => {
+      setCommanderDefaults(settings);
+      announceCommanderDefaults();
+    }).catch(() => {});
+  };
+
+  // 应用启动读一次默认，填一键行。读不到就当没有默认。
+  useEffect(() => {
+    if (!isTauri) {
+      setCommanderDefaults(emptyCommanderSettings());
+      return;
+    }
+    let dead = false;
+    commands
+      .loadCommander()
+      .then((settings) => { if (!dead) setCommanderDefaults(settings); })
+      .catch(() => { if (!dead) setCommanderDefaults(emptyCommanderSettings()); });
+    return () => { dead = true; };
+  }, []);
+
+  // 左栏工作区目录行的「在此启动总指挥」：用已存的默认 agent/模型，目录换成
+  // 事件里给的那个。没有默认就什么都不做——那一行本来就只在有默认时才画。
+  const commanderDefaultsRef = useRef(commanderDefaults);
+  useEffect(() => { commanderDefaultsRef.current = commanderDefaults; });
+  useEffect(() => {
+    const onLaunch = (event: Event) => {
+      const detail = (event as CustomEvent<CommanderLaunchDetail>).detail;
+      const saved = commanderDefaultsRef.current;
+      const tool = saved ? commanderToolId(saved.agent) : null;
+      if (!saved || tool === null) return;
+      launchCommanderRef.current(
+        {
+          agent: saved.agent as CommanderLaunchArgs['agent'],
+          provider: saved.provider,
+          model: saved.model,
+          cwd: detail?.cwd || saved.cwd,
+        },
+        true,
+      );
+    };
+    window.addEventListener(COMMANDER_LAUNCH_EVENT, onLaunch);
+    return () => window.removeEventListener(COMMANDER_LAUNCH_EVENT, onLaunch);
+  }, []);
+  // launchCommander 每次渲染都是新函数，事件监听只挂一次，走 ref 拿最新的。
+  const launchCommanderRef = useRef(launchCommander);
+  useEffect(() => { launchCommanderRef.current = launchCommander; });
 
   const handlePickFolder = async (toolKey: ToolType) => {
     if (!toolKey) return;
@@ -1313,7 +1440,9 @@ export function CenterPanel() {
           const { icon, title: baseTitle } = renderTabContent(session, isActive);
           // Tool's live OSC 0/2 title (Claude Code conversation summary, etc.)
           // overrides the cwd basename when the tool has set a non-empty one.
-          const title = session.toolTitle?.trim() || baseTitle;
+          // 总指挥标题（`agent · 模型 · 目录名`）排在中间：CLI 自己报了标题就
+          // 让它赢，没报时比光显示目录名多说两件事。
+          const title = session.toolTitle?.trim() || session.commanderTitle?.trim() || baseTitle;
           const isDragging = tabDrag?.sessionId === session.id;
 
           // Sibling shift: while a different tab is being dragged, this
@@ -1434,9 +1563,23 @@ export function CenterPanel() {
           </div>
         )}
 
-        <button className="chrome-tab-new" onClick={handleAddTab}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-        </button>
+        <div className="chrome-tab-new-wrap" ref={newTabMenuRef}>
+          <button
+            className="chrome-tab-new"
+            onClick={() => setNewTabMenuOpen(open => !open)}
+            aria-label="新建"
+            aria-expanded={newTabMenuOpen}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </button>
+          {newTabMenuOpen && (
+            <div className="chrome-tab-new-menu">
+              <button type="button" onClick={() => handleAddTab('terminal')}>系统终端</button>
+              <button type="button" onClick={() => handleAddTab('graph')}>对话图</button>
+              <button type="button" onClick={() => handleAddTab('commander')}>总指挥</button>
+            </div>
+          )}
+        </div>
       </div>,
       tabSlot)}
       <div className="main-content">
@@ -1485,56 +1628,26 @@ export function CenterPanel() {
             ) : t.tool === 'graph' ? (
               // 对话图 tab：不是 PTY，不走 TierTerminal；整个包 ErrorBoundary，
               // 图数据异常时只坏这一个 tab。
+              //
+              // TASK-10：空白 tab 的主视图改成总指挥启动器（原来是对话图开始视图
+              // + 底部「打开终端」折叠菜单）。对话图退到次级入口——点了才画，
+              // 那时 graphId 仍是空串，GraphTab 照样给开始视图。
               <div className="graph-shell">
-                <ErrorBoundary key={`graph-${t.id}`} fallbackLabel="对话图渲染出错">
-                  <GraphTab session={t} />
-                </ErrorBoundary>
-                {t.id === activeTerminalId && isEmptyGraphSession(t) && (
-                  <details
-                    ref={graphTerminalMenuRef}
-                    className="graph-terminal-entry"
-                    open={graphTerminalMenuOpen}
-                    onToggle={event => setGraphTerminalMenuOpen(event.currentTarget.open)}
-                  >
-                    <summary>打开终端</summary>
-                    <div className="graph-terminal-menu">
-                      {AGENT_CATALOG
-                        .filter(tool => tool.key === 'terminal' || (
-                          tool.type === 'ai-cli' && toolsInstalled[tool.key ?? ''] === true
-                        ))
-                        .map(tool => (
-                          <div className="graph-terminal-row" key={tool.key}>
-                            <button
-                              type="button"
-                              className="graph-terminal-tool"
-                              onClick={() => {
-                                setGraphTerminalMenuOpen(false);
-                                selectTool(tool.key, undefined, lastCwdByTool[tool.key ?? '']);
-                              }}
-                            >
-                              <span className="graph-terminal-icon">{tool.icon}</span>
-                              <span>{tool.key === 'terminal' ? '系统终端' : tool.label}</span>
-                            </button>
-                            {tool.requiresCwd && (
-                              <button
-                                type="button"
-                                className="graph-terminal-folder"
-                                onClick={() => {
-                                  setGraphTerminalMenuOpen(false);
-                                  handlePickFolder(tool.key);
-                                }}
-                                aria-label={`为${tool.key === 'terminal' ? '系统终端' : tool.label}选择文件夹`}
-                                title="选择文件夹"
-                              >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                                </svg>
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                    </div>
-                  </details>
+                {isEmptyGraphSession(t) && !graphViewTabs[t.id] ? (
+                  <ErrorBoundary key={`commander-${t.id}`} fallbackLabel="总指挥启动器出错">
+                    <CommanderLauncher
+                      installed={toolsInstalled}
+                      defaults={commanderDefaults}
+                      folderPath={t.folderPath}
+                      onLaunch={launchCommander}
+                      onOpenTerminal={() => selectTool('terminal', undefined, lastCwdByTool['terminal'] ?? t.folderPath ?? undefined)}
+                      onOpenGraph={() => setGraphViewTabs(prev => ({ ...prev, [t.id]: true }))}
+                    />
+                  </ErrorBoundary>
+                ) : (
+                  <ErrorBoundary key={`graph-${t.id}`} fallbackLabel="对话图渲染出错">
+                    <GraphTab session={t} />
+                  </ErrorBoundary>
                 )}
               </div>
             ) : (
@@ -1550,6 +1663,8 @@ export function CenterPanel() {
                   toolData={t.toolData}
                   folderPath={t.folderPath}
                   resumeToken={t.resumeToken}
+                  extraArgs={t.extraArgs}
+                  onStarted={t.commanderSettings ? () => rememberCommander(t.commanderSettings as CommanderSettings) : undefined}
                   hasBg={hasBg}
                   bgUrl={bgUrl}
                   bgType={bgType}
@@ -1590,9 +1705,11 @@ export function CenterPanel() {
                 {/* ─── Page 1: Desktop (pinned items) ─── */}
                 <div className="launchpad-page">
                   <div className="launchpad-inner">
-                    {/* 对话图入口（第 2 期）：固定卡，不占 pin 位、不可 pin，
-                        样式跟随 agent 卡。点击 = 当前 tab 变成对话图
-                        （toolData 为空 → GraphTab 显示开始视图）。 */}
+                    {/* 总指挥入口（TASK-10）：固定卡，不占 pin 位、不可 pin，
+                        样式跟随 agent 卡。点击 = 当前 tab 变成空白 tab，也就是
+                        总指挥启动器；对话图是它下面的次级入口。
+                        （TASK-10 之前这张卡直接写「对话图」——空白 tab 的主视图
+                        换了，卡名也跟着换，否则点进去与卡名对不上。） */}
                     <div className="launchpad-grid launchpad-grid--graph">
                       <div className="launchpad-card-group">
                         <div
@@ -1601,7 +1718,7 @@ export function CenterPanel() {
                         >
                           <div className="launchpad-icon"><SvgGraph /></div>
                           <div className="launchpad-card-info">
-                            <span>对话图</span>
+                            <span>总指挥</span>
                           </div>
                         </div>
                       </div>

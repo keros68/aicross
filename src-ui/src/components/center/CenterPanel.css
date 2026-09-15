@@ -114,6 +114,42 @@
   color: var(--text-1);
 }
 
+.chrome-tab-new-wrap {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+}
+
+.chrome-tab-new-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  width: 128px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-panel);
+}
+
+.chrome-tab-new-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chrome-tab-new-menu button:hover {
+  background: var(--bg-hover);
+}
+
 /* ─── Tab Actions (Status Dots ↔ Close Button Overlay) ─── */
 .tab-actions {
   display: flex;
@@ -246,8 +282,9 @@
   flex-direction: column;
 }
 
-/* Secondary terminal entry on the graph start view. The graph implementation
-   stays untouched; this wrapper adds one compact launcher at the shell level. */
+/* 总指挥启动器（TASK-10）。原来这里是对话图开始视图底部的「打开终端」折叠
+   菜单；空白 tab 的主视图换成启动器之后那套样式全部作废。
+   视觉纪律：1px 边框分块、容器 8px 圆角、单一 --accent、模型 ID 与路径走等宽。 */
 .graph-shell {
   position: relative;
   width: 100%;
@@ -255,108 +292,181 @@
   min-height: 0;
 }
 
-.graph-terminal-entry {
-  position: absolute;
-  left: 50%;
-  bottom: 28px;
-  z-index: 4;
-  width: 240px;
-  transform: translateX(-50%);
-  color: var(--text-2);
-  font-size: 12px;
+.commander-launcher {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 32px 16px;
+  box-sizing: border-box;
 }
 
-.graph-terminal-entry > summary {
-  width: max-content;
-  margin: 0 auto;
-  padding: 4px 8px;
-  border-radius: var(--radius-xs);
-  list-style: none;
-  cursor: pointer;
-  user-select: none;
+.commander-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 720px;
 }
 
-.graph-terminal-entry > summary::-webkit-details-marker {
-  display: none;
-}
-
-.graph-terminal-entry > summary::after {
-  content: '⌄';
-  display: inline-block;
-  margin-left: 6px;
-  font-family: var(--mono);
-}
-
-.graph-terminal-entry[open] > summary,
-.graph-terminal-entry > summary:hover {
+.commander-title {
+  font-size: 18px;
   color: var(--text-1);
-  background: var(--bg-hover);
 }
 
-.graph-terminal-menu {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 8px);
-  padding: 4px;
+.commander-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.commander-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.commander-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.commander-field--agents {
+  flex: 1 1 100%;
+}
+
+.commander-label {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.commander-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.commander-agent-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
-  box-shadow: var(--shadow-panel);
-}
-
-.graph-terminal-row {
-  display: flex;
-  align-items: center;
-  border-radius: var(--radius-xs);
-}
-
-.graph-terminal-row:hover {
-  background: var(--bg-hover);
-}
-
-.graph-terminal-tool,
-.graph-terminal-folder {
-  display: flex;
-  align-items: center;
-  border: 0;
   color: var(--text-1);
-  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
 }
 
-.graph-terminal-tool {
-  flex: 1;
-  min-width: 0;
-  gap: 8px;
-  padding: 8px;
+.commander-agent-card:hover {
+  border-color: var(--border-focus);
+}
+
+.commander-agent-card.is-picked {
+  border-color: var(--accent);
+}
+
+.commander-agent-name {
+  white-space: nowrap;
+}
+
+.commander-select,
+.commander-cwd {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-1);
   font-family: var(--mono);
   font-size: 12px;
+  outline: none;
+}
+
+.commander-select:focus,
+.commander-cwd:focus {
+  border-color: var(--border-focus);
+}
+
+.commander-cwd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   text-align: left;
+  cursor: pointer;
 }
 
-.graph-terminal-icon,
-.graph-terminal-icon svg,
-.graph-terminal-icon img {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+.commander-cwd-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
 }
 
-.graph-terminal-folder {
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-xs);
+.commander-cwd-pick {
+  flex-shrink: 0;
+  font-family: var(--font, system-ui);
+  font-size: 12px;
   color: var(--text-2);
 }
 
-.graph-terminal-folder:hover {
-  color: var(--text-1);
+.commander-primary-btn {
+  align-self: flex-start;
+  padding: 8px 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--bg-app);
+  font-size: 13px;
+  cursor: pointer;
 }
 
-.graph-terminal-folder svg {
-  width: 14px;
-  height: 14px;
+.commander-primary-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.commander-oneshot {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.commander-note,
+.commander-empty {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.commander-secondary {
+  display: flex;
+  gap: 16px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.commander-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.commander-link:hover {
+  color: var(--accent);
 }
 
 /* ─── Launchpad Grid Overlay ─── */
