@@ -267,6 +267,13 @@ fable-5 → [gpt-5.6 | kimi-2.7 | deepseek-v4-flash] → glm-5.3
 - ③ 额度用尽自动切备选；备选顺序由用户设定——资源页每个模型可排一个「备选顺序」（同角色可用的模型按优先级排列），派发时按顺序往下切，全部用尽才把重置时间写进节点、不算失败。（TASK-14）
 - 第 6、7 条（在飞任务条、模型备注与用途标签）后置，第 7 条的「用途标签」与 ③ 的备选顺序放在资源页同一处设计。
 
+## 用户 09-15 晚四点反馈的定案
+
+1. **对话图不能和总指挥剥离。** 没人会单独打开一张图来派发；真实用法是在总指挥会话里干活，遇到需要多家核对的地方顺手派出去——这正是 skill 存在的原因。定案：控制台起来后在 `~/.aicross/console.json` 写本机端点（现有 hook-server 的地址 + 一次性令牌），并提供一个 `aicross` 命令行入口（`aicross dispatch` / `aicross status` / `aicross adopt`）；ai-cross skill 的 `channels.md` 加「控制台通道」——控制台在跑时，skill 的派发走这个通道，节点长在当前工作区的对话图上，结果屏、留痕、合并全部复用；控制台不在时 skill 照旧直接调 CLI。总指挥不需要装任何东西：skill 由 skillmanager 装在各家 CLI 里，控制台只多一个通道。对话图从此是「看板」：总指挥派出去的活在这里看、在这里裁决。（TASK-16）
+2. **agent 图标用 coffee 那套。** fork 里已经带着上游的工具图标（`src-ui/public/icons/tools/*.svg`、`src-ui/src/icons-inline/pi.svg`），启动器、左栏、接入页统一用它们，不再自己拼 simple-icons 路径；`NOTICE` 说明沿用上游图标。（并入 TASK-15）
+3. **pi 只显示登录了的 provider。** 接入页与左栏对 pi 的每个 provider 先跑 `pi auth check --provider <p> --json --no-refresh`（不带 `--credentials`，不读凭据），没登录的 provider 折成一行「未登录 N 个 provider」不铺开；已登录的 provider 才列模型，未验证的仍折叠。页面按列等高、卡片内滚动，不再把整页拉长。（TASK-17）
+4. **模式做减法。** 预设下拉只放三种基础模式 共享 / 经济 / 盲审，加用户自己保存的「自定义模式」；擂台 / 评审 / 蜂群 收进「更多模式」折叠组，讲解页按同样分层。默认选经济模式不变。（TASK-18）
+
 ## 顺序
 
 1. 契约：`.dispatch/` frontmatter（ai-cross 侧，一个版本）。
