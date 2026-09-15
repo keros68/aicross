@@ -95,3 +95,7 @@ vite v8.0.7 building client environment for production...
 - 未运行 `cargo fmt`，未启动窗口，未 commit，未 push，未修改 `D:\work\aicross` 主工作树。
 - 反向注错期间的 panic 在 Windows Temp 留下 6 个专用测试目录（`aicross-pi-*` / `aicross-login-fallback-*`）；已核对目标，但当前沙箱策略拒绝递归删除，未绕过策略处理。它们不在仓库或主工作树内，只含假 CLI 脚本、标记文件与临时 `resources.json`。
 - 无没做或部分完成项；第 2 条的 `fallback_skipped` 仅在「所有可用备选都因未登录而没有执行」时写入，这是为了不在后续备选成功时显示错误的「未切备选」说明；每个跳过事件都会写入 note。
+
+## 复审后补记（编排者，febca39）
+
+本机 pi 二进制当晚不可用（`D:\pi-official` 不存在），DeepSeek 复审改由 codex gpt-5.6-luna（只读沙箱）担任第二家：判可交付但有未闭合项，9 条全部已修，新发现只有验证环境（cargo 构建锁）与报告状态描述两条；编排者独立复跑 cargo 414 / vitest 509 / build 通过。GLM 复审另见 `tasks/review-17-r1-glm.md`。
