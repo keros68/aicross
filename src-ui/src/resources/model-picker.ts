@@ -9,6 +9,7 @@
 // 验证失败点明。旧的 status 字段留着给接入页的详情用。
 
 import { verificationLabel, verificationOf } from './types';
+import { agentDisplayName } from './agent-display';
 
 /** 挑模型只需要这几个字段；`DispatchableModel` 与 `ResourceModel` 都满足。 */
 export interface PickableModel {
@@ -25,7 +26,8 @@ export interface PickableModel {
  */
 export function modelGroupLabel(model: PickableModel): string {
   const provider = model.provider.trim();
-  return provider === '' ? model.agent : `${model.agent} · ${provider}`;
+  const agent = agentDisplayName(model.agent);
+  return provider === '' ? agent : `${agent} · ${provider}`;
 }
 
 /**

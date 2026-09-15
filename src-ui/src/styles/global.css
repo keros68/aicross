@@ -55,7 +55,7 @@
 
 /* ─── Brand Serif (splash-label "art font") ──
    Lora italic 500, Latin + Latin-Ext only (~36 KB total). Splash text is
-   always English brand names ("Claude Code", "Codex CLI"...) since CJK
+   always English brand names ("Claude Code", "Codex"...) since CJK
    splash content is routed to a stable bold display via the .splash-label
    :lang() rules — see TierTerminal.css. unicode-range stays in sync with
    Google Fonts' upstream subsetting so the browser only loads each file

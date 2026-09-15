@@ -11,9 +11,12 @@ import { CommanderLauncher, type CommanderLaunchArgs } from './CommanderLauncher
 import { commanderArgs, commanderIdentifierError, commanderToolId } from '../../commander/args';
 import {
   commanderStartedCallback,
+  commanderNewTabLaunch,
+  commanderTabTransition,
+  type CommanderTabState,
   commanderTabTitle,
   graphTabTitle,
-  otherInstalledCommanderClis,
+  otherInstalledCommanderClis, commanderLauncherHidden,
 } from '../../commander/launcher';
 import { getToolScanSnapshot, publishToolScan } from '../../commander/tool-scan';
 import {
@@ -22,6 +25,8 @@ import {
   type CommanderLaunchDetail,
 } from '../../commander/launch-request';
 import { emptyCommanderSettings, type CommanderSettings } from '../../commander/types';
+import { agentDisplayName } from '../../resources/agent-display';
+import { AgentBadge } from '../resources/AgentBadge';
 import { ToolConfigModal } from './ToolConfigModal';
 import { ContributionHeatmap } from './ContributionHeatmap';
 import { ErrorBoundary } from '../common/ErrorBoundary';
@@ -568,19 +573,19 @@ export function CenterPanel() {
   // Built-in inline SVG icons keyed by agent id. Used when catalog entry id matches;
   // otherwise falls back to entry.icon URL.
   const BUILTIN_ICONS: Record<string, React.ReactNode> = {
-    claude: <SvgClaude />,
+    claude: <AgentBadge agentId="claude" size="lg" />,
     opencode: <SvgOpenCode />,
     mimocode: <SvgMimo />,
     openclaw: <SvgOpenClaw />,
-    codex: <SvgCodex />,
+    codex: <AgentBadge agentId="codex" size="lg" />,
     grok: <SvgGrok />,
     antigravity: <SvgAntigravity />,
     qwen: <SvgQwen />,
     hermes: <SvgHermes />,
-    pi: <SvgPi />,
+    pi: <AgentBadge agentId="pi" size="lg" />,
     crush: <SvgCrush />,
     aider: <SvgAider />,
-    kimicode: <SvgKimi />,
+    kimicode: <AgentBadge agentId="kimicode" size="lg" />,
     goose: <SvgGoose />,
     copilot: <SvgCopilot />,
   };
@@ -592,7 +597,10 @@ export function CenterPanel() {
     'claude', 'opencode', 'mimocode', 'openclaw', 'codex', 'grok', 'antigravity', 'qwen', 'hermes',
     // Pi (T2) + Crush/Aider/Goose/Copilot (T3 launch-only). Kimi Code is T1.
     'pi', 'crush', 'aider', 'kimicode', 'goose', 'copilot',
-  ].map((key) => ({ key: key as ToolType, label: getToolDisplayName(key) }));
+  ].map((key) => ({
+    key: key as ToolType,
+    label: agentDisplayName(key, getToolDisplayName(key)),
+  }));
 
   // Unified agent catalog — fully local. The remote catalog fetch
   // (coffeecli.com/agents/catalog.json) was deleted in v1.1.5; product
@@ -916,20 +924,6 @@ export function CenterPanel() {
     };
   }, [newTabMenuOpen]);
 
-  const handleAddTab = (kind: 'commander' | 'terminal' | 'graph') => {
-    const folderPath = terminals.find(t => t.id === activeTerminalId)?.folderPath ?? null;
-    const id = crypto.randomUUID();
-    const session = kind === 'terminal'
-      ? { id, tool: 'terminal' as ToolType, folderPath }
-      : createDefaultGraphSession(folderPath, id);
-    dispatch({
-      type: 'ADD_TERMINAL',
-      session,
-    });
-    if (kind === 'graph') setGraphViewTabs(prev => ({ ...prev, [id]: true }));
-    setNewTabMenuOpen(false);
-  };
-
   // External launch (`coffee-cli launch --tool <id> [--cwd <dir>]`) — reached
   // from the cold-start drain (takePendingLaunch) and the warm-start
   // single-instance forward ('launch-request' event). Reuses an idle
@@ -1151,7 +1145,7 @@ export function CenterPanel() {
     cwd?: string,
     // TASK-10：只属于这一次启动的附加 argv 与 tab 标题。工具设置里的
     // `extra_args` 不受影响——后端先加那个，再加这个。
-    launch?: { extraArgs?: string[]; title?: string; settings?: CommanderSettings },
+    launch?: { extraArgs?: string[]; title?: string; profile?: Pick<CommanderSettings, 'agent' | 'provider' | 'model'>; settings?: CommanderSettings },
   ) => {
     // Concurrent multi-agent Tabs are now supported as of the per-pane
     // MCP / per-pane system-prompt rework: each pane has its own MCP
@@ -1176,6 +1170,7 @@ export function CenterPanel() {
         toolData,
         extraArgs: launch?.extraArgs,
         commanderTitle: launch?.title,
+        commanderProfile: launch?.profile,
         commanderSettings: launch?.settings,
       });
     }
@@ -1199,7 +1194,8 @@ export function CenterPanel() {
     };
     const launch = {
       extraArgs: commanderArgs(args.agent, args.provider, args.model),
-      title: commanderTabTitle(args.agent, args.model, cwd === '' ? null : cwd),
+      title: commanderTabTitle(args.agent, args.provider, args.model, cwd === '' ? null : cwd),
+      profile: { agent: args.agent, provider: args.provider, model: args.model },
       settings,
     };
     if (openNewTab) {
@@ -1211,6 +1207,7 @@ export function CenterPanel() {
           folderPath: cwd === '' ? null : cwd,
           extraArgs: launch.extraArgs,
           commanderTitle: launch.title,
+          commanderProfile: launch.profile,
           commanderSettings: settings,
         },
       });
@@ -1221,6 +1218,47 @@ export function CenterPanel() {
       ...launch,
     });
   };
+
+  const handleAddTab = (kind: 'commander' | 'terminal' | 'graph') => {
+    const folderPath = terminals.find(t => t.id === activeTerminalId)?.folderPath ?? null;
+    if (kind === 'commander') {
+      const launch = commanderNewTabLaunch(commanderDefaults, toolsInstalled, toolsScanned, folderPath);
+      if (launch !== null) {
+        launchCommander(launch, true);
+        setNewTabMenuOpen(false);
+        return;
+      }
+    }
+    const id = crypto.randomUUID();
+    const session = kind === 'terminal'
+      ? { id, tool: 'terminal' as ToolType, folderPath }
+      : createDefaultGraphSession(folderPath, id);
+    dispatch({ type: 'ADD_TERMINAL', session });
+    if (kind === 'graph') setGraphViewTabs(prev => ({ ...prev, [id]: true }));
+    setNewTabMenuOpen(false);
+  };
+
+  // 冷启动首 tab 在默认与探测结果到齐后可直启。启动器一旦真正显示，
+  // 该 tab 即进入 launcher 状态，后到的默认或探测变化不再接管。
+  const commanderTabState = useRef<CommanderTabState>({});
+  useEffect(() => {
+    if (!activeSession || !isEmptyGraphSession(activeSession) || graphViewTabs[activeSession.id]) return;
+    const launch = commanderNewTabLaunch(commanderDefaults, toolsInstalled, toolsScanned, activeSession.folderPath);
+    const next = commanderTabTransition(commanderTabState.current, {
+      type: 'availability',
+      tabId: activeSession.id,
+      available: launch !== null,
+    });
+    commanderTabState.current = next.state;
+    if (next.shouldLaunch && launch !== null) launchCommander(launch);
+  }, [
+    activeSession,
+    commanderDefaults,
+    graphViewTabs,
+    launchCommander,
+    toolsInstalled,
+    toolsScanned,
+  ]);
 
   const rememberCommander = (sessionId: string, settings: CommanderSettings) => {
     const saved = () => {
@@ -1354,7 +1392,7 @@ export function CenterPanel() {
     const cwd = cwdBasename(session.folderPath);
     const pathTip = session.folderPath ?? undefined;
     switch (session.tool) {
-      case 'claude': return { icon: <SvgClaude />, title: cwd ?? getToolDisplayName('claude'), tooltip: pathTip };
+      case 'claude': return { icon: <SvgClaude />, title: cwd ?? agentDisplayName('claude', getToolDisplayName('claude')), tooltip: pathTip };
       case 'qwen': return { icon: <SvgQwen />, title: cwd ?? getToolDisplayName('qwen'), tooltip: pathTip };
       // OpenClaw / Hermes are directory-agnostic tools — their tab title
       // stays as the tool name regardless of any inherited folderPath.
@@ -1362,7 +1400,7 @@ export function CenterPanel() {
       case 'opencode': return { icon: <SvgOpenCode />, title: cwd ?? getToolDisplayName('opencode'), tooltip: pathTip };
       case 'mimocode': return { icon: <SvgMimo />, title: cwd ?? getToolDisplayName('mimocode'), tooltip: pathTip };
       case 'openclaw': return { icon: <SvgOpenClaw />, title: getToolDisplayName('openclaw'), tooltip: undefined };
-      case 'codex': return { icon: <SvgCodex />, title: cwd ?? getToolDisplayName('codex'), tooltip: pathTip };
+      case 'codex': return { icon: <SvgCodex />, title: cwd ?? agentDisplayName('codex', getToolDisplayName('codex')), tooltip: pathTip };
       case 'grok': return { icon: <SvgGrok />, title: cwd ?? getToolDisplayName('grok'), tooltip: pathTip };
       case 'antigravity': return { icon: <SvgAntigravity />, title: cwd ?? getToolDisplayName('antigravity'), tooltip: pathTip };
       // Directory-aware tabs (icon + cwd basename). Pi and the T3 set
@@ -1370,10 +1408,10 @@ export function CenterPanel() {
       // they get the static "fake" island via TAB_STATUS_TOOLS below.
       // Kimi Code renders the same shape but is hook-wired (T1): its
       // island is live off session.agentStatus.
-      case 'pi': return { icon: <SvgPi />, title: cwd ?? getToolDisplayName('pi'), tooltip: pathTip };
+      case 'pi': return { icon: <SvgPi />, title: cwd ?? agentDisplayName('pi', getToolDisplayName('pi')), tooltip: pathTip };
       case 'crush': return { icon: <SvgCrush />, title: cwd ?? getToolDisplayName('crush'), tooltip: pathTip };
       case 'aider': return { icon: <SvgAider />, title: cwd ?? getToolDisplayName('aider'), tooltip: pathTip };
-      case 'kimicode': return { icon: <SvgKimi />, title: cwd ?? getToolDisplayName('kimicode'), tooltip: pathTip };
+      case 'kimicode': return { icon: <SvgKimi />, title: cwd ?? agentDisplayName('kimicode', getToolDisplayName('kimicode')), tooltip: pathTip };
       case 'goose': return { icon: <SvgGoose />, title: cwd ?? getToolDisplayName('goose'), tooltip: pathTip };
       case 'copilot': return { icon: <SvgCopilot />, title: cwd ?? getToolDisplayName('copilot'), tooltip: pathTip };
       case 'remote': {
@@ -1458,7 +1496,15 @@ export function CenterPanel() {
           // overrides the cwd basename when the tool has set a non-empty one.
           // 总指挥标题（`agent · 模型 · 目录名`）排在中间：CLI 自己报了标题就
           // 让它赢，没报时比光显示目录名多说两件事。
-          const title = session.toolTitle?.trim() || session.commanderTitle?.trim() || baseTitle;
+          const liveCommanderTitle = session.commanderProfile
+            ? commanderTabTitle(
+                session.commanderProfile.agent,
+                session.commanderProfile.provider,
+                session.commanderProfile.model,
+                session.folderPath,
+              )
+            : session.commanderTitle?.trim();
+          const title = session.toolTitle?.trim() || liveCommanderTitle || baseTitle;
           const isDragging = tabDrag?.sessionId === session.id;
 
           // Sibling shift: while a different tab is being dragged, this
@@ -1650,6 +1696,7 @@ export function CenterPanel() {
               // 那时 graphId 仍是空串，GraphTab 照样给开始视图。
               <div className="graph-shell">
                 {isEmptyGraphSession(t) && !graphViewTabs[t.id] ? (
+                  commanderLauncherHidden(commanderDefaults, toolsInstalled, toolsScanned, commanderTabState.current[t.id] !== undefined) ? null :
                   <ErrorBoundary key={`commander-${t.id}`} fallbackLabel="总指挥启动器出错">
                     <CommanderLauncher
                       installed={toolsInstalled}
@@ -1657,6 +1704,13 @@ export function CenterPanel() {
                       otherClis={otherInstalledCommanderClis(BUILTIN_AI_CLI_FALLBACK, toolsInstalled)}
                       defaults={commanderDefaults}
                       folderPath={t.folderPath}
+                      onShown={() => {
+                        const next = commanderTabTransition(commanderTabState.current, {
+                          type: 'launcher-shown',
+                          tabId: t.id,
+                        });
+                        commanderTabState.current = next.state;
+                      }}
                       onLaunch={launchCommander}
                       onOpenTerminal={() => selectTool('terminal', undefined, lastCwdByTool['terminal'] ?? t.folderPath ?? undefined)}
                       onOpenGraph={() => setGraphViewTabs(prev => ({ ...prev, [t.id]: true }))}
@@ -1675,25 +1729,54 @@ export function CenterPanel() {
               </div>
             ) : (
               <ErrorBoundary key={`err-${t.id}-${t.restartKey || 0}`} fallbackLabel="Tier Terminal Error">
-                <TierTerminal
-                  key={`tier-${t.id}-${t.restartKey || 0}`}
-                  sessionId={t.id}
-                  tool={t.tool}
-                  toolName={AGENT_CATALOG.find(a => a.key === t.tool)?.label}
-                  theme={state.currentTheme}
-                  lang={state.currentLang}
-                  isActive={t.id === activeTerminalId && !diffTabActive}
-                  toolData={t.toolData}
-                  folderPath={t.folderPath}
-                  resumeToken={t.resumeToken}
-                  extraArgs={t.extraArgs}
-                  onStarted={commanderStartedCallback(t, rememberCommander)}
-                  hasBg={hasBg}
-                  bgUrl={bgUrl}
-                  bgType={bgType}
-                  termColorScheme={state.termColorScheme}
-                  termFont={state.termFont}
-                />
+                <div className="commander-session">
+                  {(t.commanderProfile || t.commanderTitle) && (
+                    <div className="commander-session-line">
+                      <span>{t.commanderProfile
+                        ? commanderTabTitle(t.commanderProfile.agent, t.commanderProfile.provider, t.commanderProfile.model, t.folderPath)
+                        : t.commanderTitle}</span>
+                      <button
+                        type="button"
+                        className="commander-change"
+                        onClick={() => {
+                          const next = commanderTabTransition(commanderTabState.current, {
+                            type: 'changed',
+                            tabId: t.id,
+                          });
+                          commanderTabState.current = next.state;
+                          setGraphViewTabs((previous) => ({ ...previous, [t.id]: false }));
+                          dispatch({
+                            type: 'SET_TERMINAL_TOOL',
+                            id: t.id,
+                            tool: 'graph',
+                            toolData: '',
+                          });
+                        }}
+                      >
+                        更改
+                      </button>
+                    </div>
+                  )}
+                  <TierTerminal
+                    key={`tier-${t.id}-${t.restartKey || 0}`}
+                    sessionId={t.id}
+                    tool={t.tool}
+                    toolName={AGENT_CATALOG.find(a => a.key === t.tool)?.label}
+                    theme={state.currentTheme}
+                    lang={state.currentLang}
+                    isActive={t.id === activeTerminalId && !diffTabActive}
+                    toolData={t.toolData}
+                    folderPath={t.folderPath}
+                    resumeToken={t.resumeToken}
+                    extraArgs={t.extraArgs}
+                    onStarted={commanderStartedCallback(t, rememberCommander)}
+                    hasBg={hasBg}
+                    bgUrl={bgUrl}
+                    bgType={bgType}
+                    termColorScheme={state.termColorScheme}
+                    termFont={state.termFont}
+                  />
+                </div>
               </ErrorBoundary>
             )}
           </div>

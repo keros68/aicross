@@ -231,7 +231,7 @@ fable-5 → [gpt-5.6 | kimi-2.7 | deepseek-v4-flash] → glm-5.3
 
 - **原生（claude / codex / kimi 的自家模型）**：读清单即「可用」，不冒烟；只在 agent 级别探一次「CLI 在不在、登录了没」。「原生」= 原生 agent **且**没走第三方端点（09-15 修正轮 R1）：claude 挂了 `ANTHROPIC_BASE_URL`（进程环境或 `~/.claude/settings.json` 的 `env`）就按第三方走，接入页对它显示「验证」按钮；codex 与 kimi 的第三方端点本期无事实源读法，暂按原生算。
 - **第三方（pi 的各 provider、cc-switch 端点）**：清单里的模型显示「未验证」，**第一次派发到它时引擎先冒烟一次**（真发一个短请求、比对响应体 model / 真身）并把结果记进资源库：通过 → 「已验证」；失败 → 「验证失败」并把这次派发按失败返回、不再自动重试。用户仍可在接入页手动重验。
-- 左栏资源列出全部已探测模型（不再只列冒烟通过的），按 agent 分组，行内只放模型名 + 状态点（原生无点；第三方 未验证/已验证/失败），来源路径与时间挪到悬停提示；agent 行带图标与版本弱化显示。（**09-15 修正**：原定「统一风格字母徽标，不用商标图」被用户推翻，改用官方品牌标志：路径数据取 simple-icons（CC0-1.0）内联成 SVG，Claude → Anthropic、Codex → OpenAI、Kimi → Kimi；pi 无公开标志，用 π 字形，未收录的 agent 退回字母。色相仍只做小面积标识，深浅主题各一套。）「N 个待冒烟 · 管理」链接改成「管理接入 →」。
+- 左栏资源列出全部已探测模型（不再只列冒烟通过的），按 agent 分组，行内只放模型名 + 状态点（原生无点；第三方 未验证/已验证/失败），来源路径与时间挪到悬停提示；agent 行带图标与版本弱化显示。（**09-15 修正**：四家 agent 统一沿用 Coffee CLI fork 中已有的工具图标，启动器、左栏资源、接入页、启动卡与历史行使用同一来源；未收录的 agent 退回字母。）「N 个待冒烟 · 管理」链接改成「管理接入 →」。
 - **09-15 第二轮（用户原话「现在很乱」）**：多 provider 的 agent（pi）在 agent 下再按 provider 分小组，组头 = provider 名 + 计数，组内模型名不再带 `· provider` 后缀；组内未验证的默认折成一行「未验证 N 个 · 展开」，已验证 / 验证失败常显；状态只留一个点（verified 绿、failed 红、unverified 灰），不再跟文字，状态词进悬停与 `aria-label`。原生 agent 无小组。
 - **别名的真身**：claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，`ResourceModel.resolved_id` 记它们对应的真实模型 ID，行内主文本给别名、次文本弱化给真身；两者相同的模型只显示一次。静态表只是起点：**第三方端点**（pi 的各 provider、挂了 `ANTHROPIC_BASE_URL` 的 claude）冒烟 / 首次派发核对到响应体 `model` 后以实测值覆盖，`resolved_source` 记这一串是算的（`alias-table`）还是量的（`identity`），别名表修正后只重算前者。**原生端点**（官方订阅下的 claude）不冒烟，没有覆盖路径，真身以静态表为准，表漂了只能改表（09-15 修正轮 R1，GLM 审查 1）。
 - 派发下拉与 G1 的模型清单沿用 TASK-08b 的「全部探测模型」口径，状态后缀改成这套三态。
@@ -240,8 +240,8 @@ fable-5 → [gpt-5.6 | kimi-2.7 | deepseek-v4-flash] → glm-5.3
 
 问题：控制台把「派发」做深了，却把 Coffee 原生最基本的用法丢了——在项目目录里一键起一个 CLI 会话、选默认模型、日常就在这个会话里聊、原生斜杠命令照用。现在「打开终端」缩成空白对话图底部的折叠菜单，模型只能在工具设置里手填参数。没有这层，用户没有理由装 aicross 而不是只用 coffee。
 
-- **总指挥 = 原生 CLI 会话（PTY）**。新空白 tab 就是启动器：选 agent（只列已安装：Claude Code / Codex / Kimi / pi，用资源页同一套品牌标志）、选模型（读资源库：Claude 别名 + 真实 ID；Codex 模型清单；Kimi 别名；pi 按 provider/model）、选工作区目录（默认当前工作区）→ 一键起会话。参数映射：claude `--model <别名或ID>`；codex `-m <model>`；kimi `--model <id>`；pi `--provider <p> --model <m>`；工具设置里的额外参数照旧追加，本次选的模型排在最后、优先生效。跑的就是 CLI 本身，斜杠命令、续聊、权限提示全部原生。
-- **默认记住**：上次的 agent / 模型 / 目录存为默认（`~/.aicross/commander.json`），下次打开首屏直接一键「启动总指挥 · claude · fable · 目录名」；工作区 tab 的目录行给「在此启动总指挥」。
+- **总指挥 = 原生 CLI 会话（PTY）**。新空白 tab 就是启动器：选 agent（只列已安装：Claude Code / Codex / Kimi Code / pi agent，用资源页同一套图标）、选模型（读资源库：Claude 别名 + 真实 ID；Codex 模型清单；Kimi 别名；pi 按 provider/model）、选工作区目录（默认当前工作区）→ 一键起会话。参数映射：claude `--model <别名或ID>`；codex `-m <model>`；kimi `--model <id>`；pi `--provider <p> --model <m>`；工具设置里的额外参数照旧追加，本次选的模型排在最后、优先生效。跑的就是 CLI 本身，斜杠命令、续聊、权限提示全部原生。
+- **默认记住**：上次的 agent / 模型 / 目录存为默认（`~/.aicross/commander.json`）；应用冷启动的首个 tab 和新建总指挥 tab 在默认有效时直接进入会话。工作区 tab 的目录行给「在此启动总指挥」。
 - **派发看板退居第二 tab**：对话图从「+」菜单开；总指挥 tab 标题显示 `agent · 模型 · 目录名`。
 - **Later**：把 ai-cross skill 装给总指挥，让它能从会话里派发、控制台同步显示对话图——这是「总指挥 + 看板」闭环的最后一步。
 - **有默认就直接起（用户 09-15 反馈后定）**：新开总指挥 tab 时有有效默认就直接进原生会话，不停在启动器；终端上方一行 `agent · 模型 · 目录 · 更改`。模型、thinking 档、切换模型都在会话里用 CLI 自己的命令做，控制台只传首次启动的模型参数。agent 显示名全局一致：Claude Code / Codex / Kimi Code / pi agent。

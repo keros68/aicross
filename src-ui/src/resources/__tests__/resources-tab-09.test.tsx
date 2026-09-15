@@ -18,7 +18,7 @@ import {
 import { mentionRef } from '../mention';
 import {
   agentEmblem,
-  BRAND_MARKS,
+  AGENT_ICON_ASSETS,
   CSS_TONED_SLUGS,
   hasCssTone,
 } from '../../components/resources/brand-marks';
@@ -155,18 +155,14 @@ describe('ResourceAgentList', () => {
     expect(markup).not.toContain('verify-native');
   });
 
-  it('agent 行带品牌标志与弱化版本号；徽标不再用字母', () => {
+  it('agent 行使用 fork 内已有图标与弱化版本号', () => {
     const markup = render();
     expect(markup).toContain('agent-badge-sm');
-    // claude → Anthropic 标志，codex → OpenAI 标志，pi → π 字形
-    expect(markup).toContain(BRAND_MARKS.claude.path);
-    expect(markup).toContain(BRAND_MARKS.codex.path);
-    expect(markup).toContain('agent-badge-pi agent-badge-glyph');
-    expect(visibleText(markup)).toContain('π');
-    // 原来的字母徽标（CO / CL / PI）不再出现
-    expect(visibleText(markup)).not.toContain('CO');
-    expect(visibleText(markup)).not.toContain('CL');
-    expect(visibleText(markup)).not.toContain('PI');
+    expect(markup).toContain('src="/icons/tools/claude.svg"');
+    expect(markup).toContain('src="/icons/tools/codex.svg"');
+    expect(markup).toContain('agent-badge-pi agent-badge-inline-svg');
+    expect(markup).not.toContain('agent-badge-letters">CO');
+    expect(markup).not.toContain('agent-badge-letters">CL');
   });
 
   // TASK-09b：用户原话「claude 没有模型 id」。别名行里补真身，别名与 ID 相同
@@ -382,14 +378,14 @@ describe('ResourceAgentList', () => {
   });
 });
 
-// TASK-09b：品牌标志表本身。路径数据来自 simple-icons（CC0-1.0），
-// 这里钉住「四家各画什么」与「没收录的退回字母」。
+// TASK-15-R1：四家复用 fork 已有图标，没收录的退回字母。
 describe('agentEmblem', () => {
-  it('claude / codex / kimi 走品牌标志，pi 走 π 字形，未知退回字母', () => {
-    expect(agentEmblem('claude', 'CL')).toMatchObject({ kind: 'mark', slug: 'claude' });
-    expect(agentEmblem('codex', 'CO')).toMatchObject({ kind: 'mark', slug: 'codex' });
-    expect(agentEmblem('kimi', 'KI')).toMatchObject({ kind: 'mark', slug: 'kimi' });
-    expect(agentEmblem('pi', 'PI')).toEqual({ kind: 'glyph', slug: 'pi', glyph: 'π' });
+  it('claude / codex / kimi / pi 都走本地资产，未知项退回字母', () => {
+    expect(agentEmblem('claude', 'CL')).toMatchObject({ kind: 'image', slug: 'claude', src: '/icons/tools/claude.svg' });
+    expect(agentEmblem('codex', 'CO')).toMatchObject({ kind: 'image', slug: 'codex', src: '/icons/tools/codex.svg' });
+    expect(agentEmblem('kimi', 'KI')).toMatchObject({ kind: 'image', slug: 'kimi' });
+    expect(agentEmblem('kimicode', 'KI')).toMatchObject({ kind: 'image', slug: 'kimi' });
+    expect(agentEmblem('pi', 'PI')).toMatchObject({ kind: 'inline-svg', slug: 'pi' });
     expect(agentEmblem('manual-1x', 'MA')).toEqual({
       kind: 'letters',
       slug: 'manual1x',
@@ -397,22 +393,21 @@ describe('agentEmblem', () => {
     });
   });
 
-  it('路径数据都在（漏抄一条会渲染成空徽标）', () => {
-    for (const [slug, mark] of Object.entries(BRAND_MARKS)) {
-      expect(mark.viewBox, slug).toBe('0 0 24 24');
-      expect(mark.path.length, slug).toBeGreaterThan(40);
+  it('AgentBadge 对四家都渲染已有图标，无字形分支', () => {
+    for (const id of ['claude', 'codex', 'kimi', 'pi']) {
+      const markup = renderToStaticMarkup(<AgentBadge agentId={id} />);
+      expect(markup, id).not.toContain('agent-badge-letters');
+      expect(markup, id).not.toContain('agent-badge-glyph');
+      expect(markup, id).toMatch(/<img|<svg/);
     }
-    expect(Object.keys(BRAND_MARKS).sort()).toEqual(['claude', 'codex', 'kimi']);
   });
 });
 
-// 修正轮 R1（DS 8）：OpenAI 标志的逃生门原来只是注释里一句口头承诺。
-// 这条钉住「删掉那一条就回退字母」，改坏了会红。
-describe('brand-marks 的逃生门', () => {
-  it('删掉 BRAND_MARKS.codex，徽标回退字母', () => {
-    const saved = BRAND_MARKS.codex;
+describe('本地图标的字母回退', () => {
+  it('删掉 codex 本地资产映射后退回字母', () => {
+    const saved = AGENT_ICON_ASSETS.codex;
     try {
-      delete BRAND_MARKS.codex;
+      delete AGENT_ICON_ASSETS.codex;
       expect(agentEmblem('codex', 'CO')).toEqual({
         kind: 'letters',
         slug: 'codex',
@@ -423,10 +418,9 @@ describe('brand-marks 的逃生门', () => {
       expect(markup).not.toContain('<svg');
       expect(markup).toContain('CO');
     } finally {
-      BRAND_MARKS.codex = saved;
+      AGENT_ICON_ASSETS.codex = saved;
     }
-    // 还原之后仍是标志，不是字母
-    expect(agentEmblem('codex', 'CO').kind).toBe('mark');
+    expect(agentEmblem('codex', 'CO').kind).toBe('image');
   });
 
   it('色相由样式表给的 slug 与标志表 / 字形表对得上', () => {
@@ -657,14 +651,12 @@ describe('resources.css 的视觉纪律（修正轮 R1）', () => {
     expect(rule).not.toContain('--border-focus');
   });
 
-  // TASK-09b：徽标换成品牌标志，18px、色随 --agent-tone；字母兜底才留薄底。
-  it('徽标 18px 单色随 --agent-tone；字号仍在六级阶梯上，没有 9px', () => {
+  it('徽标 18px；字母兜底字号仍在六级阶梯上，没有 9px', () => {
     const badge = /\.agent-badge\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
     expect(badge).toContain('width: 18px');
     expect(badge).toContain('height: 18px');
     expect(badge).toContain('color: var(--agent-tone');
-    const fallback =
-      /\.agent-badge-glyph,\s*\.agent-badge-letters\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
+    const fallback = /\.agent-badge-letters\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
     expect(fallback).toContain('font-size: 11px');
     expect(css).not.toContain('font-size: 9px');
   });

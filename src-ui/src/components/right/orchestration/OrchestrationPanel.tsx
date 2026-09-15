@@ -21,6 +21,7 @@ import { nodeStatusLabel, presetWithRoleDefaults } from '../../../graph/dispatch
 import { withSwarmPreset } from '../../../graph/swarm';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import { PresetSelect } from './PresetGroups';
+import { agentModelDisplay } from '../../../resources/agent-display';
 import './OrchestrationPanel.css';
 
 export function OrchestrationPanel() {
@@ -257,7 +258,7 @@ export function OrchestrationPanel() {
                           }}
                         />
                         <span className="orch-chip-label">
-                          {t.agent !== '' ? `${t.agent}/${t.model === '' ? '?' : t.model}` : t.model || '未指定模型'}
+                          {t.agent !== '' ? agentModelDisplay(t.agent, t.model === '' ? '?' : t.model, t.provider) : t.model || '未指定模型'}
                         </span>
                         <span className="orch-chip-role">{t.role}</span>
                       </span>

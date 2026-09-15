@@ -16,18 +16,18 @@ function model(partial: Partial<PickableModel>): PickableModel {
 }
 
 describe('modelGroupLabel', () => {
-  it('一家一个源的 agent 就用 agent id 当标签', () => {
-    expect(modelGroupLabel(model({ agent: 'codex', id: 'gpt-5.6-luna' }))).toBe('codex');
+  it('一家一个源的 agent 用全局显示名当标签', () => {
+    expect(modelGroupLabel(model({ agent: 'codex', id: 'gpt-5.6-luna' }))).toBe('Codex');
   });
 
   it('带 provider 的写成 agent · provider（pi 一家挂多个 provider）', () => {
     expect(modelGroupLabel(model({ agent: 'pi', provider: 'zai-coding-cn' }))).toBe(
-      'pi · zai-coding-cn',
+      'pi agent · zai-coding-cn',
     );
   });
 
   it('provider 只有空白算没有', () => {
-    expect(modelGroupLabel(model({ agent: 'pi', provider: '   ' }))).toBe('pi');
+    expect(modelGroupLabel(model({ agent: 'pi', provider: '   ' }))).toBe('pi agent');
   });
 });
 
@@ -70,14 +70,14 @@ describe('groupPickableModels', () => {
 
   it('按 agent · provider 归组，同一 agent 的不同 provider 各成一组', () => {
     expect(groupPickableModels(models).map((g) => g.label)).toEqual([
-      'codex',
-      'pi · zai-coding-cn',
-      'pi · moonshot',
+      'Codex',
+      'pi agent · zai-coding-cn',
+      'pi agent · moonshot',
     ]);
   });
 
   it('保持传入顺序，不二次排序（后端已按 verification + agent + provider + id 排好）', () => {
-    const zai = groupPickableModels(models).find((g) => g.label === 'pi · zai-coding-cn');
+    const zai = groupPickableModels(models).find((g) => g.label === 'pi agent · zai-coding-cn');
     expect(zai?.models.map((m) => m.id)).toEqual(['glm-5.3-flash', 'glm-4.6']);
   });
 

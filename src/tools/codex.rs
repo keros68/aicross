@@ -4,7 +4,7 @@ use super::{HistoryShape, ToolDescriptor};
 
 pub static DESCRIPTOR: ToolDescriptor = ToolDescriptor {
     id: "codex",
-    display_name: "Codex CLI",
+    display_name: crate::resources::AGENT_NAME_CODEX,
     binary_name: "codex",
     skill_dir_relative: Some(".codex/skills"),
     has_hook_surface: true,

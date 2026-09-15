@@ -22,11 +22,12 @@ import { redraftNode } from '../../../graph/dispatch';
 import {
   groupPickableModels,
   modelKey,
-  modelOptionLabel,
+  modelStatusSuffix,
   modelSelectValue,
   parseModelSelectValue,
   targetSelectValue,
 } from '../../../resources/model-picker';
+import { agentModelDisplay } from '../../../resources/agent-display';
 import './OrchestrationPanel.css';
 
 const ROLES = ['出方案', '拆分', '执行', '验收', '验证', '顾问', '仲裁'];
@@ -120,15 +121,14 @@ export function TargetEditor({ target, models, ancestors, hints, onChange }: Tar
           <option value="">未指定模型</option>
           {!manual && !isBlank && !listed && (
             <option value={modelValue}>
-              {target.agent}/{target.provider ? `${target.provider}/` : ''}
-              {target.model}
+              {agentModelDisplay(target.agent, target.model, target.provider)}
             </option>
           )}
           {groups.map((group) => (
             <optgroup key={group.label} label={group.label}>
               {group.models.map((m) => (
                 <option key={modelKey(m)} value={modelSelectValue(m)}>
-                  {modelOptionLabel(m)}
+                  {agentModelDisplay(m.agent, m.id, m.provider)}{modelStatusSuffix(m)}
                 </option>
               ))}
             </optgroup>
@@ -270,14 +270,14 @@ export function TargetEditor({ target, models, ancestors, hints, onChange }: Tar
           <option value={JSON.stringify(['', '', ''])}>无</option>
           {target.fallback && !models.some((m) => m.agent === target.fallback!.agent && (m.provider ?? '') === (target.fallback!.provider ?? '') && m.id === target.fallback!.model) && (
             <option value={JSON.stringify([target.fallback.agent, target.fallback.provider ?? '', target.fallback.model])}>
-              {target.fallback.agent}/{target.fallback.model}
+              {agentModelDisplay(target.fallback.agent, target.fallback.model)}
             </option>
           )}
           {groups.map((group) => (
             <optgroup key={group.label} label={group.label}>
               {group.models.map((m) => (
                 <option key={modelKey(m)} value={modelSelectValue(m)}>
-                  {modelOptionLabel(m)}
+                  {agentModelDisplay(m.agent, m.id, m.provider)}{modelStatusSuffix(m)}
                 </option>
               ))}
             </optgroup>

@@ -35,8 +35,14 @@ import {
   parseCommanderModelValue,
   shouldShowNoCommanderModels,
   commanderStartedCallback,
+  commanderNewTabLaunch,
+  commanderTabTransition,
+  COMMANDER_AGENT_CARD_HEIGHT,
+  COMMANDER_AGENT_GRID_TEMPLATE, commanderLauncherHidden,
 } from '../launcher';
 import { emptyCommanderSettings } from '../types';
+import type { CommanderSettings } from '../types';
+import { AGENT_DISPLAY_NAMES, agentDisplayName } from '../../resources/agent-display';
 import {
   CommanderLauncher,
   CommanderModelSelect,
@@ -44,6 +50,7 @@ import {
 } from '../../components/center/CommanderLauncher';
 import type { PickableModel } from '../../resources/model-picker';
 import type { DispatchableModel } from '../../graph/types';
+
 
 const model = (over: Partial<PickableModel>): PickableModel => ({
   id: 'm',
@@ -116,6 +123,51 @@ describe('TASK-10 (1) commanderArgs 四家映射 + 空模型', () => {
 });
 
 describe('TASK-10 (2) 启动器纯函数', () => {
+  it('TASK-15：四个 agent 显示名从同一张前端表取', () => {
+    expect(AGENT_DISPLAY_NAMES).toEqual({
+      claude: 'Claude Code',
+      codex: 'Codex',
+      kimi: 'Kimi Code',
+      pi: 'pi agent',
+    });
+    expect(agentDisplayName('kimicode')).toBe('Kimi Code');
+    expect(commanderAgentLabel('pi')).toBe('pi agent');
+  });
+
+  it('TASK-15-R1：新总指挥 tab 有默认时直接生成启动参数，当前工作区优先于存量默认目录', () => {
+    const defaults = { ...emptyCommanderSettings(), agent: 'claude', model: 'fable', cwd: 'D:\\default-b' };
+    expect(commanderNewTabLaunch(defaults, { claude: true }, true, 'D:\\workspace-a')).toEqual({
+      agent: 'claude', provider: '', model: 'fable', cwd: 'D:\\workspace-a',
+    });
+    expect(commanderNewTabLaunch(defaults, { claude: true }, true, null)?.cwd).toBe('D:\\default-b');
+    expect(commanderNewTabLaunch(defaults, { claude: false }, true, null)).toBeNull();
+    expect(commanderNewTabLaunch(defaults, { claude: true }, false, null)).toBeNull();
+  });
+
+  it('TASK-15-R1：探测 false→true 只启动一次', () => {
+    let state = {};
+    let step = commanderTabTransition(state, { type: 'availability', tabId: 'tab-1', available: false });
+    expect(step.shouldLaunch).toBe(false);
+    step = commanderTabTransition(step.state, { type: 'availability', tabId: 'tab-1', available: true });
+    expect(step.shouldLaunch).toBe(true);
+    step = commanderTabTransition(step.state, { type: 'availability', tabId: 'tab-1', available: true });
+    expect(step.shouldLaunch).toBe(false);
+  });
+
+  it('TASK-15-R1：另一 tab 写入默认不接管已显示启动器的 tab', () => {
+    const shown = commanderTabTransition({}, { type: 'launcher-shown', tabId: 'tab-1' });
+    const lateDefault = commanderTabTransition(shown.state, { type: 'availability', tabId: 'tab-1', available: true });
+    expect(lateDefault.shouldLaunch).toBe(false);
+    expect(lateDefault.state['tab-1']).toBe('launcher');
+  });
+
+  it('TASK-15-R1：点“更改”后不再自动启动', () => {
+    const changed = commanderTabTransition({}, { type: 'changed', tabId: 'tab-1' });
+    const next = commanderTabTransition(changed.state, { type: 'availability', tabId: 'tab-1', available: true });
+    expect(next.shouldLaunch).toBe(false);
+    expect(next.state['tab-1']).toBe('changed');
+  });
+
   it('可用 agent 只列探测到的，按工具 id 查（kimi → kimicode）', () => {
     expect(
       availableCommanderAgents({ claude: true, codex: false, kimicode: true, pi: true }),
@@ -213,24 +265,27 @@ describe('TASK-10 (2) 启动器纯函数', () => {
         model: 'fable',
         cwd: 'D:\\work\\aicross',
       }),
-    ).toBe('启动总指挥 · claude · fable · aicross');
+    ).toBe('启动总指挥 · Claude Code · fable · aicross');
     // 模型留空时省掉那一段，不留一个空的点
     expect(
       commanderDefaultLine({ ...emptyCommanderSettings(), agent: 'codex', cwd: '/srv/app' }),
-    ).toBe('启动总指挥 · codex · app');
+    ).toBe('启动总指挥 · Codex · app');
     // 目录留空时给占位而不是空串
     expect(commanderDefaultLine({ ...emptyCommanderSettings(), agent: 'pi' })).toBe(
-      '启动总指挥 · pi · 未选目录',
+      '启动总指挥 · pi agent · 未选目录',
     );
+    expect(commanderDefaultLine({
+      ...emptyCommanderSettings(), agent: 'pi', provider: 'bigmodel', model: 'glm', cwd: '/work',
+    })).toBe('启动总指挥 · pi agent · bigmodel / glm · work');
     // 没存过默认（agent 空）→ null，首屏不画这一行
     expect(commanderDefaultLine(emptyCommanderSettings())).toBeNull();
     expect(commanderDefaultLine(null)).toBeNull();
   });
 
-  it('tab 标题是 agent · 模型 · 目录名', () => {
-    expect(commanderTabTitle('claude', 'fable', 'D:\\work\\aicross')).toBe('claude · fable · aicross');
-    expect(commanderTabTitle('codex', '', '/srv/app')).toBe('codex · app');
-    expect(commanderTabTitle('pi', 'glm', null)).toBe('pi · glm · 未选目录');
+  it('tab 标题是 agent · 模型 · 目录名，pi 带 provider', () => {
+    expect(commanderTabTitle('claude', '', 'fable', 'D:\\work\\aicross')).toBe('Claude Code · fable · aicross');
+    expect(commanderTabTitle('codex', '', '', '/srv/app')).toBe('Codex · app');
+    expect(commanderTabTitle('pi', 'bigmodel', 'glm', null)).toBe('pi agent · bigmodel / glm · 未选目录');
   });
 
   it('启动前自检：没选 agent / 选了没装的都拦住', () => {
@@ -310,8 +365,8 @@ describe('TASK-10 (2) 启动器纯函数', () => {
 
   it('agent 显示名与接入页一致', () => {
     expect(commanderAgentLabel('claude')).toBe('Claude Code');
-    expect(commanderAgentLabel('kimi')).toBe('Kimi Code CLI');
-    expect(commanderAgentLabel('pi')).toBe('pi');
+    expect(commanderAgentLabel('kimi')).toBe('Kimi Code');
+    expect(commanderAgentLabel('pi')).toBe('pi agent');
     expect(commanderAgentLabel('grok')).toBe('grok');
   });
 });
@@ -385,5 +440,64 @@ describe('TASK-10 (3) 启动器组件', () => {
       cwd: 'D:\\work\\aicross',
     };
     expect(render({ codex: true }, defaults)).not.toContain('启动总指挥 ·');
+  });
+
+  it('TASK-15：卡片网格固定列宽和行高，窄窗口可换行', async () => {
+    // tsconfig 未引入 Node 类型；Vitest 本身运行在 Node，动态读取避免把测试工具
+    // 变成产品构建依赖，同时能真正钉住 CSS 是否消费网格变量。
+    // @ts-expect-error Node built-in is only loaded by Vitest.
+    const { readFileSync } = await import('node:fs');
+    const centerPanelCss = readFileSync(
+      new URL('../../components/center/CenterPanel.css', import.meta.url),
+      'utf8',
+    );
+    expect(centerPanelCss).toMatch(/\.commander-agents\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*var\(--commander-agent-grid\)/s);
+    expect(centerPanelCss).toMatch(/\.commander-agent-card\s*\{[^}]*height:\s*var\(--commander-agent-card-height\)/s);
+    const pickedRule = centerPanelCss.match(/\.commander-agent-card\.is-picked\s*\{([^}]*)\}/s)?.[1] ?? '';
+    expect(pickedRule).toMatch(/border-color:\s*var\(--accent\)/);
+    expect(pickedRule).not.toMatch(/(?:^|[;\s])(width|padding|border-width)\s*:/);
+    expect(COMMANDER_AGENT_GRID_TEMPLATE).toBe('repeat(auto-fit, minmax(150px, 150px))');
+    expect(COMMANDER_AGENT_CARD_HEIGHT).toBe(48);
+    const html = render({ claude: true, codex: true, kimi: true, pi: true });
+    expect(html).toContain('--commander-agent-grid:repeat(auto-fit, minmax(150px, 150px))');
+    expect(html).toContain('--commander-agent-card-height:48px');
+  });
+
+  it('TASK-15-R1：前端显示名与 Rust 常量逐项一致', async () => {
+    // @ts-expect-error Node built-in is only loaded by Vitest.
+    const { readFileSync } = await import('node:fs');
+    const rust = readFileSync(new URL('../../../../src/resources.rs', import.meta.url), 'utf8');
+    const names = Object.fromEntries(
+      [...rust.matchAll(/const AGENT_NAME_(CLAUDE|CODEX|KIMI|PI):\s*&str\s*=\s*"([^"]+)"/g)]
+        .map((match) => [match[1].toLowerCase(), match[2]]),
+    );
+    expect(names).toEqual(AGENT_DISPLAY_NAMES);
+  });
+
+  it('TASK-15-R1：CenterPanel 真实接入 tab 状态机与建 tab 直启', async () => {
+    // @ts-expect-error Node built-in is only loaded by Vitest.
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(new URL('../../components/center/CenterPanel.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('commanderNewTabLaunch(');
+    expect(source).toContain("type: 'launcher-shown'");
+    expect(source).toContain("type: 'availability'");
+    expect(source).toContain("type: 'changed'");
+    expect(source).not.toContain('commanderLauncherToolPatch');
+  });
+});
+
+describe('TASK-15-R1 复审：启动器只在可能直启时才不画', () => {
+  const ok: CommanderSettings = { version: 1, agent: 'claude', provider: '', model: 'fable', cwd: 'C:/x', updated_at: '' };
+  const none: CommanderSettings = { ...ok, agent: '' };
+  it('默认未读到 → 不画（等一拍）；读到但没有默认 → 立刻画，探测期间也画', () => {
+    expect(commanderLauncherHidden(null, {}, false, false)).toBe(true);
+    expect(commanderLauncherHidden(none, {}, false, false)).toBe(false);
+    expect(commanderLauncherHidden(none, { claude: true }, true, false)).toBe(false);
+  });
+  it('默认有效：探测未完成不画；探测完可用且 tab 未登记不画；已登记或不可用则画', () => {
+    expect(commanderLauncherHidden(ok, {}, false, false)).toBe(true);
+    expect(commanderLauncherHidden(ok, { claude: true }, true, false)).toBe(true);
+    expect(commanderLauncherHidden(ok, { claude: true }, true, true)).toBe(false);
+    expect(commanderLauncherHidden(ok, { claude: false }, true, false)).toBe(false);
   });
 });

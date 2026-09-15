@@ -115,4 +115,27 @@ describe('getInitialState personalization migration', () => {
     expect(restarted.terminals[0].id).toBe('restarted-tab');
     expect(restarted.terminals[0].commanderSettings).toBeUndefined();
   });
+
+  it('TASK-15-R1 换目录重启后保留 agent/model 快照，目录读当前 tab', () => {
+    const state = getInitialState();
+    const current = {
+      ...state.terminals[0],
+      id: 'commander-tab',
+      tool: 'pi' as const,
+      folderPath: 'D:\\old',
+      commanderProfile: { agent: 'pi', provider: 'bigmodel', model: 'glm' },
+    };
+    const moved = reducer(
+      { ...state, terminals: [current], activeTerminalId: current.id },
+      { type: 'SET_FOLDER', path: 'D:\\new' },
+    );
+    const restarted = reducer(moved, {
+      type: 'RESTART_TERMINAL', id: current.id, newId: 'restarted-tab',
+    });
+    expect(restarted.terminals[0]).toMatchObject({
+      id: 'restarted-tab',
+      folderPath: 'D:\\new',
+      commanderProfile: { agent: 'pi', provider: 'bigmodel', model: 'glm' },
+    });
+  });
 });

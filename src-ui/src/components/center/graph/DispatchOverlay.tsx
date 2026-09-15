@@ -69,7 +69,18 @@ import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import type { DispatchableModel, Graph, Target, Thinking } from '../../../graph/types';
 import { findModel } from '../../../graph/validate';
 import { modelStatusSuffix } from '../../../resources/model-picker';
+import { agentModelDisplay } from '../../../resources/agent-display';
 import { quotaExhaustedLabel, verificationOf } from '../../../resources/types';
+
+function displayRouteLine(node: Graph['nodes'][string], models: DispatchableModel[], isolation: string): string {
+  let line = routeLine(node, models, isolation);
+  for (const target of [node.target, node.target?.fallback]) {
+    if (!target?.agent || !target.model) continue;
+    const machine = `${target.agent}/${target.model}`;
+    line = line.split(machine).join(agentModelDisplay(target.agent, target.model));
+  }
+  return line;
+}
 
 type Phase = 'confirm' | 'running' | 'results';
 
@@ -550,7 +561,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 {reviewNodeIds.map((id) => (
                   <ReviewPendingRow
                     key={id}
-                    line={routeLine(graphWithTargets.nodes[id], models, '核对中')}
+                    line={displayRouteLine(graphWithTargets.nodes[id], models, '核对中')}
                     checked={nodeIds.includes(id)}
                     onToggle={() => toggleReviewNode(id)}
                   />
@@ -567,7 +578,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   return (
                     <label className="dispatch-review-row" key={id}>
                       <input type="checkbox" checked={nodeIds.includes(id)} onChange={() => toggleQuotaNode(id)} />
-                      <span className="dispatch-route-line">{routeLine(graph.nodes[id], models, '核对中')}</span>
+                      <span className="dispatch-route-line">{displayRouteLine(graph.nodes[id], models, '核对中')}</span>
                       <span className="hint-capsule">{picked ? quotaExhaustedLabel(picked) : ''}</span>
                     </label>
                   );
@@ -601,7 +612,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
               });
               return (
                 <section key={id} className={`dispatch-route-card${node.swarm && overlapItems.has(node.swarm.item) ? ' swarm-overlap' : ''}`}>
-                  <div className="dispatch-route-line">{routeLine(node, models, isolation)}<ReviewPendingTag visible={reviewIds.has(id)} /></div>
+                  <div className="dispatch-route-line">{displayRouteLine(node, models, isolation)}<ReviewPendingTag visible={reviewIds.has(id)} /></div>
                   {routeReason(node) && <div className="dispatch-reason">{routeReason(node)}</div>}
                   <RollbackBeforeHint target={target} retrying={rollbackNodes.has(id)} />
                   <div className="dispatch-reason">理由：{userEdited.has(id) ? '用户指定' : '角色默认'}</div>
@@ -637,12 +648,12 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                     >
                       {!models.some((item) => item.agent === target.agent && item.provider === (target.provider ?? '') && item.id === target.model) && (
                         <option value={JSON.stringify([target.agent, target.provider ?? '', target.model])}>
-                          {target.agent && target.model ? `${target.agent}/${target.provider ? `${target.provider}/` : ''}${target.model}` : '未指定'}
+                          {target.agent && target.model ? agentModelDisplay(target.agent, target.model, target.provider) : '未指定'}
                         </option>
                       )}
                       {models.map((item) => (
                         <option key={JSON.stringify([item.agent, item.provider, item.id])} value={JSON.stringify([item.agent, item.provider, item.id])}>
-                          {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}{modelStatusSuffix(item)}
+                          {agentModelDisplay(item.agent, item.id, item.provider)}{modelStatusSuffix(item)}
                         </option>
                       ))}
                     </select></label> : <label className="dispatch-manual-target">目标
@@ -671,12 +682,12 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                       <option value={JSON.stringify(['', '', ''])}>无</option>
                       {target.fallback && !models.some((item) => item.agent === target.fallback!.agent && item.provider === (target.fallback!.provider ?? '') && item.id === target.fallback!.model) && (
                         <option value={JSON.stringify([target.fallback.agent, target.fallback.provider ?? '', target.fallback.model])}>
-                          {target.fallback.agent}/{target.fallback.model}
+                          {agentModelDisplay(target.fallback.agent, target.fallback.model)}
                         </option>
                       )}
                       {models.map((item) => (
                         <option key={JSON.stringify([item.agent, item.provider, item.id])} value={JSON.stringify([item.agent, item.provider, item.id])}>
-                          {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}{modelStatusSuffix(item)}
+                          {agentModelDisplay(item.agent, item.id, item.provider)}{modelStatusSuffix(item)}
                         </option>
                       ))}
                     </select></label>}
@@ -720,7 +731,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
               return (
                 <div key={node.nodeId} className="dispatch-running-row">
                   <div className="dispatch-running-main">
-                    <span>{node.role || node.nodeId} · {node.agent}/{node.model}</span>
+                    <span>{node.role || node.nodeId} · {agentModelDisplay(node.agent, node.model)}</span>
                     {detail !== '' && <span className="dispatch-running-detail">{detail}</span>}
                   </div>
                   <span>{snapshot ? progressStatusLabel(snapshot.status) : '排队'}</span>
@@ -738,7 +749,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
           <div className="dispatch-body">
             {runError && <div className="dispatch-error">{runError}</div>}
             <div className="dispatch-result-lines">
-              {results.map((result) => <div key={result.nodeId}>{routeLine(graph.nodes[result.nodeId], models, result.isolation)}{routeReason(graph.nodes[result.nodeId]) && <div className="dispatch-reason">{routeReason(graph.nodes[result.nodeId])}</div>}</div>)}
+              {results.map((result) => <div key={result.nodeId}>{displayRouteLine(graph.nodes[result.nodeId], models, result.isolation)}{routeReason(graph.nodes[result.nodeId]) && <div className="dispatch-reason">{routeReason(graph.nodes[result.nodeId])}</div>}</div>)}
               {skippedNodes.map((node) => <div key={node.id}>{node.target?.role || node.id} · 已跳过：{node.reply?.skipped_reason}</div>)}
             </div>
             <div className="dispatch-result-grid" style={{ gridTemplateColumns: `repeat(${Math.max(1, resultStages.length)}, minmax(260px, 1fr))` }}>
@@ -753,7 +764,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 return (
                 <section key={result.nodeId} className={`dispatch-result-card${adopted ? ' adopted' : ''}`}>
                   <div className="dispatch-result-head">
-                    <span>{node?.target?.agent}/{node?.target?.model}{node?.target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</span>
+                    <span>{node?.target ? agentModelDisplay(node.target.agent, node.target.model) : result.nodeId}{node?.target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</span>
                     <span className="dispatch-result-status">
                       <span>{resultStatus(result.status)}</span>
                       <PinnedStatus pinned={result.pinned} />
@@ -847,7 +858,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
               const arbModels = models.filter((item) => !sideVendors.has(item.vendor));
               const routeOf = (nodeId: string) => {
                 const target = graph.nodes[nodeId]?.target;
-                return target ? `${target.agent}/${target.model}` : nodeId;
+                return target ? agentModelDisplay(target.agent, target.model) : nodeId;
               };
               const pickSide = (side: 'aId' | 'bId', value: string) => {
                 const nextIds = { ...row, [side]: value };
@@ -871,7 +882,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                       <option value="">选择第三家（与双方不同厂商）</option>
                       {arbModels.map((item) => (
                         <option key={JSON.stringify([item.agent, item.provider, item.id])} value={JSON.stringify([item.agent, item.provider, item.id])}>
-                          {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}{modelStatusSuffix(item)}
+                          {agentModelDisplay(item.agent, item.id, item.provider)}{modelStatusSuffix(item)}
                         </option>
                       ))}
                     </select></label>
@@ -891,7 +902,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
             })}
             <table className="dispatch-usage"><thead><tr><th>阶段</th><th>agent/模型</th><th>in / out tokens</th><th>cache_read</th><th>耗时</th><th>结果</th></tr></thead>
               <tbody>{usageGroups.map((group) => <Fragment key={group.stage}>
-                {group.rows.map((result) => { const target = graph.nodes[result.nodeId]?.target; return <tr key={result.nodeId}><td>{result.stage}</td><td>{target?.agent}/{target?.model}{target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</td><td>{result.tokensIn || '—'} / {result.tokensOut || '—'}</td><td>{cacheReadOf(graph.nodes[result.nodeId]?.reply, result) || '—'}</td><td>{result.durationMs} ms</td><td>{resultStatus(result.status)}</td></tr>; })}
+                {group.rows.map((result) => { const target = graph.nodes[result.nodeId]?.target; return <tr key={result.nodeId}><td>{result.stage}</td><td>{target ? agentModelDisplay(target.agent, target.model) : result.nodeId}{target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</td><td>{result.tokensIn || '—'} / {result.tokensOut || '—'}</td><td>{cacheReadOf(graph.nodes[result.nodeId]?.reply, result) || '—'}</td><td>{result.durationMs} ms</td><td>{resultStatus(result.status)}</td></tr>; })}
                 <tr className="dispatch-usage-subtotal"><td>{group.stage} 小计</td><td>{group.rows.length} 路</td><td>{group.tokensIn} / {group.tokensOut}</td><td>{group.cacheRead}</td><td>{group.durationMs} ms</td><td>—</td></tr>
               </Fragment>)}</tbody>
             </table>

@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { commands, isTauri } from '../../tauri';
 import { useAppState } from '../../store/app-state';
+import { agentDisplayName } from '../../resources/agent-display';
 import {
   errorText,
   groupKey,
@@ -147,7 +148,7 @@ export function ResourceAgentList({
                 {isExpanded ? '▾' : '▸'}
               </span>
               <AgentBadge agentId={agent.id} />
-              <span className="resource-agent-name">{agent.name || agent.id}</span>
+              <span className="resource-agent-name">{agentDisplayName(agent.id, agent.name || agent.id)}</span>
               <span className="resource-agent-version" title={agent.version || '版本未知'}>
                 {agent.version || '版本未知'}
               </span>

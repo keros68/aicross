@@ -11,6 +11,7 @@ import { findModel } from '../../../graph/validate';
 import { defaultTurnTarget } from '../../../graph/mutate';
 import { vendorColor } from '../../../graph/vendor';
 import { TargetEditor } from './NodePanel';
+import { agentModelDisplay } from '../../../resources/agent-display';
 import './OrchestrationPanel.css';
 
 interface PresetBuilderProps {
@@ -32,7 +33,7 @@ function formPreset(stages: Stage[]): Preset {
 
 function targetLabel(t: Target): string {
   if (t.agent === '' && t.model === '') return '未指定模型';
-  if (t.agent !== '') return `${t.agent}/${t.model === '' ? '?' : t.model}`;
+  if (t.agent !== '') return agentModelDisplay(t.agent, t.model === '' ? '?' : t.model, t.provider);
   return t.model;
 }
 

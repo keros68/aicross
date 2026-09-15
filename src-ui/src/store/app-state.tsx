@@ -155,6 +155,8 @@ export interface TerminalSession {
   /// 总指挥 tab 的标题（`agent · 模型 · 目录名`）。和 toolTitle 分开存：
   /// toolTitle 是 CLI 自己用 OSC 改的，一旦 CLI 报了标题就该让它赢。
   commanderTitle?: string;
+  /** 总指挥的 agent/provider/model 启动快照；目录始终读 folderPath。 */
+  commanderProfile?: Pick<CommanderSettings, 'agent' | 'provider' | 'model'>;
   /// 总指挥启动成功后要保存的默认。随本次启动留在 tab 上，避免在 PTY
   /// 真正创建成功前提前写 commander.json。
   commanderSettings?: CommanderSettings;
@@ -343,7 +345,7 @@ type Action =
   | { type: 'CLOSE_TERMINAL'; id: string }
   | { type: 'REORDER_TERMINAL'; sessionId: string; beforeId: string | null }
   | { type: 'SET_ACTIVE_TERMINAL'; id: string | null }
-  | { type: 'SET_TERMINAL_TOOL'; id: string; tool: ToolType; toolData?: string; resumeToken?: string; extraArgs?: string[]; commanderTitle?: string; commanderSettings?: CommanderSettings }
+  | { type: 'SET_TERMINAL_TOOL'; id: string; tool: ToolType; toolData?: string; resumeToken?: string; extraArgs?: string[]; commanderTitle?: string; commanderProfile?: Pick<CommanderSettings, 'agent' | 'provider' | 'model'>; commanderSettings?: CommanderSettings }
   | { type: 'CONSUME_COMMANDER_SETTINGS'; id: string }
   | { type: 'SET_TERMINAL_HIDDEN'; id: string; isHidden: boolean }
   | { type: 'RESTART_TERMINAL'; id: string; newId: string }
@@ -478,7 +480,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'SET_TERMINAL_TOOL':
       return {
         ...state,
-        terminals: state.terminals.map(t => t.id === action.id ? { ...t, tool: action.tool, toolData: action.toolData, resumeToken: action.resumeToken, extraArgs: action.extraArgs, commanderTitle: action.commanderTitle, commanderSettings: action.commanderSettings, toolTitle: undefined } : t)
+        terminals: state.terminals.map(t => t.id === action.id ? { ...t, tool: action.tool, toolData: action.toolData, resumeToken: action.resumeToken, extraArgs: action.extraArgs, commanderTitle: action.commanderTitle, commanderProfile: action.commanderProfile, commanderSettings: action.commanderSettings, toolTitle: undefined } : t)
       };
     case 'CONSUME_COMMANDER_SETTINGS':
       return {

@@ -30,6 +30,7 @@ import {
   type ResourceStore,
 } from '../../resources/types';
 import { notifyResourcesChanged } from '../../resources/mention';
+import { agentDisplayName } from '../../resources/agent-display';
 import { AgentBadge } from './AgentBadge';
 import { VerificationMark } from './VerificationMark';
 import './resources.css';
@@ -268,7 +269,10 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
           <ResourceModelDialog
             agentId={modelAgent}
             agentName={
-              store.agents.find((agent) => agent.id === modelAgent)?.name || modelAgent
+              agentDisplayName(
+                modelAgent,
+                store.agents.find((agent) => agent.id === modelAgent)?.name || modelAgent,
+              )
             }
             onClose={() => setModelAgent(null)}
             onSaved={(value) => {
@@ -436,7 +440,7 @@ export function AgentCard({
     <article className="agent-card">
       <div className="agent-card-head">
         <AgentBadge agentId={agent.id} size="md" />
-        <span className="agent-card-name">{agent.name || agent.id}</span>
+        <span className="agent-card-name">{agentDisplayName(agent.id, agent.name || agent.id)}</span>
         <span className={`detection ${agent.detected ? 'detected' : 'missing'}`}>
           {agent.detected ? '已检测' : '未检测'}
         </span>

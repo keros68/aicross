@@ -22,12 +22,7 @@ import { useTextContextMenu } from '../../lib/use-text-context-menu';
 import HERMES_DATA_URL from '../../icons-inline/hermes.png?inline';
 import OPENCODE_DATA_URL from '../../icons-inline/opencode.png?inline';
 // Kimi Code (PNG squircle) — fixed-color brand mark, ?inline data URI.
-import KIMICODE_DATA_URL from '../../icons-inline/kimicode.png?inline';
-// Pi is a MONOCHROME currentColor mark (its <style> sets fill: currentColor),
-// so it must render as an INLINE SVG (not an <img>) to inherit the surrounding
-// text color — otherwise currentColor resolves to black and the mark is
-// invisible on dark themes. CenterPanel does the same (?raw + inlineSvgIcon).
-import PI_SVG from '../../icons-inline/pi.svg?raw';
+import { AgentBadge } from '../resources/AgentBadge';
 // Grok Build - same monochrome currentColor mark treatment as Pi: inline SVG
 // so it inherits the surrounding text color across light/dark themes.
 import GROK_SVG from '../../icons-inline/grok.svg?raw';
@@ -56,7 +51,6 @@ const TOOL_ICON_SRC: Record<string, string> = {
   antigravity: '/icons/tools/antigravity.svg',
   hermes:      HERMES_DATA_URL,
   opencode:    OPENCODE_DATA_URL,
-  kimicode:    KIMICODE_DATA_URL,
   mimocode:    '/icons/tools/mimocode.svg',
 };
 
@@ -67,8 +61,11 @@ const getToolIcon = (tool: string) => {
   // resolve currentColor to black — invisible on dark themes (issue: "会话记录
   // 列表 Pi 图标一直是黑色看不清"). The other tools are fixed-color brand
   // marks (logo orange, codex gradient, kimi squircle…) and stay <img>.
-  if (tool === 'pi' || tool === 'grok') {
-    const svg = tool === 'pi' ? PI_SVG : GROK_SVG;
+  if (['claude', 'codex', 'kimicode', 'pi'].includes(tool)) {
+    return <AgentBadge agentId={tool} />;
+  }
+  if (tool === 'grok') {
+    const svg = GROK_SVG;
     return (
       <span
         aria-hidden
