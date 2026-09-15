@@ -32,6 +32,7 @@ function model(partial: Partial<ResourceModel>): ResourceModel {
     smoke_failure: '',
     meta: '',
     note: '',
+    login: 'logged_in',
     ...partial,
   };
 }

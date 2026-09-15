@@ -40,6 +40,33 @@ pub const VERIFICATION_UNVERIFIED: &str = "unverified";
 pub const VERIFICATION_VERIFIED: &str = "verified";
 pub const VERIFICATION_FAILED: &str = "failed";
 
+const PI_LOGIN_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+const PI_LOGIN_CHECK_CONCURRENCY: usize = 4;
+
+/// pi provider 的本机登录状态。它只记录 `pi auth check` 的就绪结论，
+/// 不包含、不读取也不持久化任何凭据字段。
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceLogin {
+    #[default]
+    Unknown,
+    LoggedIn,
+    LoggedOut,
+}
+
+// 读盘宽松（R1 复审 3）：resources.json 里出现认不得的值（旧版、手改、将来新增）时
+// 按「未检查」读，不让整个资源库读取失败；前端口径相同。
+impl<'de> Deserialize<'de> for ResourceLogin {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "logged_in" => ResourceLogin::LoggedIn,
+            "logged_out" => ResourceLogin::LoggedOut,
+            _ => ResourceLogin::Unknown,
+        })
+    }
+}
+
 /// 原生 CLI：自家模型清单说有就是有，不冒烟，只在 agent 级别探一次。
 /// 「原生」= 原生 agent **且**没走第三方端点（修正轮 R1）：claude 挂了
 /// `ANTHROPIC_BASE_URL`（或 settings.json 的 env）就按第三方走自动验证，
@@ -105,6 +132,12 @@ pub struct ResourceModel {
     /// `ensure_verification` 按 agent + 旧 `status` 推断后补上。
     #[serde(default)]
     pub verification: String,
+    /// pi provider 的登录状态；旧 resources.json 缺失时为 `unknown`。
+    #[serde(default)]
+    pub login: ResourceLogin,
+    /// 最近一次只读登录检查的时间；不写入任何凭据或检查输出。
+    #[serde(default)]
+    pub login_checked_at: String,
     /// 别名对应的真实模型 ID（TASK-09b）。`id` 是派发时写进命令行的那个词，
     /// claude 的 `fable` / `opus` / `sonnet` / `haiku` 都是别名，界面上只有别名
     /// 看不出跑的是哪个模型。非别名模型这里等于 `id`；冒烟/派发核对到真身后
@@ -341,6 +374,19 @@ pub(crate) fn quota_exhausted_until(agent: &str, provider: &str, model: &str) ->
         .and_then(|item| item.quota_exhausted_until.clone())
 }
 
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn login_status(agent: &str, provider: &str, model: &str) -> Option<ResourceLogin> {
+    let path = store_path().ok()?;
+    let _guard = store_lock();
+    let store = load_or_default(&path).ok()?;
+    store
+        .agents
+        .iter()
+        .flat_map(|owner| &owner.models)
+        .find(|item| item.agent == agent && item.provider == provider && item.id == model)
+        .map(|item| item.login.clone())
+}
+
 fn mark_quota_exhausted_at(
     path: &Path,
     agent: &str,
@@ -568,10 +614,14 @@ fn save_store(path: &Path, store: &ResourceStore) -> Result<(), String> {
 /// 进程级写锁：所有 load → 改 → save 序列都必须持有它，防止并发命令的
 /// 读改写互相覆盖（前端按钮 busy 只是 UI 纪律，不是后端保证）。
 fn store_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    store_mutex()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn store_mutex() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 /// 旧口径的「已接入」清单（status == 已接入）。cc-switch 一律排除。
@@ -791,6 +841,43 @@ fn detect_into(
     }
 }
 
+struct PreparedPiDetection {
+    detected: bool,
+    version: String,
+    result: Option<Result<(Vec<ResourceModel>, Vec<String>), String>>,
+}
+
+fn prepare_pi_detection(binary: Option<PathBuf>) -> PreparedPiDetection {
+    let (detected, version) = detect_version(binary.as_ref());
+    let result = binary.as_deref().map(detect_pi);
+    PreparedPiDetection { detected, version, result }
+}
+
+fn apply_prepared_pi_detection(
+    store: &mut ResourceStore,
+    prepared: PreparedPiDetection,
+    errors: &mut Vec<String>,
+) {
+    set_agent_detection(store, "pi", prepared.detected, &prepared.version);
+    match prepared.result {
+        Some(Ok((models, provider_errors))) => {
+            merge_detected_models(store, "pi", models);
+            errors.extend(provider_errors);
+        }
+        Some(Err(error)) => errors.push(format!("探测 pi 失败：{error}")),
+        None => {
+            errors.push("探测 pi 失败：未检测到 pi".to_string());
+            if let Some(agent) = store.agents.iter_mut().find(|agent| agent.id == "pi") {
+                let checked_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
+                for model in &mut agent.models {
+                    model.login = ResourceLogin::Unknown;
+                    model.login_checked_at.clone_from(&checked_at);
+                }
+            }
+        }
+    }
+}
+
 fn set_agent_detection(store: &mut ResourceStore, agent_id: &str, detected: bool, version: &str) {
     if let Some(agent) = store.agents.iter_mut().find(|agent| agent.id == agent_id) {
         agent.detected = detected;
@@ -992,43 +1079,124 @@ fn detect_pi(binary: &Path) -> Result<(Vec<ResourceModel>, Vec<String>), String>
     )?;
     let providers = models
         .iter()
-        .map(|model| model.provider.clone())
-        .collect::<HashSet<_>>();
-    let mut errors = Vec::new();
-    for provider in providers {
-        let auth = run_process(
-            binary,
-            &[
-                "auth".to_string(),
-                "check".to_string(),
-                "--provider".to_string(),
-                provider.clone(),
-                "--json".to_string(),
-            ],
-            None,
-            Duration::from_secs(20),
-            None,
-        );
-        let status = auth.as_ref().ok().and_then(pi_auth_status);
-        let ready = status.as_deref() == Some("ready");
-        if !ready {
-            let detail = auth
-                .as_ref()
-                .map_or_else(|error| error.clone(), process_error_summary);
-            let message = format!("pi provider {provider} 未就绪：{detail}");
-            errors.push(message);
-            mark_pi_auth_not_ready(&mut models, &provider, status.as_deref());
-        }
+        .map(|model| model.provider.as_str())
+        .filter(|provider| !provider.trim().is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for (provider, login) in check_pi_provider_logins(binary, providers) {
+        apply_pi_provider_login(&mut models, &provider, login);
     }
-    Ok((models, errors))
+    Ok((models, Vec::new()))
 }
 
-fn mark_pi_auth_not_ready(models: &mut [ResourceModel], provider: &str, status: Option<&str>) {
-    for model in models.iter_mut().filter(|model| model.provider == provider) {
-        model.meta = append_note_marker(&model.meta, "鉴权未就绪");
-        if let Some(status) = status {
-            model.meta = append_note_marker(&model.meta, &format!("鉴权状态：{status}"));
+/// 对同一 provider 只运行一次检查。每一批至多四个子进程，避免 provider
+/// 较多时把本机进程槽占满；批内结果按 provider 归并，所以调用方不依赖线程顺序。
+fn check_pi_provider_logins(binary: &Path, providers: Vec<String>) -> Vec<(String, ResourceLogin)> {
+    check_pi_provider_logins_with(binary, providers, PI_LOGIN_CHECK_TIMEOUT)
+}
+
+fn check_pi_provider_logins_with(
+    binary: &Path,
+    providers: Vec<String>,
+    timeout: Duration,
+) -> Vec<(String, ResourceLogin)> {
+    let binary = binary.to_path_buf();
+    check_pi_provider_logins_with_runner(
+        providers,
+        Arc::new(move |provider| check_pi_provider_login_with(&binary, provider, timeout)),
+    )
+}
+
+fn check_pi_provider_logins_with_runner(
+    mut providers: Vec<String>,
+    runner: Arc<dyn Fn(&str) -> ResourceLogin + Send + Sync>,
+) -> Vec<(String, ResourceLogin)> {
+    providers.sort();
+    providers.dedup();
+    let mut checked = Vec::with_capacity(providers.len());
+    for group in providers.chunks(PI_LOGIN_CHECK_CONCURRENCY) {
+        let handles = group
+            .iter()
+            .cloned()
+            .map(|provider| {
+                let runner = Arc::clone(&runner);
+                std::thread::spawn(move || {
+                    let login = runner(&provider);
+                    (provider, login)
+                })
+            })
+            .collect::<Vec<_>>();
+        checked.extend(handles.into_iter().filter_map(|handle| handle.join().ok()));
+    }
+    checked.sort_by(|left, right| left.0.cmp(&right.0));
+    checked
+}
+
+/// 只读 pi 的 exit code 与顶层 `status`（`ready` 布尔仅作兼容）。不要改成读取
+/// `--credentials` 或把整份 JSON 收进 `Value`：鉴权资料从不属于资源库契约。
+fn check_pi_provider_login_with(binary: &Path, provider: &str, timeout: Duration) -> ResourceLogin {
+    let result = run_process(
+        binary,
+        &[
+            "auth".to_string(),
+            "check".to_string(),
+            "--provider".to_string(),
+            provider.to_string(),
+            "--json".to_string(),
+            "--no-refresh".to_string(),
+        ],
+        None,
+        timeout,
+        None,
+    );
+    pi_login_from_check(result)
+}
+
+/// `Result` 的错误（命令不存在等）和超时都是未知，不把错误输出保存或上送；
+/// 有明确 `status: not_ready`（或兼容形状 `ready: false`）才判未登录。
+/// 退出码是就绪判据的一部分。
+fn pi_login_from_check(result: Result<ProcessResult, String>) -> ResourceLogin {
+    let Ok(result) = result else { return ResourceLogin::Unknown };
+    if result.timed_out {
+        return ResourceLogin::Unknown;
+    }
+    match pi_auth_ready(&result) {
+        Some(true) if result.code == Some(0) => ResourceLogin::LoggedIn,
+        Some(_) => ResourceLogin::LoggedOut,
+        None => ResourceLogin::Unknown,
+    }
+}
+
+/// 反序列化时只声明顶层 readiness，不构造或访问其他 JSON 字段（包括
+/// `credentials`）。pi 有时输出 JSONL，逐行时也沿用同一窄结构。
+// 真机（pi 0.85，09-15 实测）输出的是 `{"status":"ready"|"not_ready","provider":…,"authType":…}`，
+// `ready` 布尔只作兼容形态；`credentials` 与 `reason` 字段不声明、不读取。
+#[derive(Deserialize)]
+struct PiAuthReady {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    ready: Option<bool>,
+}
+
+fn pi_auth_ready(result: &ProcessResult) -> Option<bool> {
+    let ready = |text: &str| {
+        let parsed = serde_json::from_str::<PiAuthReady>(text.trim()).ok()?;
+        match parsed.status.as_deref() {
+            Some("ready") => Some(true),
+            Some("not_ready") => Some(false),
+            Some(_) => None,
+            None => parsed.ready,
         }
+    };
+    ready(&result.stdout).or_else(|| result.stdout.lines().find_map(ready))
+}
+
+fn apply_pi_provider_login(models: &mut [ResourceModel], provider: &str, login: ResourceLogin) {
+    let checked_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
+    for model in models.iter_mut().filter(|model| model.provider == provider) {
+        model.login = login.clone();
+        model.login_checked_at.clone_from(&checked_at);
     }
 }
 
@@ -1316,6 +1484,8 @@ fn detected_model(
         thinking: thinking.to_string(),
         status: STATUS_PENDING.to_string(),
         verification: inferred_verification(agent, STATUS_PENDING).to_string(),
+        login: ResourceLogin::Unknown,
+        login_checked_at: String::new(),
         resolved_id: resolved_id_for(agent, id),
         resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
         source: source.to_string(),
@@ -1452,6 +1622,8 @@ pub fn add_model(
         thinking: "未知".to_string(),
         status: STATUS_PENDING.to_string(),
         verification,
+        login: ResourceLogin::Unknown,
+        login_checked_at: String::new(),
         resolved_id,
         resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
         source: format!("申报({})", Local::now().format("%Y-%m-%d")),
@@ -1989,29 +2161,6 @@ fn home_file(parts: &[&str]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn json_lines(text: &str) -> impl Iterator<Item = Value> + '_ {
-    text.lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
-}
-
-fn pi_auth_status(result: &ProcessResult) -> Option<String> {
-    if result.timed_out {
-        return None;
-    }
-    let values = if let Ok(value) = serde_json::from_str::<Value>(result.stdout.trim()) {
-        vec![value]
-    } else {
-        json_lines(&result.stdout).collect::<Vec<_>>()
-    };
-    values
-        .into_iter()
-        .find_map(|value| match value.get("status") {
-            Some(Value::String(status)) => Some(status.clone()),
-            Some(status) => Some(status.to_string()),
-            None => None,
-        })
-}
-
 fn process_error_summary(result: &ProcessResult) -> String {
     if result.timed_out {
         return timeout_summary(result);
@@ -2101,11 +2250,26 @@ fn detect_resource_agent_at(
     agent_id: &str,
     cc_switch_path: Option<&str>,
 ) -> Result<ResourceOperation, String> {
+    let pi_binary = (agent_id == "pi").then(|| resolve_cli("pi")).flatten();
+    detect_resource_agent_at_with_pi_binary(path, agent_id, cc_switch_path, pi_binary)
+}
+
+fn detect_resource_agent_at_with_pi_binary(
+    path: &Path,
+    agent_id: &str,
+    cc_switch_path: Option<&str>,
+    pi_binary: Option<PathBuf>,
+) -> Result<ResourceOperation, String> {
+    let prepared_pi = (agent_id == "pi").then(|| prepare_pi_detection(pi_binary));
     let _guard = store_lock();
     let mut store = load_or_default(path)?;
     ensure_agents(&mut store);
     let mut errors = Vec::new();
-    detect_into(&mut store, agent_id, &mut errors);
+    if let Some(prepared) = prepared_pi {
+        apply_prepared_pi_detection(&mut store, prepared, &mut errors);
+    } else {
+        detect_into(&mut store, agent_id, &mut errors);
+    }
     let (cc_switch_hints, hint_error) = detect_cc_switch_hints(cc_switch_path);
     if let Some(error) = hint_error {
         errors.push(error);
@@ -2122,6 +2286,7 @@ fn detect_all_resources_at(
     path: &Path,
     cc_switch_path: Option<&str>,
 ) -> Result<ResourceOperation, String> {
+    let mut prepared_pi = Some(prepare_pi_detection(resolve_cli("pi")));
     let _guard = store_lock();
     let mut store = load_or_default(path)?;
     ensure_agents(&mut store);
@@ -2132,7 +2297,11 @@ fn detect_all_resources_at(
         .collect::<Vec<_>>();
     let mut errors = Vec::new();
     for agent_id in ids {
-        detect_into(&mut store, &agent_id, &mut errors);
+        if agent_id == "pi" {
+            apply_prepared_pi_detection(&mut store, prepared_pi.take().expect("pi is unique"), &mut errors);
+        } else {
+            detect_into(&mut store, &agent_id, &mut errors);
+        }
     }
     let (cc_switch_hints, hint_error) = detect_cc_switch_hints(cc_switch_path);
     if let Some(error) = hint_error {
@@ -2143,6 +2312,45 @@ fn detect_all_resources_at(
         store,
         errors,
         cc_switch_hints,
+    })
+}
+
+/// 单个 pi provider 的重新检查。检查阶段不持有资源库写锁，最多等待 10 秒；
+/// 结束后才短暂加锁写入该 provider 的状态和时间，避免阻塞其它资源操作。
+fn check_pi_provider_login_at(path: &Path, provider: &str) -> Result<ResourceOperation, String> {
+    let binary = resolve_cli("pi");
+    check_pi_provider_login_at_with_binary(path, provider, binary.as_deref())
+}
+
+fn check_pi_provider_login_at_with_binary(
+    path: &Path,
+    provider: &str,
+    binary: Option<&Path>,
+) -> Result<ResourceOperation, String> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Err("重新检查失败：provider 不能为空".to_string());
+    }
+    let missing = binary.is_none();
+    let login = binary
+        .map(|binary| check_pi_provider_login_with(binary, provider, PI_LOGIN_CHECK_TIMEOUT))
+        .unwrap_or(ResourceLogin::Unknown);
+    let _guard = store_lock();
+    let mut store = load_or_default(path)?;
+    ensure_agents(&mut store);
+    let Some(agent) = store.agents.iter_mut().find(|agent| agent.id == "pi") else {
+        return Err("重新检查失败：未找到 pi agent".to_string());
+    };
+    apply_pi_provider_login(&mut agent.models, provider, login);
+    save_store(path, &store)?;
+    Ok(ResourceOperation {
+        store,
+        errors: if missing {
+            vec!["未找到 pi，登录状态未检查".to_string()]
+        } else {
+            Vec::new()
+        },
+        cc_switch_hints: Vec::new(),
     })
 }
 
@@ -2270,6 +2478,13 @@ pub async fn detect_all_resources(
 }
 
 #[tauri::command]
+pub async fn check_pi_provider_login(provider: String) -> Result<ResourceOperation, String> {
+    tauri::async_runtime::spawn_blocking(move || check_pi_provider_login_at(&store_path()?, &provider))
+        .await
+        .map_err(|error| format!("重新检查任务失败：{error}"))?
+}
+
+#[tauri::command]
 pub fn add_resource_model(request: ResourceModelRequest) -> Result<ResourceStore, String> {
     add_resource_model_at(&store_path()?, request)
 }
@@ -2364,15 +2579,18 @@ mod tests {
         }
     }
 
-    fn process_result(code: Option<i32>, stdout: &str) -> ProcessResult {
-        ProcessResult {
-            code,
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            timed_out: false,
-            truncated: false,
-            timeout: Duration::from_secs(20),
+    fn write_fake_pi(root: &Path, body: &str) -> PathBuf {
+        #[cfg(windows)]
+        let script = root.join("pi.cmd");
+        #[cfg(not(windows))]
+        let script = root.join("pi");
+        fs::write(&script, body).expect("write fake pi");
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("make fake pi executable");
         }
+        script
     }
 
     /// 本机 claude 2.1.270 `--help` 里 `--model` 那一段的原样（含换行续排，
@@ -2611,6 +2829,8 @@ mod tests {
                     thinking: "未知".to_string(),
                     status: STATUS_CONNECTED.to_string(),
                     verification: VERIFICATION_NATIVE.to_string(),
+                    login: ResourceLogin::Unknown,
+                    login_checked_at: String::new(),
                     resolved_id: "old-model".to_string(),
                     resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
                     source: "读:old".to_string(),
@@ -2677,6 +2897,8 @@ mod tests {
                     thinking: "未知".to_string(),
                     status: STATUS_PENDING.to_string(),
                     verification: VERIFICATION_NATIVE.to_string(),
+                    login: ResourceLogin::Unknown,
+                    login_checked_at: String::new(),
                     resolved_id: "same".to_string(),
                     resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
                     source: "读:old".to_string(),
@@ -2709,7 +2931,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_source_matching_uses_exact_tokens_and_auth_uses_top_level_status() {
+    fn pi_source_matching_uses_exact_tokens() {
         let store = r#"{
           "p": {"models": [
             {"id":"glm-4","provider":"p"},
@@ -2720,27 +2942,327 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "glm-4.7");
 
-        assert_eq!(
-            pi_auth_status(&process_result(
-                Some(0),
-                include_str!("../fixtures/resources/pi_auth_check_ready.json")
-            )),
-            Some("ready".to_string())
-        );
-        assert_eq!(
-            pi_auth_status(&process_result(
-                Some(0),
-                include_str!("../fixtures/resources/pi_auth_check_not_ready.json")
-            )),
-            Some("not_ready".to_string())
-        );
-        assert_eq!(pi_auth_status(&process_result(Some(0), r#"{"ready":true}"#)), None);
+    }
 
-        let mut model = fixture_model("glm-4.7");
-        model.provider = "p".to_string();
-        mark_pi_auth_not_ready(std::slice::from_mut(&mut model), "p", Some("not_ready"));
-        assert!(model.meta.contains("鉴权未就绪"));
-        assert!(model.meta.contains("鉴权状态：not_ready"));
+    /// TASK-17：假 pi 只接受精确的只读 argv。返回 JSON 中刻意放入凭据字段，
+    /// 断言资源状态与落盘 JSON 均不含它，防止实现退回整份认证对象的解析/持久化。
+    #[test]
+    fn task17_pi_login_check_uses_safe_args_once_and_ignores_credentials() {
+        let root = std::env::temp_dir().join(format!("aicross-pi-login-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("argv.log");
+        #[cfg(windows)]
+        let body = r#"@echo off
+if /I "%~1"=="auth" goto auth
+exit /b 2
+:auth
+>> "%~dp0argv.log" echo %*
+if /I "%~4"=="ready" (
+  echo {"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"},"reason":"do-not-read"}
+  exit /b 0
+)
+if /I "%~4"=="bad-exit" (
+  echo {"status":"ready","provider":"bad-exit","authType":"api_key"}
+  exit /b 1
+)
+if /I "%~4"=="legacy-bool" (
+  echo {"ready":true,"credentials":{"access_token":"do-not-read"}}
+  exit /b 0
+)
+echo {"status":"not_ready","provider":"logged-out","reason":"do-not-read"}
+exit /b 0
+"#;
+        #[cfg(not(windows))]
+        let body = r#"#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/argv.log"
+if [ "$4" = ready ]; then
+  printf '%s\n' '{"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"},"reason":"do-not-read"}'
+  exit 0
+fi
+if [ "$4" = bad-exit ]; then
+  printf '%s\n' '{"status":"ready","provider":"bad-exit","authType":"api_key"}'
+  exit 1
+fi
+if [ "$4" = legacy-bool ]; then
+  printf '%s\n' '{"ready":true,"credentials":{"access_token":"do-not-read"}}'
+  exit 0
+fi
+printf '%s\n' '{"status":"not_ready","provider":"logged-out","reason":"do-not-read"}'
+exit 0
+"#;
+        let script = write_fake_pi(&root, body);
+        let checked = check_pi_provider_logins_with(
+            &script,
+            vec![
+                "ready".into(),
+                "logged-out".into(),
+                "bad-exit".into(),
+                "legacy-bool".into(),
+                "ready".into(),
+            ],
+            Duration::from_millis(800),
+        );
+        assert_eq!(
+            checked,
+            vec![
+                ("bad-exit".into(), ResourceLogin::LoggedOut),
+                ("legacy-bool".into(), ResourceLogin::LoggedIn),
+                ("logged-out".into(), ResourceLogin::LoggedOut),
+                ("ready".into(), ResourceLogin::LoggedIn),
+            ]
+        );
+        let argv = fs::read_to_string(&log).expect("fake pi argv");
+        let lines = argv.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 4, "each provider is checked once: {argv}");
+        for provider in ["ready", "logged-out", "bad-exit", "legacy-bool"] {
+            assert!(
+                lines.iter().any(|line| *line == format!("auth check --provider {provider} --json --no-refresh")),
+                "exact auth argv missing for {provider}: {argv}"
+            );
+        }
+        assert!(!argv.contains("--credentials"));
+        let store_path = root.join("resources.json");
+        let before = ResourceModel {
+            id: "m".into(), agent: "pi".into(), provider: "ready".into(), note: "keep".into(),
+            verification: VERIFICATION_UNVERIFIED.into(), resolved_id: "m".into(), resolved_source: "alias-table".into(),
+            ..Default::default()
+        };
+        save_store(&store_path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![before.clone()])] }).unwrap();
+        let operation = check_pi_provider_login_at_with_binary(&store_path, "ready", Some(&script)).unwrap();
+        assert!(operation.errors.is_empty(), "{:?}", operation.errors);
+        let raw = fs::read_to_string(&store_path).unwrap();
+        assert!(!raw.contains("do-not-read"), "credential and reason text must not enter resources data");
+        assert!(!raw.contains("credentials"));
+        let persisted = load(&store_path).unwrap();
+        let model = find_model(&persisted, "pi", "ready", "m").unwrap();
+        assert_eq!(model.login, ResourceLogin::LoggedIn);
+        assert!(!model.login_checked_at.is_empty());
+        let mut unchanged = model.clone();
+        unchanged.login = before.login.clone();
+        unchanged.login_checked_at = before.login_checked_at.clone();
+        assert_eq!(unchanged, before, "recheck may only change login fields");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task17_pi_status_fixtures_match_live_output_shape() {
+        let result = |stdout: &str, code| ProcessResult {
+            code: Some(code), stdout: stdout.to_string(), stderr: String::new(), timed_out: false,
+            truncated: false, timeout: Duration::from_secs(1),
+        };
+        assert_eq!(
+            pi_login_from_check(Ok(result(include_str!("../fixtures/resources/pi_auth_check_ready.json"), 0))),
+            ResourceLogin::LoggedIn
+        );
+        assert_eq!(
+            pi_login_from_check(Ok(result(include_str!("../fixtures/resources/pi_auth_check_not_ready.json"), 1))),
+            ResourceLogin::LoggedOut
+        );
+    }
+
+    #[test]
+    fn task17_pi_detect_list_auth_merge_persists_without_auth_payload() {
+        let root = std::env::temp_dir().join(format!("aicross-pi-detect-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        #[cfg(windows)]
+        let body = r#"@echo off
+if /I "%~1"=="--version" goto version
+if /I "%~1"=="--list-models" goto list
+if /I "%~1"=="auth" goto auth
+exit /b 2
+:version
+echo pi test
+exit /b 0
+:list
+echo ready model-a
+exit /b 0
+:auth
+echo {"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"}}
+exit /b 0
+"#;
+        #[cfg(not(windows))]
+        let body = r#"#!/bin/sh
+if [ "$1" = --version ]; then printf '%s\n' 'pi test'; exit 0; fi
+if [ "$1" = --list-models ]; then printf '%s\n' 'ready model-a'; exit 0; fi
+if [ "$1" = auth ]; then printf '%s\n' '{"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"}}'; exit 0; fi
+exit 2
+"#;
+        let script = write_fake_pi(&root, body);
+        let path = root.join("resources.json");
+        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, Some(script)).unwrap();
+        assert!(operation.errors.is_empty(), "{:?}", operation.errors);
+        let persisted = load(&path).unwrap();
+        let model = find_model(&persisted, "pi", "ready", "model-a").expect("detected model");
+        assert_eq!(model.login, ResourceLogin::LoggedIn);
+        assert!(!model.login_checked_at.is_empty());
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("do-not-read"));
+        assert!(!raw.contains("credentials"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task17_recheck_missing_pi_reports_and_persists_unknown() {
+        let root = std::env::temp_dir().join(format!("aicross-pi-missing-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let model = ResourceModel {
+            id: "m".into(), agent: "pi".into(), provider: "p".into(),
+            login: ResourceLogin::LoggedIn, login_checked_at: "old".into(), ..Default::default()
+        };
+        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![model])] }).unwrap();
+        let operation = check_pi_provider_login_at_with_binary(&path, "p", None).unwrap();
+        assert_eq!(operation.errors, ["未找到 pi，登录状态未检查"]);
+        let saved = find_model(&load(&path).unwrap(), "pi", "p", "m").unwrap().clone();
+        assert_eq!(saved.login, ResourceLogin::Unknown);
+        assert!(!saved.login_checked_at.is_empty());
+        assert_ne!(saved.login_checked_at, "old");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task17_missing_pi_detection_clears_stale_login() {
+        let root = std::env::temp_dir().join(format!("aicross-pi-stale-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let model = ResourceModel {
+            id: "m".into(), agent: "pi".into(), provider: "p".into(),
+            login: ResourceLogin::LoggedIn, ..Default::default()
+        };
+        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![model])] }).unwrap();
+        let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, None).unwrap();
+        let pi = operation.store.agents.iter().find(|agent| agent.id == "pi").unwrap();
+        assert!(!pi.detected);
+        assert_eq!(pi.models[0].login, ResourceLogin::Unknown);
+        assert!(!pi.models[0].login_checked_at.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task17_pi_login_probe_runs_before_store_lock() {
+        let root = std::env::temp_dir().join(format!("aicross-pi-lock-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("auth-started");
+        #[cfg(windows)]
+        let body = r#"@echo off
+if /I "%~1"=="--version" goto version
+if /I "%~1"=="--list-models" goto list
+if /I "%~1"=="auth" goto auth
+exit /b 2
+:version
+echo pi test
+exit /b 0
+:list
+echo p model-a
+exit /b 0
+:auth
+type nul > "%~dp0auth-started"
+ping -n 3 127.0.0.1 > nul
+echo {"status":"ready","provider":"p"}
+exit /b 0
+"#;
+        #[cfg(not(windows))]
+        let body = r#"#!/bin/sh
+if [ "$1" = --version ]; then printf '%s\n' 'pi test'; exit 0; fi
+if [ "$1" = --list-models ]; then printf '%s\n' 'p model-a'; exit 0; fi
+if [ "$1" = auth ]; then : > "$(dirname "$0")/auth-started"; sleep 1; printf '%s\n' '{"status":"ready","provider":"p"}'; exit 0; fi
+exit 2
+"#;
+        let script = write_fake_pi(&root, body);
+        let path = root.join("resources.json");
+        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        let thread_path = path.clone();
+        let handle = std::thread::spawn(move || {
+            detect_resource_agent_at_with_pi_binary(&thread_path, "pi", None, Some(script))
+        });
+        for _ in 0..200 {
+            if marker.is_file() { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(marker.is_file(), "fake pi auth check did not start");
+        let mut available = false;
+        for _ in 0..20 {
+            if let Ok(guard) = store_mutex().try_lock() {
+                drop(guard);
+                available = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(available, "pi auth check must not hold the resource store lock");
+        handle.join().unwrap().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-17：检查分批并行，但同一时刻最多四个 provider 子进程。
+    #[test]
+    fn task17_pi_login_checks_cap_concurrency_at_four() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let runner = {
+            let active = Arc::clone(&active);
+            let peak = Arc::clone(&peak);
+            Arc::new(move |_provider: &str| {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(current, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(50));
+                active.fetch_sub(1, Ordering::SeqCst);
+                ResourceLogin::LoggedIn
+            })
+        };
+        let providers = (0..9).map(|index| format!("p{index}")).collect();
+        let checked = check_pi_provider_logins_with_runner(providers, runner);
+        assert_eq!(checked.len(), 9);
+        assert_eq!(peak.load(Ordering::SeqCst), 4);
+    }
+
+    /// TASK-17：命令缺失和超时都不是「已退出」，只能留下 unknown。
+    #[test]
+    fn task17_pi_login_missing_command_and_timeout_are_unknown() {
+        let missing = std::env::temp_dir().join(format!("aicross-no-pi-{}", Uuid::new_v4()));
+        assert_eq!(
+            check_pi_provider_login_with(&missing, "missing", Duration::from_millis(30)),
+            ResourceLogin::Unknown
+        );
+
+        let root = std::env::temp_dir().join(format!("aicross-pi-timeout-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        #[cfg(windows)]
+        let body = "@echo off\r\nping -n 3 127.0.0.1 > nul\r\necho {\"ready\":true}\r\n";
+        #[cfg(not(windows))]
+        let body = "#!/bin/sh\nsleep 1\nprintf '%s\\n' '{\"ready\":true}'\n";
+        let script = write_fake_pi(&root, body);
+        assert_eq!(
+            check_pi_provider_login_with(&script, "slow", Duration::from_millis(30)),
+            ResourceLogin::Unknown
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task17_dirty_login_value_reads_as_unknown_instead_of_failing() {
+        let raw = r#"{"agent":"pi","id":"m","provider":"p","login":"expired"}"#;
+        let model: ResourceModel = serde_json::from_str(raw).expect("dirty login value must not fail the whole store");
+        assert_eq!(model.login, ResourceLogin::Unknown);
+        let ok: ResourceModel = serde_json::from_str(r#"{"agent":"pi","id":"m","provider":"p","login":"logged_out"}"#).unwrap();
+        assert_eq!(ok.login, ResourceLogin::LoggedOut);
+    }
+
+    #[test]
+    fn task17_old_resource_json_defaults_login_to_unknown() {
+        let root = std::env::temp_dir().join(format!("aicross-legacy-login-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(&path, r#"{"version":1,"agents":[{"id":"pi","models":[{"id":"legacy","agent":"pi","provider":"p"}]}]}"#).unwrap();
+        let store = load(&path).expect("legacy resources.json");
+        let old = find_model(&store, "pi", "p", "legacy")
+            .expect("legacy model");
+        assert_eq!(old.login, ResourceLogin::Unknown);
+        assert!(old.login_checked_at.is_empty());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

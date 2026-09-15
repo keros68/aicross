@@ -141,6 +141,9 @@ export interface DispatchableModel {
   note: string;
   fallback_order?: string[];
   quota_exhausted_until?: string | null;
+  // TASK-17：pi provider 登录状态。旧缓存缺失时前端按 unknown 处理。
+  login?: 'unknown' | 'logged_in' | 'logged_out';
+  login_checked_at?: string;
 }
 
 export function roleDefaults(role: string): { visibility: VisibilityKind; write: WriteMode } {

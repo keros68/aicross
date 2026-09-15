@@ -12,13 +12,20 @@ import { agentDisplayName } from '../../resources/agent-display';
 import {
   errorText,
   groupKey,
+  loginCheckHint,
+  loggedOutProvidersToggleLabel,
+  loginLabel,
+  loginOf,
   modelHint,
   modelPickTarget,
   modelSecondaryId,
   modelsByAgent,
+  providerLoginOf,
   providerGroups,
   showsGroupHeads,
   splitUnverified,
+  splitPiProviderGroups,
+  unknownProvidersToggleLabel,
   unverifiedToggleLabel,
   verificationOf,
   type ProviderGroup,
@@ -28,6 +35,7 @@ import {
 } from '../../resources/types';
 import {
   insertMention,
+  notifyResourcesChanged,
   openResourcesPage,
   RESOURCES_CHANGED_EVENT,
 } from '../../resources/mention';
@@ -43,6 +51,9 @@ export function ResourcesTab() {
   const [expanded, setExpanded] = useState<string[]>([]);
   // 展开了未验证清单的小组，键是 `agentId/provider`。默认全折叠。
   const [openUnverified, setOpenUnverified] = useState<string[]>([]);
+  const [openLoggedOut, setOpenLoggedOut] = useState<string[]>([]);
+  const [openUnknown, setOpenUnknown] = useState<string[]>([]);
+  const [checkingProvider, setCheckingProvider] = useState<string | null>(null);
   const [error, setError] = useState('');
   const initialized = useRef(false);
   // 点模型靠 GraphTab 挂载时的事件监听接收；没有打开的对话图 tab 时
@@ -87,6 +98,30 @@ export function ResourcesTab() {
       value.includes(key) ? value.filter((item) => item !== key) : [...value, key],
     );
 
+  const toggleLoggedOut = (agentId: string) =>
+    setOpenLoggedOut((value) =>
+      value.includes(agentId) ? value.filter((item) => item !== agentId) : [...value, agentId],
+    );
+
+  const toggleUnknown = (agentId: string) =>
+    setOpenUnknown((value) =>
+      value.includes(agentId) ? value.filter((item) => item !== agentId) : [...value, agentId],
+    );
+
+  const recheckProvider = async (provider: string) => {
+    setCheckingProvider(provider);
+    try {
+      const result = await commands.checkPiProviderLogin(provider);
+      setStore(result.store);
+      setError(result.errors.length > 0 ? result.errors.join('\n') : '');
+      notifyResourcesChanged();
+    } catch (value) {
+      setError(`重新检查失败：${errorText(value)}`);
+    } finally {
+      setCheckingProvider(null);
+    }
+  };
+
   return (
     <div className="resources-pane">
       {error && <div className="resources-error">{error}</div>}
@@ -94,9 +129,15 @@ export function ResourcesTab() {
         agents={modelsByAgent(store)}
         expanded={expanded}
         openUnverified={openUnverified}
+        openLoggedOut={openLoggedOut}
+        openUnknown={openUnknown}
+        checkingProvider={checkingProvider}
         graphOpen={graphOpen}
         onToggle={toggle}
         onToggleUnverified={toggleUnverified}
+        onToggleLoggedOut={toggleLoggedOut}
+        onToggleUnknown={toggleUnknown}
+        onRecheckProvider={recheckProvider}
         onPick={insertMention}
       />
       <button className="resource-manage-link" type="button" onClick={openResourcesPage}>
@@ -111,17 +152,29 @@ export function ResourceAgentList({
   agents,
   expanded,
   openUnverified,
+  openLoggedOut = [],
+  openUnknown = [],
+  checkingProvider = null,
   graphOpen,
   onToggle,
   onToggleUnverified,
+  onToggleLoggedOut = () => {},
+  onToggleUnknown = () => {},
+  onRecheckProvider = async () => {},
   onPick,
 }: {
   agents: ResourceAgent[];
   expanded: string[];
   openUnverified: string[];
+  openLoggedOut?: string[];
+  openUnknown?: string[];
+  checkingProvider?: string | null;
   graphOpen: boolean;
   onToggle: (agentId: string) => void;
   onToggleUnverified: (key: string) => void;
+  onToggleLoggedOut?: (agentId: string) => void;
+  onToggleUnknown?: (agentId: string) => void;
+  onRecheckProvider?: (provider: string) => Promise<void>;
   onPick: (agent: string, model: string, provider: string) => void;
 }) {
   return (
@@ -158,8 +211,14 @@ export function ResourceAgentList({
                 agentId={agent.id}
                 models={agent.models}
                 openUnverified={openUnverified}
+                loggedOutOpen={openLoggedOut.includes(agent.id)}
+                unknownOpen={openUnknown.includes(agent.id)}
+                checkingProvider={checkingProvider}
                 graphOpen={graphOpen}
                 onToggleUnverified={onToggleUnverified}
+                onToggleLoggedOut={onToggleLoggedOut}
+                onToggleUnknown={onToggleUnknown}
+                onRecheckProvider={onRecheckProvider}
                 onPick={onPick}
               />
             )}
@@ -175,19 +234,34 @@ function ResourceModelGroups({
   agentId,
   models,
   openUnverified,
+  loggedOutOpen,
+  unknownOpen,
+  checkingProvider,
   graphOpen,
   onToggleUnverified,
+  onToggleLoggedOut,
+  onToggleUnknown,
+  onRecheckProvider,
   onPick,
 }: {
   agentId: string;
   models: ResourceModel[];
   openUnverified: string[];
+  loggedOutOpen: boolean;
+  unknownOpen: boolean;
+  checkingProvider: string | null;
   graphOpen: boolean;
   onToggleUnverified: (key: string) => void;
+  onToggleLoggedOut: (agentId: string) => void;
+  onToggleUnknown: (agentId: string) => void;
+  onRecheckProvider: (provider: string) => Promise<void>;
   onPick: (agent: string, model: string, provider: string) => void;
 }) {
-  const groups = providerGroups(models);
-  const withHeads = showsGroupHeads(groups);
+  const allGroups = providerGroups(models);
+  const { shown: groups, loggedOut, unknown } = agentId === 'pi'
+    ? splitPiProviderGroups(models)
+    : { shown: allGroups, loggedOut: [], unknown: [] };
+  const withHeads = showsGroupHeads([...groups, ...loggedOut, ...unknown]);
   return (
     <div className="resource-model-list">
       {groups.map((group) => (
@@ -196,12 +270,64 @@ function ResourceModelGroups({
           agentId={agentId}
           group={group}
           showHead={withHeads}
+          showLogin={agentId === 'pi'}
           unverifiedOpen={openUnverified.includes(groupKey(agentId, group.provider))}
           graphOpen={graphOpen}
           onToggleUnverified={onToggleUnverified}
           onPick={onPick}
         />
       ))}
+      {loggedOut.length > 0 && (
+        <>
+          <button
+            className="resource-logged-out-toggle"
+            type="button"
+            aria-expanded={loggedOutOpen}
+            onClick={() => onToggleLoggedOut(agentId)}
+          >
+            {loggedOutProvidersToggleLabel(loggedOut.length, loggedOutOpen)}
+          </button>
+          {loggedOutOpen && loggedOut.map((group) => (
+            <div className="resource-logged-out-provider" key={group.provider}>
+              <span>{group.provider}</span>
+              <button
+                type="button"
+                className="row-action"
+                disabled={checkingProvider !== null}
+                onClick={() => void onRecheckProvider(group.provider)}
+              >
+                {checkingProvider === group.provider ? '检查中…' : '重新检查'}
+              </button>
+            </div>
+          ))}
+        </>
+      )}
+      {unknown.length > 0 && (
+        <>
+          <button
+            className="resource-logged-out-toggle"
+            type="button"
+            aria-expanded={unknownOpen}
+            onClick={() => onToggleUnknown(agentId)}
+          >
+            {unknownProvidersToggleLabel(unknown.length, unknownOpen)}
+          </button>
+          {unknownOpen && unknown.map((group) => (
+            <div className="resource-logged-out-provider" key={group.provider}>
+              <span>{group.provider}</span>
+              {loginCheckHint(group.models) && <span>{loginCheckHint(group.models)}</span>}
+              <button
+                type="button"
+                className="row-action"
+                disabled={checkingProvider !== null}
+                onClick={() => void onRecheckProvider(group.provider)}
+              >
+                {checkingProvider === group.provider ? '检查中…' : '重新检查'}
+              </button>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -214,6 +340,7 @@ function ResourceModelGroup({
   agentId,
   group,
   showHead,
+  showLogin,
   unverifiedOpen,
   graphOpen,
   onToggleUnverified,
@@ -222,6 +349,7 @@ function ResourceModelGroup({
   agentId: string;
   group: ProviderGroup;
   showHead: boolean;
+  showLogin: boolean;
   unverifiedOpen: boolean;
   graphOpen: boolean;
   onToggleUnverified: (key: string) => void;
@@ -234,6 +362,7 @@ function ResourceModelGroup({
       {showHead && group.provider !== '' && (
         <div className="resource-group-head">
           <span className="resource-group-name">{group.provider}</span>
+          {showLogin && <span className="resource-group-login">{loginLabel(providerLoginOf(group.models))}</span>}
           <span className="resource-group-count">{group.models.length}</span>
         </div>
       )}
@@ -311,6 +440,9 @@ function ResourceModelRow({
       >
         <span className="resource-model-id">{model.id}</span>
         {secondary !== '' && <span className="resource-model-resolved">{secondary}</span>}
+        {agentId === 'pi' && loginOf(model) !== 'logged_in' && (
+          <span className="resource-group-login">{loginLabel(loginOf(model))}</span>
+        )}
         <VerificationMark verification={verificationOf(model)} />
       </button>
       <span className="resources-sr-only" id={hintId}>

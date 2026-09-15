@@ -22,6 +22,7 @@ import {
   leftoverNodes,
   isFixRoundExecution,
   isSmallEconomyTask,
+  loggedOutNodeIds,
   needsChainThinking,
   neutralDisputeSummary,
   pickOne,
@@ -68,7 +69,7 @@ import type { DispatchableModel, Graph, Target, Thinking } from '../../../graph/
 import { findModel } from '../../../graph/validate';
 import { modelStatusSuffix } from '../../../resources/model-picker';
 import { agentModelDisplay } from '../../../resources/agent-display';
-import { quotaExhaustedLabel, verificationOf } from '../../../resources/types';
+import { loginOf, quotaExhaustedLabel, verificationOf } from '../../../resources/types';
 
 function displayRouteLine(node: Graph['nodes'][string], models: DispatchableModel[], isolation: string): string {
   let line = routeLine(node, models, isolation);
@@ -109,16 +110,58 @@ export function convergeQuotaSelection(
   blocked: string[],
   touched: ReadonlySet<string>,
 ): string[] {
+  return convergeBlockedSelection(initialIds, current, blocked, touched);
+}
+
+export function convergeBlockedSelection(
+  initialIds: string[],
+  current: string[],
+  blocked: string[],
+  touched: ReadonlySet<string>,
+): string[] {
   const selected = new Set(current);
-  const limited = new Set(blocked);
-  return initialIds.filter((id) => selected.has(id) && (touched.has(id) || !limited.has(id)));
+  const protectedIds = new Set(blocked);
+  return initialIds.filter((id) => selected.has(id) && (touched.has(id) || !protectedIds.has(id)));
+}
+
+/** G1 初始选择：待核对与登录/额度受限的目标均默认不勾。 */
+export function initialBlockedSelection(
+  initialIds: string[],
+  needsReview: string[] | undefined,
+  blocked: string[],
+): string[] {
+  const protectedIds = new Set(blocked);
+  return initialDispatchSelection(initialIds, needsReview).filter((id) => !protectedIds.has(id));
+}
+
+export function blockedNodePartitions(
+  graph: Graph,
+  initialIds: string[],
+  models: DispatchableModel[],
+): { quotaOnlyIds: string[]; loggedOutIds: string[] } {
+  const loggedOutIds = loggedOutNodeIds(graph, initialIds, models);
+  const loggedOut = new Set(loggedOutIds);
+  const quotaOnlyIds = quotaBlockedNodeIds(graph, initialIds, models).filter((id) => !loggedOut.has(id));
+  return { quotaOnlyIds, loggedOutIds };
+}
+
+export function initialResourceBlockedSelection(
+  graph: Graph,
+  initialIds: string[],
+  needsReview: string[] | undefined,
+  models: DispatchableModel[],
+): string[] {
+  const { quotaOnlyIds, loggedOutIds } = blockedNodePartitions(graph, initialIds, models);
+  return initialBlockedSelection(initialIds, needsReview, [...quotaOnlyIds, ...loggedOutIds]);
 }
 
 export function DispatchOverlay({ graph, models, projectDir, needsReview, retryNodes, progressStore, onCommit, onClose, onFocusNode, mergeOnly }: Props) {
   const initialIds = useMemo(() => dispatchableNodeIds(graph), [graph]);
   const reviewIds = useMemo(() => new Set(needsReview ?? []), [needsReview]);
-  const quotaBlockedIds = useMemo(() => quotaBlockedNodeIds(graph, initialIds, models), [graph, initialIds, models]);
-  const [nodeIds, setNodeIds] = useState(() => initialDispatchSelection(initialIds, needsReview).filter((id) => !quotaBlockedIds.includes(id)));
+  const { quotaOnlyIds, loggedOutIds } = useMemo(() => blockedNodePartitions(graph, initialIds, models), [graph, initialIds, models]);
+  const blockedIds = useMemo(() => [...quotaOnlyIds, ...loggedOutIds], [quotaOnlyIds, loggedOutIds]);
+  const [nodeIds, setNodeIds] = useState(() => initialResourceBlockedSelection(graph, initialIds, needsReview, models));
+  // 原名沿用额度分区；未登录目标也使用同一套「用户已手动勾选」收敛规则。
   const quotaSelectionTouched = useRef(new Set<string>());
   const [phase, setPhase] = useState<Phase>(mergeOnly ? 'results' : 'confirm');
   const [runId, setRunId] = useState(() => crypto.randomUUID());
@@ -170,8 +213,8 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   // 生成的执行节点要带「执行」角色默认目标，角色配置在引擎侧（同 OrchestrationPanel）。
   const [roles, setRoles] = useState<RoleSettings | null>(null);
   useEffect(() => {
-    setNodeIds((current) => convergeQuotaSelection(initialIds, current, quotaBlockedIds, quotaSelectionTouched.current));
-  }, [initialIds, quotaBlockedIds]);
+    setNodeIds((current) => convergeQuotaSelection(initialIds, current, blockedIds, quotaSelectionTouched.current));
+  }, [initialIds, blockedIds]);
   useEffect(() => {
     if (!isTauri) return;
     let cancelled = false;
@@ -293,7 +336,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     setRollbackNodes((current) =>
       toggleRollbackOnReview(current, targets[id] ?? graph.nodes[id]?.target, id, checked));
   };
-  const toggleQuotaNode = (id: string) => {
+  const toggleBlockedNode = (id: string) => {
     quotaSelectionTouched.current.add(id);
     setNodeIds((current) => {
       const next = new Set(current);
@@ -551,18 +594,35 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 ))}
               </section>
             )}
-            {quotaBlockedIds.length > 0 && (
+            {quotaOnlyIds.length > 0 && (
               <section className="dispatch-route-card">
                 <div className="dispatch-stage-heading">额度用尽</div>
                 <div className="dispatch-reason">恢复时间前默认不派，可勾选后继续。</div>
-                {quotaBlockedIds.map((id) => {
+                {quotaOnlyIds.map((id) => {
                   const target = graph.nodes[id]?.target;
                   const picked = target ? findModel(models, target) : undefined;
                   return (
                     <label className="dispatch-review-row" key={id}>
-                      <input type="checkbox" checked={nodeIds.includes(id)} onChange={() => toggleQuotaNode(id)} />
+                      <input type="checkbox" checked={nodeIds.includes(id)} onChange={() => toggleBlockedNode(id)} />
                       <span className="dispatch-route-line">{displayRouteLine(graph.nodes[id], models, '核对中')}</span>
                       <span className="hint-capsule">{picked ? quotaExhaustedLabel(picked) : ''}</span>
+                    </label>
+                  );
+                })}
+              </section>
+            )}
+            {loggedOutIds.length > 0 && (
+              <section className="dispatch-route-card">
+                <div className="dispatch-stage-heading">未登录</div>
+                <div className="dispatch-reason">该 provider 未登录，默认不派，可勾选后继续。</div>
+                {loggedOutIds.map((id) => {
+                  const target = graph.nodes[id]?.target;
+                  const picked = target ? findModel(models, target) : undefined;
+                  return (
+                    <label className="dispatch-review-row" key={id}>
+                      <input type="checkbox" checked={nodeIds.includes(id)} onChange={() => toggleBlockedNode(id)} />
+                      <span className="dispatch-route-line">{displayRouteLine(graph.nodes[id], models, '核对中')}</span>
+                      <span className="hint-capsule">{picked && loginOf(picked) === 'logged_out' ? `未登录${quotaExhaustedLabel(picked) ? '，额度同时受限' : ''}` : ''}</span>
                     </label>
                   );
                 })}
@@ -636,7 +696,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                       )}
                       {models.map((item) => (
                         <option key={JSON.stringify([item.agent, item.provider, item.id])} value={JSON.stringify([item.agent, item.provider, item.id])}>
-                          {agentModelDisplay(item.agent, item.id, item.provider)}{modelStatusSuffix(item)}
+                          {agentModelDisplay(item.agent, item.id, item.provider)}{modelStatusSuffix(item)}{loginOf(item) === 'logged_out' ? '（未登录）' : ''}
                         </option>
                       ))}
                     </select></label> : <label className="dispatch-manual-target">目标
@@ -670,7 +730,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                       )}
                       {models.map((item) => (
                         <option key={JSON.stringify([item.agent, item.provider, item.id])} value={JSON.stringify([item.agent, item.provider, item.id])}>
-                          {agentModelDisplay(item.agent, item.id, item.provider)}{modelStatusSuffix(item)}
+                          {agentModelDisplay(item.agent, item.id, item.provider)}{modelStatusSuffix(item)}{loginOf(item) === 'logged_out' ? '（未登录）' : ''}
                         </option>
                       ))}
                     </select></label>}

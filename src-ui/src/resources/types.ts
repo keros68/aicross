@@ -1,6 +1,8 @@
 // 资源接入契约类型（TASK-07）：与 src/resources.rs 的 serde 输出一一对应，
 // 字段保持 snake_case，不改名。
 
+export type Login = 'unknown' | 'logged_in' | 'logged_out';
+
 export interface ResourceModel {
   id: string;
   agent: string;
@@ -28,6 +30,9 @@ export interface ResourceModel {
   note: string;
   fallback_order?: string[];
   quota_exhausted_until?: string | null;
+  // pi provider 登录检查结果。旧 resources.json 没有字段时按 unknown 处理。
+  login?: Login;
+  login_checked_at?: string;
 }
 
 export interface ResourceAgent {
@@ -226,6 +231,18 @@ export interface ProviderGroup {
   models: ResourceModel[];
 }
 
+const LOGINS: Login[] = ['unknown', 'logged_in', 'logged_out'];
+
+/** pi provider 的登录状态；缺字段、异常值都按「未检查」显示。 */
+export function loginOf(model: { login?: string }): Login {
+  const value = (model.login || '').trim() as Login;
+  return LOGINS.includes(value) ? value : 'unknown';
+}
+
+export function loginLabel(login: Login): string {
+  return login === 'logged_in' ? '已登录' : login === 'logged_out' ? '未登录' : '未检查';
+}
+
 /**
  * 按 provider 分小组（TASK-09b）。pi 底下几十条模型混在一起没法看，分组之后
  * 组内不再需要 `· provider` 后缀——组头已经说了是哪个端点。
@@ -247,6 +264,51 @@ export function providerGroups(models: ResourceModel[]): ProviderGroup[] {
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right, 'en'))
     .map(([provider, grouped]) => ({ provider, models: grouped }));
+}
+
+/**
+ * pi 的 provider 分组：只有已登录正常显示；未登录和未检查的 provider 都合成
+ * 一行，避免其下大批未验证模型把资源页和左栏拉长。一个 provider 的模型共用
+ * 登录状态。组内只要有已登录模型就保留正常列，其余行单独标记；
+ * 全部未检查时才收入「未检查」桶。
+ */
+export function splitPiProviderGroups(models: ResourceModel[]): {
+  shown: ProviderGroup[];
+  loggedOut: ProviderGroup[];
+  unknown: ProviderGroup[];
+} {
+  const shown: ProviderGroup[] = [];
+  const loggedOut: ProviderGroup[] = [];
+  const unknown: ProviderGroup[] = [];
+  for (const group of providerGroups(models)) {
+    const states = group.models.map(loginOf);
+    if (states.includes('logged_in')) shown.push(group);
+    else if (states.every((state) => state === 'unknown')) unknown.push(group);
+    else loggedOut.push(group);
+  }
+  return { shown, loggedOut, unknown };
+}
+
+export function providerLoginOf(models: ResourceModel[]): Login {
+  const states = models.map(loginOf);
+  if (states.includes('logged_in')) return 'logged_in';
+  if (states.every((state) => state === 'unknown')) return 'unknown';
+  return 'logged_out';
+}
+
+export function loginCheckHint(models: ResourceModel[]): string {
+  return models.some((model) => loginOf(model) === 'unknown' && !!model.login_checked_at)
+    ? '登录状态未检查'
+    : '';
+}
+
+/** 未登录 provider 的折叠行文本。这一行本身就是展开按钮。 */
+export function loggedOutProvidersToggleLabel(count: number, expanded: boolean): string {
+  return `未登录 ${count} 个 provider · ${expanded ? '收起' : '展开'}`;
+}
+
+export function unknownProvidersToggleLabel(count: number, expanded: boolean): string {
+  return `未检查 ${count} 个 provider · ${expanded ? '收起' : '展开'}`;
 }
 
 /**

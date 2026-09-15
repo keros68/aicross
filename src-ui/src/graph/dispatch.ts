@@ -10,7 +10,7 @@ import acceptancePrompt from '../../../fixtures/prompts/acceptance.txt?raw';
 import executionPrompt from '../../../fixtures/prompts/execution.txt?raw';
 import planningPrompt from '../../../fixtures/prompts/planning.txt?raw';
 import advisorPrompt from '../../../fixtures/prompts/advisor.txt?raw';
-import { quotaExhaustedUntil } from '../resources/types';
+import { loginOf, quotaExhaustedUntil } from '../resources/types';
 
 export interface BackendNodeResult {
   nodeId: string;
@@ -1041,6 +1041,22 @@ export function quotaBlockedNodeIds(
     const model = models.find((item) => item.agent === target.agent && item.id === target.model && item.provider === (target.provider ?? ''))
       ?? models.find((item) => item.agent === target.agent && item.id === target.model);
     return !!model && quotaExhaustedUntil(model, now) !== null;
+  });
+}
+
+/** G1：pi provider 已退出登录的目标默认不派，但仍允许用户显式勾回。 */
+export function loggedOutNodeIds(
+  graph: Graph,
+  ids: string[],
+  models: DispatchableModel[],
+): string[] {
+  return ids.filter((id) => {
+    const target = graph.nodes[id]?.target;
+    if (!target) return false;
+    const model = models.find((item) =>
+      item.agent === target.agent && item.id === target.model && item.provider === (target.provider ?? ''))
+      ?? models.find((item) => item.agent === target.agent && item.id === target.model);
+    return !!model && loginOf(model) === 'logged_out';
   });
 }
 

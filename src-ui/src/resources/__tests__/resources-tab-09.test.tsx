@@ -46,6 +46,9 @@ function model(partial: Partial<ResourceModel>): ResourceModel {
     smoke_failure: '',
     meta: '',
     note: '',
+    // TASK-17：这组既有展示测试的 pi provider 明确设为已登录；旧库缺字段
+    // 的「未检查」折叠行为由 resources-login-17.test.tsx 单独覆盖。
+    login: 'logged_in',
     ...partial,
   };
 }
