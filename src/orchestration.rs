@@ -55,7 +55,19 @@ pub struct GraphNode {
     #[serde(default)]
     pub target: Option<Target>,
     #[serde(default)]
+    pub swarm: Option<SwarmItem>,
+    #[serde(default)]
     pub created_at: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct SwarmItem {
+    #[serde(default)]
+    pub item: u32,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub accept: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -166,6 +178,9 @@ pub struct Target {
     /// 备选目标；不设则主目标失败即终态
     #[serde(default)]
     pub fallback: Option<FallbackTarget>,
+    /// 内置预设盖章时写入节点 user.text；由 Rust 侧冻结材料提供。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preset_text: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -393,7 +408,21 @@ fn builtin_presets() -> Vec<Preset> {
                 .collect(),
         }],
     };
-    vec![shared, economy, blind, arena, jury]
+    let swarm = Preset {
+        id: "builtin-swarm".into(),
+        name: "蜂群模式".into(),
+        builtin: true,
+        stages: vec![Stage {
+            nodes: vec![Target {
+                role: "拆分".into(),
+                visibility: "共享".into(),
+                write: "只读".into(),
+                preset_text: include_str!("../fixtures/prompts/split.txt").trim().into(),
+                ..blank_target()
+            }],
+        }],
+    };
+    vec![shared, economy, blind, arena, jury, swarm]
 }
 
 // ── 内部读写函数（接受 root 路径，命令函数只包一层 aicross_root()） ────────
@@ -476,11 +505,15 @@ fn fill_role_defaults(
             .iter_mut()
             .flat_map(|stage| stage.nodes.iter_mut())
         {
+            if target.role == "拆分" {
+                target.write = "只读".into();
+                target.visibility = "共享".into();
+            }
             if !target.model.is_empty() {
                 continue;
             }
             let profile = match target.role.as_str() {
-                "出方案" => roles.planning.clone(),
+                "出方案" | "拆分" => roles.planning.clone(),
                 "执行" => roles.execution.clone(),
                 "验收" => roles.acceptance.clone(),
                 _ => continue,
@@ -780,6 +813,7 @@ mod tests {
             },
             reply: None,
             target: None,
+            swarm: None,
             created_at: "2026-09-13T10:00:00Z".into(),
         };
         let turn = GraphNode {
@@ -805,6 +839,11 @@ mod tests {
                 write: "只读".into(),
                 ..blank_target()
             }),
+            swarm: Some(SwarmItem {
+                item: 1,
+                files: vec!["src/a/**".into()],
+                accept: "cargo test a".into(),
+            }),
             created_at: "2026-09-13T10:01:00Z".into(),
         };
         let accept = GraphNode {
@@ -823,6 +862,7 @@ mod tests {
                 write: "只读".into(),
                 ..blank_target()
             }),
+            swarm: None,
             created_at: "2026-09-13T10:02:00Z".into(),
         };
         let nodes: HashMap<String, GraphNode> = [root, turn, accept]
@@ -846,8 +886,8 @@ mod tests {
         save_user_presets_in(&root, vec![user_preset("u1"), user_preset("u2")]).unwrap();
         let file = presets_from(&root);
         assert_eq!(file.version, 1);
-        // 5 个内置 + 2 个用户
-        assert_eq!(file.presets.len(), 7);
+        // 6 个内置 + 2 个用户
+        assert_eq!(file.presets.len(), 8);
         let user: Vec<&Preset> = file.presets.iter().filter(|p| !p.builtin).collect();
         assert_eq!(user.len(), 2);
         assert_eq!(*user[0], user_preset("u1"));
@@ -858,13 +898,14 @@ mod tests {
     fn presets_missing_file_returns_builtins() {
         let root = temp_root("presets-missing");
         let file = presets_from(&root);
-        assert_eq!(file.presets.len(), 5);
+        assert_eq!(file.presets.len(), 6);
         assert!(file.presets.iter().all(|p| p.builtin));
         assert_eq!(file.presets[0].id, "builtin-shared");
         assert_eq!(file.presets[1].id, "builtin-economy");
         assert_eq!(file.presets[2].id, "builtin-blind");
         assert_eq!(file.presets[3].id, "builtin-arena");
         assert_eq!(file.presets[4].id, "builtin-jury");
+        assert_eq!(file.presets[5].id, "builtin-swarm");
         assert_eq!(file.presets[0].name, "共享模式");
         assert_eq!(file.presets[1].stages.len(), 3);
         assert_eq!(file.presets[2].stages[0].nodes.len(), 3);
@@ -892,6 +933,29 @@ mod tests {
             assert_eq!(target.visibility, "盲");
             assert_eq!(target.write, "只读");
         }
+    }
+
+    #[test]
+    fn task08a_r1_builtin_swarm_is_single_filled_readonly_split_node() {
+        let mut presets = builtin_presets();
+        let roles = RoleSettings {
+            version: 1,
+            planning: RoleProfile {
+                agent: "codex".into(),
+                model: "planner".into(),
+                ..RoleProfile::default()
+            },
+            ..RoleSettings::default()
+        };
+        fill_role_defaults(&mut presets, &roles);
+        let swarm = presets.iter().find(|preset| preset.id == "builtin-swarm").unwrap();
+        assert_eq!(swarm.name, "蜂群模式");
+        assert_eq!(swarm.stages.len(), 1);
+        assert_eq!(swarm.stages[0].nodes.len(), 1);
+        let target = &swarm.stages[0].nodes[0];
+        assert_eq!((target.role.as_str(), target.write.as_str(), target.visibility.as_str()), ("拆分", "只读", "共享"));
+        assert_eq!((target.agent.as_str(), target.model.as_str()), ("codex", "planner"));
+        assert_eq!(target.preset_text, include_str!("../fixtures/prompts/split.txt").trim());
     }
 
     #[test]
@@ -1004,7 +1068,7 @@ mod tests {
         let root = temp_root("presets-broken");
         fs::write(root.join("presets.json"), "{ not json").unwrap();
         let file = presets_from(&root);
-        assert_eq!(file.presets.len(), 5);
+        assert_eq!(file.presets.len(), 6);
     }
 
     #[test]
@@ -1021,7 +1085,7 @@ mod tests {
         )
         .unwrap();
         let merged = presets_from(&root);
-        assert_eq!(merged.presets.len(), 5);
+        assert_eq!(merged.presets.len(), 6);
         assert!(merged.presets.iter().all(|p| p.builtin));
         // version 合法的同内容文件正常合并
         let file = PresetFile {
@@ -1034,7 +1098,7 @@ mod tests {
         )
         .unwrap();
         let merged = presets_from(&root);
-        assert_eq!(merged.presets.len(), 6);
+        assert_eq!(merged.presets.len(), 7);
     }
 
     #[test]
@@ -1139,9 +1203,9 @@ mod tests {
         let file: PresetFile = serde_json::from_str(&contents).unwrap();
         assert_eq!(file.presets.len(), 1);
         assert_eq!(file.presets[0].id, "u1");
-        // 读回来仍是 5 内置 + 1 用户，伪造的内置没进去
+        // 读回来仍是 6 内置 + 1 用户，伪造的内置没进去
         let merged = presets_from(&root);
-        assert_eq!(merged.presets.iter().filter(|p| p.builtin).count(), 5);
+        assert_eq!(merged.presets.iter().filter(|p| p.builtin).count(), 6);
     }
 
     #[test]
@@ -1154,6 +1218,52 @@ mod tests {
         // R5：skipped_reason 是前端追加的可选字段，Rust 镜像必须原样保住。
         let kept = loaded.nodes.values().find_map(|n| n.reply.as_ref().and_then(|r| r.skipped_reason.clone()));
         assert_eq!(kept.as_deref(), Some("上游验证未通过"));
+    }
+
+    #[test]
+    fn task08a_graph_node_swarm_roundtrips_and_old_graph_defaults_to_none() {
+        let graph = sample_graph();
+        let restored: Graph = serde_json::from_value(serde_json::to_value(&graph).unwrap()).unwrap();
+        assert_eq!(restored.nodes["n1"].swarm, Some(SwarmItem {
+            item: 1,
+            files: vec!["src/a/**".into()],
+            accept: "cargo test a".into(),
+        }));
+        let legacy: GraphNode = serde_json::from_str(r#"{"id":"old","kind":"turn"}"#).unwrap();
+        assert_eq!(legacy.swarm, None);
+    }
+
+    #[test]
+    fn task08a_split_role_uses_planning_target_and_frozen_readonly_prompt() {
+        let mut presets = vec![Preset {
+            id: "swarm-test".into(),
+            stages: vec![Stage { nodes: vec![Target {
+                role: "拆分".into(),
+                write: "worktree".into(),
+                visibility: "盲".into(),
+                ..blank_target()
+            }] }],
+            ..Preset::default()
+        }];
+        let roles = RoleSettings {
+            version: 1,
+            planning: RoleProfile {
+                agent: "codex".into(),
+                provider: "official".into(),
+                model: "planner".into(),
+                tier: "高".into(),
+                thinking: "高".into(),
+            },
+            ..RoleSettings::default()
+        };
+        fill_role_defaults(&mut presets, &roles);
+        let target = &presets[0].stages[0].nodes[0];
+        assert_eq!((target.agent.as_str(), target.provider.as_deref(), target.model.as_str()), ("codex", Some("official"), "planner"));
+        assert_eq!((target.write.as_str(), target.visibility.as_str()), ("只读", "共享"));
+        let prompt = include_str!("../fixtures/prompts/split.txt");
+        assert!(prompt.contains("只输出一个 JSON 围栏"));
+        assert!(prompt.contains("不超过 N 件"));
+        assert!(prompt.contains("有先后依赖的工作合并成一件"));
     }
 
     #[test]

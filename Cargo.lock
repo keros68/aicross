@@ -39,6 +39,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs 5.0.1",
+ "glob",
  "include_dir",
  "keyring",
  "libc",

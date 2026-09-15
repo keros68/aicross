@@ -216,7 +216,7 @@ fable-5 → [gpt-5.6 | kimi-2.7 | deepseek-v4-flash] → glm-5.3
 
 **图上长什么样**：根材料 → 一个「拆分」节点（只读，输出一份拆分清单：每件活的标题、要改的文件范围、验收命令）→ G1 显示清单，**文件范围有重叠的两件活标红，用户必须改到不重叠或合并成一件**才能派 → N 个「执行」节点并行（每个 `write=worktree`，各自 worktree）→ 一个「合并」阶段（引擎按清单顺序 `git merge` 各 worktree 分支到项目分支，每并一件跑一次验证命令）→ G3 结果屏按件列：已并入 / 冲突待裁决 / 测试红。合并冲突不自动解，交用户；也不派模型解冲突（那是共享对话，结论不独立）。
 
-**契约只追加**：`Node.role` 加「拆分」「合并」；拆分节点的回复带结构化 `plan.json`（`[{ title, files: [glob], accept: string }]`），前端解析失败按普通回复展示；留痕 `aicross-dispatch/1` 加 `swarm_item: string`（件号）与 `merge_result: merged|conflict|test_failed|skipped`；图落盘不变。
+**契约只追加**：`Node.role` 加「拆分」「合并」；拆分节点的回复带结构化 `plan.json`（`[{ title, files: [glob], accept: string }]`），前端解析失败按普通回复展示；留痕 `aicross-dispatch/1` 加 `swarm_item: number`（件号）与 `merge_result: merged|conflict|test_failed|skipped`；图落盘不变。
 
 **闸门**：G1 = 清单确认（重叠检查、每件一个目标、依赖声明为空才放行）；G2 = 每件独立进度与空转提示（复用 TASK-07 心跳）；G3 = 逐件合并结果，冲突件给「交人裁决」并附两侧 diff，不提供「自动解决」按钮。
 
