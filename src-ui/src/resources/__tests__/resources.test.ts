@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   agentMark,
-  connectedByAgent,
   groupModelsByProvider,
+  modelsByAgent,
   parseCommandArgs,
-  resourceSummary,
-  resourceSummaryText,
+  unverifiedCount,
+  unverifiedSummaryText,
+  verificationOf,
   type ResourceStore,
 } from '../types';
 import { appendMention } from '../mention';
@@ -20,6 +21,7 @@ function model(partial: Partial<import('../types').ResourceModel>): import('../t
     tier: '',
     thinking: '',
     status: '',
+    verification: '',
     source: '',
     smoked_at: '',
     smoke_model: '',
@@ -48,37 +50,72 @@ function store(models: import('../types').ResourceModel[]): ResourceStore {
   };
 }
 
-describe('connectedByAgent', () => {
-  it('只保留已接入模型，空组不出现', () => {
-    const s = store([
-      model({ agent: 'pi', id: 'a', status: '已接入' }),
-      model({ agent: 'pi', id: 'b', status: '待冒烟' }),
-      model({ agent: 'codex', id: 'c', status: '冒烟失败' }),
-    ]);
-    const groups = connectedByAgent(s);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].id).toBe('pi');
-    expect(groups[0].models.map((m) => m.id)).toEqual(['a']);
+// TASK-09：verification 三态（+ 原生）。后端会写这个字段，这里钉住「字段为空
+// 时按 agent + 旧 status 推断」这条兜底，映射与 Rust 的 inferred_verification 一致。
+describe('verificationOf', () => {
+  it('显式字段优先，四个合法值原样返回', () => {
+    expect(verificationOf({ agent: 'pi', status: '待冒烟', verification: 'verified' })).toBe('verified');
+    expect(verificationOf({ agent: 'claude', status: '已接入', verification: 'failed' })).toBe('failed');
+    expect(verificationOf({ agent: 'pi', status: '', verification: 'unverified' })).toBe('unverified');
+    expect(verificationOf({ agent: 'pi', status: '', verification: 'native' })).toBe('native');
+  });
+
+  it('原生三家（claude / codex / kimi）一律 native，不看旧 status', () => {
+    for (const agent of ['claude', 'codex', 'kimi', 'CODEX']) {
+      expect(verificationOf({ agent, status: '待冒烟', verification: '' })).toBe('native');
+      expect(verificationOf({ agent, status: '冒烟失败', verification: '' })).toBe('native');
+    }
+  });
+
+  it('第三方按旧 status 映射：已接入 → verified，冒烟失败 → failed，其余 → unverified', () => {
+    expect(verificationOf({ agent: 'pi', status: '已接入', verification: '' })).toBe('verified');
+    expect(verificationOf({ agent: 'pi', status: '冒烟失败', verification: '' })).toBe('failed');
+    expect(verificationOf({ agent: 'pi', status: '待冒烟', verification: '' })).toBe('unverified');
+    expect(verificationOf({ agent: 'pi', status: '', verification: '' })).toBe('unverified');
+    expect(verificationOf({ agent: 'pi', status: '', verification: '乱写' })).toBe('unverified');
   });
 });
 
-describe('resourceSummary', () => {
-  it('统计待冒烟与未接入', () => {
+describe('modelsByAgent', () => {
+  it('列全部探测模型，组内按 原生 → 已验证 → 未验证 → 验证失败 排', () => {
     const s = store([
-      model({ agent: 'pi', id: 'a', status: '待冒烟' }),
-      model({ agent: 'pi', id: 'b', status: '待冒烟' }),
-      model({ agent: 'pi', id: 'c', status: '未接入' }),
-      model({ agent: 'pi', id: 'd', status: '' }),
-      model({ agent: 'pi', id: 'e', status: '已接入' }),
-      model({ agent: 'pi', id: 'f', status: '冒烟失败' }),
+      model({ agent: 'pi', id: 'z-new', provider: 'zai', verification: 'unverified' }),
+      model({ agent: 'pi', id: 'a-new', provider: 'zai', verification: 'unverified' }),
+      model({ agent: 'pi', id: 'bad', provider: 'zai', verification: 'failed' }),
+      model({ agent: 'pi', id: 'ok', provider: 'zai', verification: 'verified' }),
+      model({ agent: 'codex', id: 'gpt', verification: 'native' }),
     ]);
-    expect(resourceSummary(s)).toEqual({ pending: 2, disconnected: 2 });
-    expect(resourceSummaryText(s)).toBe('2 个待冒烟 · 2 个未接入 · 管理 →');
+    const groups = modelsByAgent(s);
+    expect(groups.map((g) => g.id)).toEqual(['pi', 'codex']);
+    expect(groups[0].models.map((m) => m.id)).toEqual(['ok', 'a-new', 'z-new', 'bad']);
+    expect(groups[1].models.map((m) => m.id)).toEqual(['gpt']);
   });
 
-  it('没有待办时只显示管理入口', () => {
-    const s = store([model({ agent: 'pi', id: 'a', status: '已接入' })]);
-    expect(resourceSummaryText(s)).toBe('管理 →');
+  it('没有模型的 agent 不出现（未检测到的 CLI 在接入页管）', () => {
+    const s: ResourceStore = {
+      version: 1,
+      agents: [{ id: 'kimi', name: 'Kimi', kind: '内置', detected: false, version: '', models: [] }],
+    };
+    expect(modelsByAgent(s)).toEqual([]);
+  });
+});
+
+describe('unverifiedSummaryText', () => {
+  it('只数未验证的第三方条目，原生与已验证不计', () => {
+    const s = store([
+      model({ agent: 'pi', id: 'a', verification: 'unverified' }),
+      model({ agent: 'pi', id: 'b', verification: 'unverified' }),
+      model({ agent: 'pi', id: 'c', verification: 'verified' }),
+      model({ agent: 'pi', id: 'd', verification: 'failed' }),
+      model({ agent: 'codex', id: 'gpt', status: '待冒烟', verification: '' }),
+    ]);
+    expect(unverifiedCount(s)).toBe(2);
+    expect(unverifiedSummaryText(s)).toBe('2 个未验证（首次派发时自动验证）');
+  });
+
+  it('全部验过时不出这一行', () => {
+    const s = store([model({ agent: 'pi', id: 'a', verification: 'verified' })]);
+    expect(unverifiedSummaryText(s)).toBe('');
   });
 });
 

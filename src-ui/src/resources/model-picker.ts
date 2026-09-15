@@ -5,17 +5,19 @@
 // 31 条）。现在后端改成返回全部已探测模型并带 status，这里只管「怎么显示」：
 // 按 agent · provider 分组、未冒烟的在选项后面点明状态。
 //
-// 左栏资源 tab 不用这里——那是「可派发清单」的语义，仍然只显示已接入。
+// 09-15 起状态后缀改用 verification 三态：原生与已验证不加后缀，未验证与
+// 验证失败点明。旧的 status 字段留着给接入页的详情用。
 
-/** 挑模型只需要这四个字段；`DispatchableModel` 与 `ResourceModel` 都满足。 */
+import { verificationLabel, verificationOf } from './types';
+
+/** 挑模型只需要这几个字段；`DispatchableModel` 与 `ResourceModel` 都满足。 */
 export interface PickableModel {
   id: string;
   agent: string;
   provider: string;
   status: string;
+  verification?: string;
 }
-
-const CONNECTED = '已接入';
 
 /**
  * 分组标签：多数 agent 一家一个源，标签就是 agent id；
@@ -27,13 +29,17 @@ export function modelGroupLabel(model: PickableModel): string {
 }
 
 /**
- * 状态后缀：只有「已接入」不加。其余（待冒烟 / 冒烟失败）一律点明，
- * 免得用户以为下拉里列出来的都已经核过真身。
+ * 状态后缀：原生（自家清单说有就是有）与已验证不加。未验证与验证失败一律
+ * 点明，免得用户以为下拉里列出来的都已经核过真身。
  */
 export function modelStatusSuffix(model: PickableModel): string {
-  const status = model.status.trim();
-  if (status === '' || status === CONNECTED) return '';
-  return `（${status}）`;
+  const verification = verificationOf({
+    agent: model.agent,
+    status: model.status,
+    verification: model.verification ?? '',
+  });
+  if (verification === 'native' || verification === 'verified') return '';
+  return `（${verificationLabel(verification)}）`;
 }
 
 /** 选项文本：`agent/id` + 状态后缀。 */
@@ -42,8 +48,8 @@ export function modelOptionLabel(model: PickableModel): string {
 }
 
 /**
- * 按分组标签归组，保持传入顺序——后端已经按「已接入 → 待冒烟 → 冒烟失败，
- * 同状态内 agent → provider → id」排好，这里不再二次排序。
+ * 按分组标签归组，保持传入顺序——后端已经按「原生 / 已验证 → 未验证 →
+ * 验证失败，同一档内 agent → provider → id」排好，这里不再二次排序。
  */
 export function groupPickableModels<T extends PickableModel>(
   models: T[],

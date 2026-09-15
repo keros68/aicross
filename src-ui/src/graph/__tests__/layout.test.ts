@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { DispatchableModel, Graph, GraphNode, NodeKind } from '../types.ts';
 import { depthMap, latestLeaf, layersOf, pathTo } from '../layout.ts';
 import { appendTurn, fillRoot, parseSend } from '../mutate.ts';
+import { mentionRef } from '../../resources/mention.ts';
 
 let clock = 0;
 function ts(): string {
@@ -204,5 +205,24 @@ describe('parseSend', () => {
     const r = parseSend('就这句话', MODELS);
     expect(r.text).toBe('就这句话');
     expect(r.target).toBeUndefined();
+  });
+
+  // 修正轮 R1-5：`@agent/模型` 表达不了 provider，pi 同名模型挂在多个 provider
+  // 下时会落到清单里的第一条——不一定是用户在左栏点的那一行。mentionRef 带上
+  // `#provider` 后缀，parseSend 切回来，两头必须对得上。
+  it('#provider 后缀把同名模型解析到用户点的那一行', () => {
+    const multi: DispatchableModel[] = [
+      { ...mkModel('glm-4.7', 'pi'), provider: 'zai' },
+      { ...mkModel('glm-4.7', 'pi'), provider: 'bigmodel' },
+    ];
+    expect(mentionRef('pi', 'glm-4.7', 'bigmodel')).toBe('@pi/glm-4.7#bigmodel');
+    const picked = parseSend(`${mentionRef('pi', 'glm-4.7', 'bigmodel')} 干活`, multi);
+    expect(picked.text).toBe('干活');
+    expect(picked.target).toMatchObject({ agent: 'pi', model: 'glm-4.7', provider: 'bigmodel' });
+    // 没有后缀时仍是旧行为：落到清单里的第一条
+    expect(parseSend('@pi/glm-4.7 干活', multi).target).toMatchObject({ provider: 'zai' });
+    // provider 为空的 agent 不加后缀，老文本照旧解析
+    expect(mentionRef('kimi', 'k3')).toBe('@kimi/k3');
+    expect(parseSend('@kimi/k3 干活', MODELS).target).toMatchObject({ agent: 'kimi', model: 'k3' });
   });
 });

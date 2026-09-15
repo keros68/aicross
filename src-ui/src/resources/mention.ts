@@ -6,10 +6,20 @@ export const INSERT_MENTION_EVENT = 'aicross:insert-mention';
 export const OPEN_RESOURCES_EVENT = 'aicross:open-resources';
 export const RESOURCES_CHANGED_EVENT = 'aicross:resources-changed';
 
+/**
+ * mention 引用文本。`@agent/模型` 表达不了 provider，pi 一家挂三个 provider
+ * 时同名模型解析不出点的是哪一行，所以 provider 非空时补一个 `#provider`
+ * 后缀（模型 id 里不会出现 `#`），由 `parseSend` 切回来（修正轮 R1）。
+ */
+export function mentionRef(agent: string, model: string, provider = ''): string {
+  const tail = provider.trim() === '' ? '' : `#${provider.trim()}`;
+  return `@${agent}/${model}${tail}`;
+}
+
 /** 把 `@agent/模型` 插进当前对话图的主面板输入框。 */
-export function insertMention(agent: string, model: string): void {
+export function insertMention(agent: string, model: string, provider = ''): void {
   window.dispatchEvent(
-    new CustomEvent(INSERT_MENTION_EVENT, { detail: { text: `@${agent}/${model}` } }),
+    new CustomEvent(INSERT_MENTION_EVENT, { detail: { text: mentionRef(agent, model, provider) } }),
   );
 }
 

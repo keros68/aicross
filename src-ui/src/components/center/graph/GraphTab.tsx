@@ -22,7 +22,7 @@ import { applyReconcile, applyRoleDefaults, dispatchableNodeIds, EMPTY_RECONCILE
 import { useDispatchProgress } from '../../../graph/dispatch-progress';
 import { DispatchOverlay } from './DispatchOverlay';
 import { NodeProgressRow } from './DispatchBits';
-import { appendMention, INSERT_MENTION_EVENT, openResourcesPage, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
+import { appendMention, INSERT_MENTION_EVENT, mentionRef, openResourcesPage, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { groupPickableModels, modelKey, modelOptionLabel } from '../../../resources/model-picker';
 import { stampMenuShouldClose } from '../../../graph/stamp-menu';
 import { requestOrchestrationPanel } from '../../../lib/open-orchestration';
@@ -695,7 +695,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     const hints = validateNode(graph, endId, models);
     const value = drafts[colIdx] ?? '';
     const atMatch = value.match(/@([^\s@]*)$/);
-    const filter = (atMatch?.[1] ?? '').toLowerCase();
+    // 已经带上 `#provider` 后缀的部分不参与过滤（修正轮 R1）。
+    const filter = (atMatch?.[1] ?? '').split('#')[0].toLowerCase();
     // 与节点面板同一套分组（agent · provider）与状态后缀，见 resources/model-picker.ts
     const grouped = atMatch
       ? groupPickableModels(
@@ -708,7 +709,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
       const v = drafts[colIdx] ?? '';
       const nm = v.match(/@([^\s@]*)$/);
       const base = nm ? v.slice(0, v.length - nm[0].length) : v;
-      setDrafts((d) => ({ ...d, [colIdx]: `${base}@${m.agent}/${m.id} ` }));
+      setDrafts((d) => ({ ...d, [colIdx]: `${base}${mentionRef(m.agent, m.id, m.provider)} ` }));
     };
     const stampName = presetNameOf(graph.id, endId);
 

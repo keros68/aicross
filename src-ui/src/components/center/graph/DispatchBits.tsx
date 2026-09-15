@@ -3,6 +3,7 @@
 
 import { fallbackSkippedLineOf, idleHint, rollbackHintOf, runningDetailOf, writableFallbackHintOf, type BackendNodeResult, type ProgressSnapshot } from '../../../graph/dispatch';
 import type { Target } from '../../../graph/types';
+import { verificationHint, type Verification } from '../../../resources/types';
 
 // G1 确认屏：可写节点（write != 只读）配了备选时的提示。
 export function WritableFallbackHint({ target }: { target: Target }) {
@@ -16,6 +17,15 @@ export function FallbackSkippedLine({ result }: { result: Pick<BackendNodeResult
   const line = fallbackSkippedLineOf(result);
   if (!line) return null;
   return <div className="dispatch-warning">{line}</div>;
+}
+
+// G1 确认屏：目标模型的验证档提示（修正轮 R1）。未验证是第三方模型的常态，
+// 走 dispatch-reason；红字只留给 failed。文案与 tone 都在 verificationHint 里，
+// 这里只负责渲染。
+export function VerificationHint({ verification }: { verification?: Verification }) {
+  const hint = verificationHint(verification);
+  if (!hint) return null;
+  return <div className={hint.tone === 'warning' ? 'dispatch-warning' : 'dispatch-reason'}>{hint.text}</div>;
 }
 
 // G1 确认屏：单写者节点重派时，说明引擎会先回滚上次改动（TASK-06-2）。

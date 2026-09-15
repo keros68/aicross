@@ -34,12 +34,13 @@ import {
 } from '../../../graph/dispatch';
 import type { DispatchProgressStore } from '../../../graph/dispatch-progress';
 import { updateNodeFallback } from '../../../graph/mutate';
-import { FallbackSkippedLine, IdleHint, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, WritableFallbackHint } from './DispatchBits';
+import { FallbackSkippedLine, IdleHint, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, VerificationHint, WritableFallbackHint } from './DispatchBits';
 import { presetNameOf } from '../../../graph/persist';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import type { DispatchableModel, Graph, Target, Thinking } from '../../../graph/types';
 import { findModel } from '../../../graph/validate';
 import { modelStatusSuffix } from '../../../resources/model-picker';
+import { verificationOf } from '../../../resources/types';
 
 type Phase = 'confirm' | 'running' | 'results';
 
@@ -422,7 +423,13 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
               // provider 先精确匹配，匹配不上再退到 agent+id——节点面板选模型时不写 provider。
               const picked = models.find((item) => item.agent === target.agent && item.id === target.model && (item.provider ?? '') === (target.provider ?? ''))
                 ?? models.find((item) => item.agent === target.agent && item.id === target.model);
-              const unsmoked = picked !== undefined && picked.status !== '已接入' && picked.status !== '';
+              // 09-15 口径：未验证可以直接派，引擎在首次派发前自己验一次；
+              // 验失败过的不自动重试，提示用户去接入页手动重验。
+              const verification = picked && verificationOf({
+                agent: picked.agent,
+                status: picked.status,
+                verification: picked.verification ?? '',
+              });
               const sameVendorReview = target.role === '验收' && !!vendor && initialIds.some((otherId) => {
                 const other = targets[otherId];
                 if (!other || other.role !== '执行') return false;
@@ -439,7 +446,8 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                     <div className="dispatch-warning">任务含数字或链式关键词，thinking 已调为中；可修改。</div>
                   )}
                   {sameVendorReview && <div className="dispatch-reason">复核，非独立验证</div>}
-                  {unsmoked && <div className="dispatch-warning">该模型{picked?.status}，尚未核对真身；派发时通道会核对。</div>}
+                  {/* 未验证是第三方模型的常态，走 dispatch-reason；红字只留给 failed（修正轮 R1） */}
+                  <VerificationHint verification={verification} />
                   <WritableFallbackHint target={target} />
                   <div className="dispatch-controls">
                     {models.length > 0 ? <label>目标<select

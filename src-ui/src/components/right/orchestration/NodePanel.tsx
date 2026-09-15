@@ -55,7 +55,7 @@ export function TargetEditor({ target, models, ancestors, hints, onChange }: Tar
   const patch = (p: Partial<Target>) => onChange({ ...target, ...p });
 
   // 模型下拉按 agent · provider 分组（pi 一家挂三个 provider，只按 agent 分会挤成一组）；
-  // 顺序沿用后端排好的「已接入 → 待冒烟 → 冒烟失败」。
+  // 顺序沿用后端排好的「原生 / 已验证 → 未验证 → 验证失败」（09-15 起按 verification）。
   const groups = groupPickableModels(models);
 
   // 下拉的 value 是 [agent, provider, id] 三元组（见 model-picker.ts）：只有把
