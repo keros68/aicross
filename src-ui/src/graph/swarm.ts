@@ -525,6 +525,20 @@ export function swarmMergeEntry(graph: Graph, stage: number): SwarmMergeEntry {
   };
 }
 
+// 图上还有没并完的蜂群阶段（08E）：件全部跑到终态、却有件没并入时，
+// 图工具条给一个「合并」入口重开结果屏；多阶段取最深的那个。没有则 null。
+export function swarmPendingMergeStage(graph: Graph): number | null {
+  const stages = [...new Set(Object.values(graph.nodes)
+    .filter((node) => !!node.swarm)
+    .map((node) => graphStage(graph, node.id)))]
+    .sort((a, b) => b - a);
+  for (const stage of stages) {
+    const entry = swarmMergeEntry(graph, stage);
+    if (entry.ready && entry.pendingIds.length > 0) return stage;
+  }
+  return null;
+}
+
 // 这一屏该看哪一阶段的蜂群件：本次结果与本次可派节点里第一个蜂群件所在的阶段。
 export function swarmStageOf(graph: Graph, nodeIds: string[]): number | null {
   for (const id of nodeIds) {

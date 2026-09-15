@@ -19,6 +19,7 @@ import {
   swarmItemBase,
   swarmLimitLine,
   swarmMergeEntry,
+  swarmPendingMergeStage,
   swarmMergeItems,
   swarmRecordedResult,
   swarmStageOf,
@@ -152,6 +153,24 @@ describe('TASK-08C 蜂群联调收口', () => {
     expect(swarmMergeItems(redrafted, reopened.nodeIds).map((row) => row.item)).toEqual([2, 3]);
     // 别的阶段没有件
     expect(swarmMergeEntry(after, 1).nodeIds).toEqual([]);
+  });
+
+  it('08E 工具条「合并」入口：件全到终态且有未并入的才给，重派中或全并入则不给', () => {
+    const graph = mkGraph([mkSplit('split'), mkItem('n1', 'split', 1), mkItem('n2', 'split', 2)]);
+    expect(swarmPendingMergeStage(graph)).toBe(2);
+    const partly = applySwarmMerge(graph, [
+      mergeRow({ nodeId: 'n1', item: 1, commit: 'aaa' }),
+      mergeRow({ nodeId: 'n2', item: 2, result: 'conflict', note: 'D:/wt/2' }),
+    ]);
+    expect(swarmPendingMergeStage(partly)).toBe(2);
+    const all = applySwarmMerge(graph, [
+      mergeRow({ nodeId: 'n1', item: 1, commit: 'aaa' }),
+      mergeRow({ nodeId: 'n2', item: 2, commit: 'bbb' }),
+    ]);
+    expect(swarmPendingMergeStage(all)).toBeNull();
+    const redrafted: Graph = { ...partly, nodes: { ...partly.nodes, n2: { ...partly.nodes.n2, reply: { status: 'draft', text: '' } } } };
+    expect(swarmPendingMergeStage(redrafted)).toBeNull();
+    expect(swarmPendingMergeStage(newGraph())).toBeNull();
   });
 
   it('08C-3 跨拆分节点件号续号：第二个拆分从最大件号 +1 起编，重复生成仍幂等', () => {

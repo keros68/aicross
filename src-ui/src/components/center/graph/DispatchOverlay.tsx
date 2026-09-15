@@ -54,6 +54,7 @@ import {
   swarmMergeItems,
   swarmNodeIdsOf,
   swarmOverlapItems,
+  swarmPendingMergeStage,
   swarmStageOf,
   swarmWireSettings,
   type SwarmCheckState,
@@ -83,16 +84,18 @@ interface Props {
   onClose: () => void;
   // 擂台「选它」与仲裁建节点后，把焦点/主列对齐到该节点（GraphTab 提供）
   onFocusNode?: (nodeId: string) => void;
+  // 从图工具条「合并」进来（08E）：直接开结果屏，只做没并完的蜂群件的合并。
+  mergeOnly?: boolean;
 }
 
 const resultStatus = (status: string) =>
   status === 'ok' ? '完成' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证失败' : '失败';
 
-export function DispatchOverlay({ graph, models, projectDir, needsReview, retryNodes, progressStore, onCommit, onClose, onFocusNode }: Props) {
+export function DispatchOverlay({ graph, models, projectDir, needsReview, retryNodes, progressStore, onCommit, onClose, onFocusNode, mergeOnly }: Props) {
   const initialIds = useMemo(() => dispatchableNodeIds(graph), [graph]);
   const reviewIds = useMemo(() => new Set(needsReview ?? []), [needsReview]);
   const [nodeIds, setNodeIds] = useState(() => initialDispatchSelection(initialIds, needsReview));
-  const [phase, setPhase] = useState<Phase>('confirm');
+  const [phase, setPhase] = useState<Phase>(mergeOnly ? 'results' : 'confirm');
   const [runId, setRunId] = useState(() => crypto.randomUUID());
   const [targets, setTargets] = useState(() => Object.fromEntries(initialIds.map((id) => {
     const target = { ...graph.nodes[id].target! };
@@ -426,7 +429,9 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
 
   // 合并入口按图派生（08C-2）：本阶段图上的全部蜂群件，不是本次 results 里的那些。
   // 关屏重开、单件重派之后清单都按当前图算，冲突件不会因为换了一批结果就没地方再并。
-  const swarmStage = swarmStageOf(graph, [...results.map((result) => result.nodeId), ...initialIds]);
+  // 从工具条「合并」进来时阶段在开屏那一刻钉住（08E）：并完最后一件后清单不会消失，结果行留着给人看。
+  const [pinnedSwarmStage] = useState(() => (mergeOnly ? swarmPendingMergeStage(graph) : null));
+  const swarmStage = swarmStageOf(graph, [...results.map((result) => result.nodeId), ...initialIds]) ?? pinnedSwarmStage;
   const mergeEntry = swarmStage === null ? null : swarmMergeEntry(graph, swarmStage);
   const swarmReady = mergeEntry?.ready === true;
   // 已并入的件不再进下一次请求（R1-3）：没剩下要并的件时按钮禁用。

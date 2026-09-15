@@ -11,7 +11,7 @@ import type { DispatchableModel, Graph, GraphNode, Preset } from '../../../graph
 import { newGraph } from '../../../graph/types';
 import { contextOf } from '../../../graph/context';
 import { childrenOf, stamp } from '../../../graph/stamp';
-import { withSwarmPreset } from '../../../graph/swarm';
+import { swarmPendingMergeStage, withSwarmPreset } from '../../../graph/swarm';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import { findModel, validateNode } from '../../../graph/validate';
 import { latestLeaf, layersOf, normalizeNodeKinds, pathTo, sameBranch } from '../../../graph/layout';
@@ -72,6 +72,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [failedId, setFailedId] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
+  // 08E：从工具条「合并」打开时只开结果屏做蜂群合并，不走确认屏。
+  const [mergeOnly, setMergeOnly] = useState(false);
   // 资源是否已读过一轮。models 初值是 []，没有这个标记会把「还没读」
   // 误判成「一个资源都没有」，首启引导就会闪一下。
   const [modelsRead, setModelsRead] = useState(false);
@@ -813,7 +815,11 @@ export function GraphTab({ session }: { session: TerminalSession }) {
         {unfinishedRun && <span className="graph-resume">上次派发未完成；若上次是崩溃退出，请先手动检查残留进程 <button onClick={continueUnfinished}>继续</button><button onClick={abandonUnfinished}>放弃</button></span>}
         {!unfinishedRun && reconcileUi.note !== '' && <span className="graph-resume">{reconcileUi.note}</span>}
         <span>可派 {dispatchableNodeIds(graph).length} 路</span>
-        <button className="graph-primary-btn" disabled={dispatchableNodeIds(graph).length === 0} onClick={() => setDispatchOpen(true)}>派发</button>
+        <button className="graph-primary-btn" disabled={dispatchableNodeIds(graph).length === 0} onClick={() => { setMergeOnly(false); setDispatchOpen(true); }}>派发</button>
+        {/* 08E：蜂群件全部跑完但还有没并入的（冲突、测试红、上次关了屏），从这里重开合并 */}
+        {swarmPendingMergeStage(graph) !== null && (
+          <button onClick={() => { setMergeOnly(true); setDispatchOpen(true); }}>合并</button>
+        )}
       </div>
       <div className="graph-canvas" ref={canvasRef}>
         <div
@@ -853,7 +859,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
             setReconcile((current) => reconcileUiConverged(current, saved));
             return saved;
           }}
-          onClose={() => { setDispatchOpen(false); setRetryNodes([]); }}
+          mergeOnly={mergeOnly}
+          onClose={() => { setDispatchOpen(false); setMergeOnly(false); setRetryNodes([]); }}
           onFocusNode={(nodeId) => {
             dispatch({ type: 'SET_GRAPH_FOCUS', focus: { graphId: graph.id, nodeId } });
             setColumns((cols) => [nodeId, ...cols.slice(1).filter((c) => c !== nodeId)]);
