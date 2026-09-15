@@ -88,3 +88,9 @@
 53. 控制台 run 未接图进度 store（图上节点卡无心跳）：`startPipelineHeadless` 支持 begin/end，但 progress store 挂在 GraphTab 内，通道拿不到；需要 graphId → store 的注册表。（DS 2）
 54. `aicross adopt` 要求图在内存 state 中，用户关掉该图 tab 后得 409；先 loadGraph 兜底。（GLM N4）
 55. `head_and_options_are_http_methods` 与 `HTTP_TIMEOUT` 两条测试仍是自证；NSIS 脚本本体无自动化测试，只有 TS 镜像的纯函数测试。（GLM N5 / 5）
+
+## TASK-17 R1 复审剩余（09-15，两家都判可交付；低危，择期）
+
+56. `detect_into` 的 pi 分支已成生产死代码且保留「不刷登录」旧语义，日后恢复会无声回归；清理或注明。（GLM）
+57. 引擎跳过未登录备选的说明只加在返回结果上，不进主尝试留痕；引擎每候选各读一次库取 login。（GLM）
+58. `status:"ready"` 但退出码非 0 判未登录而非未检查（有意取舍，仅记口径）。（GLM）
