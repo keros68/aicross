@@ -1,35 +1,62 @@
 /* 资源接入（TASK-07；TASK-09 改版）：左栏「资源」tab + 全屏接入页。
    主题变量沿用 global.css（--bg-panel/--bg-card/--text-1..3/--accent/--green/--red）。 */
 
-/* ── agent 字母徽标与验证标记（TASK-09；修正轮 R1 改色源与字号） ─────────
+/* ── agent 品牌徽标与验证标记（TASK-09；TASK-09b 换成官方标志） ───────────
+   标志本体是内联 SVG（路径数据与许可见 brand-marks.ts），按 currentColor 填。
    厂商色只做小面积标识（PRODUCT.md 视觉纪律）：色相由 AgentBadge 从
-   graph/vendor.ts 取，按 --agent-tone 内联传进来，这里只做薄底与描边。
-   字母本身走 --text-1——全饱和色相在浅色主题上做小号文字到不了 4.5:1。 */
+   graph/vendor.ts 取，按 --agent-tone 内联传进来。没有收录标志的 agent 退回
+   字形（pi → π）或字母，形状仍是同一个 18px 方槽，行高不会因家而异。 */
 
 .agent-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  color: var(--agent-tone, var(--text-3));
+}
+
+.agent-badge svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 字形 / 字母兜底：没有标志时给一个薄底方块，免得一个孤零零的 π 看着像正文。 */
+.agent-badge-glyph,
+.agent-badge-letters {
   border-radius: var(--radius-xs);
   font-family: var(--font-mono);
   font-weight: 700;
+  font-size: 11px;
   letter-spacing: 0.02em;
   background: color-mix(in srgb, var(--agent-tone, var(--text-3)) 18%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent-tone, var(--text-3)) 40%, transparent);
-  color: var(--text-1);
-}
-
-.agent-badge-sm {
-  width: 20px;
-  height: 20px;
-  font-size: 11px;
 }
 
 .agent-badge-md {
-  width: 24px;
-  height: 24px;
-  font-size: 12px;
+  width: 20px;
+  height: 20px;
+}
+
+/* 浅色主题各一套色（任务书要求）：vendor.ts 的原色是按深色底挑的，
+   #D97757 / #10A37F 这类在白底上做 18px 实心图形到不了 3:1（WCAG 非文字
+   对比度）。这里只压暗，不换色相——和对话图上的色点仍是同一家的颜色。 */
+[data-theme="light"] .agent-badge-claude {
+  --agent-tone: #a2491f;
+}
+
+[data-theme="light"] .agent-badge-codex {
+  --agent-tone: #0a6b52;
+}
+
+[data-theme="light"] .agent-badge-kimi {
+  --agent-tone: #4a35a8;
+}
+
+[data-theme="light"] .agent-badge-pi {
+  --agent-tone: #2f6b47;
 }
 
 /* 「已验证」的绿点是左栏 verified 的唯一可见标识，浅色主题的 --green
@@ -52,14 +79,24 @@
 }
 
 .verify-dot {
+  display: inline-block;
+  flex-shrink: 0;
   width: 6px;
   height: 6px;
   border-radius: var(--radius-pill);
   background: var(--text-3);
 }
 
+/* 左栏里点是独立元素（没有 .verify-dot-wrap 外壳），色按自身 class 走；
+   接入页里点在外壳内，色按外壳 class 走。两套选择器都要留。 */
+.verify-dot.verify-verified,
 .verify-verified .verify-dot {
   background: var(--verify-green);
+}
+
+.verify-dot.verify-failed,
+.verify-failed .verify-dot {
+  background: var(--red);
 }
 
 .verify-text {
@@ -195,6 +232,38 @@
   padding: 0 4px 4px 16px;
 }
 
+/* ── provider 小组（TASK-09b） ──────────────────────────────────────────
+   pi 底下几十条模型混在一起没法看。组头 = provider 名 + 计数，组内的模型名
+   因此不再需要 `· provider` 后缀。原生 agent 只有一个空名组，不出组头。 */
+
+.resource-group + .resource-group {
+  margin-top: 4px;
+}
+
+.resource-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.resource-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-group-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .resource-model-row {
   display: flex;
   align-items: center;
@@ -206,6 +275,7 @@
   border-radius: var(--radius-xs);
   cursor: pointer;
   text-align: left;
+  line-height: 16px;
 }
 
 .resource-model-row:hover {
@@ -221,16 +291,56 @@
   background: none;
 }
 
-/* 模型 ID 是结构性文字：等宽字，长名截断而不是把状态标记挤出行外。 */
+/* 模型名用界面正文字体（TASK-09b）：左栏满屏都是模型名，等宽字在 12px 上
+   字距过宽、中英混排更挤。真身 ID 才是结构性文字，留等宽。 */
 .resource-model-id {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   color: var(--text-1);
-  font-family: var(--font-mono);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 别名行的次文本：claude 的 fable → claude-fable-5-1。别名与 ID 相同的
+   模型不渲染这一段（modelSecondaryId 返回空串）。 */
+.resource-model-resolved {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 未验证清单的折叠行。它本身就是展开按钮，度量与模型行一致。 */
+.resource-unverified-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.resource-unverified-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-2);
+}
+
+.resource-unverified-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .resource-manage-link {
@@ -393,10 +503,29 @@
   font-size: 12px;
 }
 
+/* 组头与左栏同一套：provider 名 + 计数（TASK-09b）。 */
 .agent-card-group {
-  margin: 4px 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
   color: var(--text-3);
   font-size: 11px;
+  line-height: 16px;
+}
+
+.agent-card-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-card-group-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .agent-card-model {
@@ -413,8 +542,18 @@
 
 .agent-card-model-id {
   min-width: 0;
-  font-family: var(--font-mono);
   font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Claude 卡片上的别名 + 真实 ID（TASK-09b）。 */
+.agent-card-model-resolved {
+  min-width: 0;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

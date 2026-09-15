@@ -1,19 +1,24 @@
 // 左栏「资源」tab。09-15 口径起列出全部已探测模型（不再只列冒烟通过的），
 // 按 agent 折叠分组；点模型把 @agent/模型 插进当前对话图主面板输入框。
 //
-// 行内只放「模型名 + 状态标记」，来源路径与最近验证时间挪到 title 悬停——
-// 左栏宽度有限，每行顶着一条 `读:C:\Users\…` 会把模型名挤没。
+// TASK-09b（用户反馈「现在很乱」）：多 provider 的 agent（pi）再按 provider
+// 分小组，组内未验证的默认折成一行；行内只剩「模型名 +（别名时）真实 ID +
+// 状态点」，状态词、来源路径与最近验证时间都在悬停里——左栏宽度有限。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { commands, isTauri } from '../../tauri';
 import { useAppState } from '../../store/app-state';
 import {
-  ambiguousModelIds,
   errorText,
+  groupKey,
   modelHint,
-  modelRowLabel,
+  modelSecondaryId,
   modelsByAgent,
+  providerGroups,
+  splitUnverified,
+  unverifiedToggleLabel,
   verificationOf,
+  type ProviderGroup,
   type ResourceAgent,
   type ResourceModel,
   type ResourceStore,
@@ -33,6 +38,8 @@ export function ResourcesTab() {
   const { state } = useAppState();
   const [store, setStore] = useState<ResourceStore | null>(null);
   const [expanded, setExpanded] = useState<string[]>([]);
+  // 展开了未验证清单的小组，键是 `agentId/provider`。默认全折叠。
+  const [openUnverified, setOpenUnverified] = useState<string[]>([]);
   const [error, setError] = useState('');
   const initialized = useRef(false);
   // 点模型靠 GraphTab 挂载时的事件监听接收；没有打开的对话图 tab 时
@@ -72,14 +79,21 @@ export function ResourcesTab() {
       value.includes(agentId) ? value.filter((id) => id !== agentId) : [...value, agentId],
     );
 
+  const toggleUnverified = (key: string) =>
+    setOpenUnverified((value) =>
+      value.includes(key) ? value.filter((item) => item !== key) : [...value, key],
+    );
+
   return (
     <div className="resources-pane">
       {error && <div className="resources-error">{error}</div>}
       <ResourceAgentList
         agents={modelsByAgent(store)}
         expanded={expanded}
+        openUnverified={openUnverified}
         graphOpen={graphOpen}
         onToggle={toggle}
+        onToggleUnverified={toggleUnverified}
         onPick={insertMention}
       />
       <button className="resource-manage-link" type="button" onClick={openResourcesPage}>
@@ -93,14 +107,18 @@ export function ResourcesTab() {
 export function ResourceAgentList({
   agents,
   expanded,
+  openUnverified,
   graphOpen,
   onToggle,
+  onToggleUnverified,
   onPick,
 }: {
   agents: ResourceAgent[];
   expanded: string[];
+  openUnverified: string[];
   graphOpen: boolean;
   onToggle: (agentId: string) => void;
+  onToggleUnverified: (key: string) => void;
   onPick: (agent: string, model: string, provider: string) => void;
 }) {
   return (
@@ -134,13 +152,14 @@ export function ResourceAgentList({
             </button>
             {isExpanded && (
               <div className="resource-model-list">
-                {agent.models.map((model) => (
-                  <ResourceModelRow
-                    key={`${model.provider}:${model.id}`}
-                    model={model}
+                {providerGroups(agent.models).map((group) => (
+                  <ResourceModelGroup
+                    key={group.provider || 'models'}
                     agentId={agent.id}
-                    ambiguous={ambiguousModelIds(agent.models)}
+                    group={group}
+                    unverifiedOpen={openUnverified.includes(groupKey(agent.id, group.provider))}
                     graphOpen={graphOpen}
+                    onToggleUnverified={onToggleUnverified}
                     onPick={onPick}
                   />
                 ))}
@@ -154,19 +173,80 @@ export function ResourceAgentList({
 }
 
 /**
+ * 一个 provider 小组：组头（provider 名 + 计数）+ 常显行 + 折叠的未验证行。
+ * 原生 agent 只有一个空名小组，不渲染组头。
+ */
+function ResourceModelGroup({
+  agentId,
+  group,
+  unverifiedOpen,
+  graphOpen,
+  onToggleUnverified,
+  onPick,
+}: {
+  agentId: string;
+  group: ProviderGroup;
+  unverifiedOpen: boolean;
+  graphOpen: boolean;
+  onToggleUnverified: (key: string) => void;
+  onPick: (agent: string, model: string, provider: string) => void;
+}) {
+  const { shown, collapsed } = splitUnverified(group.models);
+  const key = groupKey(agentId, group.provider);
+  return (
+    <div className="resource-group">
+      {group.provider !== '' && (
+        <div className="resource-group-head">
+          <span className="resource-group-name">{group.provider}</span>
+          <span className="resource-group-count">{group.models.length}</span>
+        </div>
+      )}
+      {shown.map((model) => (
+        <ResourceModelRow
+          key={`${model.provider}:${model.id}`}
+          model={model}
+          agentId={agentId}
+          graphOpen={graphOpen}
+          onPick={onPick}
+        />
+      ))}
+      {collapsed.length > 0 && (
+        <button
+          className="resource-unverified-toggle"
+          type="button"
+          aria-expanded={unverifiedOpen}
+          onClick={() => onToggleUnverified(key)}
+        >
+          <span className="verify-dot verify-unverified" aria-hidden="true" />
+          {unverifiedToggleLabel(collapsed.length, unverifiedOpen)}
+        </button>
+      )}
+      {unverifiedOpen &&
+        collapsed.map((model) => (
+          <ResourceModelRow
+            key={`${model.provider}:${model.id}`}
+            model={model}
+            agentId={agentId}
+            graphOpen={graphOpen}
+            onPick={onPick}
+          />
+        ))}
+    </div>
+  );
+}
+
+/**
  * 模型行。悬停提示同时挂进 `aria-describedby`：`title` 在 WebView2 里只响应
  * 鼠标悬停，键盘 Tab 到这一行读不到来源与最近验证时间（修正轮 R1）。
  */
 function ResourceModelRow({
   model,
   agentId,
-  ambiguous,
   graphOpen,
   onPick,
 }: {
   model: ResourceModel;
   agentId: string;
-  ambiguous: Set<string>;
   graphOpen: boolean;
   onPick: (agent: string, model: string, provider: string) => void;
 }) {
@@ -175,6 +255,7 @@ function ResourceModelRow({
     /[^A-Za-z0-9_-]/g,
     '-',
   );
+  const secondary = modelSecondaryId(model);
   return (
     <>
       <button
@@ -185,7 +266,8 @@ function ResourceModelRow({
         aria-describedby={hintId}
         onClick={() => onPick(model.agent || agentId, model.id, model.provider)}
       >
-        <span className="resource-model-id">{modelRowLabel(model, ambiguous)}</span>
+        <span className="resource-model-id">{model.id}</span>
+        {secondary !== '' && <span className="resource-model-resolved">{secondary}</span>}
         <VerificationMark verification={verificationOf(model)} />
       </button>
       <span className="resources-sr-only" id={hintId}>

@@ -100,6 +100,13 @@ pub struct ResourceModel {
     /// `ensure_verification` 按 agent + 旧 `status` 推断后补上。
     #[serde(default)]
     pub verification: String,
+    /// 别名对应的真实模型 ID（TASK-09b）。`id` 是派发时写进命令行的那个词，
+    /// claude 的 `fable` / `opus` / `sonnet` / `haiku` 都是别名，界面上只有别名
+    /// 看不出跑的是哪个模型。非别名模型这里等于 `id`；冒烟/派发核对到真身后
+    /// 由 `apply_smoke_outcome` 覆盖成实测值。旧库缺这个字段，`ensure_resolved_id`
+    /// 按 `CLAUDE_ALIAS_IDS` 补上。
+    #[serde(default)]
+    pub resolved_id: String,
     #[serde(default)]
     pub source: String,
     #[serde(default)]
@@ -234,6 +241,7 @@ pub fn load(path: &Path) -> Result<ResourceStore, String> {
     }
     let mut store = store;
     ensure_verification(&mut store);
+    ensure_resolved_id(&mut store);
     Ok(store)
 }
 
@@ -282,6 +290,60 @@ fn inferred_verification(agent: &str, status: &str) -> &'static str {
 ///
 /// 除这条不变式外不改已有值：用户手动重验过的 verified / failed 不被覆盖。
 /// `model.agent` 可能还没回填（`ensure_agents` 才做），用 agent.id 兜底。
+/// claude 别名 → 真实模型 ID（TASK-09b）。claude 的事实源是 `--help` 里的别名
+/// 举例，拿不到完整 ID，这张表是唯一的本地事实源；写表日期见
+/// `CLAUDE_STATIC_TABLE_DATE`，过期由冒烟/派发核对真身后覆盖。
+const CLAUDE_ALIAS_IDS: [(&str, &str); 4] = [
+    ("fable", "claude-fable-5-1"),
+    ("opus", "claude-opus-5"),
+    ("sonnet", "claude-sonnet-5"),
+    ("haiku", "claude-haiku-4-5-20251001"),
+];
+
+/// 别名的真身。只有 claude 有别名；其余 agent 的 `id` 本身就是真实 ID。
+fn resolved_id_for(agent: &str, id: &str) -> String {
+    if agent.trim().eq_ignore_ascii_case("claude") {
+        if let Some((_, real)) = CLAUDE_ALIAS_IDS
+            .iter()
+            .find(|(alias, _)| alias.eq_ignore_ascii_case(id.trim()))
+        {
+            return (*real).to_string();
+        }
+    }
+    id.to_string()
+}
+
+/// 冒烟/派发核对到的真身 → `resolved_id`。pi 的真身带 provider 前缀
+/// （`zai/glm-4.7`），`resolved_id` 只要模型那一半。
+fn resolved_id_from_identity(identity: &str, provider: &str) -> String {
+    let identity = identity.trim();
+    let provider = provider.trim();
+    if !provider.is_empty() {
+        if let Some(rest) = identity.strip_prefix(&format!("{provider}/")) {
+            return rest.to_string();
+        }
+    }
+    identity.to_string()
+}
+
+/// 补齐 `resolved_id`：旧库里没有这个字段，空值按别名表推断。
+/// 非空值不覆盖——冒烟核对到的真身比静态表可信。
+fn ensure_resolved_id(store: &mut ResourceStore) {
+    for agent in &mut store.agents {
+        let owner = agent.id.clone();
+        for model in &mut agent.models {
+            if model.resolved_id.trim().is_empty() {
+                let agent_id = if model.agent.trim().is_empty() {
+                    owner.clone()
+                } else {
+                    model.agent.clone()
+                };
+                model.resolved_id = resolved_id_for(&agent_id, &model.id);
+            }
+        }
+    }
+}
+
 fn ensure_verification(store: &mut ResourceStore) {
     for agent in &mut store.agents {
         let owner = agent.id.clone();
@@ -447,6 +509,7 @@ pub fn ensure_agents(store: &mut ResourceStore) {
         }
     }
     ensure_verification(&mut *store);
+    ensure_resolved_id(&mut *store);
 }
 
 // ── 二进制解析 ────────────────────────────────────────────────────────────
@@ -1111,6 +1174,7 @@ fn detected_model(
         thinking: thinking.to_string(),
         status: STATUS_PENDING.to_string(),
         verification: inferred_verification(agent, STATUS_PENDING).to_string(),
+        resolved_id: resolved_id_for(agent, id),
         source: source.to_string(),
         smoked_at: String::new(),
         smoke_model: String::new(),
@@ -1152,6 +1216,10 @@ fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: 
             model.smoked_at.clone_from(&existing.smoked_at);
             model.smoke_model.clone_from(&existing.smoke_model);
             model.smoke_failure.clone_from(&existing.smoke_failure);
+            // 冒烟核对到的真身比别名静态表可信：重新探测不许把它退回静态值。
+            if !existing.resolved_id.trim().is_empty() {
+                model.resolved_id.clone_from(&existing.resolved_id);
+            }
             if !existing.vendor.trim().is_empty() {
                 model.vendor.clone_from(&existing.vendor);
             }
@@ -1215,6 +1283,7 @@ pub fn add_model(
         return Err("手动输入失败：该模型已存在".to_string());
     }
     let verification = inferred_verification(&request.agent_id, STATUS_PENDING).to_string();
+    let resolved_id = resolved_id_for(&request.agent_id, id);
     agent.models.push(ResourceModel {
         id: id.to_string(),
         agent: request.agent_id,
@@ -1233,6 +1302,7 @@ pub fn add_model(
         thinking: "未知".to_string(),
         status: STATUS_PENDING.to_string(),
         verification,
+        resolved_id,
         source: format!("申报({})", Local::now().format("%Y-%m-%d")),
         smoked_at: String::new(),
         smoke_model: String::new(),
@@ -1438,6 +1508,12 @@ fn apply_smoke_outcome(
             }
             .to_string();
             target.smoked_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
+            // 真身覆盖别名静态表（TASK-09b）：核对到的 model 字段才是这次真跑的
+            // 模型。空真身不覆盖——个别通道拿不到 model 字段时别把已有值抹掉。
+            let resolved = resolved_id_from_identity(&success.identity, &request.provider);
+            if !resolved.is_empty() {
+                target.resolved_id = resolved;
+            }
             target.smoke_model = success.identity;
             target.smoke_failure.clear();
             if let Some(marker) = success.meta_marker {
@@ -2364,6 +2440,7 @@ mod tests {
                     thinking: "未知".to_string(),
                     status: STATUS_CONNECTED.to_string(),
                     verification: VERIFICATION_NATIVE.to_string(),
+                    resolved_id: "old-model".to_string(),
                     source: "读:old".to_string(),
                     smoked_at: "2026-01-01".to_string(),
                     smoke_model: "old-model".to_string(),
@@ -2422,6 +2499,7 @@ mod tests {
                     thinking: "未知".to_string(),
                     status: STATUS_PENDING.to_string(),
                     verification: VERIFICATION_NATIVE.to_string(),
+                    resolved_id: "same".to_string(),
                     source: "读:old".to_string(),
                     smoked_at: String::new(),
                     smoke_model: String::new(),
@@ -2664,6 +2742,137 @@ mod tests {
             STATUS_FAILED
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    // ── TASK-09b：别名 → 真实模型 ID ──────────────────────────────────────
+
+    /// 四个 claude 别名按已知表落 `resolved_id`；非别名模型 `resolved_id == id`；
+    /// 同名词出现在别的 agent 下（pi 的 provider 里也可能有叫 `opus` 的）不映射。
+    #[test]
+    fn task09b_claude_aliases_resolve_to_known_model_ids() {
+        assert_eq!(resolved_id_for("claude", "fable"), "claude-fable-5-1");
+        assert_eq!(resolved_id_for("claude", "opus"), "claude-opus-5");
+        assert_eq!(resolved_id_for("claude", "sonnet"), "claude-sonnet-5");
+        assert_eq!(resolved_id_for("claude", "haiku"), "claude-haiku-4-5-20251001");
+        // 大小写与空白不敏感（手工添加的 agent 会写成 `Claude`）
+        assert_eq!(resolved_id_for("Claude", " Sonnet "), "claude-sonnet-5");
+        // 非别名：claude 下的完整 ID 与别家的模型都原样返回
+        assert_eq!(resolved_id_for("claude", "claude-opus-5"), "claude-opus-5");
+        assert_eq!(resolved_id_for("pi", "opus"), "opus");
+        assert_eq!(resolved_id_for("codex", "gpt-5.1-codex"), "gpt-5.1-codex");
+    }
+
+    /// 旧库（没有 resolved_id 字段）读进来时补齐：claude 别名按表，其余等于 id；
+    /// 库里已有的非空值不被静态表覆盖。
+    #[test]
+    fn task09b_legacy_store_backfills_resolved_id() {
+        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[
+                {"id":"claude","name":"Claude","models":[
+                    {"id":"fable","agent":"claude","status":"待冒烟"},
+                    {"id":"opus","agent":"claude","status":"待冒烟","resolved_id":"claude-opus-5-2"}]},
+                {"id":"pi","name":"pi","models":[
+                    {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        )
+        .unwrap();
+        let store = load(&path).expect("legacy store");
+        let resolved = |agent: &str, provider: &str, id: &str| {
+            find_model(&store, agent, provider, id)
+                .expect(id)
+                .resolved_id
+                .clone()
+        };
+        assert_eq!(resolved("claude", "", "fable"), "claude-fable-5-1");
+        // 库里存着的真身（上一次冒烟核对出来的）优先于静态表
+        assert_eq!(resolved("claude", "", "opus"), "claude-opus-5-2");
+        // 非别名模型：resolved_id == id
+        assert_eq!(resolved("pi", "zai", "glm-4.7"), "glm-4.7");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 冒烟核对到的真身覆盖静态表；pi 的真身带 provider 前缀，只取模型那一半；
+    /// 失败时不动 `resolved_id`（上次核对过的真身不该被一次网络故障抹掉）。
+    #[test]
+    fn task09b_smoke_success_overwrites_resolved_id_with_identity() {
+        let mut claude = detected_model("fable", "claude", "", "Anthropic", "官方订阅", "未知", "读:fixture", "");
+        assert_eq!(claude.resolved_id, "claude-fable-5-1");
+        claude.verification = VERIFICATION_UNVERIFIED.to_string();
+        let mut store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("claude", vec![claude])],
+        };
+        let key = ResourceModelKey {
+            agent_id: "claude".into(),
+            provider: String::new(),
+            id: "fable".into(),
+        };
+        apply_smoke_outcome(
+            &mut store,
+            &key,
+            Ok(SmokeSuccess { identity: "claude-fable-5-1-20260901".into(), meta_marker: None }),
+        )
+        .unwrap();
+        assert_eq!(
+            find_model(&store, "claude", "", "fable").unwrap().resolved_id,
+            "claude-fable-5-1-20260901"
+        );
+        apply_smoke_outcome(&mut store, &key, Err("端点不可达".into())).unwrap();
+        assert_eq!(
+            find_model(&store, "claude", "", "fable").unwrap().resolved_id,
+            "claude-fable-5-1-20260901",
+            "验证失败不该抹掉上次核对出来的真身"
+        );
+
+        // pi：真身是 `provider/model`，resolved_id 只留模型那一半
+        let pi_model = ResourceModel {
+            id: "deepseek-v4-flash".into(),
+            agent: "pi".into(),
+            provider: "deepseek".into(),
+            ..ResourceModel::default()
+        };
+        let mut pi_store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("pi", vec![pi_model])],
+        };
+        let pi_key = ResourceModelKey {
+            agent_id: "pi".into(),
+            provider: "deepseek".into(),
+            id: "deepseek-v4-flash".into(),
+        };
+        apply_smoke_outcome(
+            &mut pi_store,
+            &pi_key,
+            Ok(SmokeSuccess { identity: "deepseek/deepseek-flash".into(), meta_marker: None }),
+        )
+        .unwrap();
+        let saved = find_model(&pi_store, "pi", "deepseek", "deepseek-v4-flash").unwrap();
+        assert_eq!(saved.resolved_id, "deepseek-flash");
+        // smoke_model 仍是完整真身，两个字段不互相替代
+        assert_eq!(saved.smoke_model, "deepseek/deepseek-flash");
+    }
+
+    /// 重新探测不许把冒烟核对出来的真身退回静态表。
+    #[test]
+    fn task09b_redetect_keeps_verified_resolved_id() {
+        let mut existing = detected_model("fable", "claude", "", "Anthropic", "官方订阅", "未知", "读:old", "");
+        existing.resolved_id = "claude-fable-5-1-20260901".to_string();
+        let mut store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("claude", vec![existing])],
+        };
+        merge_detected_models(
+            &mut store,
+            "claude",
+            vec![detected_model("fable", "claude", "", "Anthropic", "官方订阅", "未知", "读:new", "")],
+        );
+        assert_eq!(
+            find_model(&store, "claude", "", "fable").unwrap().resolved_id,
+            "claude-fable-5-1-20260901"
+        );
     }
 
     // ── TASK-09：verification 三态与首次派发自动验证 ──────────────────────

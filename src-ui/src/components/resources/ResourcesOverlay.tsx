@@ -13,8 +13,9 @@ import { commands, isTauri } from '../../tauri';
 import { loadDispatchSettings } from '../../graph/dispatch-settings';
 import {
   errorText,
-  groupModelsByProvider,
+  modelSecondaryId,
   parseCommandArgs,
+  providerGroups,
   unverifiedSummaryText,
   verificationOf,
   type AddManualAgentRequest,
@@ -290,7 +291,8 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
   );
 }
 
-function AgentCard({
+/** 接入页的 agent 卡片。导出只为让 vitest 直接 renderToStaticMarkup（TASK-09b）。 */
+export function AgentCard({
   agent,
   busy,
   note,
@@ -314,7 +316,7 @@ function AgentCard({
   onRemove: (model: ResourceModel) => Promise<void>;
   onManual: () => void;
 }) {
-  const groups = groupModelsByProvider(agent.models);
+  const groups = providerGroups(agent.models);
   const [openDetails, setOpenDetails] = useState<Record<string, boolean>>({});
   const detecting = busy === `detect:${agent.id}`;
   const verifyingAgent = busy === `smoke-agent:${agent.id}`;
@@ -333,8 +335,13 @@ function AgentCard({
       <div className="agent-card-models">
         {groups.length === 0 && <div className="agent-empty">暂无模型</div>}
         {groups.map((group) => (
-          <div className="agent-card-group-wrap" key={group.label || 'models'}>
-            {group.label && <div className="agent-card-group">{group.label}</div>}
+          <div className="agent-card-group-wrap" key={group.provider || 'models'}>
+            {group.provider !== '' && (
+              <div className="agent-card-group">
+                <span className="agent-card-group-name">{group.provider}</span>
+                <span className="agent-card-group-count">{group.models.length}</span>
+              </div>
+            )}
             {group.models.map((model) => {
               const key = `${model.agent}:${model.provider}:${model.id}`;
               const verification = verificationOf(model);
@@ -347,6 +354,11 @@ function AgentCard({
                     <span className="agent-card-model-id" title={model.id}>
                       {model.id}
                     </span>
+                    {modelSecondaryId(model) !== '' && (
+                      <span className="agent-card-model-resolved" title={modelSecondaryId(model)}>
+                        {modelSecondaryId(model)}
+                      </span>
+                    )}
                     <span className="agent-card-model-state">
                       <VerificationMark verification={verification} showLabel />
                     </span>

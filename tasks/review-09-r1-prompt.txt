@@ -1,0 +1,5 @@
+你是代码审查者，本次是 TASK-09（资源页美化与冒烟口径）修正轮 R1 的复审。仓库在当前目录，当前是 main 之上的 ui/phase9 分支。先读 tasks/fix-09-r1.md（6 组，来自 tasks/review-09-ds.md 与 tasks/review-09-glm.md）、docs/PRODUCT.md「资源冒烟口径」，再读 tasks/REPORT-09.md 末尾「修正轮 R1」一节，再读 src/resources.rs、src/dispatch.rs（首次验证接线段与前置条件）、src-ui/src/components/resources/（ResourcesTab.tsx、ResourcesOverlay.tsx、AgentBadge.tsx、VerificationMark.tsx、resources.css）、src-ui/src/resources/（types.ts、model-picker.ts、__tests__/）、src-ui/src/components/center/graph/DispatchOverlay.tsx（提示段）、docs/MANUAL.md。不读 node_modules、target、dist、port、src/channels/。
+
+逐条核对 6 组：每组「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：原生 = 原生 agent 且非第三方端点，且换端点后旧库 native 会降回 unverified；provider 为空时的解析与多命中处理；验证在写锁/worktree/快照之前且可取消、取消不写库；并发只冒烟一次、写回失败让派发失败；G1 unverified 不用红；多 provider 同名行的点击目标；对比度/焦点环/键盘可达；不采纳项理由是否成立；修正是否引入新缺陷（run_one 主路径、对账、回滚、心跳、蜂群不在本分支）。编排者已复跑 cargo 295 / vitest 315 / build 零 warning。
+
+最后单独回答：R1 之后 TASK-09 是否可交付？一句话 + 仍未闭合的项列表（按严重度排序）。
