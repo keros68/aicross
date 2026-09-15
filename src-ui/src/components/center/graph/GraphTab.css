@@ -325,20 +325,6 @@
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
-.graph-stamp-item {
-  padding: 6px 12px;
-  font-size: 12px;
-  color: var(--text-1);
-  background: transparent;
-  border: none;
-  text-align: left;
-  cursor: pointer;
-}
-
-.graph-stamp-item:hover {
-  background: var(--bg-hover);
-}
-
 .graph-stamp-empty {
   padding: 8px 12px;
   font-size: 12px;

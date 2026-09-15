@@ -16,6 +16,15 @@ export function nodeLabel(node: GraphNode | undefined): string {
 
 export const USER_PRESET_LABEL = '自定义模式';
 
+export type PresetGroup = '基础模式' | '自定义模式' | '更多模式';
+
+const BASIC_PRESET_IDS = new Set(['builtin-shared', 'builtin-economy', 'builtin-blind']);
+
+export function presetGroupOf(preset: Pick<Preset, 'id' | 'builtin'>): PresetGroup {
+  if (!preset.builtin) return '自定义模式';
+  return BASIC_PRESET_IDS.has(preset.id) ? '基础模式' : '更多模式';
+}
+
 export function presetDisplayName(preset: Pick<Preset, 'name' | 'builtin'>, userPresetCount: number): string {
   if (preset.builtin) return preset.name;
   return userPresetCount > 1 ? `${USER_PRESET_LABEL} · ${preset.name}` : USER_PRESET_LABEL;

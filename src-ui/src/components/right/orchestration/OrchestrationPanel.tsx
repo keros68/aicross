@@ -20,16 +20,8 @@ import { RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { nodeStatusLabel, presetWithRoleDefaults } from '../../../graph/dispatch';
 import { withSwarmPreset } from '../../../graph/swarm';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
+import { PresetSelect } from './PresetGroups';
 import './OrchestrationPanel.css';
-
-// 规划中的模式：下拉里置灰 + 标「规划中」，不实现（TASK-02 A8）。
-// 擂台/评审团/仲裁/前提抽查/主备/顾问已在 TASK-05B 落地（前两个是这里的真预设，
-// 后四个分别是结果屏动作、设置页、G1 备选、/advise 输入）。
-// 蜂群在 TASK-08 落地，从这份名单里挪走，改由 withSwarmPreset 兜底。
-const FUTURE_PRESETS = [
-  { id: 'redblue', name: '红蓝模式（规划中）' },
-  { id: 'chat', name: '群聊模式（规划中）' },
-];
 
 export function OrchestrationPanel() {
   const { state, dispatch } = useAppState();
@@ -215,26 +207,14 @@ export function OrchestrationPanel() {
     <div className="orch-panel">
       {/* 顶部：预设下拉 + 应用 / 编辑编排 / 讲解 */}
       <div className="orch-toolbar">
-        <select
-          className="orch-preset-select"
-          value={selectedPresetId}
-          onChange={(e) => {
-            setSelectedPresetId(e.target.value);
-            setGhost(presets.find((p) => p.id === e.target.value) ?? null);
+        <PresetSelect
+          presets={presets}
+          selectedId={selectedPresetId}
+          onSelect={(preset) => {
+            setSelectedPresetId(preset.id);
+            setGhost(preset);
           }}
-        >
-          {selectedPresetId === '' && <option value="">选择预设</option>}
-          {presets.map((p) => (
-            <option key={p.id} value={p.id}>
-              {presetDisplayName(p, userPresetCount)}
-            </option>
-          ))}
-          {FUTURE_PRESETS.map((n) => (
-            <option key={n.id} disabled value={`future-${n.id}`}>
-              {n.name}
-            </option>
-          ))}
-        </select>
+        />
         <div className="orch-toolbar-btns">
           <button
             className="orch-btn orch-btn-primary"

@@ -30,6 +30,7 @@ import { stampMenuShouldClose } from '../../../graph/stamp-menu';
 import { requestOrchestrationPanel } from '../../../lib/open-orchestration';
 import { FirstRunGuide } from './FirstRunGuide';
 import { shouldShowFirstRun, type FirstRunStepKey } from './first-run';
+import { PresetGroups } from '../../right/orchestration/PresetGroups';
 import './GraphTab.css';
 
 // 节点卡固定尺寸，图区横向滚动；不做缩放、不做拖拽（任务书硬约束）。
@@ -630,18 +631,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     const top = Math.min(stampAt.top, Math.max(8, window.innerHeight - STAMP_MENU_MIN_H - 8));
     return createPortal(
       <div className="graph-stamp-menu" style={{ left, top }}>
-        {presets.map((preset) => (
-          <button
-            key={preset.id}
-            className="graph-stamp-item"
-            onClick={(e) => {
-              e.stopPropagation();
-              applyStamp(nodeId, preset);
-            }}
-          >
-            {presetDisplayName(preset, presets.filter((p) => !p.builtin).length)}
-          </button>
-        ))}
+        <PresetGroups presets={presets} onSelect={(preset) => applyStamp(nodeId, preset)} />
         {presets.length === 0 && <div className="graph-stamp-empty">无可用预设</div>}
       </div>,
       document.body,

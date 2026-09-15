@@ -1,0 +1,76 @@
+.preset-select {
+  position: relative;
+}
+
+.preset-select > summary {
+  list-style: none;
+}
+
+.preset-select > summary::-webkit-details-marker {
+  display: none;
+}
+
+.preset-select > summary::after {
+  content: '▾';
+  margin-left: auto;
+  color: var(--text-3);
+}
+
+.preset-select[open] > summary::after {
+  content: '▴';
+}
+
+.preset-select-menu {
+  position: absolute;
+  z-index: 20;
+  top: 36px;
+  left: 0;
+  right: 0;
+  max-height: min(360px, calc(100vh - 160px));
+  overflow-y: auto;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.preset-groups {
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+  padding: 4px 0;
+}
+
+.preset-group-label {
+  padding: 6px 12px 4px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.preset-more > summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.preset-group-item {
+  width: 100%;
+  padding: 6px 12px;
+  color: var(--text-1);
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.preset-group-item:hover,
+.preset-group-item[aria-selected='true'] {
+  background: var(--bg-hover);
+}
+
+.preset-group-item:disabled {
+  color: var(--text-3);
+  cursor: default;
+}

@@ -21,6 +21,8 @@
 }
 
 .orch-preset-select {
+  display: flex;
+  align-items: center;
   width: 100%;
   /* 固定 32px 而不是靠 6px 上下 padding：原生 select 在 WebView2 里按 padding
      算出的高度和下面按钮不一样高，两行控件边缘对不齐。固定高度后下拉和按钮行
@@ -33,6 +35,8 @@
   font-size: 13px;
   padding: 0 8px;
   outline: none;
+  cursor: pointer;
+  box-sizing: border-box;
 }
 
 .orch-preset-select:focus {
