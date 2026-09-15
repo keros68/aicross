@@ -387,6 +387,8 @@ export const commands = {
     }),
   detectAllResources: (ccSwitchPath?: string) =>
     invoke<ResourceOperation>('detect_all_resources', { ccSwitchPath: ccSwitchPath ?? null }),
+  checkPiProviderLogin: (provider: string) =>
+    invoke<ResourceOperation>('check_pi_provider_login', { provider }),
   addResourceModel: (request: ResourceModelRequest) =>
     invoke<ResourceStore>('add_resource_model', { request }),
   updateResourceModel: (request: ResourceModelRequest) =>

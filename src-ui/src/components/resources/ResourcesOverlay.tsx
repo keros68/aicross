@@ -19,7 +19,14 @@ import {
   showsGroupHeads,
   quotaExhaustedLabel,
   resourceModelKey,
+  loggedOutProvidersToggleLabel,
+  loginLabel,
+  loginOf,
+  splitPiProviderGroups,
+  splitUnverified,
+  unknownProvidersToggleLabel,
   unverifiedSummaryText,
+  unverifiedToggleLabel,
   verificationOf,
   type AddManualAgentRequest,
   type CcSwitchHint,
@@ -161,6 +168,17 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const recheckProvider = async (provider: string) => {
+    setBusy(`login:${provider}`);
+    try {
+      finishOperation(await commands.checkPiProviderLogin(provider));
+    } catch (value) {
+      setError(`重新检查失败：${errorText(value)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const updateModel = async (
     model: ResourceModel,
     patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note' | 'fallback_order'>> & { clear_quota_exhausted?: boolean },
@@ -251,6 +269,7 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
                 onDetect={detect}
                 onVerifyAgent={verifyAgent}
                 onVerifyModel={verifyModel}
+                onRecheckProvider={recheckProvider}
                 onUpdate={updateModel}
                 onRemove={removeModel}
                 onManual={() => setModelAgent(agent.id)}
@@ -410,6 +429,7 @@ export function AgentCard({
   onDetect,
   onVerifyAgent,
   onVerifyModel,
+  onRecheckProvider,
   onUpdate,
   onRemove,
   onManual,
@@ -421,6 +441,7 @@ export function AgentCard({
   onDetect: (agent: ResourceAgent) => Promise<void>;
   onVerifyAgent: (agent: ResourceAgent) => Promise<void>;
   onVerifyModel: (model: ResourceModel) => Promise<void>;
+  onRecheckProvider?: (provider: string) => Promise<void>;
   onUpdate: (
     model: ResourceModel,
     patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note' | 'fallback_order'>> & { clear_quota_exhausted?: boolean },
@@ -428,10 +449,16 @@ export function AgentCard({
   onRemove: (model: ResourceModel) => Promise<void>;
   onManual: () => void;
 }) {
-  const groups = providerGroups(agent.models);
+  const allGroups = providerGroups(agent.models);
+  const { shown: groups, loggedOut, unknown } = agent.id === 'pi'
+    ? splitPiProviderGroups(agent.models)
+    : { shown: allGroups, loggedOut: [], unknown: [] };
   // 只有一个小组时不出组头，provider 改进详情块（修正轮 R1，DS 3）。
-  const withHeads = showsGroupHeads(groups);
+  const withHeads = showsGroupHeads([...groups, ...loggedOut, ...unknown]);
   const [openDetails, setOpenDetails] = useState<Record<string, boolean>>({});
+  const [openUnverified, setOpenUnverified] = useState<Record<string, boolean>>({});
+  const [loggedOutOpen, setLoggedOutOpen] = useState(false);
+  const [unknownOpen, setUnknownOpen] = useState(false);
   const detecting = busy === `detect:${agent.id}`;
   const verifyingAgent = busy === `smoke-agent:${agent.id}`;
   // 原生 agent 的模型不验证，整卡与单条都不给「验证」按钮。
@@ -447,16 +474,22 @@ export function AgentCard({
       </div>
       <div className="agent-card-version">{agent.version || '版本未知'}</div>
       <div className="agent-card-models">
-        {groups.length === 0 && <div className="agent-empty">暂无模型</div>}
-        {groups.map((group) => (
+        {groups.length === 0 && loggedOut.length === 0 && unknown.length === 0 && <div className="agent-empty">暂无模型</div>}
+        {groups.map((group) => {
+          const groupId = `${agent.id}/${group.provider}`;
+          const { shown, collapsed } = splitUnverified(group.models);
+          const unverifiedOpen = !!openUnverified[groupId];
+          const visibleModels = unverifiedOpen ? [...shown, ...collapsed] : shown;
+          return (
           <div className="agent-card-group-wrap" key={group.provider || 'models'}>
             {withHeads && group.provider !== '' && (
               <div className="agent-card-group">
                 <span className="agent-card-group-name">{group.provider}</span>
+                {agent.id === 'pi' && <span className="agent-card-group-login">{loginLabel(loginOf(group.models[0]))}</span>}
                 <span className="agent-card-group-count">{group.models.length}</span>
               </div>
             )}
-            {group.models.map((model) => {
+            {visibleModels.map((model) => {
               const key = `${model.agent}:${model.provider}:${model.id}`;
               const verification = verificationOf(model);
               const verifying = busy === `smoke:${key}`;
@@ -558,8 +591,69 @@ export function AgentCard({
                 </div>
               );
             })}
+            {collapsed.length > 0 && (
+              <button
+                type="button"
+                className="agent-card-unverified-toggle"
+                aria-expanded={unverifiedOpen}
+                onClick={() => setOpenUnverified((current) => ({ ...current, [groupId]: !current[groupId] }))}
+              >
+                {unverifiedToggleLabel(collapsed.length, unverifiedOpen)}
+              </button>
+            )}
           </div>
-        ))}
+          );
+        })}
+        {loggedOut.length > 0 && (
+          <div className="agent-card-logged-out">
+            <button
+              type="button"
+              className="agent-card-logged-out-toggle"
+              aria-expanded={loggedOutOpen}
+              onClick={() => setLoggedOutOpen((value) => !value)}
+            >
+              {loggedOutProvidersToggleLabel(loggedOut.length, loggedOutOpen)}
+            </button>
+            {loggedOutOpen && loggedOut.map((group) => (
+              <div className="agent-card-logged-out-provider" key={group.provider}>
+                <span>{group.provider}</span>
+                <button
+                  type="button"
+                  className="row-action"
+                  disabled={busy !== null || !onRecheckProvider}
+                  onClick={() => void onRecheckProvider?.(group.provider)}
+                >
+                  {busy === `login:${group.provider}` ? '检查中…' : '重新检查'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {unknown.length > 0 && (
+          <div className="agent-card-logged-out">
+            <button
+              type="button"
+              className="agent-card-logged-out-toggle"
+              aria-expanded={unknownOpen}
+              onClick={() => setUnknownOpen((value) => !value)}
+            >
+              {unknownProvidersToggleLabel(unknown.length, unknownOpen)}
+            </button>
+            {unknownOpen && unknown.map((group) => (
+              <div className="agent-card-logged-out-provider" key={group.provider}>
+                <span>{group.provider}</span>
+                <button
+                  type="button"
+                  className="row-action"
+                  disabled={busy !== null || !onRecheckProvider}
+                  onClick={() => void onRecheckProvider?.(group.provider)}
+                >
+                  {busy === `login:${group.provider}` ? '检查中…' : '重新检查'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div className="agent-card-note">{note}</div>
       <div className="agent-card-actions">

@@ -305,6 +305,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+.resource-group-login,
+.agent-card-group-login {
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+
 .resource-model-row {
   display: flex;
   align-items: center;
@@ -387,6 +393,54 @@
   outline-offset: -2px;
 }
 
+/* 已退出的 pi provider 不展开模型清单；需要时再逐个重新检查。 */
+.resource-logged-out-toggle,
+.agent-card-logged-out-toggle {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 4px 8px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.resource-logged-out-toggle:hover,
+.agent-card-logged-out-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-2);
+}
+
+.resource-logged-out-provider,
+.agent-card-logged-out-provider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.resource-logged-out-provider > span,
+.agent-card-logged-out-provider > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-logged-out-provider .row-action,
+.agent-card-logged-out-provider .row-action {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .resource-manage-link {
   flex-shrink: 0;
   padding: 8px 12px;
@@ -414,9 +468,13 @@
 
 .resources-page {
   position: relative;
-  height: 100%;
-  overflow-y: auto;
-  padding: 40px 48px 64px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  padding: 40px 48px 24px;
   color: var(--text-1);
 }
 
@@ -483,12 +541,18 @@
 /* ── agent 卡片网格 ───────────────────────────────────────────────────── */
 
 .agent-card-grid {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
   gap: 12px;
+  overflow: hidden;
 }
 
 .agent-card {
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -539,7 +603,8 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 24px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .agent-empty {
@@ -792,7 +857,8 @@
 }
 
 .resources-footer {
-  margin-top: 16px;
+  flex-shrink: 0;
+  margin-top: 12px;
 }
 
 .res-dialog-backdrop {

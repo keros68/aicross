@@ -3967,6 +3967,7 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::resources::get_resources,
             crate::resources::detect_resource_agent,
             crate::resources::detect_all_resources,
+            crate::resources::check_pi_provider_login,
             crate::resources::add_resource_model,
             crate::resources::update_resource_model,
             crate::resources::remove_resource_model,
