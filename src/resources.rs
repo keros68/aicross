@@ -14,7 +14,7 @@
 use crate::channels;
 use crate::paths::aicross_root;
 use crate::process::{run_process, run_process_registered, version_for, ProcessResult};
-use chrono::{Local, SecondsFormat};
+use chrono::{DateTime, Local, SecondsFormat};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -125,6 +125,12 @@ pub struct ResourceModel {
     pub meta: String,
     #[serde(default)]
     pub note: String,
+    /// 本模型额度用尽时按顺序尝试的 `agent/provider/model` 键。
+    #[serde(default)]
+    pub fallback_order: Vec<String>,
+    /// 已知的额度恢复时间。过期值在读取资源库时自动清掉。
+    #[serde(default)]
+    pub quota_exhausted_until: Option<String>,
 }
 
 /// cc-switch 发现提示：只用于展示「cc-switch 里有 X，建议加进 pi」。
@@ -160,6 +166,11 @@ pub struct ResourceModelRequest {
     pub tier: String,
     #[serde(default)]
     pub note: String,
+    #[serde(default)]
+    pub fallback_order: Option<Vec<String>>,
+    /// 用户确认额度已恢复时显式清除限额状态；缺失时保持原值。
+    #[serde(default)]
+    pub clear_quota_exhausted: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -249,6 +260,107 @@ pub fn load(path: &Path) -> Result<ResourceStore, String> {
     ensure_verification(&mut store);
     ensure_resolved_id(&mut store);
     Ok(store)
+}
+
+fn clear_expired_quota(store: &mut ResourceStore) -> bool {
+    let now = Local::now().timestamp_millis();
+    let mut changed = false;
+    for model in store.agents.iter_mut().flat_map(|agent| &mut agent.models) {
+        let expired = model
+            .quota_exhausted_until
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.timestamp_millis() <= now)
+            .unwrap_or(false);
+        if expired {
+            model.quota_exhausted_until = None;
+            changed = true;
+        }
+    }
+    changed
+}
+
+pub(crate) fn resource_model_key(agent: &str, provider: &str, model: &str) -> String {
+    format!("{agent}/{provider}/{model}")
+}
+
+fn parse_resource_model_key(value: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = value.splitn(3, '/');
+    let agent = parts.next()?.trim();
+    let provider = parts.next()?.trim();
+    let model = parts.next()?.trim();
+    (!agent.is_empty() && !model.is_empty()).then_some((agent, provider, model))
+}
+
+fn fallback_models_at(path: &Path, agent: &str, provider: &str, model: &str) -> Result<Vec<ResourceModel>, String> {
+    let _guard = store_lock();
+    let mut store = load_or_default(path)?;
+    clear_expired_quota(&mut store);
+    let current = store
+        .agents
+        .iter()
+        .flat_map(|agent| &agent.models)
+        .find(|item| item.agent == agent && item.provider == provider && item.id == model);
+    let Some(current) = current else { return Ok(Vec::new()) };
+    let mut result = Vec::new();
+    for key in &current.fallback_order {
+        let Some((next_agent, next_provider, next_model)) = parse_resource_model_key(key) else { continue };
+        if let Some(found) = store
+            .agents
+            .iter()
+            .flat_map(|owner| &owner.models)
+            .find(|item| item.agent == next_agent && item.provider == next_provider && item.id == next_model)
+        {
+            result.push(found.clone());
+        }
+    }
+    Ok(result)
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn fallback_models(agent: &str, provider: &str, model: &str) -> Result<Vec<ResourceModel>, String> {
+    fallback_models_at(&store_path()?, agent, provider, model)
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn quota_exhausted_until(agent: &str, provider: &str, model: &str) -> Option<String> {
+    let path = store_path().ok()?;
+    let _guard = store_lock();
+    let mut store = load_or_default(&path).ok()?;
+    clear_expired_quota(&mut store);
+    store
+        .agents
+        .iter()
+        .flat_map(|owner| &owner.models)
+        .find(|item| item.agent == agent && item.provider == provider && item.id == model)
+        .and_then(|item| item.quota_exhausted_until.clone())
+}
+
+fn mark_quota_exhausted_at(
+    path: &Path,
+    agent: &str,
+    provider: &str,
+    model: &str,
+    resets_at: Option<&str>,
+) -> Result<(), String> {
+    let Some(resets_at) = resets_at.filter(|value| DateTime::parse_from_rfc3339(value).is_ok()) else {
+        return Ok(());
+    };
+    let _guard = store_lock();
+    let mut store = load_or_default(path)?;
+    let item = find_model_mut(&mut store, agent, provider, model)?;
+    item.quota_exhausted_until = Some(resets_at.to_string());
+    save_store(path, &store)
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn mark_quota_exhausted(
+    agent: &str,
+    provider: &str,
+    model: &str,
+    resets_at: Option<&str>,
+) -> Result<(), String> {
+    mark_quota_exhausted_at(&store_path()?, agent, provider, model, resets_at)
 }
 
 /// agent id 是不是原生三家。大小写不敏感——手工添加的 agent 写成 `Codex`
@@ -478,7 +590,9 @@ pub fn connected(path: &Path) -> Result<Vec<ResourceModel>, String> {
 /// 排序（09-15 起按 verification 而不是旧 status）：原生 / 已验证 → 未验证
 /// → 验证失败，同一档内 agent → provider → id。
 pub fn detected(path: &Path) -> Result<Vec<ResourceModel>, String> {
-    let mut models: Vec<ResourceModel> = load(path)?
+    let mut store = load(path)?;
+    clear_expired_quota(&mut store);
+    let mut models: Vec<ResourceModel> = store
         .agents
         .into_iter()
         .flat_map(|agent| agent.models)
@@ -1205,6 +1319,8 @@ fn detected_model(
         smoke_failure: String::new(),
         meta: meta.to_string(),
         note: String::new(),
+        fallback_order: Vec::new(),
+        quota_exhausted_until: None,
     }
 }
 
@@ -1251,6 +1367,8 @@ fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: 
                 model.vendor.clone_from(&existing.vendor);
             }
             model.note.clone_from(&existing.note);
+            model.fallback_order.clone_from(&existing.fallback_order);
+            model.quota_exhausted_until.clone_from(&existing.quota_exhausted_until);
             *existing = model;
         } else {
             agent.models.push(model);
@@ -1337,6 +1455,8 @@ pub fn add_model(
         smoke_failure: String::new(),
         meta: String::new(),
         note: request.note.trim().to_string(),
+        fallback_order: request.fallback_order.unwrap_or_default(),
+        quota_exhausted_until: None,
     });
     Ok(store)
 }
@@ -1354,6 +1474,12 @@ pub fn update_model(
     model.vendor = request.vendor.trim().to_string();
     model.tier = request.tier.trim().to_string();
     model.note = request.note.trim().to_string();
+    if let Some(fallback_order) = request.fallback_order {
+        model.fallback_order = fallback_order;
+    }
+    if request.clear_quota_exhausted {
+        model.quota_exhausted_until = None;
+    }
     Ok(store)
 }
 
@@ -1583,6 +1709,8 @@ pub enum FirstUseVerification {
     Verified,
     /// 本次验证失败（或验过了但结果写不回资源库），附脱敏后的原因。
     Failed(String),
+    /// 首次验证请求命中额度限制；不把模型写成验证失败，由派发层切备选。
+    QuotaExhausted { resets_at: Option<String> },
     /// 验证窗口内用户点了叫停：不写库、不继续派发。
     Cancelled,
 }
@@ -1750,6 +1878,11 @@ fn verify_on_first_use_at(
     // 不写库（免得把「被杀」记成验证失败），节点按「已取消」返回。
     if cancelled() {
         return FirstUseVerification::Cancelled;
+    }
+    if let Err(error) = &outcome {
+        if let Some(hit) = crate::channels::classify_quota(error, None, None) {
+            return FirstUseVerification::QuotaExhausted { resets_at: hit.resets_at };
+        }
     }
     let failure = outcome.as_ref().err().map(|error| safe_summary(error));
     let persisted = {
@@ -1949,8 +2082,12 @@ fn safe_summary(text: &str) -> String {
 // 方便测试用临时目录钉住行为。
 
 fn get_resources_at(path: &Path) -> Result<ResourceStore, String> {
+    let _guard = store_lock();
     let mut store = load_or_default(path)?;
     ensure_agents(&mut store);
+    if clear_expired_quota(&mut store) && path.is_file() {
+        save_store(path, &store)?;
+    }
     Ok(store)
 }
 
@@ -2477,6 +2614,8 @@ mod tests {
                     smoke_failure: "旧失败；摘要保留完整".to_string(),
                     meta: "旧元数据".to_string(),
                     note: "保留备注".to_string(),
+                    fallback_order: vec!["pi/zai/glm-4.7".to_string()],
+                    quota_exhausted_until: Some("2099-01-01T00:00:00+08:00".to_string()),
                 }],
             )],
         };
@@ -2492,6 +2631,8 @@ mod tests {
         assert_eq!(old.status, STATUS_CONNECTED);
         assert_eq!(old.vendor, "用户厂商");
         assert_eq!(old.billing_source, "新源");
+        assert_eq!(old.fallback_order, ["pi/zai/glm-4.7"]);
+        assert!(old.quota_exhausted_until.is_some());
         assert_eq!(
             find_model(&store, "codex", "", "new-model")
                 .expect("new")
@@ -2514,6 +2655,8 @@ mod tests {
         .expect("legacy resource without meta");
         assert!(legacy.meta.is_empty());
         assert_eq!(legacy.note, "旧备注");
+        assert!(legacy.fallback_order.is_empty());
+        assert!(legacy.quota_exhausted_until.is_none());
 
         let mut store = ResourceStore {
             version: 1,
@@ -2537,6 +2680,8 @@ mod tests {
                     smoke_failure: String::new(),
                     meta: "priority：1".to_string(),
                     note: "用户备注".to_string(),
+                    fallback_order: Vec::new(),
+                    quota_exhausted_until: None,
                 }],
             )],
         };
@@ -2608,10 +2753,62 @@ mod tests {
                 vendor: "Zhipu".to_string(),
                 tier: String::new(),
                 note: String::new(),
+                fallback_order: Some(Vec::new()),
+                clear_quota_exhausted: false,
             },
         )
         .expect_err("pi provider is required");
         assert!(error.contains("必须填写 provider"));
+    }
+
+    #[test]
+    fn task14_fallback_order_roundtrips_and_quota_expiry_is_cleared() {
+        let root = std::env::temp_dir().join(format!("aicross-quota-store-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let mut primary = fixture_model("main");
+        primary.agent = "pi".into();
+        primary.provider = "p0".into();
+        primary.fallback_order = vec!["pi/p1/backup-a".into(), "pi/p2/backup-b".into()];
+        primary.quota_exhausted_until = Some("2000-01-01T00:00:00+08:00".into());
+        let mut backup_a = fixture_model("backup-a");
+        backup_a.agent = "pi".into();
+        backup_a.provider = "p1".into();
+        let mut backup_b = fixture_model("backup-b");
+        backup_b.agent = "pi".into();
+        backup_b.provider = "p2".into();
+        let store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("pi", vec![primary, backup_a, backup_b])],
+        };
+        save_store(&path, &store).unwrap();
+
+        let ordered = fallback_models_at(&path, "pi", "p0", "main").unwrap();
+        assert_eq!(ordered.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["backup-a", "backup-b"]);
+
+        let visible = get_resources_at(&path).unwrap();
+        let main = find_model(&visible, "pi", "p0", "main").unwrap();
+        assert_eq!(main.fallback_order, ["pi/p1/backup-a", "pi/p2/backup-b"]);
+        assert!(main.quota_exhausted_until.is_none());
+        assert!(fs::read_to_string(&path).unwrap().contains("\"fallback_order\""));
+
+        let preserved = update_model(visible, ResourceModelRequest {
+            agent_id: "pi".into(), id: "main".into(), provider: "p0".into(),
+            vendor: "Zhipu".into(), tier: "中".into(), note: String::new(), fallback_order: None,
+            clear_quota_exhausted: false,
+        }).unwrap();
+        assert_eq!(find_model(&preserved, "pi", "p0", "main").unwrap().fallback_order, ["pi/p1/backup-a", "pi/p2/backup-b"]);
+
+        mark_quota_exhausted_at(&path, "pi", "p0", "main", Some("2099-01-01T00:00:00+08:00")).unwrap();
+        assert_eq!(find_model(&load(&path).unwrap(), "pi", "p0", "main").unwrap().quota_exhausted_until.as_deref(), Some("2099-01-01T00:00:00+08:00"));
+        let cleared = update_resource_model_at(&path, ResourceModelRequest {
+            agent_id: "pi".into(), id: "main".into(), provider: "p0".into(),
+            vendor: "Zhipu".into(), tier: "中".into(), note: String::new(), fallback_order: None,
+            clear_quota_exhausted: true,
+        }).unwrap();
+        assert!(find_model(&cleared, "pi", "p0", "main").unwrap().quota_exhausted_until.is_none());
+        assert!(find_model(&load(&path).unwrap(), "pi", "p0", "main").unwrap().quota_exhausted_until.is_none());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2726,6 +2923,8 @@ mod tests {
             vendor: String::new(),
             tier: String::new(),
             note: String::new(),
+            fallback_order: Some(Vec::new()),
+            clear_quota_exhausted: false,
         };
         assert!(add_resource_model_at(&path, request()).is_err());
         assert!(update_resource_model_at(&path, request()).is_err());
@@ -2959,6 +3158,8 @@ mod tests {
                 vendor: "Anthropic".to_string(),
                 tier: String::new(),
                 note: String::new(),
+                fallback_order: Some(Vec::new()),
+                clear_quota_exhausted: false,
             },
         )
         .expect("manual claude alias");
@@ -2976,6 +3177,8 @@ mod tests {
                 vendor: "Anthropic".to_string(),
                 tier: String::new(),
                 note: String::new(),
+                fallback_order: Some(Vec::new()),
+                clear_quota_exhausted: false,
             },
         )
         .expect("manual full id");
@@ -3106,6 +3309,33 @@ mod tests {
         let second = verify_on_first_use_at(&path, "pi", "zai", "glm-4.7", smoke, || false);
         assert_eq!(second, FirstUseVerification::Skipped);
         assert_eq!(calls.get(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_r1_first_use_quota_keeps_model_unverified() {
+        let root = std::env::temp_dir().join(format!("aicross-first-use-quota-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        ).unwrap();
+        let outcome = verify_on_first_use_at(
+            &path,
+            "pi",
+            "zai",
+            "glm-4.7",
+            |_| Err("HTTP 429 too many requests; Retry-After: 60".into()),
+            || false,
+        );
+        assert!(matches!(outcome, FirstUseVerification::QuotaExhausted { resets_at: Some(_) }));
+        let stored = load(&path).unwrap();
+        let model = find_model(&stored, "pi", "zai", "glm-4.7").unwrap();
+        assert_eq!(model.verification, VERIFICATION_UNVERIFIED);
+        assert_ne!(model.status, STATUS_FAILED);
+        assert!(model.smoke_failure.is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

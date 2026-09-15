@@ -3,9 +3,16 @@
 
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { AgentCard, AgentCardModelMeta } from '../../components/resources/ResourcesOverlay';
+import dispatchRustSource from '../../../../src/dispatch.rs?raw';
+import manualSource from '../../../../docs/MANUAL.md?raw';
+import appSource from '../../App.tsx?raw';
+import { AgentCard, AgentCardModelMeta, FallbackOrderEditor, moveFallbackOrder, quotaClearVisible } from '../../components/resources/ResourcesOverlay';
+import resourcesOverlaySource from '../../components/resources/ResourcesOverlay.tsx?raw';
 import { BRAND_MARKS } from '../../components/resources/brand-marks';
+import resourcesBridgeSource from '../mention.ts?raw';
 import type { ResourceAgent, ResourceModel } from '../types';
+import { QuotaResetLine } from '../../components/center/graph/DispatchBits';
+import { resultStatus } from '../../components/center/graph/DispatchOverlay';
 
 function model(partial: Partial<ResourceModel>): ResourceModel {
   return {
@@ -131,5 +138,67 @@ describe('AgentCardModelMeta（接入页详情）', () => {
     expect(markup).toContain('最近验证：2026-09-15T10:02:00+08:00（zai/glm-4.5）');
     expect(markup).toContain('验证失败：401: invalid api key');
     expect(markup).toContain('备注：手动加的');
+  });
+});
+
+describe('TASK-14 备选顺序组件', () => {
+  it('按保存顺序渲染，并提供上移、下移、移除', () => {
+    const primary = model({
+      agent: 'pi', provider: 'p0', id: 'main',
+      fallback_order: ['codex//gpt', 'pi/p1/glm'],
+    });
+    const markup = renderToStaticMarkup(
+      <FallbackOrderEditor
+        model={primary}
+        models={[
+          primary,
+          model({ agent: 'codex', id: 'gpt' }),
+          model({ agent: 'pi', provider: 'p1', id: 'glm' }),
+          model({ agent: 'kimi', id: 'k2' }),
+        ]}
+        onChange={() => {}}
+      />,
+    );
+    expect(markup.indexOf('1. codex/gpt')).toBeLessThan(markup.indexOf('2. pi/p1/glm'));
+    expect(markup).toContain('>上移</button>');
+    expect(markup).toContain('>下移</button>');
+    expect(markup).toContain('>移除</button>');
+    expect(markup).toContain('value="kimi//k2"');
+  });
+
+  it('移动只交换相邻项，不修改输入数组', () => {
+    const order = ['a//1', 'b//2', 'c//3'];
+    expect(moveFallbackOrder(order, 2, -1)).toEqual(['a//1', 'c//3', 'b//2']);
+    expect(order).toEqual(['a//1', 'b//2', 'c//3']);
+  });
+});
+
+describe('TASK-14 额度结果组件', () => {
+  it('显示独立状态与恢复时间', () => {
+    expect(resultStatus('quota_exhausted')).toBe('额度用尽');
+    const markup = renderToStaticMarkup(<QuotaResetLine resetsAt="2099-01-01T00:00:00+08:00" />);
+    expect(markup).toContain('恢复时间：');
+    expect(renderToStaticMarkup(<QuotaResetLine />)).toBe('');
+  });
+
+  it('Rust 写回额度后通过单一桥接通知现有资源监听方', () => {
+    expect(dispatchRustSource).toContain('app.emit("aicross:resources-changed", ())');
+    expect(resourcesBridgeSource).toContain('listen(RESOURCES_CHANGED_EVENT, notifyResourcesChanged)');
+    expect(appSource).toContain('useEffect(() => subscribeResourcesChanged(), [])');
+  });
+
+  it('受限模型提供清除动作，普通模型不显示', () => {
+    const limited = model({
+      agent: 'pi', provider: 'zai', id: 'glm', quota_exhausted_until: '2099-01-01T00:00:00+08:00',
+    });
+    expect(quotaClearVisible(limited)).toBe(true);
+    expect(quotaClearVisible(model({ agent: 'pi', provider: 'zai', id: 'glm' }))).toBe(false);
+    expect(resourcesOverlaySource).toMatch(/quotaClearVisible\(model\)[\s\S]*?>\s*清除\s*<\/button>/);
+    expect(resourcesOverlaySource).toContain('clear_quota_exhausted: true');
+  });
+
+  it('TASK-14 R1 统一使用恢复时间术语', () => {
+    expect(manualSource).toContain('| 模型额度重新可用的时间 | 恢复时间 |');
+    expect(manualSource).not.toContain('重置时间');
   });
 });

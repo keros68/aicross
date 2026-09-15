@@ -371,13 +371,13 @@ export const SWARM_MERGE_EMPTY_TEXT = '合并结果为空，项目目录状态�
 export const SWARM_MERGE_MARK = '[蜂群合并]';
 export const SWARM_MERGED_TEXT = '已并入';
 
-// 本阶段全部 swarm 节点终态（done / failed）才出「合并」按钮。
+// 本阶段全部 swarm 节点终态才出「合并」按钮。
 export function swarmMergeReady(graph: Graph, nodeIds: string[]): boolean {
   const ids = swarmNodeIdsOf(graph, nodeIds);
   if (ids.length === 0) return false;
   return ids.every((id) => {
     const status = graph.nodes[id].reply?.status;
-    return status === 'done' || status === 'failed';
+    return status === 'done' || status === 'failed' || status === 'quota_exhausted';
   });
 }
 

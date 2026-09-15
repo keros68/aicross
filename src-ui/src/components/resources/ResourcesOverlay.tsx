@@ -17,6 +17,8 @@ import {
   parseCommandArgs,
   providerGroups,
   showsGroupHeads,
+  quotaExhaustedLabel,
+  resourceModelKey,
   unverifiedSummaryText,
   verificationOf,
   type AddManualAgentRequest,
@@ -42,6 +44,7 @@ const emptyModel = (agentId: string): ResourceModelRequest => ({
   vendor: '其他',
   tier: '',
   note: '',
+  fallback_order: [],
 });
 
 function operationErrors(operation: ResourceOperation): string {
@@ -159,7 +162,7 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
 
   const updateModel = async (
     model: ResourceModel,
-    patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note'>>,
+    patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note' | 'fallback_order'>> & { clear_quota_exhausted?: boolean },
   ) => {
     setBusy(`update:${model.agent}:${model.provider}:${model.id}`);
     try {
@@ -170,6 +173,8 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
         vendor: patch.vendor ?? model.vendor,
         tier: patch.tier ?? model.tier,
         note: patch.note ?? model.note,
+        fallback_order: patch.fallback_order ?? model.fallback_order ?? [],
+        clear_quota_exhausted: patch.clear_quota_exhausted ?? false,
       });
       setStore(value);
       setError('');
@@ -239,6 +244,7 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
               <AgentCard
                 key={agent.id}
                 agent={agent}
+                models={store.agents.flatMap((item) => item.models)}
                 busy={busy}
                 note={notes[agent.id] || ''}
                 onDetect={detect}
@@ -323,9 +329,78 @@ export function AgentCardModelMeta({ model }: { model: ResourceModel }) {
   );
 }
 
+export function FallbackOrderEditor({
+  model,
+  models,
+  disabled = false,
+  onChange,
+}: {
+  model: ResourceModel;
+  models: ResourceModel[];
+  disabled?: boolean;
+  onChange: (order: string[]) => void;
+}) {
+  const order = model.fallback_order ?? [];
+  const byKey = new Map(models.map((item) => [resourceModelKey(item), item]));
+  const candidates = models.filter((item) => {
+    const key = resourceModelKey(item);
+    return key !== resourceModelKey(model) && !order.includes(key);
+  });
+  const move = (index: number, offset: number) => {
+    onChange(moveFallbackOrder(order, index, offset));
+  };
+  return (
+    <div className="fallback-order-editor">
+      <label>
+        备选顺序
+        <select
+          aria-label={`${model.id} 备选顺序`}
+          value=""
+          disabled={disabled || candidates.length === 0}
+          onChange={(event) => {
+            if (event.target.value) onChange([...order, event.target.value]);
+          }}
+        >
+          <option value="">选择模型</option>
+          {candidates.map((item) => (
+            <option key={resourceModelKey(item)} value={resourceModelKey(item)}>
+              {item.agent}/{item.provider ? `${item.provider}/` : ''}{item.id}
+            </option>
+          ))}
+        </select>
+      </label>
+      {order.map((key, index) => {
+        const item = byKey.get(key);
+        const label = item ? `${item.agent}/${item.provider ? `${item.provider}/` : ''}${item.id}` : key;
+        return (
+          <div className="fallback-order-row" key={key}>
+            <span>{index + 1}. {label}</span>
+            <button type="button" disabled={disabled || index === 0} onClick={() => move(index, -1)}>上移</button>
+            <button type="button" disabled={disabled || index === order.length - 1} onClick={() => move(index, 1)}>下移</button>
+            <button type="button" disabled={disabled} onClick={() => onChange(order.filter((item) => item !== key))}>移除</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function moveFallbackOrder(order: string[], index: number, offset: number): string[] {
+  const next = [...order];
+  const target = index + offset;
+  if (target < 0 || target >= next.length) return next;
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
+}
+
+export function quotaClearVisible(model: ResourceModel): boolean {
+  return quotaExhaustedLabel(model) !== '';
+}
+
 /** 接入页的 agent 卡片。导出只为让 vitest 直接 renderToStaticMarkup（TASK-09b）。 */
 export function AgentCard({
   agent,
+  models = agent.models,
   busy,
   note,
   onDetect,
@@ -336,6 +411,7 @@ export function AgentCard({
   onManual,
 }: {
   agent: ResourceAgent;
+  models?: ResourceModel[];
   busy: string | null;
   note: string;
   onDetect: (agent: ResourceAgent) => Promise<void>;
@@ -343,7 +419,7 @@ export function AgentCard({
   onVerifyModel: (model: ResourceModel) => Promise<void>;
   onUpdate: (
     model: ResourceModel,
-    patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note'>>,
+    patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note' | 'fallback_order'>> & { clear_quota_exhausted?: boolean },
   ) => Promise<void>;
   onRemove: (model: ResourceModel) => Promise<void>;
   onManual: () => void;
@@ -396,6 +472,9 @@ export function AgentCard({
                     <span className="agent-card-model-state">
                       <VerificationMark verification={verification} showLabel />
                     </span>
+                    {quotaExhaustedLabel(model) && (
+                      <span className="agent-card-model-quota">{quotaExhaustedLabel(model)}</span>
+                    )}
                   </div>
                   <div className="agent-card-model-detail">
                     <button type="button" className="agent-card-detail-toggle" onClick={() => setOpenDetails((current) => ({ ...current, [key]: !current[key] }))}>详情</button>
@@ -433,7 +512,23 @@ export function AgentCard({
                       </label>
                     </div>
                     <AgentCardModelMeta model={model} />
+                    <FallbackOrderEditor
+                      model={model}
+                      models={models}
+                      disabled={busy !== null}
+                      onChange={(fallbackOrder) => void onUpdate(model, { fallback_order: fallbackOrder })}
+                    />
                     <div className="agent-card-model-actions">
+                      {quotaClearVisible(model) && (
+                        <button
+                          className="row-action"
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() => void onUpdate(model, { clear_quota_exhausted: true })}
+                        >
+                          清除
+                        </button>
+                      )}
                       {verification !== 'native' && (
                         <button
                           className="row-action"

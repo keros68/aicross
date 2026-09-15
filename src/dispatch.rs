@@ -72,6 +72,10 @@ fn default_true() -> bool {
     true
 }
 
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
 fn oneshot() -> String {
     "oneshot".into()
 }
@@ -149,6 +153,9 @@ pub struct DispatchArtifacts {
     pub worktree: Option<String>,
     #[serde(default)]
     pub stdout_summary: String,
+    // R1 复审：本次尝试落下的派发前快照目录（没改动时为空）。额度用尽切备选前的回滚只认它，不认历史快照。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub before_dir: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -223,6 +230,12 @@ pub struct DispatchNodeResult {
     /// 主失败但跳过备选的原因（空串 = 未发生跳过）；可写节点为「可写节点」。
     #[serde(default)]
     pub fallback_skipped: String,
+    /// 额度用尽时能从通道响应解析出的恢复时间（ISO 8601）。
+    #[serde(default)]
+    pub quota_resets_at: Option<String>,
+    /// 仅供引擎在本轮结束后通知前端刷新资源，不进入 IPC 契约。
+    #[serde(skip)]
+    resources_changed: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -348,6 +361,9 @@ struct DispatchRecord {
     /// TASK-05B：「主」或「备」（备选重跑的那条留痕）。追加字段，不改名不删。
     #[serde(default)]
     attempt: String,
+    /// 备选的实际尝试顺序；主尝试为 0。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    attempt_index: u32,
     /// TASK-05B R2：生效的写权限（盲节点强制只读之后的值）。
     #[serde(default)]
     write: String,
@@ -1849,10 +1865,16 @@ fn dispatch_stage_core(
             "timeout" => "超时",
             "validation_failed" => "验证命令未通过",
             "identity_mismatch" => "真身不符",
+            "quota_exhausted" => "额度用尽",
             _ => "失败",
         };
         status.insert(result.node_id.clone(), ui_status.into());
         emit_progress(&app, &request.run_id, &result.node_id, ui_status);
+        if result.resources_changed {
+            if let Some(app) = &app {
+                let _ = app.emit("aicross:resources-changed", ());
+            }
+        }
         results.push(result);
         write_state(
             &state_file,
@@ -2289,6 +2311,12 @@ fn rollback_node_changes_core(project: &Path, run_id: &str, node_id: &str) -> Re
     if !root.is_dir() {
         return Ok(RollbackSummary { note: "没有找到派发前快照（首次派发或快照已清理）；排除目录（.git/node_modules/target/dist…）与链接内的改动不在快照内".into(), ..RollbackSummary::default() });
     }
+    restore_before_dir(project, &root)
+}
+
+// 按指定的快照目录恢复（重派回滚用历史最新快照；额度回滚只用本次尝试的快照）。
+fn restore_before_dir(project: &Path, root: &Path) -> Result<RollbackSummary, String> {
+    let root = root.to_path_buf();
     let mut summary = RollbackSummary::default();
     summary.skipped = fs::read_to_string(root.join(".skipped"))
         .unwrap_or_default()
@@ -2641,13 +2669,15 @@ fn redact_artifacts(value: &mut DispatchArtifacts) -> usize {
     redacted + count
 }
 
-// 主/备两次尝试各自的原始输出转存（R2-3）：备选加 .fallback 后缀，
-// 不再覆盖主尝试的转存。
+// 主/备尝试各自的原始输出转存：备选按实际尝试序号加后缀，互不覆盖。
 fn record_stdout(raw_stdout: &str, run_root: &Path, node_id: &str, attempt: &str) -> String {
     if raw_stdout.len() <= 32 * 1024 {
         return raw_stdout.to_string();
     }
-    let suffix = if attempt == "备" { ".fallback" } else { "" };
+    let suffix = attempt.strip_prefix("备").map(|value| {
+        let index = value.trim().parse::<u32>().unwrap_or(1);
+        format!(".备{index}")
+    }).unwrap_or_default();
     let raw_path = run_root.join(format!("{}{}.raw.txt", safe_name(node_id), suffix));
     let tail = raw_stdout
         .chars()
@@ -2697,13 +2727,10 @@ fn resolve_acp_attempt<T>(
     }
 }
 
-// TASK-05B 主备/熔断：主目标以 error/timeout/identity_mismatch 收场且设了备选
-// 时重跑一次。validation_failed 不触发（备选换的是通道不是产物，验证失败应走修正轮）。
-fn should_try_fallback(status: &str, fallback: Option<&FallbackSpec>) -> bool {
-    matches!(status, "error" | "timeout" | "identity_mismatch")
-        && fallback
-            .map(|f| !f.agent.trim().is_empty() && !f.model.trim().is_empty())
-            .unwrap_or(false)
+// 显式备选保留既有的 error/timeout/identity_mismatch 语义；额度用尽也会触发，
+// 并可继续走资源库里的有序备选。validation_failed 仍交给修正轮。
+fn should_try_fallback(status: &str, has_fallback: bool) -> bool {
+    has_fallback && matches!(status, "error" | "timeout" | "identity_mismatch" | "quota_exhausted")
 }
 
 #[cfg(test)]
@@ -2728,20 +2755,16 @@ fn run_one_with_activity(
     activity: ProcessActivity,
 ) -> DispatchNodeResult {
     let cancel_key = registry_key(run_id, &node.node_id);
-    // 可写节点（单写者 / worktree 等）主尝试可能已改动项目，备选再跑会叠加
-    // 写入；不触发备选。把跳过原因预先交给主尝试：主失败时直接写进结果的
-    // fallback_skipped 与该条留痕的 frontmatter（R2-11），事后只看留痕也能
-    // 区分「可写节点未切备选」与普通失败。盲节点由引擎强制只读，不受限。
-    let has_fallback = node
+    // 可写节点只在额度用尽时切备选，并在每次切换前回滚该次尝试的改动。
+    // 其它 error/timeout/identity_mismatch 保持 05B 语义，不自动换通道。
+    let explicit = node
         .fallback
         .as_ref()
         .map(|f| !f.agent.trim().is_empty() && !f.model.trim().is_empty())
         .unwrap_or(false);
-    let skip_reason = if has_fallback && node.visibility != "盲" && node.write != "只读" {
-        "可写节点"
-    } else {
-        ""
-    };
+    let configured = resource_fallback_models(&node.agent, &node.provider, &node.model);
+    let has_fallback = explicit || !configured.is_empty();
+    let writable = node.visibility != "盲" && node.write != "只读";
     let primary = run_one_attempt(
         run_id,
         project,
@@ -2750,26 +2773,165 @@ fn run_one_with_activity(
         settings,
         node.clone(),
         "主",
-        skip_reason,
+        // 05B：可写节点非额度失败不切备选，留痕与结果都标原因；额度用尽的情况在下面回滚后切，不标。
+        if writable && has_fallback { "可写节点" } else { "" },
         &activity,
     );
-    let result = if should_try_fallback(&primary.status, node.fallback.as_ref())
-        && !is_cancelled(&cancel_key)
-    {
-        if skip_reason.is_empty() {
-            run_fallback(run_id, project, run_root, log_dir, settings, &node, &activity)
+    let mut candidates = Vec::new();
+    if let Some(fallback) = node.fallback.clone().filter(|item| !item.agent.trim().is_empty() && !item.model.trim().is_empty()) {
+        let exhausted_until = resource_quota_until(&fallback.agent, &fallback.provider, &fallback.model);
+        candidates.push((fallback, true, exhausted_until));
+    }
+    for model in configured {
+        candidates.push((FallbackSpec {
+            agent: model.agent.clone(),
+            provider: model.provider.clone(),
+            model: model.id.clone(),
+            vendor: model.vendor.clone(),
+        }, false, model.quota_exhausted_until.clone()));
+    }
+    let primary_key = crate::resources::resource_model_key(&node.agent, &node.provider, &node.model);
+    let mut seen = HashSet::from([primary_key]);
+    candidates.retain(|(candidate, _, _)| seen.insert(crate::resources::resource_model_key(&candidate.agent, &candidate.provider, &candidate.model)));
+
+    let mut result = primary;
+    let mut resources_changed = result.resources_changed;
+    let mut previous_route = route_name(&node.agent, &node.provider, &node.model);
+    let mut quota_notes = Vec::new();
+    let mut quota_resets = Vec::new();
+    let mut attempt_index = 0_u32;
+    let mut current_attempt_rolled_back = false;
+    if result.status == "quota_exhausted" {
+        quota_notes.push(format!("主 {previous_route} 额度用尽"));
+        if let Some(value) = result.quota_resets_at.clone() { quota_resets.push(value); }
+    }
+    for (candidate, is_explicit, exhausted_until) in candidates {
+        let eligible = if writable {
+            result.status == "quota_exhausted"
+        } else if is_explicit {
+            should_try_fallback(&result.status, true)
         } else {
-            primary
+            result.status == "quota_exhausted"
+        };
+        if !eligible || is_cancelled(&cancel_key) {
+            break;
         }
-    } else {
-        primary
-    };
+        if writable && !current_attempt_rolled_back {
+            match rollback_quota_attempt(project, &result, Duration::from_secs(settings.timeout_secs.clamp(1, 3600))) {
+                Ok(note) => {
+                    quota_notes.push(note);
+                    current_attempt_rolled_back = true;
+                }
+                Err(error) => {
+                    result.fallback_skipped = "回滚失败".into();
+                    append_runner_note(&mut result.runner_note, &format!("额度用尽，回滚本次改动失败：{error}"));
+                    current_attempt_rolled_back = true;
+                    break;
+                }
+            }
+        }
+        let next_route = route_name(&candidate.agent, &candidate.provider, &candidate.model);
+        if quota_until_active(exhausted_until.as_deref()) {
+            if let Some(value) = exhausted_until {
+                quota_resets.push(value.clone());
+                quota_notes.push(format!("跳过 {next_route}（额度用尽至 {value}）"));
+            }
+            continue;
+        }
+        attempt_index += 1;
+        let mut next = run_fallback_attempt(
+            run_id, project, run_root, log_dir, settings, &node, &candidate,
+            &format!("备 {attempt_index}"), &activity,
+        );
+        next.fallback_from = previous_route.clone();
+        next.fallback_to = next_route.clone();
+        previous_route = next_route.clone();
+        if next.status == "quota_exhausted" {
+            quota_notes.push(format!("备 {next_route} 额度用尽"));
+            if let Some(value) = next.quota_resets_at.clone() { quota_resets.push(value); }
+        } else if !quota_notes.is_empty() {
+            quota_notes.push(format!("备 {next_route}"));
+        }
+        result = next;
+        resources_changed |= result.resources_changed;
+        current_attempt_rolled_back = false;
+    }
+    if writable && has_fallback && result.status == "quota_exhausted" && !current_attempt_rolled_back {
+        match rollback_quota_attempt(project, &result, Duration::from_secs(settings.timeout_secs.clamp(1, 3600))) {
+            Ok(note) => quota_notes.push(note),
+            Err(error) => {
+                result.fallback_skipped = "回滚失败".into();
+                append_runner_note(&mut result.runner_note, &format!("额度用尽，回滚本次改动失败：{error}"));
+            }
+        }
+    }
+    if !quota_notes.is_empty() {
+        append_runner_note(&mut result.runner_note, &quota_notes.join(" → "));
+    }
+    if result.status == "quota_exhausted" {
+        result.quota_resets_at = earliest_reset(quota_resets);
+    }
+    result.resources_changed = resources_changed;
     clear_cancelled(&cancel_key);
     result
 }
 
+fn rollback_quota_attempt(project: &Path, result: &DispatchNodeResult, timeout: Duration) -> Result<String, String> {
+    #[cfg(test)]
+    if QUOTA_ROLLBACK_FAILURE.with(|cell| cell.get()) {
+        return Err("测试注入的回滚失败".into());
+    }
+    if let Some(worktree) = result.artifacts.as_ref().and_then(|artifacts| artifacts.worktree.as_deref()) {
+        let removed = run_process_registered(
+            Path::new("git"),
+            &["worktree".into(), "remove".into(), "--force".into(), worktree.into()],
+            None,
+            timeout,
+            Some(project),
+            None,
+        )?;
+        if removed.timed_out || removed.code != Some(0) {
+            return Err(nonempty_process_error(&removed, "清理本次 worktree 失败"));
+        }
+        return Ok(format!("已回滚 {} 本次改动", result.node_id));
+    }
+    // 只认本次尝试的快照：本次没改动就无需回滚；绝不拿历史快照把上一次的产物或用户手改一起还原。
+    let before_dir = result.artifacts.as_ref().map(|artifacts| artifacts.before_dir.trim()).unwrap_or("");
+    if before_dir.is_empty() {
+        return Ok(format!("{} 本次没有改动，无需回滚", result.node_id));
+    }
+    let root = PathBuf::from(before_dir);
+    let root = if root.is_absolute() { root } else { project.join(root) };
+    if !root.is_dir() {
+        return Err("本次派发前快照不存在，无法回滚".into());
+    }
+    let summary = restore_before_dir(project, &root)?;
+    if !summary.skipped.is_empty() {
+        return Err(format!("{}，无法确认全部改动已恢复", summary.note));
+    }
+    Ok(format!("已回滚 {} 本次改动", result.node_id))
+}
+
+fn route_name(agent: &str, _provider: &str, model: &str) -> String {
+    format!("{agent}/{model}")
+}
+
+fn quota_until_active(value: Option<&str>) -> bool {
+    value
+        .and_then(|item| DateTime::parse_from_rfc3339(item).ok())
+        .map(|item| item.timestamp_millis() > Local::now().timestamp_millis())
+        .unwrap_or(false)
+}
+
+fn earliest_reset(values: Vec<String>) -> Option<String> {
+    values.into_iter().filter_map(|value| {
+        DateTime::parse_from_rfc3339(&value).ok().map(|parsed| (parsed.timestamp_millis(), value))
+    }).min_by_key(|(timestamp, _)| *timestamp).map(|(_, value)| value)
+}
+
 // 备选重跑：同 prompt、同可见性、同写权限，只换 agent/provider/model；
 // 留痕由 run_one_attempt 各写一条（attempt: 主 / 备），结果带上主备路由供界面显示。
+#[cfg(test)]
 fn run_fallback(
     run_id: &str,
     project: &Path,
@@ -2780,6 +2942,20 @@ fn run_fallback(
     activity: &ProcessActivity,
 ) -> DispatchNodeResult {
     let fallback = node.fallback.clone().unwrap_or_default();
+    run_fallback_attempt(run_id, project, run_root, log_dir, settings, node, &fallback, "备", activity)
+}
+
+fn run_fallback_attempt(
+    run_id: &str,
+    project: &Path,
+    run_root: &Path,
+    log_dir: &Path,
+    settings: &DispatchSettings,
+    node: &DispatchNodeRequest,
+    fallback: &FallbackSpec,
+    attempt: &str,
+    activity: &ProcessActivity,
+) -> DispatchNodeResult {
     // 盲节点的隔离目录在第一次尝试时已铺过材料；重跑前清掉，否则 prepare_outbound
     // 会因目录非空而拒绝。
     if node.visibility == "盲" {
@@ -2812,14 +2988,14 @@ fn run_fallback(
     };
     retry.fallback = None; // 备选不再套备选，最多重跑一次
     retry.session_id = String::new(); // 换通道不续接旧会话
-    let mut result = run_one_attempt(run_id, project, run_root, log_dir, settings, retry, "备", "", activity);
+    let mut result = run_one_attempt(run_id, project, run_root, log_dir, settings, retry, attempt, "", activity);
     // R2-1：这个 session 属于备选通道，而节点 target 仍是主目标；写回会让下游
     // 同目标「共享」子节点经 continuationSession 把它续到主通道（-S/-r 一个
     // 主通道不存在的会话）。备选作答 = 另起会话不续聊：结果 session 置空，
     // 下游节点发完整 prompt；留痕里保留真实 session 仅供查账。
     result.session_id = String::new();
-    result.fallback_from = format!("{}/{}", node.agent, node.model);
-    result.fallback_to = format!("{}/{}", fallback.agent, fallback.model);
+    result.fallback_from = route_name(&node.agent, &node.provider, &node.model);
+    result.fallback_to = route_name(&fallback.agent, &fallback.provider, &fallback.model);
     result
 }
 
@@ -2833,6 +3009,59 @@ thread_local! {
     /// 和「验过的第二次不再验」（修正轮 R1，原来替身把三个参数直接丢掉）。
     static FIRST_USE_CALLS: std::cell::RefCell<Vec<(String, String, String)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// TASK-14：资源路由测试替身。None 表示测试不读用户真实 resources.json。
+    static RESOURCE_MODELS_STUB: std::cell::RefCell<Option<Vec<crate::resources::ResourceModel>>> =
+        const { std::cell::RefCell::new(None) };
+    static QUOTA_MARKS: std::cell::RefCell<Vec<(String, String, String, Option<String>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static QUOTA_ROLLBACK_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn resource_fallback_models(agent: &str, provider: &str, model: &str) -> Vec<crate::resources::ResourceModel> {
+    #[cfg(test)]
+    {
+        return RESOURCE_MODELS_STUB.with(|cell| {
+            let borrowed = cell.borrow();
+            let Some(models) = borrowed.as_ref() else { return Vec::new() };
+            let Some(current) = models.iter().find(|item| item.agent == agent && item.provider == provider && item.id == model) else { return Vec::new() };
+            current.fallback_order.iter().filter_map(|key| {
+                models.iter().find(|item| crate::resources::resource_model_key(&item.agent, &item.provider, &item.id) == *key).cloned()
+            }).collect()
+        });
+    }
+    #[cfg(not(test))]
+    crate::resources::fallback_models(agent, provider, model).unwrap_or_default()
+}
+
+fn resource_quota_until(agent: &str, provider: &str, model: &str) -> Option<String> {
+    #[cfg(test)]
+    {
+        return RESOURCE_MODELS_STUB.with(|cell| cell.borrow().as_ref().and_then(|models| {
+            models.iter().find(|item| item.agent == agent && item.provider == provider && item.id == model)
+                .and_then(|item| item.quota_exhausted_until.clone())
+        }));
+    }
+    #[cfg(not(test))]
+    crate::resources::quota_exhausted_until(agent, provider, model)
+}
+
+fn record_quota_hit(agent: &str, provider: &str, model: &str, resets_at: Option<&str>) -> bool {
+    #[cfg(test)]
+    {
+        QUOTA_MARKS.with(|cell| cell.borrow_mut().push((agent.into(), provider.into(), model.into(), resets_at.map(str::to_string))));
+        resets_at.is_some()
+    }
+    #[cfg(not(test))]
+    {
+        resets_at.is_some() && crate::resources::mark_quota_exhausted(agent, provider, model, resets_at).is_ok()
+    }
+}
+
+fn classify_attempt_quota(status: &str, raw_stderr: &str, error: &str, exit_code: Option<i32>) -> Option<channels::QuotaHit> {
+    if status != "error" {
+        return None;
+    }
+    channels::classify_quota(&[raw_stderr, error].join("\n"), exit_code, None)
 }
 
 fn first_use_verification(
@@ -2849,7 +3078,7 @@ fn first_use_verification(
                 .push((agent.to_string(), provider.to_string(), model.to_string()))
         });
         FIRST_USE_STUB
-            .with(|cell| cell.borrow().clone())
+            .with(|cell| cell.borrow_mut().take())
             .unwrap_or(crate::resources::FirstUseVerification::Skipped)
     }
     #[cfg(not(test))]
@@ -2887,6 +3116,7 @@ fn run_one_attempt(
     // 验证失败也不该留下一个白建的 worktree 和一份白铺的隔离目录。
     let mut verify_error = String::new();
     let mut verify_note = String::new();
+    let mut verify_quota_resets_at = None;
     if is_cancelled(&cancel_key) {
         verify_error = "派发已取消".to_string();
     } else {
@@ -2901,6 +3131,11 @@ fn run_one_attempt(
             crate::resources::FirstUseVerification::Failed(reason) => {
                 append_runner_note(&mut verify_note, "首次派发自动验证");
                 verify_error = format!("首次验证失败：{reason}");
+            }
+            crate::resources::FirstUseVerification::QuotaExhausted { resets_at } => {
+                append_runner_note(&mut verify_note, "首次派发自动验证命中额度限制");
+                verify_error = "首次验证请求额度用尽".to_string();
+                verify_quota_resets_at = resets_at;
             }
             crate::resources::FirstUseVerification::Cancelled => {
                 append_runner_note(&mut verify_note, "首次派发自动验证，验证中已取消");
@@ -3006,6 +3241,9 @@ fn run_one_attempt(
     let mut timed_out = false;
     let mut entered_channel = false;
     let mut status = "error".to_string();
+    if verify_quota_resets_at.is_some() || verify_error == "首次验证请求额度用尽" {
+        status = "quota_exhausted".to_string();
+    }
     let mut runner = "oneshot".to_string();
     let mut runner_note = rollback_note;
     if !verify_note.is_empty() {
@@ -3073,9 +3311,16 @@ fn run_one_attempt(
                 needs_oneshot = false;
             }
             AcpResolution::Fallback(reason) => {
-                (oneshot_session, oneshot_outbound) = reset_acp_fallback(&prompt);
-                append_runner_note(&mut runner_note, &format!("ACP 会话已重置，改一次性完整上下文：{reason}"));
-                activity.reset_attempt();
+                if channels::classify_quota(&reason, None, None).is_some() {
+                    raw_stderr = reason.clone();
+                    error = reason;
+                    runner = "acp".into();
+                    needs_oneshot = false;
+                } else {
+                    (oneshot_session, oneshot_outbound) = reset_acp_fallback(&prompt);
+                    append_runner_note(&mut runner_note, &format!("ACP 会话已重置，改一次性完整上下文：{reason}"));
+                    activity.reset_attempt();
+                }
             }
             AcpResolution::Failed(acp_error) => {
                 timed_out = acp_error.kind == channels::acp::AcpErrorKind::Timeout;
@@ -3167,6 +3412,18 @@ fn run_one_attempt(
         }
     }
 
+    let mut quota_resets_at = verify_quota_resets_at;
+    let mut resources_changed = false;
+    if status == "quota_exhausted" && !entered_channel {
+        resources_changed = record_quota_hit(&node.agent, &node.provider, &node.model, quota_resets_at.as_deref());
+    } else if entered_channel {
+        if let Some(hit) = classify_attempt_quota(&status, &raw_stderr, &error, exit_code) {
+            status = "quota_exhausted".into();
+            quota_resets_at = hit.resets_at;
+            resources_changed = record_quota_hit(&node.agent, &node.provider, &node.model, quota_resets_at.as_deref());
+        }
+    }
+
     let mut validation_output = String::new();
     if status == "ok" && successful_validation_output(&node, worktree_path.is_some()).is_some() {
         validation_output = successful_validation_output(&node, true).unwrap().into();
@@ -3198,6 +3455,7 @@ fn run_one_attempt(
         match built {
             Ok(mut value) => {
                 value.worktree = worktree_path;
+                value.before_dir = before_dir.clone();
                 let summary = safe_trace(&channel_output.text)
                     .chars()
                     .take(2000)
@@ -3272,7 +3530,8 @@ fn run_one_attempt(
         session_id: channel_output.session_id.clone(),
         exit_code,
         error: error.clone(),
-        attempt: attempt.into(),
+        attempt: if attempt.starts_with("备") { "备".into() } else { "主".into() },
+        attempt_index: attempt.strip_prefix("备").and_then(|value| value.trim().parse().ok()).unwrap_or(0),
         write: node.write.clone(),
         fallback_skipped: fallback_skipped.clone(),
         before_dir,
@@ -3324,6 +3583,8 @@ fn run_one_attempt(
         fallback_from: String::new(),
         fallback_to: String::new(),
         fallback_skipped,
+        quota_resets_at,
+        resources_changed,
     };
     result
 }
@@ -3659,6 +3920,14 @@ fn write_state(
             .unwrap_or("");
         body.push_str(&format!("- [ ] {node}: {state} → {file}\n"));
     }
+    body.push_str("## 额度用尽\n");
+    for (node, state) in entries.iter().filter(|(_, state)| *state == "额度用尽") {
+        let file = by_id
+            .get(node.as_str())
+            .map(|result| result.dispatch_file.as_str())
+            .unwrap_or("");
+        body.push_str(&format!("- [ ] {node}: {state} → {file}\n"));
+    }
     body.push_str("## 失败与超时\n");
     for (node, state) in entries
         .iter()
@@ -3674,7 +3943,7 @@ fn write_state(
         "## 决策记录\n- 同阶段并发上限 {concurrency}；同一 agent 同时最多 1 路\n"
     ));
     body.push_str("## 下一步\n");
-    if status.values().all(|state| state == "完成") {
+    if status.values().all(|state| matches!(state.as_str(), "完成" | "额度用尽")) {
         body.push_str("- 查看并排结果，采纳、重派、升级或交人裁决\n");
     } else if status
         .values()
@@ -4616,6 +4885,7 @@ mod tests {
             changed_files: vec![ChangedFile { path: "a.txt".into(), content: "c".into() }],
             worktree: Some("wt".into()),
             stdout_summary: "s".into(),
+            before_dir: String::new(),
         }).unwrap();
         let mut keys = value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
         keys.sort();
@@ -4664,7 +4934,7 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("node-large.raw.txt")).unwrap(), large);
         let small = "y".repeat(20 * 1024);
         assert_eq!(record_stdout(&small, &root, "node-small", "主"), small);
-        let failed_target = root.join("node-failed.fallback.raw.txt");
+        let failed_target = root.join("node-failed.备1.raw.txt");
         fs::create_dir_all(&failed_target).unwrap();
         let failed = record_stdout(&large, &root, "node-failed", "备");
         assert!(failed.contains("原始输出转存失败："));
@@ -4866,6 +5136,7 @@ mod tests {
             exit_code: Some(0),
             error: String::new(),
             attempt: "主".into(),
+            attempt_index: 0,
             write: "只读".into(),
             fallback_skipped: String::new(),
             before_dir: String::new(),
@@ -5494,6 +5765,7 @@ mod tests {
             exit_code: Some(0),
             error: String::new(),
             attempt: "主".into(),
+            attempt_index: 0,
             runner: "oneshot".into(),
             runner_note: String::new(),
             write: "只读".into(),
@@ -5621,6 +5893,7 @@ mod tests {
             ("a".into(), "运行中".into()),
             ("b".into(), "失败".into()),
             ("c".into(), "验证命令未通过".into()),
+            ("d".into(), "额度用尽".into()),
         ]);
         let failed = [
             DispatchNodeResult {
@@ -5631,6 +5904,11 @@ mod tests {
             DispatchNodeResult {
                 node_id: "c".into(),
                 dispatch_file: "c.md".into(),
+                ..DispatchNodeResult::default()
+            },
+            DispatchNodeResult {
+                node_id: "d".into(),
+                dispatch_file: "d.md".into(),
                 ..DispatchNodeResult::default()
             },
         ];
@@ -5646,6 +5924,7 @@ mod tests {
         assert_eq!(header.active_node_ids, ["a"]);
         assert!(state.contains("## 进行中\n- [ ] a: 运行中"));
         assert!(state.contains("## 验证命令未通过\n- [ ] c: 验证命令未通过 → c.md"));
+        assert!(state.contains("## 额度用尽\n- [ ] d: 额度用尽 → d.md"));
         assert!(state.contains("## 失败与超时\n- [ ] b: 失败 → b.md"));
         let _ = fs::remove_dir_all(root);
     }
@@ -6298,6 +6577,7 @@ mod tests {
             }],
             stdout_summary: "done".into(),
             worktree: None,
+            before_dir: String::new(),
         }];
         let (prompt, _, _) = prepare_outbound(&request, true, &root, true).unwrap();
         let mut entries = fs::read_dir(&root)
@@ -6348,24 +6628,302 @@ mod tests {
 
     #[test]
     fn fallback_predicate_only_triggers_on_channel_failures() {
-        let spec = FallbackSpec {
-            agent: "codex".into(),
-            provider: String::new(),
-            model: "gpt-5.6-luna".into(),
-            ..FallbackSpec::default()
-        };
-        for status in ["error", "timeout", "identity_mismatch"] {
-            assert!(should_try_fallback(status, Some(&spec)), "{status} 应触发备选");
+        for status in ["error", "timeout", "identity_mismatch", "quota_exhausted"] {
+            assert!(should_try_fallback(status, true), "{status} 应触发备选");
         }
         for status in ["ok", "validation_failed"] {
-            assert!(!should_try_fallback(status, Some(&spec)), "{status} 不应触发备选");
+            assert!(!should_try_fallback(status, true), "{status} 不应触发备选");
         }
-        assert!(!should_try_fallback("error", None));
-        let incomplete = FallbackSpec {
-            agent: " ".into(),
-            ..FallbackSpec::default()
+        assert!(!should_try_fallback("error", false));
+    }
+
+    #[test]
+    fn task14_r1_quota_classification_only_accepts_error_fields_and_never_identity_mismatch() {
+        assert!(classify_attempt_quota("error", "HTTP 429 too many requests", "", Some(1)).is_some());
+        assert!(classify_attempt_quota("identity_mismatch", "HTTP 429 too many requests", "", Some(1)).is_none());
+        assert!(classify_attempt_quota("error", "ordinary command error", "", Some(1)).is_none());
+        // 函数没有 stdout 参数：模型正文无法进入额度分类。
+        assert!(classify_attempt_quota("error", "", "output parse failed", Some(1)).is_none());
+    }
+
+    #[test]
+    fn task14_quota_fallback_order_runs_fake_channel_through_three_attempts() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-quota-fallback-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let marker = root.join("calls.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nf=pathlib.Path(r'{}')\nf.write_text((f.read_text() if f.exists() else '')+p+'\\n')\nif p != 'p2':\n print('session limit; resets at 2099-01-01T00:00:00+08:00', file=sys.stderr)\n sys.exit(1)\nprint('final answer')\n",
+            marker.display()
+        )).unwrap();
+
+        let mut primary = crate::resources::ResourceModel { agent: "cc-switch".into(), provider: "p0".into(), id: "main".into(), ..Default::default() };
+        primary.fallback_order = vec![
+            "cc-switch/skip/skipped".into(),
+            "cc-switch/p2/backup-b".into(),
+        ];
+        let skipped = crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: "skip".into(), id: "skipped".into(),
+            quota_exhausted_until: Some("2099-02-01T00:00:00+08:00".into()), ..Default::default()
         };
-        assert!(!should_try_fallback("error", Some(&incomplete)));
+        let backup_a = crate::resources::ResourceModel { agent: "cc-switch".into(), provider: "p1".into(), id: "backup-a".into(), ..Default::default() };
+        let backup_b = crate::resources::ResourceModel { agent: "cc-switch".into(), provider: "p2".into(), id: "backup-b".into(), ..Default::default() };
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![primary, skipped, backup_a, backup_b]));
+        QUOTA_MARKS.with(|cell| cell.borrow_mut().clear());
+
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = "p0".into();
+        request.model = "main".into();
+        request.visibility = "共享".into();
+        request.write = "只读".into();
+        request.fallback = Some(FallbackSpec { agent: "cc-switch".into(), provider: "p1".into(), model: "backup-a".into(), vendor: String::new() });
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("quota-three", &project, &root.join("runs"), &log_dir, &settings, request);
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = None);
+
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert_eq!(fs::read_to_string(&marker).unwrap().lines().collect::<Vec<_>>(), ["p0", "p1", "p2"]);
+        assert_eq!(result.fallback_from, "cc-switch/backup-a");
+        assert_eq!(result.fallback_to, "cc-switch/backup-b");
+        assert!(result.runner_note.contains("主 cc-switch/main 额度用尽 → 备 cc-switch/backup-a 额度用尽"), "{}", result.runner_note);
+        assert!(result.runner_note.contains("跳过 cc-switch/skipped（额度用尽至 2099-02-01T00:00:00+08:00）"), "{}", result.runner_note);
+        assert!(result.runner_note.ends_with("备 cc-switch/backup-b"), "{}", result.runner_note);
+        assert_eq!(QUOTA_MARKS.with(|cell| cell.borrow().len()), 2);
+        assert_eq!(fs::read_dir(&log_dir).unwrap().filter_map(Result::ok).count(), 3);
+        let records = fs::read_dir(&log_dir).unwrap().filter_map(Result::ok)
+            .map(|entry| fs::read_to_string(entry.path()).unwrap()).collect::<Vec<_>>();
+        assert!(records.iter().any(|body| body.contains("attempt: 备\nattempt_index: 1")));
+        assert!(records.iter().any(|body| body.contains("attempt: 备\nattempt_index: 2")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_reset_helpers_choose_earliest_active_time() {
+        let earliest = earliest_reset(vec![
+            "2099-01-02T00:00:00+08:00".into(),
+            "2099-01-01T12:00:00+08:00".into(),
+        ]);
+        assert_eq!(earliest.as_deref(), Some("2099-01-01T12:00:00+08:00"));
+        assert!(quota_until_active(Some("2099-01-01T00:00:00+08:00")));
+        assert!(!quota_until_active(Some("2000-01-01T00:00:00+08:00")));
+    }
+
+    #[test]
+    fn task14_r1_skipped_candidate_reset_is_returned_when_no_attempt_has_one() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-quota-skipped-reset-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let marker = root.join("calls.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=pathlib.Path(r'{}')\np.write_text((p.read_text() if p.exists() else '')+'called\\n')\nprint('usage limit reached', file=sys.stderr)\nsys.exit(1)\n",
+            marker.display()
+        )).unwrap();
+        let mut primary = crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: "p0".into(), id: "main".into(), ..Default::default()
+        };
+        primary.fallback_order = vec!["cc-switch/p1/blocked".into()];
+        let blocked = crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: "p1".into(), id: "blocked".into(),
+            quota_exhausted_until: Some("2099-03-01T00:00:00+08:00".into()), ..Default::default()
+        };
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![primary, blocked]));
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "只读".into();
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("quota-skipped-reset", &project, &root.join("runs"), &log_dir, &settings, request);
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(result.status, "quota_exhausted");
+        assert_eq!(result.quota_resets_at.as_deref(), Some("2099-03-01T00:00:00+08:00"));
+        assert!(result.runner_note.contains("跳过 cc-switch/blocked（额度用尽至 2099-03-01T00:00:00+08:00）"), "{}", result.runner_note);
+        assert_eq!(fs::read_to_string(marker).unwrap().lines().collect::<Vec<_>>(), ["called"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_exhausted_fake_channels_return_quota_not_error() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-quota-terminal-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, "import sys\np=sys.argv[sys.argv.index('--provider')+1]\nreset='2099-01-02T00:00:00+08:00' if p == 'p0' else '2099-01-01T00:00:00+08:00'\nprint('usage limit; resets at '+reset, file=sys.stderr)\nsys.exit(1)\n").unwrap();
+        let mut primary = crate::resources::ResourceModel { agent: "cc-switch".into(), provider: "p0".into(), id: "main".into(), ..Default::default() };
+        primary.fallback_order = vec!["cc-switch/p1/backup".into()];
+        let backup = crate::resources::ResourceModel { agent: "cc-switch".into(), provider: "p1".into(), id: "backup".into(), ..Default::default() };
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![primary, backup]));
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "只读".into();
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("quota-terminal", &project, &root.join("runs"), &log_dir, &settings, request);
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(result.status, "quota_exhausted");
+        assert_eq!(result.quota_resets_at.as_deref(), Some("2099-01-01T00:00:00+08:00"));
+        assert_eq!(result.fallback_from, "cc-switch/main");
+        assert_eq!(result.fallback_to, "cc-switch/backup");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_r1_writable_quota_rolls_back_before_fallback() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-quota-writable-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = project.join(".dispatch");
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(project.join("state.txt"), "original").unwrap();
+        let marker = root.join("calls.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nf=pathlib.Path(r'{}')\nf.write_text((f.read_text() if f.exists() else '')+p+'\\n')\ns=pathlib.Path('state.txt')\nold=s.read_text()\ns.write_text(p+'|saw='+old)\nif p == 'p0':\n print('HTTP 429 too many requests; resets at 2099-01-01T00:00:00+08:00', file=sys.stderr)\n sys.exit(1)\nprint('fallback answer')\n",
+            marker.display()
+        )).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "单写者".into();
+        request.fallback = Some(FallbackSpec { agent: "cc-switch".into(), provider: "p1".into(), model: "backup".into(), vendor: String::new() });
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("quota-writable", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert_eq!(fs::read_to_string(project.join("state.txt")).unwrap(), "p1|saw=original");
+        assert_eq!(fs::read_to_string(marker).unwrap().lines().collect::<Vec<_>>(), ["p0", "p1"]);
+        assert!(result.runner_note.contains("已回滚 node-1 本次改动"), "{}", result.runner_note);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_r2_writable_quota_without_changes_falls_back_without_rollback() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-quota-nochange-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = project.join(".dispatch");
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(project.join("state.txt"), "original").unwrap();
+        let stub = root.join("cc_switch_stub.py");
+        // 主目标第一句就撞额度、没碰任何文件；备选正常写。
+        fs::write(&stub, "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nif p == 'p0':\n print('HTTP 429 too many requests; resets at 2099-01-01T00:00:00+08:00', file=sys.stderr)\n sys.exit(1)\ns=pathlib.Path('state.txt')\ns.write_text(p+'|saw='+s.read_text())\nprint('fallback answer')\n").unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "单写者".into();
+        request.fallback = Some(FallbackSpec { agent: "cc-switch".into(), provider: "p1".into(), model: "backup".into(), vendor: String::new() });
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("quota-nochange", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "ok", "{} / {}", result.error, result.runner_note);
+        assert_eq!(result.fallback_to, "cc-switch/backup");
+        assert!(result.fallback_skipped.is_empty(), "{}", result.fallback_skipped);
+        assert!(result.runner_note.contains("本次没有改动，无需回滚"), "{}", result.runner_note);
+        assert_eq!(fs::read_to_string(project.join("state.txt")).unwrap(), "p1|saw=original");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_r2_quota_rollback_ignores_stale_snapshot_from_earlier_run() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-quota-stale-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = project.join(".dispatch");
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(project.join("state.txt"), "original").unwrap();
+        let flag = root.join("first-done.flag");
+        let stub = root.join("cc_switch_stub.py");
+        // 第一轮：主目标先改文件再撞额度（落下快照）；第二轮：主目标不碰文件直接撞额度。
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nflag=pathlib.Path(r'{}')\ns=pathlib.Path('state.txt')\nif p == 'p0':\n if not flag.exists():\n  s.write_text('p0-dirty')\n  flag.write_text('1')\n print('HTTP 429 too many requests; resets at 2099-01-01T00:00:00+08:00', file=sys.stderr)\n sys.exit(1)\ns.write_text(p+'|saw='+s.read_text())\nprint('fallback answer')\n",
+            flag.display()
+        )).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "单写者".into();
+        request.fallback = Some(FallbackSpec { agent: "cc-switch".into(), provider: "p1".into(), model: "backup".into(), vendor: String::new() });
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let first = run_one("quota-stale-1", &project, &root.join("runs"), &log_dir, &settings, request.clone());
+        assert_eq!(first.status, "ok", "{} / {}", first.error, first.runner_note);
+        assert!(first.runner_note.contains("已回滚 node-1 本次改动"), "{}", first.runner_note);
+        assert_eq!(fs::read_to_string(project.join("state.txt")).unwrap(), "p1|saw=original");
+        // 用户在两次派发之间手改了文件；第二轮本次无改动，历史快照绝不能把它还原成 original。
+        fs::write(project.join("state.txt"), "user-edit").unwrap();
+        let second = run_one("quota-stale-2", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(second.status, "ok", "{} / {}", second.error, second.runner_note);
+        assert!(second.runner_note.contains("本次没有改动，无需回滚"), "{}", second.runner_note);
+        assert_eq!(fs::read_to_string(project.join("state.txt")).unwrap(), "p1|saw=user-edit");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_r1_first_use_quota_switches_to_fallback_without_entering_primary_channel() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-first-use-quota-dispatch-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let marker = root.join("calls.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\npathlib.Path(r'{}').write_text(p)\nprint('fallback answer')\n",
+            marker.display()
+        )).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "只读".into();
+        request.fallback = Some(FallbackSpec { agent: "cc-switch".into(), provider: "p1".into(), model: "backup".into(), vendor: String::new() });
+        FIRST_USE_STUB.with(|cell| *cell.borrow_mut() = Some(crate::resources::FirstUseVerification::QuotaExhausted {
+            resets_at: Some("2099-01-01T00:00:00+08:00".into()),
+        }));
+        QUOTA_MARKS.with(|cell| cell.borrow_mut().clear());
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("first-use-quota", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert_eq!(result.fallback_to, "cc-switch/backup");
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "p1");
+        assert_eq!(QUOTA_MARKS.with(|cell| cell.borrow().len()), 1);
+        assert!(result.runner_note.contains("主 cc-switch/main 额度用尽"), "{}", result.runner_note);
+        let records = fs::read_dir(&log_dir).unwrap().filter_map(Result::ok)
+            .map(|entry| fs::read_to_string(entry.path()).unwrap()).collect::<Vec<_>>();
+        assert!(records.iter().any(|body| body.contains("首次派发自动验证命中额度限制")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_r1_writable_quota_stops_when_rollback_fails() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-quota-rollback-fail-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = project.join(".dispatch");
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(project.join("state.txt"), "original").unwrap();
+        let marker = root.join("calls.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nf=pathlib.Path(r'{}')\nf.write_text((f.read_text() if f.exists() else '')+p+'\\n')\npathlib.Path('state.txt').write_text(p)\nprint('HTTP 429 too many requests; resets at 2099-01-01T00:00:00+08:00', file=sys.stderr)\nsys.exit(1)\n",
+            marker.display()
+        )).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "单写者".into();
+        request.fallback = Some(FallbackSpec { agent: "cc-switch".into(), provider: "p1".into(), model: "backup".into(), vendor: String::new() });
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        QUOTA_ROLLBACK_FAILURE.with(|cell| cell.set(true));
+        let result = run_one("quota-rollback-fail", &project, &root.join("runs"), &log_dir, &settings, request);
+        QUOTA_ROLLBACK_FAILURE.with(|cell| cell.set(false));
+        assert_eq!(result.status, "quota_exhausted");
+        assert_eq!(result.fallback_skipped, "回滚失败");
+        assert!(result.fallback_to.is_empty());
+        assert_eq!(fs::read_to_string(marker).unwrap().lines().collect::<Vec<_>>(), ["p0"]);
+        assert!(result.runner_note.contains("回滚本次改动失败"), "{}", result.runner_note);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6456,7 +7014,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_skipped_for_writable_node_returns_primary_failure() {
+    fn writable_non_quota_failure_does_not_switch_fallback() {
         let root = std::env::temp_dir().join(format!("aicross-fallback-writable-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
@@ -6482,13 +7040,12 @@ mod tests {
             &DispatchSettings::default(),
             request,
         );
-        // 可写节点主失败：不切备选（主尝试可能已写项目，备选再跑会叠加写入）
+        // 非额度类失败保持 05B 语义：可写节点不切备选。
         assert_eq!(result.status, "error");
         assert_eq!(result.fallback_skipped, "可写节点");
         assert!(result.fallback_from.is_empty());
         assert!(result.fallback_to.is_empty());
         assert!(result.frontmatter.contains("attempt: 主"));
-        // R2-11：跳过原因进留痕 frontmatter，事后只看留痕也能区分普通失败
         assert!(result.frontmatter.contains("fallback_skipped: 可写节点"));
         let bodies: Vec<String> = fs::read_dir(&log_dir)
             .unwrap()
@@ -6496,8 +7053,7 @@ mod tests {
             .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("md"))
             .map(|entry| fs::read_to_string(entry.path()).unwrap())
             .collect();
-        assert_eq!(bodies.len(), 1, "可写节点只能有主尝试一条留痕");
-        assert!(bodies[0].contains("fallback_skipped: 可写节点"), "落盘留痕同样带跳过原因");
+        assert_eq!(bodies.len(), 1, "非额度失败只能有主尝试一条留痕");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -6694,18 +7250,21 @@ mod tests {
 
     // R2-3：主/备两次尝试的原始输出转存路径不同且都存在（备选不再覆盖主尝试）。
     #[test]
-    fn record_stdout_keeps_primary_and_fallback_dumps_separate() {
+    fn task14_r1_production_backup_labels_keep_all_raw_dumps_separate() {
         let root = std::env::temp_dir().join(format!("aicross-rawdump-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let large = "x".repeat(40 * 1024);
         let primary = record_stdout(&large, &root, "node-1", "主");
-        let backup = record_stdout(&large, &root, "node-1", "备");
-        assert_ne!(primary, backup);
+        let backup_one = record_stdout(&large, &root, "node-1", "备 1");
+        let backup_two = record_stdout(&large, &root, "node-1", "备 2");
+        assert_ne!(primary, backup_one);
+        assert_ne!(backup_one, backup_two);
         assert!(primary.contains("node-1.raw.txt"));
-        assert!(!primary.contains("fallback"));
-        assert!(backup.contains("node-1.fallback.raw.txt"));
+        assert!(backup_one.contains("node-1.备1.raw.txt"));
+        assert!(backup_two.contains("node-1.备2.raw.txt"));
         assert_eq!(fs::read_to_string(root.join("node-1.raw.txt")).unwrap(), large);
-        assert_eq!(fs::read_to_string(root.join("node-1.fallback.raw.txt")).unwrap(), large);
+        assert_eq!(fs::read_to_string(root.join("node-1.备1.raw.txt")).unwrap(), large);
+        assert_eq!(fs::read_to_string(root.join("node-1.备2.raw.txt")).unwrap(), large);
         let _ = fs::remove_dir_all(root);
     }
 

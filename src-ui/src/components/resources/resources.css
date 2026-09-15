@@ -599,6 +599,44 @@
   flex-shrink: 0;
 }
 
+.agent-card-model-quota {
+  color: var(--warning, #c18401);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.fallback-order-editor {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.fallback-order-editor > label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.fallback-order-editor select {
+  min-width: 0;
+}
+
+.fallback-order-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.fallback-order-row span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-card-model-detail {
   margin-top: 4px;
 }

@@ -1,4 +1,5 @@
 use crate::process::ProcessResult;
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveTime, TimeZone};
 use regex::Regex;
 use serde_json::Value;
 
@@ -45,6 +46,124 @@ pub struct ChannelOutput {
     pub usage: Usage,
     pub identity: String,
     pub session_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuotaHit {
+    pub reason: String,
+    pub resets_at: Option<String>,
+}
+
+/// 把各通道不一致的限额响应收敛成同一个结果。调用方只把错误输出传进来，
+/// 避免正常回复谈到 quota / 限额时被误判。
+pub fn classify_quota(
+    stderr_or_body: &str,
+    exit_code: Option<i32>,
+    http_status: Option<u16>,
+) -> Option<QuotaHit> {
+    // 各 CLI 的退出码不稳定且可能与 HTTP 状态重号，当前只保留参数以维持通道
+    // 汇合点的统一签名；额度判定只采信明确的响应状态与错误文本。
+    let _ = exit_code;
+    let lower = stderr_or_body.to_lowercase();
+    let embedded_status = {
+        static STATUS: OnceLock<Regex> = OnceLock::new();
+        STATUS
+            .get_or_init(|| Regex::new(r#"(?ix)(?:\bhttp(?:\s+status)?\s+|[\"']?status[\"']?\s*[:=]\s*|\bcode\s*[:=]\s*|\bapi[_ -]?error(?:[_ -]?(?:status|code))?\s*[:=]?\s*)(402|403|429)\b"#).expect("quota status regex"))
+            .captures(stderr_or_body)
+            .and_then(|capture| capture.get(1))
+            .and_then(|value| value.as_str().parse::<u16>().ok())
+    };
+    let status = http_status.or(embedded_status);
+    let balance = lower.contains("insufficient balance");
+    let forbidden_limit = status == Some(403)
+        && ["rate limit", "quota", "usage limit"]
+            .iter()
+            .any(|marker| lower.contains(marker));
+    let reset_limit = {
+        static RESET: OnceLock<Regex> = OnceLock::new();
+        RESET
+            .get_or_init(|| Regex::new(r"(?i)\bresets?\s+(?:at\b|in\b|\d)").expect("quota reset marker regex"))
+            .is_match(stderr_or_body)
+    };
+    let chinese_limit = {
+        static CHINESE: OnceLock<Regex> = OnceLock::new();
+        CHINESE
+            .get_or_init(|| Regex::new(r"(?m)(?:[^。！？\r\n]*(?:额度|限额|配额)[^。！？\r\n]*(?:用尽|不足|已达|超出|耗尽)|[^。！？\r\n]*(?:用尽|不足|已达|超出|耗尽)[^。！？\r\n]*(?:额度|限额|配额))").expect("Chinese quota marker regex"))
+            .is_match(stderr_or_body)
+    };
+    let text_limit = ["session limit", "usage limit"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+        || reset_limit
+        || chinese_limit;
+    if status != Some(429) && !forbidden_limit && !balance && !text_limit {
+        return None;
+    }
+    Some(QuotaHit {
+        reason: if balance { "balance" } else if status == Some(429) || forbidden_limit { "rate_limit" } else { "quota" }.into(),
+        resets_at: parse_quota_reset(stderr_or_body),
+    })
+}
+
+fn parse_quota_reset(text: &str) -> Option<String> {
+    static EPOCH: OnceLock<Regex> = OnceLock::new();
+    if let Some(capture) = EPOCH
+        .get_or_init(|| Regex::new(r"(?i)usage\s+limit\s+reached\s*\|\s*(\d{10})\b").expect("quota epoch regex"))
+        .captures(text)
+    {
+        let seconds = capture.get(1)?.as_str().parse::<i64>().ok()?;
+        return DateTime::from_timestamp(seconds, 0).map(|value| value.to_rfc3339());
+    }
+    static RETRY: OnceLock<Regex> = OnceLock::new();
+    if let Some(capture) = RETRY
+        .get_or_init(|| Regex::new(r"(?i)retry[-_ ]?after\s*[:=]?\s*(\d+)\s*(seconds?|secs?|s|minutes?|mins?|m)?").expect("retry-after regex"))
+        .captures(text)
+    {
+        let value = capture.get(1)?.as_str().parse::<i64>().ok()?;
+        let minutes = capture.get(2).map(|unit| unit.as_str().to_ascii_lowercase().starts_with('m')).unwrap_or(false);
+        let reset = Local::now() + if minutes { ChronoDuration::minutes(value) } else { ChronoDuration::seconds(value) };
+        return Some(reset.to_rfc3339());
+    }
+    static RETRY_DATE: OnceLock<Regex> = OnceLock::new();
+    if let Some(capture) = RETRY_DATE
+        .get_or_init(|| Regex::new(r"(?im)retry[-_ ]?after\s*:\s*([^\r\n]+)").expect("retry-after date regex"))
+        .captures(text)
+    {
+        if let Ok(reset) = DateTime::parse_from_rfc2822(capture.get(1)?.as_str().trim()) {
+            return Some(reset.to_rfc3339());
+        }
+    }
+    static CLOCK: OnceLock<Regex> = OnceLock::new();
+    if let Some(capture) = CLOCK
+        .get_or_init(|| Regex::new(r"(?i)resets(?:\s+at)?\s+(\d{1,2}):(\d{2})\s*(am|pm)?").expect("quota clock regex"))
+        .captures(text)
+    {
+        let mut hour = capture.get(1)?.as_str().parse::<u32>().ok()?;
+        let minute = capture.get(2)?.as_str().parse::<u32>().ok()?;
+        match capture.get(3).map(|value| value.as_str().to_ascii_lowercase()) {
+            Some(period) if period == "pm" && hour < 12 => hour += 12,
+            Some(period) if period == "am" && hour == 12 => hour = 0,
+            _ => {}
+        }
+        let time = NaiveTime::from_hms_opt(hour, minute, 0)?;
+        let now = Local::now();
+        let today = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), now.day())?;
+        let mut reset = Local.from_local_datetime(&today.and_time(time)).earliest()?;
+        if reset <= now {
+            reset = Local.from_local_datetime(&(today + ChronoDuration::days(1)).and_time(time)).earliest()?;
+        }
+        return Some(reset.to_rfc3339());
+    }
+    static ISO: OnceLock<Regex> = OnceLock::new();
+    if let Some(value) = ISO
+        .get_or_init(|| Regex::new(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})\b").expect("quota ISO regex"))
+        .find(text)
+    {
+        if DateTime::parse_from_rfc3339(value.as_str()).is_ok() {
+            return Some(value.as_str().to_string());
+        }
+    }
+    None
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -851,6 +970,76 @@ fn nonempty_error(result: &ProcessResult, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
+
+    #[test]
+    fn quota_classifier_covers_status_text_balance_and_plain_errors() {
+        let hit = classify_quota("HTTP 429 too many requests", Some(1), None).unwrap();
+        assert_eq!(hit.reason, "rate_limit");
+        assert!(hit.resets_at.is_none());
+
+        assert!(classify_quota("usage limit reached", Some(1), Some(403)).is_some());
+
+        let session = classify_quota("session limit · resets 1:30pm", Some(0), None).unwrap();
+        assert_eq!(session.reason, "quota");
+        assert!(session.resets_at.as_deref().is_some_and(|value| chrono::DateTime::parse_from_rfc3339(value).is_ok()));
+
+        let balance = classify_quota("HTTP 402: Insufficient Balance", Some(1), None).unwrap();
+        assert_eq!(balance.reason, "balance");
+
+        assert!(classify_quota("本月额度已用尽", Some(1), None).is_some());
+        assert!(classify_quota("ordinary command error", Some(1), None).is_none());
+    }
+
+    #[test]
+    fn quota_classifier_rejects_unmarked_status_reset_prose_and_loose_chinese_words() {
+        for text in [
+            "error at src/lib.rs:429:5",
+            "server resets the connection",
+            "403 forbidden",
+            "额度配置已加载",
+            "配额字段不能为空",
+            "ordinary command error",
+        ] {
+            assert!(classify_quota(text, Some(1), None).is_none(), "误判：{text}");
+        }
+    }
+
+    #[test]
+    fn quota_classifier_parses_retry_after_with_real_time_window() {
+        let before = Local::now();
+        let hit = classify_quota("usage limit; retry after 60 seconds", Some(1), None).unwrap();
+        let reset = DateTime::parse_from_rfc3339(hit.resets_at.as_deref().unwrap()).unwrap();
+        let seconds = reset.signed_duration_since(before).num_seconds();
+        assert!((59..=61).contains(&seconds), "实际相差 {seconds} 秒");
+
+        let header = classify_quota("usage limit; Retry-After: 120", Some(1), None).unwrap();
+        let header_reset = DateTime::parse_from_rfc3339(header.resets_at.as_deref().unwrap()).unwrap();
+        let header_seconds = header_reset.signed_duration_since(before).num_seconds();
+        assert!((119..=121).contains(&header_seconds), "实际相差 {header_seconds} 秒");
+    }
+
+    #[test]
+    fn quota_classifier_parses_epoch_http_date_and_prefers_reset_semantics_over_iso() {
+        let epoch = classify_quota("Claude AI usage limit reached|1757970000", Some(1), None).unwrap();
+        assert_eq!(DateTime::parse_from_rfc3339(epoch.resets_at.as_deref().unwrap()).unwrap().timestamp(), 1_757_970_000);
+
+        let header = classify_quota("usage limit\nRetry-After: Wed, 21 Oct 2015 07:28:00 GMT", Some(1), None).unwrap();
+        assert_eq!(DateTime::parse_from_rfc3339(header.resets_at.as_deref().unwrap()).unwrap().timestamp(), 1_445_412_480);
+
+        let semantic = classify_quota("event at 2099-01-01T00:00:00Z; usage limit; retry_after=60", Some(1), None).unwrap();
+        assert!(DateTime::parse_from_rfc3339(semantic.resets_at.as_deref().unwrap()).unwrap().year() < 2099);
+    }
+
+    #[test]
+    fn quota_classifier_resets_clock_uses_local_1330_and_rolls_past_time_to_tomorrow() {
+        let now = Local::now();
+        let hit = classify_quota("session limit; resets 1:30pm", Some(1), None).unwrap();
+        let reset = DateTime::parse_from_rfc3339(hit.resets_at.as_deref().unwrap()).unwrap().with_timezone(&Local);
+        assert_eq!((reset.hour(), reset.minute()), (13, 30));
+        let expected_days = if (now.hour(), now.minute(), now.second()) >= (13, 30, 0) { 1 } else { 0 };
+        assert_eq!(reset.date_naive(), now.date_naive() + ChronoDuration::days(expected_days));
+    }
     use std::time::Duration;
 
     fn result(stdout: &str) -> ProcessResult {

@@ -26,6 +26,8 @@ export interface ResourceModel {
   smoke_failure: string;
   meta: string;
   note: string;
+  fallback_order?: string[];
+  quota_exhausted_until?: string | null;
 }
 
 export interface ResourceAgent {
@@ -61,6 +63,8 @@ export interface ResourceModelRequest {
   vendor: string;
   tier: string;
   note: string;
+  fallback_order: string[];
+  clear_quota_exhausted?: boolean;
 }
 
 export interface ResourceModelKey {
@@ -79,6 +83,30 @@ export interface AddManualAgentRequest {
 
 export const STATUS_CONNECTED = '已接入';
 export const STATUS_FAILED = '冒烟失败';
+
+export function resourceModelKey(model: Pick<ResourceModel, 'agent' | 'provider' | 'id'>): string {
+  return `${model.agent}/${model.provider}/${model.id}`;
+}
+
+export function quotaExhaustedUntil(
+  model: Pick<ResourceModel, 'quota_exhausted_until'>,
+  now = Date.now(),
+): string | null {
+  const value = model.quota_exhausted_until?.trim();
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp > now ? value : null;
+}
+
+export function quotaExhaustedLabel(
+  model: Pick<ResourceModel, 'quota_exhausted_until'>,
+  now = Date.now(),
+): string {
+  const value = quotaExhaustedUntil(model, now);
+  if (!value) return '';
+  const time = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value));
+  return `额度用尽至 ${time}`;
+}
 
 /** 09-15 口径的四态，与 Rust 的 `ResourceModel::verification` 一一对应。 */
 export type Verification = 'native' | 'unverified' | 'verified' | 'failed';
@@ -286,6 +314,8 @@ export function modelHint(model: ResourceModel): string {
   const resolved = modelSecondaryId(model);
   if (resolved !== '') lines.push(`模型 ID：${resolved}`);
   lines.push(`状态：${verificationLabel(verificationOf(model))}`);
+  const quota = quotaExhaustedLabel(model);
+  if (quota) lines.push(quota);
   if (model.provider.trim() !== '') lines.push(`provider：${model.provider}`);
   lines.push(model.source || '来源未记录');
   if (model.smoked_at) {

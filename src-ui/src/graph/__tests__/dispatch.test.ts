@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import dispatchOverlaySource from '../../components/center/graph/DispatchOverlay.tsx?raw';
+import graphTabSource from '../../components/center/graph/GraphTab.tsx?raw';
+import nodePanelSource from '../../components/right/orchestration/NodePanel.tsx?raw';
+import { convergeQuotaSelection } from '../../components/center/graph/DispatchOverlay';
 import {
   appendDecision,
   acceptanceRound,
@@ -19,6 +23,7 @@ import {
   needsChainThinking,
   parseAcceptance,
   promptForRole,
+  quotaBlockedNodeIds,
   reducePipelineStep,
   redraftNode,
   setReplyAdopted,
@@ -57,6 +62,40 @@ const graph = (nodes: GraphNode[]): Graph => ({
 });
 
 describe('graph dispatch helpers', () => {
+  it('TASK-14 G1 默认排除恢复时间未到的模型', () => {
+    const g = graph([node('r', []), node('a', ['r'], { status: 'draft', text: '' }), node('b', ['r'], { status: 'draft', text: '' })]);
+    g.nodes.b.target = target('kimi', 'k');
+    const models = [
+      { agent: 'codex', provider: '', id: 'm', vendor: '', billing_source: '', tier: '', thinking: '', status: '', source: '', smoked_at: '', smoke_model: '', smoke_failure: '', meta: '', note: '', quota_exhausted_until: '2026-09-15T11:00:00+08:00' },
+      { agent: 'kimi', provider: '', id: 'k', vendor: '', billing_source: '', tier: '', thinking: '', status: '', source: '', smoked_at: '', smoke_model: '', smoke_failure: '', meta: '', note: '', quota_exhausted_until: '2026-09-15T09:00:00+08:00' },
+    ];
+    expect(quotaBlockedNodeIds(g, ['a', 'b'], models, Date.parse('2026-09-15T10:00:00+08:00'))).toEqual(['a']);
+  });
+
+  it('TASK-14 R1 G1 模型异步更新后只收敛用户未手动改过的节点', () => {
+    expect(convergeQuotaSelection(['a', 'b'], ['a', 'b'], ['a'], new Set())).toEqual(['b']);
+    expect(convergeQuotaSelection(['a', 'b'], ['a', 'b'], ['a'], new Set(['a']))).toEqual(['a', 'b']);
+    expect(dispatchOverlaySource).toMatch(/useEffect\(\(\) => \{\s*setNodeIds\(\(current\) => convergeQuotaSelection/);
+    expect(dispatchOverlaySource).toContain('quotaSelectionTouched.current.add(id)');
+  });
+
+  it('TASK-14 R1 图结果保留额度状态、恢复时间与节点状态词', () => {
+    const g = graph([node('r', []), node('a', ['r'], { status: 'draft', text: '' })]);
+    const updated = applyDispatchResults(g, [{
+      nodeId: 'a', status: 'quota_exhausted', text: '', modelReported: '', sessionId: '',
+      tokensIn: 0, tokensOut: 0, durationMs: 1, error: 'HTTP 429',
+      quotaResetsAt: '2099-01-01T00:00:00+08:00',
+    }]);
+    expect(updated.nodes.a.reply).toMatchObject({
+      status: 'quota_exhausted', error_kind: 'quota_exhausted',
+      quota_resets_at: '2099-01-01T00:00:00+08:00',
+    });
+    expect(nodeStatusLabel(updated.nodes.a)).toBe('额度用尽');
+    expect(graphTabSource).toContain('<QuotaResetLine resetsAt={node.reply.quota_resets_at} />');
+    expect(graphTabSource).toContain("node.reply?.status === 'failed' || node.reply?.status === 'quota_exhausted'");
+    expect(nodePanelSource).toContain("node.reply?.status === 'failed' || node.reply?.status === 'quota_exhausted'");
+  });
+
   it('R5-1 验证重试到顶把未派验收标为已跳过', () => {
     const g = graph([
       node('r', []),

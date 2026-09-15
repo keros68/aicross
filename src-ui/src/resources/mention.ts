@@ -33,6 +33,23 @@ export function notifyResourcesChanged(): void {
   window.dispatchEvent(new Event(RESOURCES_CHANGED_EVENT));
 }
 
+/** 把 Rust 引擎写回额度状态的 Tauri 事件转成现有页面使用的 window 事件。 */
+export function subscribeResourcesChanged(): () => void {
+  let stopped = false;
+  let unlisten: (() => void) | undefined;
+  import('@tauri-apps/api/event')
+    .then(({ listen }) => listen(RESOURCES_CHANGED_EVENT, notifyResourcesChanged))
+    .then((stop) => {
+      if (stopped) stop();
+      else unlisten = stop;
+    })
+    .catch(() => {});
+  return () => {
+    stopped = true;
+    unlisten?.();
+  };
+}
+
 /** 把 mention 文本追加到既有草稿后面（补空格分隔），GraphTab 与测试共用。 */
 export function appendMention(draft: string, text: string): string {
   const base = draft && !draft.endsWith(' ') ? `${draft} ` : draft;

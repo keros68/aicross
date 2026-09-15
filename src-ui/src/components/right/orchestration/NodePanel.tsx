@@ -345,7 +345,7 @@ export function NodePanel({ graph, nodeId, models, onCommit, onClose }: NodePane
             关闭
           </button>
         </div>
-        {node.reply?.status === 'failed' && (
+        {(node.reply?.status === 'failed' || node.reply?.status === 'quota_exhausted') && (
           <div className="np-body"><button onClick={() => onCommit(redraftNode(graph, nodeId))}>重派</button></div>
         )}
         {node.kind === 'material' ? (
