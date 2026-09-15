@@ -396,6 +396,7 @@ export function swarmMergeItems(graph: Graph, nodeIds: string[]): SwarmMergeRequ
       nodeId: id,
       item: node.swarm!.item,
       worktree: node.reply?.artifacts?.worktree ?? '',
+      files: node.swarm!.files,
       title: (node.user.text.split('\n')[0] ?? '').trim(),
       accept: node.swarm!.accept,
     };

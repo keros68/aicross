@@ -107,7 +107,7 @@ describe('B1 契约：Node.swarm 与两条命令', () => {
     const wire = swarmWireSettings(DEFAULT_DISPATCH_SETTINGS);
     await expect(commands.checkSwarmPlan('D:/p', [{ item: 1, files: ['a/**'] }], wire)).rejects.toThrow();
     await expect(commands.mergeSwarmItems('D:/p', 'run', [], '', wire)).rejects.toThrow();
-    expect(swarmMergeFallback([{ nodeId: 'a', item: 1, worktree: 'D:/wt/1', accept: '' }])).toEqual([
+    expect(swarmMergeFallback([{ nodeId: 'a', item: 1, worktree: 'D:/wt/1', files: [], accept: '' }])).toEqual([
       { nodeId: 'a', item: 1, result: 'skipped', commit: '', note: SWARM_BACKEND_MISSING_NOTE, testOutput: '' },
     ]);
   });
@@ -304,8 +304,8 @@ describe('B5 G3 逐件合并', () => {
   it('B5 送给引擎的件按件号排序，带 worktree 与本件验收命令', () => {
     const graph = mkGraph([mkSwarmNode('b', 2), mkSwarmNode('a', 1)]);
     expect(swarmMergeItems(graph, ['b', 'a'])).toEqual([
-      { nodeId: 'a', item: 1, worktree: 'D:/wt/1', title: '', accept: 'pytest tests/test_1.py' },
-      { nodeId: 'b', item: 2, worktree: 'D:/wt/2', title: '', accept: 'pytest tests/test_2.py' },
+      { nodeId: 'a', item: 1, worktree: 'D:/wt/1', files: graph.nodes.a.swarm!.files, title: '', accept: 'pytest tests/test_1.py' },
+      { nodeId: 'b', item: 2, worktree: 'D:/wt/2', files: graph.nodes.b.swarm!.files, title: '', accept: 'pytest tests/test_2.py' },
     ]);
   });
 
@@ -456,7 +456,7 @@ describe('R1 修正轮', () => {
     // 再写一次不重复追加
     expect(applySwarmMerge(next, results).nodes.a.reply!.text).toBe(next.nodes.a.reply!.text);
     // 引擎未接通那批不写进正文
-    const missing = applySwarmMerge(graph, swarmMergeFallback([{ nodeId: 'a', item: 1, worktree: '', accept: '' }]));
+    const missing = applySwarmMerge(graph, swarmMergeFallback([{ nodeId: 'a', item: 1, worktree: '', files: [], accept: '' }]));
     expect(missing.nodes.a.reply!.text).toBe('做完了');
   });
 
@@ -470,7 +470,7 @@ describe('R1 修正轮', () => {
   });
 
   it('R1-3 失败分级：只有引擎未接通才说未接通，部分并入如实报数', () => {
-    const items = [{ nodeId: 'a', item: 1, worktree: 'D:/wt/1', accept: '' }];
+    const items = [{ nodeId: 'a', item: 1, worktree: 'D:/wt/1', files: [], accept: '' }];
     expect(swarmMergeErrorResults(items, new Error('Tauri IPC not available'))[0].note).toBe(SWARM_BACKEND_MISSING_NOTE);
     expect(swarmMergeErrorResults(items, new Error('git cherry-pick 失败'))[0].note).toBe('合并未完成：git cherry-pick 失败');
     expect(swarmMergeSummary(swarmMergeFallback(items))).toBe(SWARM_BACKEND_MISSING_NOTE);

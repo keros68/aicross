@@ -567,6 +567,8 @@ export interface SwarmMergeRequestItem {
   nodeId: string;
   item: number;
   worktree: string;
+  /** 该件声明的文件范围（TASK-08D：合并只取范围内的 diff） */
+  files: string[];
   /** 合并提交的标题：`aicross swarm item N: <title>` */
   title?: string;
   accept: string;

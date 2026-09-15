@@ -193,7 +193,7 @@ describe('TASK-08C 蜂群联调收口', () => {
   it('08C-5 合并与核对只发 camelCase，且都带 settings', () => {
     const graph = mkGraph([mkSplit('split'), mkItem('n1', 'split', 1)]);
     const sent = swarmMergeItems(graph, ['n1'])[0];
-    expect(Object.keys(sent).sort()).toEqual(['accept', 'item', 'nodeId', 'title', 'worktree']);
+    expect(Object.keys(sent).sort()).toEqual(['accept', 'files', 'item', 'nodeId', 'title', 'worktree']);
     expect(sent.title).toBe('第1件标题');
     expect(swarmWireSettings({ ...DEFAULT_DISPATCH_SETTINGS, swarmLimit: 2 })).toEqual({
       timeoutSecs: 600, concurrency: 3, maxRequests: 8, redact: true, writeProjectDispatch: true,
