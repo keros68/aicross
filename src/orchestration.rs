@@ -605,7 +605,7 @@ fn dispatchable_from(root: &Path) -> DispatchableModels {
         Err(_) if !path.exists() => {
             return DispatchableModels {
                 models: Vec::new(),
-                error: Some("未找到 resources.json，未接入资源".to_string()),
+                error: Some("未找到 resources.json".to_string()),
             }
         }
         Err(error) => DispatchableModels {
@@ -1334,7 +1334,7 @@ mod tests {
         assert!(result.models.is_empty());
         assert_eq!(
             result.error.as_deref(),
-            Some("未找到 resources.json，未接入资源")
+            Some("未找到 resources.json")
         );
     }
 

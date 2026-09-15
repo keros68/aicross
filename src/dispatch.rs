@@ -3325,7 +3325,7 @@ fn project_path(value: &str) -> Result<PathBuf, String> {
 }
 
 fn ensure_log_dir(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path).map_err(|error| format!("创建留痕目录失败：{error}"))?;
+    fs::create_dir_all(path).map_err(|error| format!("创建派发记录目录失败：{error}"))?;
     let ignore = path.join(".gitignore");
     if !ignore.exists() {
         fs::write(&ignore, "*\n")
@@ -3335,7 +3335,7 @@ fn ensure_log_dir(path: &Path) -> Result<(), String> {
 }
 
 fn serialize_frontmatter(record: &DispatchRecord) -> Result<String, String> {
-    let yaml = serde_yaml::to_string(record).map_err(|error| format!("序列化留痕失败：{error}"))?;
+    let yaml = serde_yaml::to_string(record).map_err(|error| format!("序列化派发记录失败：{error}"))?;
     Ok(format!("---\n{yaml}---"))
 }
 

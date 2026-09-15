@@ -123,7 +123,7 @@ Rust 侧用 grep 补盘点：`src/server.rs` 返回前端的错误串均为英�
 - 评审模式节点文本「你是评审团的安全评审。只从安全视角审查这批材料：指出…」→「安全评审：只从安全视角审查这批材料，指出…」；性能评审同改（R1「评审团」→评审模式、R8）
 
 **graph/swarm.ts**
-- 合并结果行与结论里的「测试红」→「验收未通过」（三处：`swarmMergeStatusOf` 识别、`swarmResultLine`、汇总标签）（R5）
+- 合并结果行与结论里的「测试红」→「验收未通过」（三处：`swarmRecordedResult` 识别、`swarmResultLine`、汇总标签）（R5）
 
 **resources/types.ts**
 - 「该模型上次验证失败，可在接入页手动重验。」→「…可在接入页重新验证。」（R2：按钮就叫「重新验证」）
@@ -216,10 +216,14 @@ test result: ok. 330 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; f
 ## 没做 / 保留
 
 - `resources.json` 的 `status` 机器值「待冒烟 / 已接入 / 冒烟失败」（Rust `STATUS_*` 与前端 `STATUS_*` 常量）保留：是用户磁盘上的存储格式，改值需迁移；界面不直接显示它。
-- 已存图里节点正文中的旧「测试红」字样：`swarmMergeStatusOf` 现在按「验收未通过」识别，旧图的该件会被读成「已跳过 / 待合并」而不是 `test_failed`。只影响历史图的一个状态标签，不影响合并逻辑；如需兼容旧文本再加一行识别。
+- 已存图里节点正文中的旧「测试红」字样：`swarmRecordedResult` 同时识别「验收未通过」与旧「测试红」（编排者补，`swarm-08c.test.tsx` 有断言），旧图状态标签不变。
 - 测试名与测试数据里的期次 / 修正轮编号（06B、R1、G1…）与「你好」之类数据不改，不是用户可见字符串。
 - 代码注释里的「擂台」「评审团」「冒烟」「口径」「G1」等未改（不进界面）。
 - 「前提台账」「抽查」「归类模型」「长驻」「单写者」等既有功能名未改：不在任务书的改名清单里，且各处已一致。
 - `commands.smoke*` / `smoke_resource_model` 等命令名与 `smoked_at` / `smoke_failure` 字段名不动（机器 id）。
 - phase/10 正在改的 `CenterPanel.tsx` / `Explorer.tsx` / `TierTerminal.tsx` / `commander/*`：体检未发现需要改的中文串，本期没有碰这几个文件，不会产生冲突。
 - `scripts/copy-audit.py` 的规则里 `—` 会把空值占位符也报出来，留作人工复核项，没有为它加白名单。
+
+## 复审后补记（编排者）
+
+DeepSeek 盲审（`tasks/review-11-ds.md`）判可交付但有未闭合项，编排者直接修：`src/dispatch.rs` 两处用户可见错误串「留痕」→「派发记录」；图上「盖预设」菜单与底栏「当前节点」行改走 `presetDisplayName`（未盖预设的节点不再显示「自定义」）；`src/orchestration.rs` 的「未找到 resources.json，未接入资源」去掉与前端前缀重复的后半句；手册「不是擂台」→「不是竞争」，术语表补两处出现位置并改「接入」一行的状态说明。体检脚本对含转义的模板串有盲区（DeepSeek 8），计数不是完备清单，已知。

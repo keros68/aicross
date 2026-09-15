@@ -18,7 +18,7 @@ import { latestLeaf, layersOf, normalizeNodeKinds, pathTo, sameBranch } from '..
 import { appendTurn, defaultTurnTarget, fillRoot, parseSend, removeDraftNode } from '../../../graph/mutate';
 import { commitGraph, presetNameOf, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
-import { nodeLabel } from '../../../graph/label';
+import { nodeLabel, presetDisplayName } from '../../../graph/label';
 import { NodePanel } from '../../right/orchestration/NodePanel';
 import { applyReconcile, applyRoleDefaults, dispatchableNodeIds, EMPTY_RECONCILE_UI, fallbackNoticeOf, nodeStatusLabel, parseAdvise, presetWithRoleDefaults, RECONCILE_UNKNOWN_TEXT, reconcileUiAfter, reconcileUiConverged, reconcileUiFor, redraftNode, resetPendingToDraft, type ReconcileSummary, type ReconcileUi } from '../../../graph/dispatch';
 import { useDispatchProgress } from '../../../graph/dispatch-progress';
@@ -373,7 +373,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     recordStamp(
       graph.id,
       Object.keys(g2.nodes).filter((id) => !before.has(id)),
-      preset.name,
+      presetDisplayName(preset, presets.filter((p) => !p.builtin).length),
     );
     commit(g2);
     closeStamp();
@@ -638,7 +638,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               applyStamp(nodeId, preset);
             }}
           >
-            {preset.name}
+            {presetDisplayName(preset, presets.filter((p) => !p.builtin).length)}
           </button>
         ))}
         {presets.length === 0 && <div className="graph-stamp-empty">无可用预设</div>}
@@ -760,7 +760,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               title="打开右栏「方案与编排」"
               onClick={() => window.dispatchEvent(new CustomEvent('aicross:open-orchestration'))}
             >
-              当前节点：{nodeLabel(endNode)} · {stampName ?? '自定义'}
+              当前节点：{nodeLabel(endNode)}{stampName ? ` · ${stampName}` : ''}
             </button>
           )}
           <div className="graph-input-wrap">

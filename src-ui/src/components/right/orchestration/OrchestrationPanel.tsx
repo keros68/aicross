@@ -145,7 +145,7 @@ export function OrchestrationPanel() {
     recordStamp(
       graph.id,
       Object.keys(g2.nodes).filter((id) => !before.has(id)),
-      preset.name,
+      presetDisplayName(preset, userPresetCount),
     );
     commit(g2);
     setGhost(null);
