@@ -715,3 +715,34 @@
   font-size: 12px;
   line-height: 1.6;
 }
+
+.console-run-list {
+  margin: 8px 10px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-1, rgba(255, 255, 255, 0.14));
+  border-radius: var(--radius-xs, 4px);
+  background: var(--bg-2, rgba(255, 255, 255, 0.04));
+  color: var(--text-1, #e8e4de);
+  font-size: 12px;
+}
+
+.console-run-heading {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.console-run-card + .console-run-card {
+  margin-top: 6px;
+}
+
+.console-run-route {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 3px;
+  color: var(--text-2, rgba(255, 255, 255, 0.65));
+}
+
+.console-run-stuck {
+  color: var(--danger, #d97070);
+}

@@ -37,6 +37,12 @@ pub struct Graph {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
+    /// TASK-16：图所属工作区。旧图缺失时保持为空，不改变既有契约。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project: String,
+    /// TASK-16：`console` 表示图由总指挥通道创建或继续。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -61,6 +67,9 @@ pub struct GraphNode {
     pub leftover: Option<Leftover>,
     #[serde(default)]
     pub created_at: String,
+    /// TASK-16：`console` 表示节点来自总指挥通道。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
 }
 
 /// 遗留清单（前端 `GraphNode.leftover` 镜像）：来源验收节点与未闭合的条目。
@@ -356,7 +365,7 @@ fn blank_target() -> Target {
     Target::default()
 }
 
-fn builtin_presets() -> Vec<Preset> {
+pub(crate) fn builtin_presets() -> Vec<Preset> {
     let shared = Preset {
         id: "builtin-shared".into(),
         name: "共享模式".into(),
@@ -586,7 +595,7 @@ fn valid_commander_identifier(value: &str) -> bool {
             }))
 }
 
-fn roles_from(root: &Path) -> RoleSettings {
+pub(crate) fn roles_from(root: &Path) -> RoleSettings {
     fs::read_to_string(roles_path(root))
         .ok()
         .and_then(|text| serde_json::from_str::<RoleSettings>(&text).ok())
@@ -604,7 +613,7 @@ fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), String> {
     write_json_atomic(&roles_path(root), settings)
 }
 
-fn fill_role_defaults(
+pub(crate) fn fill_role_defaults(
     presets: &mut [Preset],
     roles: &RoleSettings,
 ) {
@@ -942,6 +951,7 @@ mod tests {
             swarm: None,
             leftover: None,
             created_at: "2026-09-13T10:00:00Z".into(),
+            source: String::new(),
         };
         let turn = GraphNode {
             id: "n1".into(),
@@ -973,6 +983,7 @@ mod tests {
             }),
             leftover: None,
             created_at: "2026-09-13T10:01:00Z".into(),
+            source: String::new(),
         };
         let accept = GraphNode {
             id: "n2".into(),
@@ -993,6 +1004,7 @@ mod tests {
             swarm: None,
             leftover: None,
             created_at: "2026-09-13T10:02:00Z".into(),
+            source: String::new(),
         };
         let nodes: HashMap<String, GraphNode> = [root, turn, accept]
             .into_iter()
@@ -1006,6 +1018,8 @@ mod tests {
             nodes,
             created_at: "2026-09-13T10:00:00Z".into(),
             updated_at: "2026-09-13T10:02:00Z".into(),
+            project: String::new(),
+            source: String::new(),
         }
     }
 
@@ -1676,4 +1690,5 @@ mod tests {
         assert!(plain.leftover.is_none());
         assert_eq!(serde_json::to_value(&plain).unwrap()["leftover"], serde_json::Value::Null);
     }
+
 }

@@ -1458,3 +1458,46 @@ export async function runStageLoop<R extends BackendNodeResult, Req extends Stag
     if (!step.continueRunning) return { kind: 'done' };
   }
 }
+
+export interface HeadlessPipelineOptions<R extends BackendNodeResult, Req extends StageRequestShape, P> {
+  graph: Graph;
+  settings: { maxRequests: number; fixRoundLimit?: number };
+  skip?: ReadonlySet<string>;
+  deps: StageLoopDeps<R, Req, P>;
+  begin?: (runId: string) => void;
+  end?: () => void;
+  onError?: (active: Req['nodes'], collected: R[], error: string, graph: Graph) => R[];
+}
+
+export interface HeadlessPipelineResult<R extends BackendNodeResult> {
+  graph: Graph;
+  results: R[];
+  activeNodes: { nodeId: string }[];
+  leftoverIds: string[];
+  outcome: StageLoopOutcome;
+  error: string;
+}
+
+// 界面确认派发与控制台通道共用的唯一启动函数。调用方只注入 IO、保存和展示回调；
+// 阶段推进、结果写回、修正轮与异常收尾仍由同一套纯函数完成。
+export async function startPipelineHeadless<R extends BackendNodeResult, Req extends StageRequestShape, P>(
+  options: HeadlessPipelineOptions<R, Req, P>,
+): Promise<HeadlessPipelineResult<R>> {
+  const state: StageLoopState<R> = { graph: options.graph, collected: [], activeNodes: [] };
+  options.begin?.(options.deps.runId);
+  try {
+    const outcome = await runStageLoop(state, options.settings, options.skip ?? new Set<string>(), options.deps);
+    return { graph: state.graph, results: state.collected, activeNodes: state.activeNodes, leftoverIds: state.leftoverIds ?? [], outcome, error: outcome.kind === 'stopped' || outcome.kind === 'missing-target' ? outcome.error : '' };
+  } catch (error) {
+    const message = String(error);
+    const failed = options.onError?.(state.activeNodes as Req['nodes'], state.collected, message, state.graph) ?? [];
+    if (failed.length > 0) {
+      state.graph = options.deps.commit(applyDispatchResults(state.graph, failed));
+      state.collected.push(...failed);
+      options.deps.onResults([...state.collected]);
+    }
+    return { graph: state.graph, results: state.collected, activeNodes: state.activeNodes, leftoverIds: state.leftoverIds ?? [], outcome: { kind: 'stopped', error: message }, error: message };
+  } finally {
+    options.end?.();
+  }
+}

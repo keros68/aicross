@@ -4,7 +4,6 @@ import { contextPartsOf, originalRequestOf, serializeContext, serializeCurrentMe
 import {
   appendArbitration,
   appendDecision,
-  applyDispatchResults,
   buildNodeRequest,
   cacheReadOf,
   clearTargetSession,
@@ -16,7 +15,7 @@ import {
   progressStatusLabel,
   rollbackBeforeOf,
   runningDetailOf,
-  runStageLoop,
+  startPipelineHeadless,
   toggleRollbackOnReview,
   graphStage,
   groupResultsByStage,
@@ -33,7 +32,6 @@ import {
   routeReason,
   sameParentsResultCount,
   setReplyAdopted,
-  type StageLoopState,
 } from '../../../graph/dispatch';
 import type { DispatchProgressStore } from '../../../graph/dispatch-progress';
 import { updateNodeFallback, updateNodeSwarm } from '../../../graph/mutate';
@@ -324,20 +322,17 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     // 新一轮先清进度（R1-2）：快照以 nodeId 为键、跨轮存活，上一轮没收到终态
     // 的快照（叫停、抛错、丢事件）会让新一行一出现就显示上一轮的耗时、甚至
     // 立刻挂空转胶囊。beginRun 同时把共享层的 runId 换成本轮的。
-    progressStore.beginRun(runId);
     setCurrentNodes([]);
-    // 推进循环搬进 graph/dispatch.ts 的 runStageLoop（TASK-07-4）；这个对象由
-    // 循环就地更新，抛错时下面的 catch 还要读它的 graph / collected / activeNodes。
-    const loop: StageLoopState<DispatchNodeResult> = {
-      graph: graphWithTargets,
-      collected: [],
-      activeNodes: [],
-    };
     // R1-7：确认屏取消勾选的「待核对」节点不进实际派发集合——这一层不派，
     // 后续层重算时也不再捡起来。
     const skipIds = new Set([...reviewIds].filter((id) => !nodeIds.includes(id)));
-    try {
-      const outcome = await runStageLoop(loop, settings, skipIds, {
+    const pipeline = await startPipelineHeadless({
+      graph: graphWithTargets,
+      settings,
+      skip: skipIds,
+      begin: (id) => progressStore.beginRun(id),
+      end: () => progressStore.endRun(),
+      deps: {
         runId,
         buildRequest,
         preview: (stageRequest: DispatchStageRequest) => commands.previewDispatch(stageRequest),
@@ -346,34 +341,22 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         onPreview: (stagePreview) => { setPreview(stagePreview); setPreviewError(''); },
         onStage: (stageRequest) => setCurrentNodes(stageRequest.nodes),
         onResults: (collected) => setResults([...collected]),
-      });
-      if (outcome.kind === 'missing-target') {
-        setNodeIds(outcome.nodeIds);
-        setTargets((current) => ({ ...current, ...Object.fromEntries(outcome.nodeIds.map((id) => [id, { ...loop.graph.nodes[id].target! }])) }));
-        setRunError(outcome.error);
-        setPhase('confirm');
-        return;
-      }
-      if (outcome.kind === 'stopped') setRunError(outcome.error);
-      setRunLeftoverIds(loop.leftoverIds ?? []);
-      setPhase('results');
-    } catch (error) {
-      const message = String(error);
-      setRunError(message);
-      let working = loop.graph;
-      const collected = loop.collected;
-      const failed: DispatchNodeResult[] = failedNodesWithoutResults(loop.activeNodes, collected, message)
-        .map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', runner: 'unknown' as const, workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null, fallbackFrom: '', fallbackTo: '', fallbackSkipped: '' }));
-      if (failed.length > 0) working = onCommit(applyDispatchResults(working, failed));
-      setResults([...collected, ...failed]);
-      setRunLeftoverIds(loop.leftoverIds ?? []);
-      setPhase('results');
-    } finally {
-      // 本轮收尾（R1-3）：异常路径不会给每个节点补终态事件，快照会一直停在
-      // running——5s 时钟永不停，3 分钟后还会挂出「疑似空转」。endRun 把它们标成
-      // 终态，读数仍冻结在最后一条心跳上。正常跑完时是空操作。
-      progressStore.endRun();
+      },
+      onError: (active, collected, message, working) => failedNodesWithoutResults(active, collected, message)
+        .map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', runner: 'unknown' as const, workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null, fallbackFrom: '', fallbackTo: '', fallbackSkipped: '' })),
+    });
+    if (pipeline.outcome.kind === 'missing-target') {
+      const missingIds = pipeline.outcome.nodeIds;
+      setNodeIds(missingIds);
+      setTargets((current) => ({ ...current, ...Object.fromEntries(missingIds.map((id) => [id, { ...pipeline.graph.nodes[id].target! }])) }));
+      setRunError(pipeline.outcome.error);
+      setPhase('confirm');
+      return;
     }
+    if (pipeline.error) setRunError(pipeline.error);
+    setRunLeftoverIds(pipeline.leftoverIds);
+    setResults([...pipeline.results]);
+    setPhase('results');
   };
 
   const retry = (nodeId: string, upgrade: boolean) => {
@@ -796,7 +779,9 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                         onFocusNode?.(result.nodeId);
                       }}
                     />
-                    {cardActions.showAdopt && <button onClick={() => onCommit(setReplyAdopted(graph, result.nodeId, !adopted))}>{adopted ? '取消采纳' : '采纳'}</button>}
+                    {cardActions.showAdopt && <button onClick={() => {
+                      onCommit(setReplyAdopted(graph, result.nodeId, !adopted));
+                    }}>{adopted ? '取消采纳' : '采纳'}</button>}
                     {cardActions.showRetry && <button onClick={() => retry(result.nodeId, false)}>重派</button>}
                     {cardActions.showRetry && <button onClick={() => retry(result.nodeId, true)}>升级</button>}
                     {cardActions.note !== '' && <span className="dispatch-reason">{cardActions.note}</span>}

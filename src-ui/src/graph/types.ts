@@ -95,6 +95,7 @@ export interface GraphNode {
   swarm?: SwarmItem;
   leftover?: Leftover;
   created_at: string;
+  source?: 'console';
 }
 
 export interface Graph {
@@ -105,6 +106,8 @@ export interface Graph {
   nodes: Record<string, GraphNode>;
   created_at: string;
   updated_at: string;
+  project?: string;
+  source?: 'console';
 }
 
 export interface Preset {
@@ -168,7 +171,7 @@ export function cloneTarget(target: Target): Target {
 
 // 标题置空：默认名「对话图」由展示层兜底（tab 标题 / 已有图列表），
 // fillRoot 发第一句时取首行前 20 字作标题。
-export function newGraph(): Graph {
+export function newGraph(project = ''): Graph {
   const now = new Date().toISOString();
   const rootId = newNodeId();
   const root: GraphNode = {
@@ -186,5 +189,6 @@ export function newGraph(): Graph {
     nodes: { [rootId]: root },
     created_at: now,
     updated_at: now,
+    ...(project ? { project } : {}),
   };
 }

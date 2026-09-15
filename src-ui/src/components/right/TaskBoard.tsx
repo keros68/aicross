@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useT } from '../../i18n/useT';
 import { useAppState } from '../../store/app-state';
-import { isTauri, commands } from '../../tauri';
+import { isTauri, commands, onConsoleRunsChanged, type ConsoleRun } from '../../tauri';
 import { getTabActions } from '../../lib/tab-actions';
 import './TaskBoard.css';
 import { ChangesBoard } from './ChangesBoard';
@@ -28,6 +28,8 @@ import {
   type TaskLoadResult,
 } from './task-storage';
 import { useTextContextMenu } from '../../lib/use-text-context-menu';
+import { applyProgressEvent, beginProgressRun, progressRunOf, subscribeProgress, type ProgressRun } from '../../graph/dispatch-progress';
+import { idleHint, runningDetailOf } from '../../graph/dispatch';
 
 // ─── Persistence (Rust file backend with localStorage fallback) ──────────────
 
@@ -82,6 +84,39 @@ export function TaskBoard() {
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [addingId, setAddingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [consoleRuns, setConsoleRuns] = useState<ConsoleRun[]>([]);
+  const [consoleProgress, setConsoleProgress] = useState<Record<string, ProgressRun>>({});
+  const [consoleNow, setConsoleNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    commands.listConsoleRuns().then((runs) => { if (!disposed) setConsoleRuns(runs); }).catch(() => {});
+    onConsoleRunsChanged((event) => { if (!disposed) setConsoleRuns(event.runs); })
+      .then((stop) => { if (disposed) stop(); else unlisten = stop; }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  const runningConsoleRuns = consoleRuns.filter((run) => run.status === 'running');
+  const runningConsoleKey = runningConsoleRuns.map((run) => run.run_id).sort().join('\0');
+  useEffect(() => {
+    const subscriptions = runningConsoleRuns.map((run) => subscribeProgress(run.run_id, (payload) => {
+      setConsoleProgress((current) => {
+        const value = current[run.run_id] ?? beginProgressRun(run.run_id);
+        return { ...current, [run.run_id]: applyProgressEvent(value, payload, Date.now()) };
+      });
+    }));
+    return () => subscriptions.forEach((subscription) => subscription.dispose());
+    // run ids are the subscription identity; node/status updates do not require a re-subscribe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runningConsoleKey]);
+  useEffect(() => {
+    if (runningConsoleRuns.length === 0) return;
+    setConsoleNow(Date.now());
+    const timer = setInterval(() => setConsoleNow(Date.now()), 5000);
+    return () => clearInterval(timer);
+  }, [runningConsoleRuns.length]);
 
   // Persist last-selected tab so a returning user resumes where they left off.
   // First-time users land on Tasks. Legacy 'sessions' value (history moved to
@@ -585,6 +620,26 @@ export function TaskBoard() {
             <div className="task-damaged" role="status">
               {DAMAGED_TEXT[loadDamaged]}
             </div>
+          )}
+          {runningConsoleRuns.length > 0 && (
+            <section className="console-run-list" aria-label="来自总指挥的在飞任务">
+              <div className="console-run-heading">来自总指挥 · {runningConsoleRuns.length} 项任务</div>
+              {runningConsoleRuns.map((run) => (
+                <div key={run.run_id} className="console-run-card">
+                  <div>{run.nodes.filter((node) => node.status === 'running').length} 路在飞</div>
+                  {run.nodes.filter((node) => node.status === 'running').map((node) => {
+                    const progress = progressRunOf(consoleProgress[run.run_id] ?? beginProgressRun(run.run_id), node.node_id);
+                    const detail = runningDetailOf(progress, consoleNow);
+                    const stuck = idleHint(progress, consoleNow);
+                    return <div key={node.node_id} className="console-run-route">
+                      <span>{node.agent}/{node.model} · {node.role}</span>
+                      {detail && <span>{detail}</span>}
+                      {stuck && <span className="console-run-stuck">{stuck}</span>}
+                    </div>;
+                  })}
+                </div>
+              ))}
+            </section>
           )}
           {viewMode === 'note' ? (
             <TaskNoteView

@@ -416,12 +416,14 @@ describe('07C-R1-3 异常收尾后时钟停', () => {
     }
   });
 
-  it('接线：start() 的 finally 调 endRun，死接口 resetRun 已删', () => {
+  it('接线：共享启动函数的 finally 调 endRun，死接口 resetRun 已删', () => {
     const shared = readSource('../dispatch-progress.ts');
     const overlay = readSource('../../components/center/graph/DispatchOverlay.tsx');
+    const pipeline = readSource('../dispatch.ts');
     expect(shared).not.toContain('resetRun');
     expect(shared).toMatch(/endRun: \(\) => void;/);
-    expect(overlay).toMatch(/\} finally \{[\s\S]*?progressStore\.endRun\(\);[\s\S]*?\}/);
+    expect(pipeline).toMatch(/finally \{[\s\S]*?options\.end\?\.\(\);[\s\S]*?\}/);
+    expect(overlay).toContain('end: () => progressStore.endRun()');
   });
 });
 

@@ -3985,6 +3985,9 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::orchestration::save_premises,
             crate::orchestration::load_commander,
             crate::orchestration::save_commander,
+            crate::console_api::list_console_runs,
+            crate::console_api::console_run_update,
+            crate::console_api::console_action_ack,
         ])
         .setup(|app| {
             // Seed bundled skills (screenshot, vibeid) into
@@ -4137,6 +4140,7 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             }
 
             if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                crate::console_api::remove_manifest();
                 crate::channels::acp::shutdown_all();
                 let state = app_handle.state::<AppState>();
                 let mut n = 0usize;

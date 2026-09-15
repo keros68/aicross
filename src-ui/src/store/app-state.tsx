@@ -341,6 +341,7 @@ type Action =
   | { type: 'SET_ICON_THEME'; theme: IconTheme }
   | { type: 'SET_LANG'; lang: string }
   | { type: 'ADD_TERMINAL'; session: TerminalSession }
+  | { type: 'ADD_TERMINAL_BACKGROUND'; session: TerminalSession }
   | { type: 'REMOVE_TERMINAL'; id: string }
   | { type: 'CLOSE_TERMINAL'; id: string }
   | { type: 'REORDER_TERMINAL'; sessionId: string; beforeId: string | null }
@@ -426,6 +427,15 @@ export function reducer(state: AppState, action: Action): AppState {
         activeTerminalId: session.id,
         graphFocus: session.tool === 'graph' && session.toolData === state.graphFocus?.graphId ? state.graphFocus : null,
       };
+    }
+    case 'ADD_TERMINAL_BACKGROUND': {
+      const activeFolder = state.terminals.find(t => t.id === state.activeTerminalId)?.folderPath
+        ?? state.terminals.find(t => !!t.folderPath)?.folderPath
+        ?? null;
+      const session = action.session.folderPath == null
+        ? { ...action.session, folderPath: activeFolder }
+        : action.session;
+      return { ...state, terminals: [...state.terminals, session] };
     }
     case 'REMOVE_TERMINAL':
     case 'CLOSE_TERMINAL': {

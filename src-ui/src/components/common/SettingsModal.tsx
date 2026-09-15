@@ -633,6 +633,15 @@ export function SettingsModal() {
                     </select>
                   </label>
                   <label className="settings-dispatch-field">
+                    <span>通道在飞上限</span>
+                    <select
+                      value={dispatchSettings.consoleRunLimit}
+                      onChange={(e) => setDispatchOption('consoleRunLimit', Number(e.target.value))}
+                    >
+                      <option value={1}>1</option><option value={2}>2</option><option value={3}>3</option>
+                    </select>
+                  </label>
+                  <label className="settings-dispatch-field">
                     <span>总请求上限</span>
                     <input
                       type="number"
