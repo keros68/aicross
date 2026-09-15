@@ -82,3 +82,9 @@
 50. 自动直启的「真实接入」断言仍是源码文本比对；把 effect 判定抽成纯函数再单测。（DS 2）
 51. tab 条上的 claude/codex 图标仍是内联字面量副本（CLAUDE_SVG/CODEX_SVG），与 public/icons/tools 同源但各存一份；设置页与接入页两处仍直出机器 id。（DS 4/5、GLM 5）
 52. 启动器 `onShown` 每次渲染重复登记（幂等，无功能影响）；有存量默认时探测期间首屏短暂空白属有意取舍。（GLM 2/3）
+
+## TASK-16 R1 复审剩余（09-15，两家都判可交付；低危，择期）
+
+53. 控制台 run 未接图进度 store（图上节点卡无心跳）：`startPipelineHeadless` 支持 begin/end，但 progress store 挂在 GraphTab 内，通道拿不到；需要 graphId → store 的注册表。（DS 2）
+54. `aicross adopt` 要求图在内存 state 中，用户关掉该图 tab 后得 409；先 loadGraph 兜底。（GLM N4）
+55. `head_and_options_are_http_methods` 与 `HTTP_TIMEOUT` 两条测试仍是自证；NSIS 脚本本体无自动化测试，只有 TS 镜像的纯函数测试。（GLM N5 / 5）
