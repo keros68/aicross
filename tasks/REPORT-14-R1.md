@@ -34,3 +34,7 @@
 - 没有未完成或部分完成项。
 - 未运行被忽略的真机／真实模型测试；本轮按要求只使用本地假通道和单元／集成测试。
 - 未运行 `cargo fmt`，未启动 Tauri 窗口，未修改 `src/terminal.rs`，未 commit，未 push。
+
+## 复审后补记（编排者，aa81270）
+
+两家复审（`tasks/review-14-r1-*.md`）都判可交付。DeepSeek 新发现第 1 条（高）编排者直接修：可写节点撞额度时的回滚原本复用 `rollback_node_changes_core`，它按节点取「历史最新快照」——本次尝试没改动时判「回滚失败」不切备选，且可能把上一次派发的产物和用户手改一起还原。改成只认本次尝试的快照（`DispatchArtifacts.before_dir` 记录本次落下的快照目录；没有就「无需回滚」照常切；有就按该目录恢复，抽出 `restore_before_dir`），新增 `task14_r2_writable_quota_without_changes_falls_back_without_rollback` 与 `task14_r2_quota_rollback_ignores_stale_snapshot_from_earlier_run`，回退到旧查找后两条都红。顺带恢复 05B 的「可写节点」跳过标记（非额度失败）。改后全树 `cargo test` 364 passed、vitest 438、build 通过。其余低危记入 `tasks/fix-04-r5-backlog.md` 第 33–36 条。
