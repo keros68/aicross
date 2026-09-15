@@ -12,6 +12,7 @@ import { depthMap } from '../../../graph/layout';
 import { commitGraph, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
 import { nodeLabel, presetDisplayName } from '../../../graph/label';
+import { continuationNodeId } from '../../../graph/layout';
 import { NodePanel } from './NodePanel';
 import { PresetBuilder } from './PresetBuilder';
 import { ExplainOverlay } from './ExplainOverlay';
@@ -141,7 +142,8 @@ export function OrchestrationPanel() {
     // 擂台跳过角色默认填充：三路目标留空，G1 确认屏逐家选（不然会填成同一家）
     const effective = roles ? presetWithRoleDefaults(preset, roles) : preset;
     // 拆分节点的「最多 N 件」跟着设置里的蜂群件数上限走（R1-7）。
-    const g2 = stamp(graph, focus.nodeId, effective, loadDispatchSettings().swarmLimit);
+    // 遗留节点不能当父节点（R1 复审 A）：焦点落在遗留上时盖到它的来源验收节点。
+    const g2 = stamp(graph, continuationNodeId(graph, focus.nodeId), effective, loadDispatchSettings().swarmLimit);
     recordStamp(
       graph.id,
       Object.keys(g2.nodes).filter((id) => !before.has(id)),

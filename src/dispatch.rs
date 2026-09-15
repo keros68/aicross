@@ -7656,7 +7656,10 @@ mod tests {
         let workdir = root.join("blind");
         let marker = root.join("validation-ran.txt");
         fs::create_dir_all(&project).unwrap();
+        #[cfg(windows)]
         let command = format!("Set-Content -LiteralPath '{}' -Value ran", marker.display());
+        #[cfg(not(windows))]
+        let command = format!("printf ran > '{}'", marker.display());
         let settings = DispatchSettings { validation_command: command, ..DispatchSettings::default() };
         let request = task12_blind_node(true);
         let (prepared, attached) = attach_review_validation(
@@ -7682,7 +7685,10 @@ mod tests {
         let project = root.join("project");
         let marker = root.join("validation-count.txt");
         fs::create_dir_all(&project).unwrap();
+        #[cfg(windows)]
         let command = format!("Add-Content -LiteralPath '{}' -Value x; Write-Output shared-output", marker.display());
+        #[cfg(not(windows))]
+        let command = format!("printf x >> '{}'; echo shared-output", marker.display());
         let settings = DispatchSettings { validation_command: command, ..DispatchSettings::default() };
         clear_review_validation_cache("same-run", &project);
         for name in ["blind-a", "blind-b"] {

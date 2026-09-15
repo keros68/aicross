@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import orchestrationSource from '../../../../src/orchestration.rs?raw';
+import orchestrationPanelSource from '../../components/right/orchestration/OrchestrationPanel.tsx?raw';
 import manualSource from '../../../../docs/MANUAL.md?raw';
 import explainSource from '../../components/right/orchestration/ExplainOverlay.tsx?raw';
 import settingsSource from '../../components/common/SettingsModal.tsx?raw';
@@ -180,6 +181,8 @@ describe('TASK-12 修正轮上限与遗留节点', () => {
     const removed = removeDraftNode(capped, leftover.id);
     expect(removed.nodes[leftover.id]).toBeUndefined();
     expect(leftoverNodes(removed)).toHaveLength(0);
+    // 右栏「应用」也不能把预设盖在遗留节点上（R1 复审 A）
+    expect(orchestrationPanelSource).toContain('stamp(graph, continuationNodeId(graph, focus.nodeId)');
   });
 
   it('验证命令未通过的重派同样读上限：上限 1 重派一次后把等待中的验收标已跳过', () => {
@@ -364,7 +367,7 @@ describe('TASK-12 验收与盲审同阶段并行', () => {
   it('手册与讲解页说明验收只读判定、验证输出来源及角色默认', () => {
     for (const text of [manualSource, explainSource]) {
       expect(text).toContain('看产物给 PASS / NEEDS_FIX');
-      expect(text).toContain('派盲审前由执行节点跑一次验证命令');
+      expect(text).toContain('派盲审前引擎先跑一次验证命令');
       expect(text).toContain('沿用验收角色的默认目标');
     }
     expect(manualSource).toContain('三路都要在确认派发页选择目标');
