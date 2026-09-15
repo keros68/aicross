@@ -4,6 +4,9 @@
 
 import { describe, expect, it } from 'vitest';
 import orchestrationSource from '../../../../src/orchestration.rs?raw';
+import manualSource from '../../../../docs/MANUAL.md?raw';
+import explainSource from '../../components/right/orchestration/ExplainOverlay.tsx?raw';
+import settingsSource from '../../components/common/SettingsModal.tsx?raw';
 import {
   appendCorrectionRound,
   appendLeftover,
@@ -31,6 +34,8 @@ import { PRESET_NODE_TEXTS, VERIFICATION_ROUTE_TEXT, childrenOf, stamp } from '.
 import { nodeLabel } from '../label.ts';
 import { newGraph } from '../types.ts';
 import type { Graph, GraphNode, Preset, Target } from '../types.ts';
+import { continuationNodeId, latestLeaf } from '../layout.ts';
+import { appendTurn, removeDraftNode } from '../mutate.ts';
 
 const CONTRACT_FOCUS = '契约（字段、命令签名、序列化大小写）有没有变';
 const RED_TEST_FOCUS = '新增的测试能不能红：把修复回退后该测试是否会失败';
@@ -77,6 +82,10 @@ function acceptResult(nodeId: string, text = 'NEEDS_FIX\n- 测试未覆盖\n- �
 
 function validationFailure(nodeId: string): BackendNodeResult {
   return { nodeId, status: 'validation_failed', text: '', modelReported: '', sessionId: '', tokensIn: 0, tokensOut: 0, durationMs: 0, error: 'pytest failed', validationOutput: '1 failed' };
+}
+
+function failedResult(nodeId: string, status: 'error' | 'timeout' = 'error'): BackendNodeResult {
+  return { ...acceptResult(nodeId, ''), status, error: status };
 }
 
 describe('TASK-12 修正轮上限与遗留节点', () => {
@@ -152,6 +161,27 @@ describe('TASK-12 修正轮上限与遗留节点', () => {
     expect(leftoverNodes(step.graph).map((n) => n.id)).toEqual([leftover.id]);
   });
 
+  it('验收 NEEDS_FIX 与验证 error 同批返回时仍生成修正轮', () => {
+    const g = pipeline(1);
+    const step = reducePipelineStep(g, [acceptResult('a1'), failedResult('v1')], {}, 1);
+    expect(step.continueRunning).toBe(true);
+    expect(Object.values(step.graph.nodes).filter((n) => !g.nodes[n.id]).map((n) => n.target?.role).sort())
+      .toEqual(['执行', '验收', '验证']);
+  });
+
+  it('遗留焦点回退到来源验收，新节点不会挂在遗留下；遗留可删除', () => {
+    const capped = reducePipelineStep(pipeline(2), [acceptResult('a2')], {}, 1).graph;
+    const leftover = leftoverNodes(capped)[0];
+    expect(latestLeaf(capped)).not.toBe(leftover.id);
+    const parent = continuationNodeId(capped, leftover.id);
+    expect(parent).toBe('a2');
+    const appended = appendTurn(capped, parent, '继续处理');
+    expect(appended.graph.nodes[appended.nodeId].parents).toEqual(['a2']);
+    const removed = removeDraftNode(capped, leftover.id);
+    expect(removed.nodes[leftover.id]).toBeUndefined();
+    expect(leftoverNodes(removed)).toHaveLength(0);
+  });
+
   it('验证命令未通过的重派同样读上限：上限 1 重派一次后把等待中的验收标已跳过', () => {
     const g = graph([
       node('r', []),
@@ -173,6 +203,31 @@ describe('TASK-12 修正轮上限与遗留节点', () => {
     expect(third.continueRunning).toBe(true);
     const retry3 = Object.values(third.graph.nodes).find((n) => !g.nodes[n.id] && n.target?.role === '执行')!;
     expect(retry3.user.text.startsWith('[修正 2/3] ')).toBe(true);
+  });
+
+  it('验证命令未通过时同父验证兄弟一并已跳过，不再可派', () => {
+    const g = graph([
+      node('r', []),
+      node('e', ['r'], { reply: { status: 'failed', text: '' }, target: target({ write: '单写者' }) }),
+      node('a', ['e'], { reply: { status: 'draft', text: '' }, target: target({ role: '验收', visibility: '盲' }) }),
+      node('v', ['e'], { reply: { status: 'draft', text: '' }, target: target({ role: '验证', visibility: '盲' }) }),
+    ]);
+    for (const retries of [{}, { e: 1 }] as Record<string, number>[]) {
+      const step = reducePipelineStep(g, [validationFailure('e')], retries, 1);
+      expect(step.graph.nodes.v.reply?.skipped_reason).toBe('上游验证未通过');
+      expect(nodeStatusLabel(step.graph.nodes.v)).toBe('已跳过');
+      expect(dispatchableNodeIds(step.graph)).not.toContain('v');
+    }
+  });
+
+  it('同一验收重复到顶只更新一张遗留卡，并随步状态传出同一个 id', () => {
+    const first = reducePipelineStep(pipeline(2), [acceptResult('a2')], {}, 1);
+    const id = first.leftoverIds[0];
+    const secondGraph = { ...first.graph, nodes: { ...first.graph.nodes, a2: { ...first.graph.nodes.a2, reply: { status: 'done' as const, text: 'NEEDS_FIX\n- 新条目' } } } };
+    const second = reducePipelineStep(secondGraph, [acceptResult('a2', 'NEEDS_FIX\n- 新条目')], {}, 1);
+    expect(leftoverNodes(second.graph)).toHaveLength(1);
+    expect(second.leftoverIds).toEqual([id]);
+    expect(second.graph.nodes[id].leftover?.items).toEqual(['- 新条目']);
   });
 
   it('runStageLoop 把设置里的上限传给推进函数', async () => {
@@ -234,13 +289,14 @@ describe('TASK-12 验收与盲审同阶段并行', () => {
   };
 
   it('引擎侧内置预设：经济模式第三段是「验收 + 验证」，盲审模式是「验收 + 验证 + 验证」', () => {
-    const start = orchestrationSource.indexOf('fn builtin_presets()');
-    const economy = orchestrationSource.slice(orchestrationSource.indexOf('id: "builtin-economy"', start), orchestrationSource.indexOf('id: "builtin-blind"', start));
+    const blocks = new Map([...orchestrationSource.matchAll(/let \w+ = Preset \{[\s\S]*?^    \};/gm)]
+      .map((match) => [match[0].match(/id: "([^"]+)"/)?.[1], match[0]]));
+    const economy = blocks.get('builtin-economy') ?? '';
     const stages = economy.split('Stage {').slice(1);
     expect(stages).toHaveLength(3);
     expect(stages[2]).toContain('role: "验收".into()');
     expect(stages[2]).toContain('role: "验证".into()');
-    const blind = orchestrationSource.slice(orchestrationSource.indexOf('id: "builtin-blind"', start), orchestrationSource.indexOf('id: "builtin-arena"', start));
+    const blind = blocks.get('builtin-blind') ?? '';
     expect(blind).toContain('["验收", "验证", "验证"]');
   });
 
@@ -303,6 +359,20 @@ describe('TASK-12 验收与盲审同阶段并行', () => {
     expect(blind.stages[0].nodes.every((t) => t.model === '')).toBe(true);
     const jury = presetWithRoleDefaults({ ...blindShape, id: 'builtin-jury', name: '评审模式' }, roles);
     expect(jury.stages[0].nodes.every((t) => t.model === '')).toBe(true);
+  });
+
+  it('手册与讲解页说明验收只读判定、验证输出来源及角色默认', () => {
+    for (const text of [manualSource, explainSource]) {
+      expect(text).toContain('看产物给 PASS / NEEDS_FIX');
+      expect(text).toContain('派盲审前由执行节点跑一次验证命令');
+      expect(text).toContain('沿用验收角色的默认目标');
+    }
+    expect(manualSource).toContain('三路都要在确认派发页选择目标');
+  });
+
+  it('设置页完整说明共用上限与到顶已跳过', () => {
+    expect(settingsSource).toContain('验证命令未通过的重派与修正轮共用此上限');
+    expect(settingsSource).toContain('验证未通过到顶时该验收标「已跳过」');
   });
 });
 

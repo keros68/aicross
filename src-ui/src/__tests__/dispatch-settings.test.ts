@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_DISPATCH_SETTINGS, loadDispatchSettings, saveDispatchSettings } from '../graph/dispatch-settings';
+import { DEFAULT_DISPATCH_SETTINGS, fixRoundLimitFromInput, loadDispatchSettings, saveDispatchSettings } from '../graph/dispatch-settings';
 
 describe('ACP dispatch settings', () => {
   const values = new Map<string, string>();
@@ -36,5 +36,11 @@ describe('ACP dispatch settings', () => {
     expect(loadDispatchSettings().fixRoundLimit).toBe(0);
     values.set('aicross-dispatch-settings', JSON.stringify({ fixRoundLimit: 'x' }));
     expect(loadDispatchSettings().fixRoundLimit).toBe(1);
+  });
+
+  it('修正轮上限输入清空时回到默认 1，显式 0 保持 0', () => {
+    expect(fixRoundLimitFromInput('')).toBe(1);
+    expect(fixRoundLimitFromInput('   ')).toBe(1);
+    expect(fixRoundLimitFromInput('0')).toBe(0);
   });
 });

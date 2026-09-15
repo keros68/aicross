@@ -637,11 +637,18 @@ export function appendValidationRetry(
   const nextExecutionId = newNodeId();
   const nextAcceptanceId = newNodeId();
   const now = Date.now();
+  const skippedVerifications = verificationSiblings(graph, waitingAccept)
+    .filter((node) => node.reply?.status === 'draft')
+    .map((node) => [node.id, {
+      ...node,
+      reply: { status: 'draft' as const, text: '', skipped_reason: '上游验证未通过' },
+    }] as const);
   return {
     graph: {
       ...graph,
       nodes: {
       ...graph.nodes,
+      ...Object.fromEntries(skippedVerifications),
       [waitingAccept.id]: { ...waitingAccept, reply: { status: 'failed', text: '验证命令未通过，未送审' } },
       [nextExecutionId]: {
         id: nextExecutionId,
@@ -673,14 +680,16 @@ function closeWaitingAcceptance(graph: Graph, executionId: string): Graph {
     (node) => node.parents.includes(executionId) && node.target?.role === '验收' && node.reply?.status === 'draft',
   );
   if (!waitingAccept) return graph;
+  const skipped = [waitingAccept, ...verificationSiblings(graph, waitingAccept)
+    .filter((node) => node.reply?.status === 'draft')];
   return {
     ...graph,
     nodes: {
       ...graph.nodes,
-      [waitingAccept.id]: {
-        ...waitingAccept,
-        reply: { status: 'draft', text: '', skipped_reason: '上游验证未通过' },
-      },
+      ...Object.fromEntries(skipped.map((node) => [node.id, {
+        ...node,
+        reply: { status: 'draft' as const, text: '', skipped_reason: '上游验证未通过' },
+      }])),
     },
   };
 }
@@ -705,6 +714,7 @@ export interface PipelineStep {
   graph: Graph;
   validationRetries: Record<string, number>;
   continueRunning: boolean;
+  leftoverIds: string[];
 }
 
 // ── TASK-12 修正轮上限与遗留节点 ─────────────────────────────────────────
@@ -738,7 +748,8 @@ export function appendLeftover(graph: Graph, acceptId: string): { graph: Graph; 
   if (!accept) return { graph };
   const items = leftoverItems(accept.reply?.text ?? '');
   if (items.length === 0) return { graph };
-  const id = newNodeId();
+  const existing = Object.values(graph.nodes).find((node) => node.leftover?.source_node_id === acceptId);
+  const id = existing?.id ?? newNodeId();
   const node: GraphNode = {
     id,
     kind: 'turn',
@@ -768,9 +779,31 @@ export function reducePipelineStep(
   fixRoundLimit: number = DEFAULT_FIX_ROUND_LIMIT,
 ): PipelineStep {
   const limit = Math.max(0, Math.floor(fixRoundLimit));
+  const acceptanceResults = results.filter(
+    (result) => graph.nodes[result.nodeId]?.target?.role === '验收',
+  );
+  let acceptanceGraph = graph;
+  let addedCorrection = false;
+  const leftoverIds: string[] = [];
+  for (const result of acceptanceResults) {
+    if (result.status !== 'ok' || parseAcceptance(result.text) !== 'NEEDS_FIX') continue;
+    // 验收提出修正时优先生成下一轮；同批盲验证的 error / timeout 只保留在该路结果上。
+    if (acceptanceRound(acceptanceGraph, result.nodeId) > limit) {
+      const appended = appendLeftover(acceptanceGraph, result.nodeId);
+      acceptanceGraph = appended.graph;
+      if (appended.leftoverId) leftoverIds.push(appended.leftoverId);
+      continue;
+    }
+    const appended = appendCorrectionRound(acceptanceGraph, result.nodeId);
+    acceptanceGraph = appended.graph;
+    addedCorrection ||= !!appended.executionId;
+  }
+  if (addedCorrection) {
+    return { graph: acceptanceGraph, validationRetries, continueRunning: true, leftoverIds };
+  }
   const validationFailures = results.filter((result) => result.status === 'validation_failed');
   if (validationFailures.length > 0) {
-    let next = graph;
+    let next = acceptanceGraph;
     let addedRetry = false;
     const retries = { ...validationRetries };
     for (const failure of validationFailures) {
@@ -792,33 +825,15 @@ export function reducePipelineStep(
         addedRetry = true;
       }
     }
-    return { graph: next, validationRetries: retries, continueRunning: addedRetry };
+    return { graph: next, validationRetries: retries, continueRunning: addedRetry, leftoverIds };
   }
   if (results.some((result) => result.status !== 'ok')) {
-    return { graph, validationRetries, continueRunning: false };
+    return { graph: acceptanceGraph, validationRetries, continueRunning: false, leftoverIds };
   }
-
-  const acceptanceResults = results.filter(
-    (result) => graph.nodes[result.nodeId]?.target?.role === '验收',
-  );
   if (acceptanceResults.length === 0) {
-    return { graph, validationRetries, continueRunning: true };
+    return { graph: acceptanceGraph, validationRetries, continueRunning: true, leftoverIds };
   }
-
-  let next = graph;
-  let addedCorrection = false;
-  for (const result of acceptanceResults) {
-    if (parseAcceptance(result.text) !== 'NEEDS_FIX') continue;
-    // acceptanceRound 含本轮验收：已派过的修正轮数 = acceptanceRound - 1。
-    if (acceptanceRound(next, result.nodeId) > limit) {
-      next = appendLeftover(next, result.nodeId).graph;
-      continue;
-    }
-    const appended = appendCorrectionRound(next, result.nodeId);
-    next = appended.graph;
-    addedCorrection ||= !!appended.executionId;
-  }
-  return { graph: next, validationRetries, continueRunning: addedCorrection };
+  return { graph: acceptanceGraph, validationRetries, continueRunning: false, leftoverIds };
 }
 
 export interface ResultStageGroup<T extends BackendNodeResult = BackendNodeResult> {
@@ -1303,6 +1318,7 @@ export interface StageLoopState<R extends BackendNodeResult> {
   graph: Graph;
   collected: R[];
   activeNodes: { nodeId: string }[];
+  leftoverIds?: string[];
 }
 
 export interface StageRequestShape {
@@ -1369,6 +1385,9 @@ export async function runStageLoop<R extends BackendNodeResult, Req extends Stag
     state.graph = deps.commit(applyDispatchResults(state.graph, output.results));
     const step = reducePipelineStep(state.graph, output.results, validationRetries, settings.fixRoundLimit ?? DEFAULT_FIX_ROUND_LIMIT);
     validationRetries = step.validationRetries;
+    if (step.leftoverIds.length > 0) {
+      state.leftoverIds = [...new Set([...(state.leftoverIds ?? []), ...step.leftoverIds])];
+    }
     if (step.graph !== state.graph) state.graph = deps.commit(step.graph);
     if (!step.continueRunning) return { kind: 'done' };
   }

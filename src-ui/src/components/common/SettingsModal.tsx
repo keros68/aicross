@@ -21,7 +21,7 @@ import { attachmentDraftState, buildPremiseCheckGraph, matchPremiseResults, prem
 import { modelStatusSuffix } from '../../resources/model-picker';
 import { FontPicker } from './FontPicker';
 import { THEME_COLORS, LANGUAGES, TASK_VIEW_MODES } from '../../lib/personalization';
-import { loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } from '../../graph/dispatch-settings';
+import { fixRoundLimitFromInput, loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } from '../../graph/dispatch-settings';
 import { FIX_ROUND_LIMIT_MAX, ROLE_PROMPT_TEMPLATES } from '../../graph/dispatch';
 import './SettingsModal.css';
 
@@ -649,9 +649,9 @@ export function SettingsModal() {
                       min={0}
                       max={FIX_ROUND_LIMIT_MAX}
                       value={dispatchSettings.fixRoundLimit}
-                      onChange={(e) => setDispatchOption('fixRoundLimit', Math.max(0, Math.min(FIX_ROUND_LIMIT_MAX, Math.floor(Number(e.target.value) || 0))))}
+                      onChange={(e) => setDispatchOption('fixRoundLimit', fixRoundLimitFromInput(e.target.value))}
                     />
-                    <span>到上限后未闭合的条目生成遗留节点，不再派修正</span>
+                    <span>到上限后未闭合的条目生成遗留节点，不再派修正。验证命令未通过的重派与修正轮共用此上限；验证未通过到顶时该验收标「已跳过」。</span>
                   </label>
                   <label className="settings-dispatch-field settings-dispatch-wide">
                     <span>归类模型</span>

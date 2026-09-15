@@ -393,8 +393,8 @@ fn builtin_presets() -> Vec<Preset> {
                     ..blank_target()
                 }],
             },
-            // TASK-12：验收阶段两路同阶段——验收（验证命令 + 验收提示词，修正轮只看它）
-            // 与验证（盲审同一份产物，派发前附 VALIDATION.txt），互不等待，结果并排。
+            // TASK-12：验收阶段两路同阶段——验收（盲、只读，看产物给 PASS / NEEDS_FIX，
+            // 修正轮只看它）与验证（派盲审前由执行节点跑一次验证命令并附输出），结果并排。
             Stage {
                 nodes: vec![
                     Target {
@@ -415,7 +415,8 @@ fn builtin_presets() -> Vec<Preset> {
             },
         ],
     };
-    // 盲审模式（TASK-12）：一段三路——一路验收跑验证命令，两路验证盲审；同阶段并行。
+    // 盲审模式（TASK-12）：一段三路——一路验收看产物给 PASS / NEEDS_FIX，两路验证
+    // 盲审；派盲审前由执行节点跑一次验证命令并附输出，同阶段并行。
     let blind = Preset {
         id: "builtin-blind".into(),
         name: "盲审模式".into(),

@@ -1877,6 +1877,8 @@ fn dispatch_stage_core(
         )?;
     }
 
+    clear_review_validation_cache(&request.run_id, &project);
+
     let order: HashMap<&str, usize> = request
         .nodes
         .iter()
@@ -2984,12 +2986,13 @@ fn run_one_attempt(
     // 节点还是 error。
     let prepared = if verified {
         prepare_outbound(&node, settings.redact, &workdir, blind)
+            .map(|(prompt, names, count)| OutboundPreparation::Materialized(prompt, names, count))
     } else {
-        Ok(("(未发送)".to_string(), Vec::new(), 0))
+        Ok(OutboundPreparation::Unsent)
     };
     // TASK-12：审查材料附带验证输出（盲目录物化后、派发前；一处调用）。
     let (prepared, validation_attached) =
-        attach_review_validation(project, settings, &node, &workdir, blind, timeout, prepared);
+        attach_review_validation(run_id, project, settings, &node, &workdir, blind, timeout, prepared);
     let effective_session =
         if channels::normalize_agent(&node.agent) == "pi" && node.session_id.is_empty() {
             Uuid::new_v4().to_string()
@@ -2998,7 +3001,8 @@ fn run_one_attempt(
         };
 
     let (prompt, material_names, prepared_redacted, preparation_error) = match prepared {
-        Ok(value) => (value.0, value.1, value.2, String::new()),
+        Ok(OutboundPreparation::Materialized(prompt, names, count)) => (prompt, names, count, String::new()),
+        Ok(OutboundPreparation::Unsent) => ("(未发送)".into(), Vec::new(), 0, String::new()),
         Err(error) => ("(未发送)".into(), Vec::new(), 0, error),
     };
     let continuing = is_continuing(&node);
@@ -3355,6 +3359,53 @@ pub const REVIEW_VALIDATION_LIMIT: usize = 8 * 1024;
 const REVIEW_VALIDATION_PROMPT_NOTE: &str = "验证命令输出见 VALIDATION.txt";
 const REVIEW_VALIDATION_UNSET: &str = "未配置验证命令";
 
+#[derive(Debug)]
+enum OutboundPreparation {
+    Materialized(String, Vec<String>, usize),
+    Unsent,
+}
+
+type ReviewValidationCell = Arc<OnceLock<String>>;
+
+fn review_validation_cache() -> &'static Mutex<HashMap<String, ReviewValidationCell>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, ReviewValidationCell>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn review_validation_cache_key(run_id: &str, project: &Path) -> String {
+    let project = fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    format!("{run_id}\0{}", project.to_string_lossy())
+}
+
+fn clear_review_validation_cache(run_id: &str, project: &Path) {
+    let key = review_validation_cache_key(run_id, project);
+    review_validation_cache().lock().unwrap().remove(&key);
+}
+
+#[cfg(test)]
+type ReviewValidationHook = Arc<
+    dyn Fn(&str, &Path, Duration) -> Option<Result<String, String>> + Send + Sync,
+>;
+
+#[cfg(test)]
+fn review_validation_hook() -> &'static Mutex<Option<ReviewValidationHook>> {
+    static HOOK: OnceLock<Mutex<Option<ReviewValidationHook>>> = OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+fn run_review_validation(command: &str, cwd: &Path, timeout: Duration) -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(result) = review_validation_hook()
+        .lock()
+        .unwrap()
+        .clone()
+        .and_then(|hook| hook(command, cwd, timeout))
+    {
+        return result;
+    }
+    run_validation(command, cwd, timeout)
+}
+
 /// 验证命令在「材料来源目录」跑：上游产物带 worktree 且目录还在就用它，否则项目目录。
 fn review_material_dir(project: &Path, node: &DispatchNodeRequest) -> PathBuf {
     node.upstream_artifacts
@@ -3398,31 +3449,52 @@ fn review_validation_text(command: &str, outcome: Result<String, String>) -> Str
 …（输出超过 8 KB 已截断）", &text[..cut])
 }
 
+/// 同一 run、同一项目目录只执行一次验证命令；同批各盲验证节点复用同一正文。
+fn cached_review_validation_text(
+    run_id: &str,
+    project: &Path,
+    settings: &DispatchSettings,
+    node: &DispatchNodeRequest,
+    timeout: Duration,
+) -> String {
+    let key = review_validation_cache_key(run_id, project);
+    let cell = {
+        let mut cache = review_validation_cache().lock().unwrap();
+        cache.entry(key).or_insert_with(|| Arc::new(OnceLock::new())).clone()
+    };
+    cell.get_or_init(|| {
+        let command = settings.validation_command.trim();
+        let outcome = if command.is_empty() {
+            Ok(String::new())
+        } else {
+            let half = Duration::from_secs((timeout.as_secs() / 2).max(1));
+            run_review_validation(command, &review_material_dir(project, node), half)
+        };
+        review_validation_text(command, outcome)
+    }).clone()
+}
+
 /// 盲目录物化成功后附 VALIDATION.txt：返回改写后的 prompt / 材料名与「是否附上」。
 /// 非盲节点、未开启、物化失败的一律原样返回且不附。
 fn attach_review_validation(
+    run_id: &str,
     project: &Path,
     settings: &DispatchSettings,
     node: &DispatchNodeRequest,
     workdir: &Path,
     blind: bool,
     timeout: Duration,
-    prepared: Result<(String, Vec<String>, usize), String>,
-) -> (Result<(String, Vec<String>, usize), String>, bool) {
+    prepared: Result<OutboundPreparation, String>,
+) -> (Result<OutboundPreparation, String>, bool) {
     if !blind || !node.review_material_validation {
         return (prepared, false);
     }
-    let Ok((mut prompt, mut names, count)) = prepared else {
-        return (prepared, false);
+    let (mut prompt, mut names, count) = match prepared {
+        Ok(OutboundPreparation::Materialized(prompt, names, count)) => (prompt, names, count),
+        Ok(OutboundPreparation::Unsent) => return (Ok(OutboundPreparation::Unsent), false),
+        Err(error) => return (Err(error), false),
     };
-    let command = settings.validation_command.trim();
-    let outcome = if command.is_empty() {
-        Ok(String::new())
-    } else {
-        let half = Duration::from_secs((timeout.as_secs() / 2).max(1));
-        run_validation(command, &review_material_dir(project, node), half)
-    };
-    let text = review_validation_text(command, outcome);
+    let text = cached_review_validation_text(run_id, project, settings, node, timeout);
     if let Err(error) = fs::write(workdir.join(REVIEW_VALIDATION_FILE), text.as_bytes()) {
         return (Err(format!("写入 {REVIEW_VALIDATION_FILE} 失败：{error}")), false);
     }
@@ -3431,7 +3503,9 @@ fn attach_review_validation(
 
 ");
     prompt.push_str(REVIEW_VALIDATION_PROMPT_NOTE);
-    (Ok((prompt, names, count)), true)
+    prompt.push_str("\n\n验证命令输出：\n");
+    prompt.push_str(&text);
+    (Ok(OutboundPreparation::Materialized(prompt, names, count)), true)
 }
 
 fn reset_acp_fallback(full_prompt: &str) -> (String, String) {
@@ -7465,6 +7539,15 @@ mod tests {
         request
     }
 
+    fn task12_prepared(
+        request: &DispatchNodeRequest,
+        workdir: &Path,
+        blind: bool,
+    ) -> Result<OutboundPreparation, String> {
+        prepare_outbound(request, true, workdir, blind)
+            .map(|(prompt, names, count)| OutboundPreparation::Materialized(prompt, names, count))
+    }
+
     #[test]
     fn task12_settings_fix_round_limit_defaults_to_one_and_reads_camel_case() {
         let settings: DispatchSettings = serde_json::from_str("{}").unwrap();
@@ -7496,15 +7579,16 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         let settings = DispatchSettings { validation_command: "echo review-ok".into(), ..DispatchSettings::default() };
         let request = task12_blind_node(true);
-        let prepared = prepare_outbound(&request, true, &workdir, true);
-        let (prepared, attached) = attach_review_validation(&project, &settings, &request, &workdir, true, Duration::from_secs(60), prepared);
-        let (prompt, names, _) = prepared.unwrap();
+        let prepared = task12_prepared(&request, &workdir, true);
+        let (prepared, attached) = attach_review_validation("exit0", &project, &settings, &request, &workdir, true, Duration::from_secs(60), prepared);
+        let OutboundPreparation::Materialized(prompt, names, _) = prepared.unwrap() else { panic!("应已物化") };
         assert!(attached);
         let text = fs::read_to_string(workdir.join("VALIDATION.txt")).unwrap();
         assert!(text.contains("验证命令：echo review-ok"), "{text}");
         assert!(text.contains("exit 0"), "{text}");
         assert!(text.contains("review-ok"), "{text}");
-        assert!(prompt.ends_with("验证命令输出见 VALIDATION.txt"), "{prompt}");
+        assert!(prompt.contains("验证命令输出见 VALIDATION.txt\n\n验证命令输出：\n"), "{prompt}");
+        assert!(prompt.contains("review-ok"), "{prompt}");
         assert_eq!(names.last().map(String::as_str), Some("VALIDATION.txt"));
         let _ = fs::remove_dir_all(root);
     }
@@ -7517,8 +7601,8 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         let settings = DispatchSettings { validation_command: "echo boom; exit 9".into(), ..DispatchSettings::default() };
         let request = task12_blind_node(true);
-        let prepared = prepare_outbound(&request, true, &workdir, true);
-        let (prepared, attached) = attach_review_validation(&project, &settings, &request, &workdir, true, Duration::from_secs(60), prepared);
+        let prepared = task12_prepared(&request, &workdir, true);
+        let (prepared, attached) = attach_review_validation("exit9", &project, &settings, &request, &workdir, true, Duration::from_secs(60), prepared);
         assert!(prepared.is_ok());
         assert!(attached);
         let text = fs::read_to_string(workdir.join("VALIDATION.txt")).unwrap();
@@ -7534,8 +7618,8 @@ mod tests {
         let workdir = root.join("blind");
         fs::create_dir_all(&project).unwrap();
         let request = task12_blind_node(true);
-        let prepared = prepare_outbound(&request, true, &workdir, true);
-        let (_, attached) = attach_review_validation(&project, &DispatchSettings::default(), &request, &workdir, true, Duration::from_secs(60), prepared);
+        let prepared = task12_prepared(&request, &workdir, true);
+        let (_, attached) = attach_review_validation("unset", &project, &DispatchSettings::default(), &request, &workdir, true, Duration::from_secs(60), prepared);
         assert!(attached);
         assert_eq!(fs::read_to_string(workdir.join("VALIDATION.txt")).unwrap(), "未配置验证命令");
         let _ = fs::remove_dir_all(root);
@@ -7548,19 +7632,122 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         let settings = DispatchSettings { validation_command: "echo x".into(), ..DispatchSettings::default() };
         let off = root.join("off");
-        let prepared = prepare_outbound(&task12_blind_node(false), true, &off, true);
-        let (prepared, attached) = attach_review_validation(&project, &settings, &task12_blind_node(false), &off, true, Duration::from_secs(60), prepared);
+        let prepared = task12_prepared(&task12_blind_node(false), &off, true);
+        let (prepared, attached) = attach_review_validation("off", &project, &settings, &task12_blind_node(false), &off, true, Duration::from_secs(60), prepared);
         assert!(!attached);
-        assert!(!prepared.unwrap().0.contains("VALIDATION.txt"));
+        let OutboundPreparation::Materialized(prompt, _, _) = prepared.unwrap() else { panic!("应已物化") };
+        assert!(!prompt.contains("VALIDATION.txt"));
         assert!(!off.join("VALIDATION.txt").exists());
         let shared = root.join("shared");
         fs::create_dir_all(&shared).unwrap();
         let mut request = task12_blind_node(true);
         request.visibility = "共享".into();
-        let prepared = prepare_outbound(&request, true, &shared, false);
-        let (_, attached) = attach_review_validation(&project, &settings, &request, &shared, false, Duration::from_secs(60), prepared);
+        let prepared = task12_prepared(&request, &shared, false);
+        let (_, attached) = attach_review_validation("shared", &project, &settings, &request, &shared, false, Duration::from_secs(60), prepared);
         assert!(!attached);
         assert!(!shared.join("VALIDATION.txt").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task12_unsent_does_not_run_validation_or_write_blind_material() {
+        let root = task12_temp("unsent");
+        let project = root.join("project");
+        let workdir = root.join("blind");
+        let marker = root.join("validation-ran.txt");
+        fs::create_dir_all(&project).unwrap();
+        let command = format!("Set-Content -LiteralPath '{}' -Value ran", marker.display());
+        let settings = DispatchSettings { validation_command: command, ..DispatchSettings::default() };
+        let request = task12_blind_node(true);
+        let (prepared, attached) = attach_review_validation(
+            "unsent",
+            &project,
+            &settings,
+            &request,
+            &workdir,
+            true,
+            Duration::from_secs(60),
+            Ok(OutboundPreparation::Unsent),
+        );
+        assert!(matches!(prepared, Ok(OutboundPreparation::Unsent)));
+        assert!(!attached);
+        assert!(!marker.exists());
+        assert!(!workdir.join(REVIEW_VALIDATION_FILE).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task12_same_run_and_project_executes_review_validation_once() {
+        let root = task12_temp("cache");
+        let project = root.join("project");
+        let marker = root.join("validation-count.txt");
+        fs::create_dir_all(&project).unwrap();
+        let command = format!("Add-Content -LiteralPath '{}' -Value x; Write-Output shared-output", marker.display());
+        let settings = DispatchSettings { validation_command: command, ..DispatchSettings::default() };
+        clear_review_validation_cache("same-run", &project);
+        for name in ["blind-a", "blind-b"] {
+            let workdir = root.join(name);
+            let request = task12_blind_node(true);
+            let prepared = task12_prepared(&request, &workdir, true);
+            let (prepared, attached) = attach_review_validation(
+                "same-run",
+                &project,
+                &settings,
+                &request,
+                &workdir,
+                true,
+                Duration::from_secs(60),
+                prepared,
+            );
+            assert!(attached);
+            let OutboundPreparation::Materialized(prompt, _, _) = prepared.unwrap() else { panic!("应已物化") };
+            assert!(prompt.contains("shared-output"), "{prompt}");
+        }
+        assert_eq!(fs::read_to_string(&marker).unwrap().lines().count(), 1);
+        clear_review_validation_cache("same-run", &project);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task12_run_one_materializes_validation_and_uses_half_node_timeout() {
+        if channels::resolve_binary("python", None).is_err() {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        }
+        let root = task12_temp("run-one");
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let stub = root.join("cc-switch-stub.py");
+        fs::write(&stub, "print('review complete')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        *review_validation_hook().lock().unwrap() = Some(Arc::new(move |command, cwd, timeout| {
+            if command != "task12-injected-validation" {
+                return None;
+            }
+            captured.lock().unwrap().push((cwd.to_path_buf(), timeout));
+            Some(Ok("injected-validation-output".into()))
+        }));
+        let mut request = task12_blind_node(true);
+        request.agent = "cc-switch".into();
+        request.provider = "stub".into();
+        request.model = "stub".into();
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            validation_command: "task12-injected-validation".into(),
+            timeout_secs: 10,
+            ..DispatchSettings::default()
+        };
+        let result = run_one("run-one", &project, &run_root, &log_dir, &settings, request);
+        *review_validation_hook().lock().unwrap() = None;
+        clear_review_validation_cache("run-one", &project);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert!(run_root.join("node-1").join(REVIEW_VALIDATION_FILE).exists());
+        assert!(result.frontmatter.contains("validation_attached: true"), "{}", result.frontmatter);
+        assert_eq!(*observed.lock().unwrap(), vec![(project.clone(), Duration::from_secs(5))]);
         let _ = fs::remove_dir_all(root);
     }
 

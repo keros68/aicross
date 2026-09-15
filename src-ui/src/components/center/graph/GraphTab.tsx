@@ -14,7 +14,7 @@ import { childrenOf, stamp } from '../../../graph/stamp';
 import { swarmPendingMergeStage, withSwarmPreset } from '../../../graph/swarm';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import { findModel, validateNode } from '../../../graph/validate';
-import { latestLeaf, layersOf, normalizeNodeKinds, pathTo, sameBranch } from '../../../graph/layout';
+import { continuationNodeId, latestLeaf, layersOf, normalizeNodeKinds, pathTo, sameBranch } from '../../../graph/layout';
 import { appendTurn, defaultTurnTarget, fillRoot, parseSend, removeDraftNode } from '../../../graph/mutate';
 import { commitGraph, presetNameOf, recordStamp } from '../../../graph/persist';
 import { vendorColor } from '../../../graph/vendor';
@@ -225,9 +225,9 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     setPrevGraph(graph);
     if (graph) {
       setColumns((cols) => {
-        const valid = cols.filter((id) => graph.nodes[id]);
+        const valid = cols.filter((id) => graph.nodes[id]).map((id) => continuationNodeId(graph, id));
         if (valid.length === 0) return [latestLeaf(graph)];
-        return valid.length === cols.length ? cols : valid;
+        return valid.length === cols.length && valid.every((id, index) => id === cols[index]) ? cols : valid;
       });
     }
   }
@@ -383,7 +383,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     if (!graph) return;
     const raw = (drafts[colIdx] ?? '').trim();
     if (raw === '') return;
-    const endId = columns[colIdx];
+    const endId = continuationNodeId(graph, columns[colIdx]);
     const endNode = endId ? graph.nodes[endId] : undefined;
     if (!endNode) return;
     // /advise @agent/model 问题 → 顾问节点（盲、只读、只要方案不要执行）
@@ -586,12 +586,12 @@ export function GraphTab({ session }: { session: TerminalSession }) {
                 重派
               </button>
             )}
-            {node.reply?.status === 'draft' && childrenOf(graph, id).length === 0 && (
+            {(node.leftover || node.reply?.status === 'draft') && childrenOf(graph, id).length === 0 && (
               <button className="graph-mini-btn" onClick={(e) => { e.stopPropagation(); commit(removeDraftNode(graph, id)); }}>
                 删除
               </button>
             )}
-            <button
+            {!node.leftover && <button
               className="graph-mini-btn graph-stamp-trigger"
               onClick={(e) => {
                 e.stopPropagation();
@@ -599,8 +599,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               }}
             >
               分叉
-            </button>
-            <button
+            </button>}
+            {!node.leftover && <button
               className="graph-mini-btn"
               onClick={(e) => {
                 e.stopPropagation();
@@ -614,7 +614,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               }}
             >
               盖预设
-            </button>
+            </button>}
           </div>
         )}
       </div>

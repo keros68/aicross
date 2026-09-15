@@ -70,6 +70,7 @@ export function latestLeaf(graph: Graph): string {
   let best = graph.root;
   let bestDepth = -1;
   for (const id of Object.keys(graph.nodes)) {
+    if (graph.nodes[id].leftover) continue;
     const d = depths.get(id) ?? 0;
     if (d > bestDepth) {
       best = id;
@@ -79,6 +80,12 @@ export function latestLeaf(graph: Graph): string {
     }
   }
   return best;
+}
+
+// 遗留节点是结果清单，不是可继续生长的父节点；列输入统一回到它的来源验收节点。
+export function continuationNodeId(graph: Graph, nodeId: string): string {
+  const source = graph.nodes[nodeId]?.leftover?.source_node_id;
+  return source && graph.nodes[source] ? source : nodeId;
 }
 
 // 全部祖先（BFS，去重，悬空 parents 跳过）——节点面板「指定上游」的候选列表。

@@ -23,6 +23,14 @@ export const DEFAULT_DISPATCH_SETTINGS: UiDispatchSettings = {
 
 const KEY = 'aicross-dispatch-settings';
 
+export function fixRoundLimitFromInput(value: string): number {
+  if (value.trim() === '') return DEFAULT_FIX_ROUND_LIMIT;
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? Math.max(0, Math.min(FIX_ROUND_LIMIT_MAX, Math.floor(parsed)))
+    : DEFAULT_FIX_ROUND_LIMIT;
+}
+
 export function loadDispatchSettings(): UiDispatchSettings {
   try {
     const raw = localStorage.getItem(KEY);

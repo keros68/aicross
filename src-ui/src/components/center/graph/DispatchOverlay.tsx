@@ -119,6 +119,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   // G2 疑似空转（TASK-07-1）：快照与时钟在 GraphTab 层的共享 store 里
   // （TASK-07C），本屏只消费。状态词也从同一份快照读，心跳还没到的行显示「排队」。
   const [results, setResults] = useState<DispatchNodeResult[]>([]);
+  const [runLeftoverIds, setRunLeftoverIds] = useState<string[]>([]);
   const [runError, setRunError] = useState('');
   const [restartNodes, setRestartNodes] = useState<Set<string>>(new Set());
   const [settings] = useState(loadDispatchSettings);
@@ -280,6 +281,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     if (request.nodes.length === 0 || hasMissingTargets) return;
     setPhase('running');
     setRunError('');
+    setRunLeftoverIds([]);
     // 新一轮先清进度（R1-2）：快照以 nodeId 为键、跨轮存活，上一轮没收到终态
     // 的快照（叫停、抛错、丢事件）会让新一行一出现就显示上一轮的耗时、甚至
     // 立刻挂空转胶囊。beginRun 同时把共享层的 runId 换成本轮的。
@@ -314,6 +316,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         return;
       }
       if (outcome.kind === 'stopped') setRunError(outcome.error);
+      setRunLeftoverIds(loop.leftoverIds ?? []);
       setPhase('results');
     } catch (error) {
       const message = String(error);
@@ -324,6 +327,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         .map((node) => ({ ...node, stage: graphStage(working, node.nodeId), rawStdout: '', rawStderr: '', cacheRead: 0, exitCode: null, timedOut: false, truncated: false, redacted: 0, isolation: '部分', runner: 'unknown' as const, workdir: '', dispatchFile: '', frontmatter: '', outputPreview: '', validationOutput: '', artifacts: null, fallbackFrom: '', fallbackTo: '', fallbackSkipped: '' }));
       if (failed.length > 0) working = onCommit(applyDispatchResults(working, failed));
       setResults([...collected, ...failed]);
+      setRunLeftoverIds(loop.leftoverIds ?? []);
       setPhase('results');
     } finally {
       // 本轮收尾（R1-3）：异常路径不会给每个节点补终态事件，快照会一直停在
@@ -353,6 +357,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     // 单写者节点重派/升级：这一路带 rollbackBefore（TASK-06-2）。
     setRollbackNodes(rollbackBeforeOf(node.target, true) ? new Set([nodeId]) : new Set());
     setResults([]);
+    setRunLeftoverIds([]);
     setPhase('confirm');
   };
 
@@ -463,8 +468,8 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   const resultStages = groupResultsByStage(graph, results);
   const skippedNodes = Object.values(graph.nodes).filter((node) => !!node.reply?.skipped_reason);
   // 遗留节点（TASK-12）：本轮验收结果到修正轮上限后生成的那些，结果屏展示同一清单。
-  const resultIds = new Set(results.map((result) => result.nodeId));
-  const leftovers = leftoverNodes(graph).filter((node) => resultIds.has(node.leftover!.source_node_id));
+  const currentLeftoverIds = new Set(runLeftoverIds);
+  const leftovers = leftoverNodes(graph).filter((node) => currentLeftoverIds.has(node.id));
   const vendorNames = [...new Set(request.nodes
     .map((node) => (node.vendor || node.agent).trim())
     .filter(Boolean))];
