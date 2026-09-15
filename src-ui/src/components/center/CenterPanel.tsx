@@ -12,7 +12,7 @@ import { commanderArgs, commanderIdentifierError, commanderToolId } from '../../
 import {
   commanderStartedCallback,
   commanderTabTitle,
-  emptyGraphTabTitle,
+  graphTabTitle,
   otherInstalledCommanderClis,
 } from '../../commander/launcher';
 import { getToolScanSnapshot, publishToolScan } from '../../commander/tool-scan';
@@ -841,7 +841,7 @@ export function CenterPanel() {
       if (Date.now() - lastToolsScanAt.current < SCAN_TTL_MS) return;
       commands.checkToolsInstalled()
         .then(applyToolsInstalled)
-        .catch(() => {});
+        .catch(() => applyToolsInstalled({}));
       try {
         const raw = localStorage.getItem('coffee:last-cwd-by-tool');
         if (raw) setLastCwdByTool(JSON.parse(raw));
@@ -878,7 +878,7 @@ export function CenterPanel() {
         if (!isToolPickerModeRef.current) return;
         commands.checkToolsInstalled()
           .then(applyToolsInstalled)
-          .catch(() => {});
+          .catch(() => applyToolsInstalled({}));
       }, 500);
     });
     return () => {
@@ -1397,7 +1397,8 @@ export function CenterPanel() {
       // 对话图 tab（第 2 期）：toolData 存 graph id；标题取图标题，未打开图时显示「对话图」。
       case 'graph': return {
         icon: <SvgGraph />,
-        title: state.graphs[session.toolData ?? '']?.title || emptyGraphTabTitle(Boolean(graphViewTabs[session.id])),
+        // R1 复审：只有 toolData 为空（还没进图）的 tab 才按启动器/对话图判；已开图的空标题仍是「对话图」。
+        title: graphTabTitle(session.toolData, state.graphs[session.toolData ?? '']?.title, Boolean(graphViewTabs[session.id])),
         tooltip: undefined,
       };
       default: return { icon: <SvgPlus active={isActive} />, title: t('tab.new'), tooltip: undefined };

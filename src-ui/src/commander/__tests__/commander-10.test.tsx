@@ -29,6 +29,7 @@ import {
   commanderTabTitle,
   cwdName,
   emptyGraphTabTitle,
+  graphTabTitle,
   markCommanderSelection,
   otherInstalledCommanderClis,
   parseCommanderModelValue,
@@ -243,6 +244,12 @@ describe('TASK-10 (2) 启动器纯函数', () => {
   it('空白 tab 只有显式进入对话图后才显示“对话图”标题', () => {
     expect(emptyGraphTabTitle(false)).toBe('总指挥');
     expect(emptyGraphTabTitle(true)).toBe('对话图');
+    // 已开图的 tab 不受启动器影响：空标题仍是「对话图」，有标题用图标题
+    expect(graphTabTitle('g1', '', false)).toBe('对话图');
+    expect(graphTabTitle('g1', undefined, false)).toBe('对话图');
+    expect(graphTabTitle('g1', '两件小活', false)).toBe('两件小活');
+    expect(graphTabTitle('', undefined, false)).toBe('总指挥');
+    expect(graphTabTitle(null, undefined, true)).toBe('对话图');
   });
 
   it('其它 CLI 只列已安装的非总指挥工具，点击沿原工具路径转发', () => {

@@ -175,6 +175,13 @@ export function emptyGraphTabTitle(graphViewSelected: boolean): string {
   return graphViewSelected ? '对话图' : '总指挥';
 }
 
+// 对话图 tab 的标题（R1 复审）：已开图的按图标题，空标题仍是「对话图」；
+// 只有还没进图的空白 tab 才按 启动器 / 对话图 判。
+export function graphTabTitle(toolData: string | null | undefined, graphTitle: string | undefined, graphViewSelected: boolean): string {
+  if (toolData) return graphTitle || '对话图';
+  return emptyGraphTabTitle(graphViewSelected);
+}
+
 export function shouldShowNoCommanderModels(
   modelsLoaded: boolean,
   modelsError: string | null,
