@@ -21,6 +21,7 @@ import {
   graphStage,
   groupResultsByStage,
   leftoverNodes,
+  isFixRoundExecution,
   isSmallEconomyTask,
   needsChainThinking,
   neutralDisputeSummary,
@@ -61,7 +62,7 @@ import {
   swarmWireSettings,
   type SwarmCheckState,
 } from '../../../graph/swarm';
-import { FallbackSkippedLine, IdleHint, PickOneButton, QuotaHint, QuotaResetLine, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, SwarmGateNotice, SwarmMergeRow, VerificationHint, WritableFallbackHint } from './DispatchBits';
+import { FallbackSkippedLine, IdleHint, PickOneButton, PinnedNote, PinnedStatus, QuotaHint, QuotaResetLine, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, SwarmGateNotice, SwarmMergeRow, VerificationHint, WritableFallbackHint } from './DispatchBits';
 import { SwarmEditor } from '../../right/orchestration/NodePanel';
 import { presetNameOf } from '../../../graph/persist';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
@@ -212,6 +213,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         previousRunner: restartNodes.has(id) ? '' : continuationRunner(sourceGraph, id) ?? '',
         rollback: rollbackNodes.has(id),
         stage: graphStage(sourceGraph, id),
+        fixRound: isFixRoundExecution(sourceGraph, id),
       });
     }),
   });
@@ -752,7 +754,10 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 <section key={result.nodeId} className={`dispatch-result-card${adopted ? ' adopted' : ''}`}>
                   <div className="dispatch-result-head">
                     <span>{node?.target?.agent}/{node?.target?.model}{node?.target?.agent === 'cc-switch' ? ' · 单轮' : ''} · {result.runner === 'acp' ? '长驻' : result.runner === 'oneshot' ? '一次性' : '未运行'}</span>
-                    <span>{resultStatus(result.status)}</span>
+                    <span className="dispatch-result-status">
+                      <span>{resultStatus(result.status)}</span>
+                      <PinnedStatus pinned={result.pinned} />
+                    </span>
                   </div>
                   {result.truncated && <div className="dispatch-warning">输出已截断</div>}
                   {result.tokensIn > 50_000 && <div className="dispatch-warning">输入超过 50k tokens</div>}
@@ -760,6 +765,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   {result.runnerNote?.includes('额度用尽') && <div className="dispatch-reason">{result.runnerNote}</div>}
                   <QuotaResetLine resetsAt={result.quotaResetsAt} />
                   <FallbackSkippedLine result={result} />
+                  <PinnedNote result={result} />
                   <div className="dispatch-result-text">{result.text || result.error}</div>
                   {result.artifacts && (
                     <details className="dispatch-artifacts">

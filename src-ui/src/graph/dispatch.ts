@@ -28,6 +28,9 @@ export interface BackendNodeResult {
   runner?: 'acp' | 'oneshot' | 'unknown';
   artifacts?: ReplyArtifacts | null;
   validationOutput?: string;
+  // TASK-13：红绿核对结论与说明；普通节点缺省。
+  pinned?: 'pinned' | 'unpinned' | 'skipped';
+  pinnedNote?: string;
   // TASK-05B：结果由备选重跑产生时带主/备路由（"agent/model"），否则缺省
   fallbackFrom?: string;
   fallbackTo?: string;
@@ -259,6 +262,13 @@ export function fallbackSkippedLineOf(result: Pick<BackendNodeResult, 'fallbackS
     : `主失败，未切备选（${result.fallbackSkipped}）`;
 }
 
+export function pinnedLabelOf(pinned: BackendNodeResult['pinned']): string | null {
+  if (pinned === 'pinned') return '测试已钉住';
+  if (pinned === 'unpinned') return '测试未钉住';
+  if (pinned === 'skipped') return '未核对';
+  return null;
+}
+
 export function applyDispatchResults(graph: Graph, results: BackendNodeResult[]): Graph {
   const nodes = { ...graph.nodes };
   for (const result of results) {
@@ -268,7 +278,16 @@ export function applyDispatchResults(graph: Graph, results: BackendNodeResult[])
     const validationText = result.status === 'validation_failed' && result.validationOutput
       ? `${result.text}${result.text ? '\n\n' : ''}[验证输出]\n${result.validationOutput}`
       : undefined;
-    const body = validationText ?? (ok ? result.text : result.text || result.error);
+    const pinText = result.pinned === 'pinned'
+      ? '测试已钉住'
+      : result.pinned === 'unpinned'
+        ? `测试未钉住${result.pinnedNote ? `：${result.pinnedNote}` : ''}`
+        : result.pinned === 'skipped'
+          ? `未核对${result.pinnedNote ? `：${result.pinnedNote}` : ''}`
+          : '';
+    const resultBody = validationText ?? (ok ? result.text : result.text || result.error);
+    // 红绿结论进入 Reply 正文，下一阶段验收材料会随图上下文收到它；不扩展图契约。
+    const body = pinText ? `${resultBody}${resultBody ? '\n\n' : ''}[红绿核对]\n${pinText}` : resultBody;
     const reply: Reply = {
       status: ok ? 'done' : result.status === 'quota_exhausted' ? 'quota_exhausted' : 'failed',
       text: body,
@@ -639,6 +658,7 @@ export function appendValidationRetry(
   detail: string,
   retryRound = 1,
   limit: number = DEFAULT_FIX_ROUND_LIMIT,
+  unpinned = false,
 ): { graph: Graph; executionId?: string; acceptanceId?: string } {
   const execution = graph.nodes[executionId];
   if (!execution?.target) return { graph };
@@ -649,11 +669,12 @@ export function appendValidationRetry(
   const nextExecutionId = newNodeId();
   const nextAcceptanceId = newNodeId();
   const now = Date.now();
+  const upstreamReason = unpinned ? '上游测试未钉住' : '上游验证未通过';
   const skippedVerifications = verificationSiblings(graph, waitingAccept)
     .filter((node) => node.reply?.status === 'draft')
     .map((node) => [node.id, {
       ...node,
-      reply: { status: 'draft' as const, text: '', skipped_reason: '上游验证未通过' },
+      reply: { status: 'draft' as const, text: '', skipped_reason: upstreamReason },
     }] as const);
   return {
     graph: {
@@ -661,12 +682,17 @@ export function appendValidationRetry(
       nodes: {
       ...graph.nodes,
       ...Object.fromEntries(skippedVerifications),
-      [waitingAccept.id]: { ...waitingAccept, reply: { status: 'failed', text: '验证命令未通过，未送审' } },
+      [waitingAccept.id]: { ...waitingAccept, reply: { status: 'failed', text: unpinned ? '测试未钉住，未送审' : '验证命令未通过，未送审' } },
       [nextExecutionId]: {
         id: nextExecutionId,
         kind: execution.parents.length > 1 ? 'accept' : 'turn',
         parents: [...execution.parents],
-        user: { text: `[修正 ${retryRound}/${limit}] 验证命令未通过，请修正后重新运行。\n\n${detail}`, attachments: [] },
+        user: {
+          text: unpinned
+            ? `[修正 ${retryRound}/${limit}] 测试未钉住，请修正后重新运行。\n\n${detail}\n\n上一轮修复回退后测试仍通过，请补能失败的测试`
+            : `[修正 ${retryRound}/${limit}] 验证命令未通过，请修正后重新运行。\n\n${detail}`,
+          attachments: [],
+        },
         reply: { status: 'draft', text: '' },
         target: { ...execution.target },
         created_at: new Date(now).toISOString(),
@@ -687,7 +713,7 @@ export function appendValidationRetry(
   };
 }
 
-function closeWaitingAcceptance(graph: Graph, executionId: string): Graph {
+function closeWaitingAcceptance(graph: Graph, executionId: string, reason: string): Graph {
   const waitingAccept = Object.values(graph.nodes).find(
     (node) => node.parents.includes(executionId) && node.target?.role === '验收' && node.reply?.status === 'draft',
   );
@@ -700,7 +726,7 @@ function closeWaitingAcceptance(graph: Graph, executionId: string): Graph {
       ...graph.nodes,
       ...Object.fromEntries(skipped.map((node) => [node.id, {
         ...node,
-        reply: { status: 'draft' as const, text: '', skipped_reason: '上游验证未通过' },
+        reply: { status: 'draft' as const, text: '', skipped_reason: reason },
       }])),
     },
   };
@@ -813,7 +839,9 @@ export function reducePipelineStep(
   if (addedCorrection) {
     return { graph: acceptanceGraph, validationRetries, continueRunning: true, leftoverIds };
   }
-  const validationFailures = results.filter((result) => result.status === 'validation_failed');
+  const validationFailures = results.filter(
+    (result) => result.status === 'validation_failed' || result.pinned === 'unpinned',
+  );
   if (validationFailures.length > 0) {
     let next = acceptanceGraph;
     let addedRetry = false;
@@ -821,7 +849,7 @@ export function reducePipelineStep(
     for (const failure of validationFailures) {
       const count = retries[failure.nodeId] ?? 0;
       if (count >= limit) {
-        next = closeWaitingAcceptance(next, failure.nodeId);
+        next = closeWaitingAcceptance(next, failure.nodeId, failure.pinned === 'unpinned' ? '上游测试未钉住' : '上游验证未通过');
         continue;
       }
       const appended = appendValidationRetry(
@@ -830,6 +858,7 @@ export function reducePipelineStep(
         failure.validationOutput || failure.error,
         count + 1,
         limit,
+        failure.pinned === 'unpinned',
       );
       next = appended.graph;
       if (appended.executionId) {
@@ -1111,6 +1140,14 @@ export interface NodeRequestParts {
   previousRunner: string;
   rollback: boolean; // 本节点这一轮是重派 / 从待核对勾回
   stage: number;
+  fixRound?: boolean;
+}
+
+export function isFixRoundExecution(graph: Graph, nodeId: string): boolean {
+  const node = graph.nodes[nodeId];
+  if (node?.target?.role !== '执行') return false;
+  if (/^\[修正 \d+\/\d+\]/.test(node.user.text)) return true;
+  return node.user.text.startsWith('根据上一轮验收意见修正实现。');
 }
 
 export function buildNodeRequest(
@@ -1147,6 +1184,8 @@ export function buildNodeRequest(
     ...(rollbackBeforeOf(target, parts.rollback) ? { rollbackBefore: true } : {}),
     // TASK-12：盲的「验证」那一路派发前先跑验证命令，输出附成 VALIDATION.txt
     ...(reviewMaterialValidationOf(target) ? { reviewMaterialValidation: true } : {}),
+    // TASK-13：只给 reducePipelineStep 生成的修正轮执行节点追加。
+    ...(parts.fixRound ? { fixRound: true } : {}),
   };
 }
 

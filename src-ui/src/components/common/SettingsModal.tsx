@@ -651,7 +651,7 @@ export function SettingsModal() {
                       value={dispatchSettings.fixRoundLimit}
                       onChange={(e) => setDispatchOption('fixRoundLimit', fixRoundLimitFromInput(e.target.value))}
                     />
-                    <span>到上限后未闭合的条目生成遗留节点，不再派修正。验证命令未通过的重派与修正轮共用此上限；验证未通过到顶时该验收标「已跳过」。</span>
+                    <span>到上限后未闭合的条目生成遗留节点，不再派修正。验证命令未通过和测试未钉住都计入此上限；到顶后验收标为「已跳过」。</span>
                   </label>
                   <label className="settings-dispatch-field settings-dispatch-wide">
                     <span>归类模型</span>

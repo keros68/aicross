@@ -67,3 +67,12 @@
 41. 右栏预设下拉的 listbox 角色混排（组标签 div、details/summary 在 listbox 内，规划项无 role=option），方向键/字母跳转不如原生 select。（DS 5 / GLM 3）
 42. 规划中两项只在右栏下拉出现，盖预设菜单与讲解页没有；盖预设菜单的源码字符串断言偏弱。（DS 7 / GLM 5）
 43. 没有用户预设时不出现「自定义模式」组；只有一个用户预设时组标签与条目同名两行。（DS 6）
+
+## TASK-13 R1 复审剩余（09-15，两家都判可交付；低危，择期）
+
+44. 本轮新建的空目录在核对后丢失（回退按 .created 的 dir: 删，恢复只重建 changed 文件的父目录）；恢复阶段按 dir: 清单重建。（GLM 1）
+45. `.redgreen` 标记固定写 project/.dispatch，不遵循 write_project_dispatch；设置关闭时对账发现不了。（GLM 2 / DS H）
+46. 既有文件被替换成链接后恢复阶段会删掉它且不报失败；before 有、after 无但路径存在应判恢复失败。（DS B）
+47. 绿跑后取消分支丢弃验证输出；对账 unknown 的说明进不了界面、record_path 指向 .redgreen；worktree 节点的对账文案未指出是 worktree。（GLM 3 / DS E、J）
+48. .created 的 dir: 项计入 RollbackSummary.removed 的文件计数（文案）；Windows 启动失败靠英文输出特征识别，spawn 失败变体无测试。（DS F、I / GLM 4）
+49. 验证门叫停分支（R1 复审 A）无测试；核对耗时仍计入节点时长。（GLM 5）
