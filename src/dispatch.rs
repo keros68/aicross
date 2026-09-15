@@ -153,6 +153,9 @@ pub struct DispatchArtifacts {
     pub worktree: Option<String>,
     #[serde(default)]
     pub stdout_summary: String,
+    // R1 复审：本次尝试落下的派发前快照目录（没改动时为空）。额度用尽切备选前的回滚只认它，不认历史快照。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub before_dir: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2308,6 +2311,12 @@ fn rollback_node_changes_core(project: &Path, run_id: &str, node_id: &str) -> Re
     if !root.is_dir() {
         return Ok(RollbackSummary { note: "没有找到派发前快照（首次派发或快照已清理）；排除目录（.git/node_modules/target/dist…）与链接内的改动不在快照内".into(), ..RollbackSummary::default() });
     }
+    restore_before_dir(project, &root)
+}
+
+// 按指定的快照目录恢复（重派回滚用历史最新快照；额度回滚只用本次尝试的快照）。
+fn restore_before_dir(project: &Path, root: &Path) -> Result<RollbackSummary, String> {
+    let root = root.to_path_buf();
     let mut summary = RollbackSummary::default();
     summary.skipped = fs::read_to_string(root.join(".skipped"))
         .unwrap_or_default()
@@ -2764,7 +2773,8 @@ fn run_one_with_activity(
         settings,
         node.clone(),
         "主",
-        "",
+        // 05B：可写节点非额度失败不切备选，留痕与结果都标原因；额度用尽的情况在下面回滚后切，不标。
+        if writable && has_fallback { "可写节点" } else { "" },
         &activity,
     );
     let mut candidates = Vec::new();
@@ -2885,10 +2895,17 @@ fn rollback_quota_attempt(project: &Path, result: &DispatchNodeResult, timeout: 
         }
         return Ok(format!("已回滚 {} 本次改动", result.node_id));
     }
-    let summary = rollback_node_changes_core(project, "", &result.node_id)?;
-    if summary.note.starts_with("没有找到派发前快照") {
-        return Err(summary.note);
+    // 只认本次尝试的快照：本次没改动就无需回滚；绝不拿历史快照把上一次的产物或用户手改一起还原。
+    let before_dir = result.artifacts.as_ref().map(|artifacts| artifacts.before_dir.trim()).unwrap_or("");
+    if before_dir.is_empty() {
+        return Ok(format!("{} 本次没有改动，无需回滚", result.node_id));
     }
+    let root = PathBuf::from(before_dir);
+    let root = if root.is_absolute() { root } else { project.join(root) };
+    if !root.is_dir() {
+        return Err("本次派发前快照不存在，无法回滚".into());
+    }
+    let summary = restore_before_dir(project, &root)?;
     if !summary.skipped.is_empty() {
         return Err(format!("{}，无法确认全部改动已恢复", summary.note));
     }
@@ -3438,6 +3455,7 @@ fn run_one_attempt(
         match built {
             Ok(mut value) => {
                 value.worktree = worktree_path;
+                value.before_dir = before_dir.clone();
                 let summary = safe_trace(&channel_output.text)
                     .chars()
                     .take(2000)
@@ -3474,7 +3492,7 @@ fn run_one_attempt(
     // R2-11：主失败且可写节点跳过备选时，把原因写进留痕 frontmatter 与结果；
     // validation_failed 不触发备选（走修正轮），不标。
     let fallback_skipped = if !fallback_skip_reason.is_empty()
-        && matches!(status.as_str(), "error" | "timeout" | "identity_mismatch" | "quota_exhausted")
+        && matches!(status.as_str(), "error" | "timeout" | "identity_mismatch")
     {
         fallback_skip_reason.to_string()
     } else {
@@ -4867,6 +4885,7 @@ mod tests {
             changed_files: vec![ChangedFile { path: "a.txt".into(), content: "c".into() }],
             worktree: Some("wt".into()),
             stdout_summary: "s".into(),
+            before_dir: String::new(),
         }).unwrap();
         let mut keys = value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
         keys.sort();
@@ -6558,6 +6577,7 @@ mod tests {
             }],
             stdout_summary: "done".into(),
             worktree: None,
+            before_dir: String::new(),
         }];
         let (prompt, _, _) = prepare_outbound(&request, true, &root, true).unwrap();
         let mut entries = fs::read_dir(&root)
@@ -6784,6 +6804,64 @@ mod tests {
     }
 
     #[test]
+    fn task14_r2_writable_quota_without_changes_falls_back_without_rollback() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-quota-nochange-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = project.join(".dispatch");
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(project.join("state.txt"), "original").unwrap();
+        let stub = root.join("cc_switch_stub.py");
+        // 主目标第一句就撞额度、没碰任何文件；备选正常写。
+        fs::write(&stub, "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nif p == 'p0':\n print('HTTP 429 too many requests; resets at 2099-01-01T00:00:00+08:00', file=sys.stderr)\n sys.exit(1)\ns=pathlib.Path('state.txt')\ns.write_text(p+'|saw='+s.read_text())\nprint('fallback answer')\n").unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "单写者".into();
+        request.fallback = Some(FallbackSpec { agent: "cc-switch".into(), provider: "p1".into(), model: "backup".into(), vendor: String::new() });
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("quota-nochange", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "ok", "{} / {}", result.error, result.runner_note);
+        assert_eq!(result.fallback_to, "cc-switch/backup");
+        assert!(result.fallback_skipped.is_empty(), "{}", result.fallback_skipped);
+        assert!(result.runner_note.contains("本次没有改动，无需回滚"), "{}", result.runner_note);
+        assert_eq!(fs::read_to_string(project.join("state.txt")).unwrap(), "p1|saw=original");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_r2_quota_rollback_ignores_stale_snapshot_from_earlier_run() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-quota-stale-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = project.join(".dispatch");
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(project.join("state.txt"), "original").unwrap();
+        let flag = root.join("first-done.flag");
+        let stub = root.join("cc_switch_stub.py");
+        // 第一轮：主目标先改文件再撞额度（落下快照）；第二轮：主目标不碰文件直接撞额度。
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nflag=pathlib.Path(r'{}')\ns=pathlib.Path('state.txt')\nif p == 'p0':\n if not flag.exists():\n  s.write_text('p0-dirty')\n  flag.write_text('1')\n print('HTTP 429 too many requests; resets at 2099-01-01T00:00:00+08:00', file=sys.stderr)\n sys.exit(1)\ns.write_text(p+'|saw='+s.read_text())\nprint('fallback answer')\n",
+            flag.display()
+        )).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "单写者".into();
+        request.fallback = Some(FallbackSpec { agent: "cc-switch".into(), provider: "p1".into(), model: "backup".into(), vendor: String::new() });
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let first = run_one("quota-stale-1", &project, &root.join("runs"), &log_dir, &settings, request.clone());
+        assert_eq!(first.status, "ok", "{} / {}", first.error, first.runner_note);
+        assert!(first.runner_note.contains("已回滚 node-1 本次改动"), "{}", first.runner_note);
+        assert_eq!(fs::read_to_string(project.join("state.txt")).unwrap(), "p1|saw=original");
+        // 用户在两次派发之间手改了文件；第二轮本次无改动，历史快照绝不能把它还原成 original。
+        fs::write(project.join("state.txt"), "user-edit").unwrap();
+        let second = run_one("quota-stale-2", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(second.status, "ok", "{} / {}", second.error, second.runner_note);
+        assert!(second.runner_note.contains("本次没有改动，无需回滚"), "{}", second.runner_note);
+        assert_eq!(fs::read_to_string(project.join("state.txt")).unwrap(), "p1|saw=user-edit");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn task14_r1_first_use_quota_switches_to_fallback_without_entering_primary_channel() {
         if channels::resolve_binary("python", None).is_err() { return; }
         let root = std::env::temp_dir().join(format!("aicross-first-use-quota-dispatch-{}", Uuid::new_v4()));
@@ -6964,11 +7042,11 @@ mod tests {
         );
         // 非额度类失败保持 05B 语义：可写节点不切备选。
         assert_eq!(result.status, "error");
-        assert!(result.fallback_skipped.is_empty());
+        assert_eq!(result.fallback_skipped, "可写节点");
         assert!(result.fallback_from.is_empty());
         assert!(result.fallback_to.is_empty());
         assert!(result.frontmatter.contains("attempt: 主"));
-        assert!(result.frontmatter.contains("fallback_skipped: ''"));
+        assert!(result.frontmatter.contains("fallback_skipped: 可写节点"));
         let bodies: Vec<String> = fs::read_dir(&log_dir)
             .unwrap()
             .filter_map(Result::ok)
