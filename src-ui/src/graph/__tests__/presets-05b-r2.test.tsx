@@ -136,7 +136,7 @@ describe('R2-5 DispatchOverlay 三处组件级断言', () => {
   it('WritableFallbackHint：可写节点配备选渲染提示，只读不渲染', () => {
     const writable = mkTarget({ write: '单写者', fallback: { agent: 'pi', model: 'glm' } });
     const html = renderToStaticMarkup(<WritableFallbackHint target={writable} />);
-    expect(html).toContain('可写节点不自动切备选');
+    expect(html).toContain('额度用尽时会先回滚本次改动，再切备选。');
     expect(html).toContain('dispatch-warning');
     const readonly = mkTarget({ write: '只读', fallback: { agent: 'pi', model: 'glm' } });
     expect(renderToStaticMarkup(<WritableFallbackHint target={readonly} />)).toBe('');

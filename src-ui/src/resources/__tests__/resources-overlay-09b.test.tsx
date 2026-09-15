@@ -3,8 +3,13 @@
 
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { AgentCard, AgentCardModelMeta, FallbackOrderEditor, moveFallbackOrder } from '../../components/resources/ResourcesOverlay';
+import dispatchRustSource from '../../../../src/dispatch.rs?raw';
+import manualSource from '../../../../docs/MANUAL.md?raw';
+import appSource from '../../App.tsx?raw';
+import { AgentCard, AgentCardModelMeta, FallbackOrderEditor, moveFallbackOrder, quotaClearVisible } from '../../components/resources/ResourcesOverlay';
+import resourcesOverlaySource from '../../components/resources/ResourcesOverlay.tsx?raw';
 import { BRAND_MARKS } from '../../components/resources/brand-marks';
+import resourcesBridgeSource from '../mention.ts?raw';
 import type { ResourceAgent, ResourceModel } from '../types';
 import { QuotaResetLine } from '../../components/center/graph/DispatchBits';
 import { resultStatus } from '../../components/center/graph/DispatchOverlay';
@@ -174,5 +179,26 @@ describe('TASK-14 额度结果组件', () => {
     const markup = renderToStaticMarkup(<QuotaResetLine resetsAt="2099-01-01T00:00:00+08:00" />);
     expect(markup).toContain('恢复时间：');
     expect(renderToStaticMarkup(<QuotaResetLine />)).toBe('');
+  });
+
+  it('Rust 写回额度后通过单一桥接通知现有资源监听方', () => {
+    expect(dispatchRustSource).toContain('app.emit("aicross:resources-changed", ())');
+    expect(resourcesBridgeSource).toContain('listen(RESOURCES_CHANGED_EVENT, notifyResourcesChanged)');
+    expect(appSource).toContain('useEffect(() => subscribeResourcesChanged(), [])');
+  });
+
+  it('受限模型提供清除动作，普通模型不显示', () => {
+    const limited = model({
+      agent: 'pi', provider: 'zai', id: 'glm', quota_exhausted_until: '2099-01-01T00:00:00+08:00',
+    });
+    expect(quotaClearVisible(limited)).toBe(true);
+    expect(quotaClearVisible(model({ agent: 'pi', provider: 'zai', id: 'glm' }))).toBe(false);
+    expect(resourcesOverlaySource).toMatch(/quotaClearVisible\(model\)[\s\S]*?>\s*清除\s*<\/button>/);
+    expect(resourcesOverlaySource).toContain('clear_quota_exhausted: true');
+  });
+
+  it('TASK-14 R1 统一使用恢复时间术语', () => {
+    expect(manualSource).toContain('| 模型额度重新可用的时间 | 恢复时间 |');
+    expect(manualSource).not.toContain('重置时间');
   });
 });

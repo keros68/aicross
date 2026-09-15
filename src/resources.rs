@@ -168,6 +168,9 @@ pub struct ResourceModelRequest {
     pub note: String,
     #[serde(default)]
     pub fallback_order: Option<Vec<String>>,
+    /// 用户确认额度已恢复时显式清除限额状态；缺失时保持原值。
+    #[serde(default)]
+    pub clear_quota_exhausted: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1474,6 +1477,9 @@ pub fn update_model(
     if let Some(fallback_order) = request.fallback_order {
         model.fallback_order = fallback_order;
     }
+    if request.clear_quota_exhausted {
+        model.quota_exhausted_until = None;
+    }
     Ok(store)
 }
 
@@ -1703,6 +1709,8 @@ pub enum FirstUseVerification {
     Verified,
     /// 本次验证失败（或验过了但结果写不回资源库），附脱敏后的原因。
     Failed(String),
+    /// 首次验证请求命中额度限制；不把模型写成验证失败，由派发层切备选。
+    QuotaExhausted { resets_at: Option<String> },
     /// 验证窗口内用户点了叫停：不写库、不继续派发。
     Cancelled,
 }
@@ -1870,6 +1878,11 @@ fn verify_on_first_use_at(
     // 不写库（免得把「被杀」记成验证失败），节点按「已取消」返回。
     if cancelled() {
         return FirstUseVerification::Cancelled;
+    }
+    if let Err(error) = &outcome {
+        if let Some(hit) = crate::channels::classify_quota(error, None, None) {
+            return FirstUseVerification::QuotaExhausted { resets_at: hit.resets_at };
+        }
     }
     let failure = outcome.as_ref().err().map(|error| safe_summary(error));
     let persisted = {
@@ -2741,6 +2754,7 @@ mod tests {
                 tier: String::new(),
                 note: String::new(),
                 fallback_order: Some(Vec::new()),
+                clear_quota_exhausted: false,
             },
         )
         .expect_err("pi provider is required");
@@ -2781,11 +2795,19 @@ mod tests {
         let preserved = update_model(visible, ResourceModelRequest {
             agent_id: "pi".into(), id: "main".into(), provider: "p0".into(),
             vendor: "Zhipu".into(), tier: "中".into(), note: String::new(), fallback_order: None,
+            clear_quota_exhausted: false,
         }).unwrap();
         assert_eq!(find_model(&preserved, "pi", "p0", "main").unwrap().fallback_order, ["pi/p1/backup-a", "pi/p2/backup-b"]);
 
         mark_quota_exhausted_at(&path, "pi", "p0", "main", Some("2099-01-01T00:00:00+08:00")).unwrap();
         assert_eq!(find_model(&load(&path).unwrap(), "pi", "p0", "main").unwrap().quota_exhausted_until.as_deref(), Some("2099-01-01T00:00:00+08:00"));
+        let cleared = update_resource_model_at(&path, ResourceModelRequest {
+            agent_id: "pi".into(), id: "main".into(), provider: "p0".into(),
+            vendor: "Zhipu".into(), tier: "中".into(), note: String::new(), fallback_order: None,
+            clear_quota_exhausted: true,
+        }).unwrap();
+        assert!(find_model(&cleared, "pi", "p0", "main").unwrap().quota_exhausted_until.is_none());
+        assert!(find_model(&load(&path).unwrap(), "pi", "p0", "main").unwrap().quota_exhausted_until.is_none());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2902,6 +2924,7 @@ mod tests {
             tier: String::new(),
             note: String::new(),
             fallback_order: Some(Vec::new()),
+            clear_quota_exhausted: false,
         };
         assert!(add_resource_model_at(&path, request()).is_err());
         assert!(update_resource_model_at(&path, request()).is_err());
@@ -3136,6 +3159,7 @@ mod tests {
                 tier: String::new(),
                 note: String::new(),
                 fallback_order: Some(Vec::new()),
+                clear_quota_exhausted: false,
             },
         )
         .expect("manual claude alias");
@@ -3154,6 +3178,7 @@ mod tests {
                 tier: String::new(),
                 note: String::new(),
                 fallback_order: Some(Vec::new()),
+                clear_quota_exhausted: false,
             },
         )
         .expect("manual full id");
@@ -3284,6 +3309,33 @@ mod tests {
         let second = verify_on_first_use_at(&path, "pi", "zai", "glm-4.7", smoke, || false);
         assert_eq!(second, FirstUseVerification::Skipped);
         assert_eq!(calls.get(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task14_r1_first_use_quota_keeps_model_unverified() {
+        let root = std::env::temp_dir().join(format!("aicross-first-use-quota-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"glm-4.7","agent":"pi","provider":"zai","status":"待冒烟"}]}]}"#,
+        ).unwrap();
+        let outcome = verify_on_first_use_at(
+            &path,
+            "pi",
+            "zai",
+            "glm-4.7",
+            |_| Err("HTTP 429 too many requests; Retry-After: 60".into()),
+            || false,
+        );
+        assert!(matches!(outcome, FirstUseVerification::QuotaExhausted { resets_at: Some(_) }));
+        let stored = load(&path).unwrap();
+        let model = find_model(&stored, "pi", "zai", "glm-4.7").unwrap();
+        assert_eq!(model.verification, VERIFICATION_UNVERIFIED);
+        assert_ne!(model.status, STATUS_FAILED);
+        assert!(model.smoke_failure.is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

@@ -74,22 +74,26 @@ const ROLES = {
   acceptance: { agent: 'codex', model: 'gpt-acc', thinking: '中' },
 };
 
-describe('R1-1 可写节点不自动切备选', () => {
+describe('TASK-14 R1 可写节点额度备选', () => {
   it('writableFallbackHintOf：可写节点配了备选才提示', () => {
     const writable = mkTarget({ write: '单写者', fallback: { agent: 'pi', model: 'glm' } });
-    expect(writableFallbackHintOf(writable)).toBe('可写节点不自动切备选');
+    expect(writableFallbackHintOf(writable)).toBe('额度用尽时会先回滚本次改动，再切备选。');
     const worktree = mkTarget({ write: 'worktree', fallback: { agent: 'pi', model: 'glm' } });
-    expect(writableFallbackHintOf(worktree)).toBe('可写节点不自动切备选');
+    expect(writableFallbackHintOf(worktree)).toBe('额度用尽时会先回滚本次改动，再切备选。');
     const readonly = mkTarget({ write: '只读', fallback: { agent: 'pi', model: 'glm' } });
     expect(writableFallbackHintOf(readonly)).toBeNull();
     const noFallback = mkTarget({ write: '单写者' });
     expect(writableFallbackHintOf(noFallback)).toBeNull();
+    expect(writableFallbackHintOf(noFallback, [{
+      agent: noFallback.agent, provider: '', id: noFallback.model, fallback_order: ['pi//glm'],
+    } as never])).toBe('额度用尽时会先回滚本次改动，再切备选。');
   });
 
   it('fallbackSkippedLineOf：fallbackSkipped 非空时给「主失败，未切备选（可写节点）」', () => {
-    expect(fallbackSkippedLineOf({ fallbackSkipped: '可写节点' })).toBe('主失败，未切备选（可写节点）');
-    expect(fallbackSkippedLineOf({ fallbackSkipped: '' })).toBeNull();
-    expect(fallbackSkippedLineOf({})).toBeNull();
+    expect(fallbackSkippedLineOf({ fallbackSkipped: '可写节点', status: 'error' })).toBe('主失败，未切备选（可写节点）');
+    expect(fallbackSkippedLineOf({ fallbackSkipped: '回滚失败', status: 'quota_exhausted' })).toBe('额度用尽，未切备选（回滚失败）');
+    expect(fallbackSkippedLineOf({ fallbackSkipped: '', status: 'error' })).toBeNull();
+    expect(fallbackSkippedLineOf({ status: 'error' })).toBeNull();
   });
 });
 

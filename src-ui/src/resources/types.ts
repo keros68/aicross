@@ -64,6 +64,7 @@ export interface ResourceModelRequest {
   tier: string;
   note: string;
   fallback_order: string[];
+  clear_quota_exhausted?: boolean;
 }
 
 export interface ResourceModelKey {

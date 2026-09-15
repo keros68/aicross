@@ -5,17 +5,18 @@ import { fallbackSkippedLineOf, idleHint, rollbackHintOf, runningDetailOf, writa
 import { swarmResultLine, type SwarmGateState } from '../../../graph/swarm';
 import type { SwarmMergeResult } from '../../../tauri';
 import type { Target } from '../../../graph/types';
+import type { DispatchableModel } from '../../../graph/types';
 import { quotaExhaustedLabel, verificationHint, type Verification } from '../../../resources/types';
 
-// G1 确认屏：可写节点（write != 只读）配了备选时的提示。
-export function WritableFallbackHint({ target }: { target: Target }) {
-  const hint = writableFallbackHintOf(target);
+// G1 确认屏：可写节点配了备选时的额度回滚提示。
+export function WritableFallbackHint({ target, models = [] }: { target: Target; models?: DispatchableModel[] }) {
+  const hint = writableFallbackHintOf(target, models);
   if (!hint) return null;
   return <div className="dispatch-warning">{hint}</div>;
 }
 
 // 结果卡：可写节点主失败但未切备选时的说明行。
-export function FallbackSkippedLine({ result }: { result: Pick<BackendNodeResult, 'fallbackSkipped'> }) {
+export function FallbackSkippedLine({ result }: { result: Pick<BackendNodeResult, 'fallbackSkipped' | 'status'> }) {
   const line = fallbackSkippedLineOf(result);
   if (!line) return null;
   return <div className="dispatch-warning">{line}</div>;

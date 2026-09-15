@@ -6,6 +6,7 @@ import { retryInvoke } from './tauri';
 import { subscribeAgentStatus } from './lib/agent-status-bus';
 import { routeFileDrop } from './lib/file-drop';
 import { initHistoryAutoRefresh } from './lib/history-cache';
+import { subscribeResourcesChanged } from './resources/mention';
 import { TitleBar } from './components/common/TitleBar';
 import { ResizeEdges } from './components/common/ResizeEdges';
 // 设置面板按需载入（TASK-05 C 拆包）：它只在点齿轮后出现，却把主题、
@@ -129,6 +130,8 @@ export function App() {
       dispatch({ type: 'SET_AGENT_STATUS', id: payload.tab_id, status: payload.status });
     });
   }, [dispatch]);
+
+  useEffect(() => subscribeResourcesChanged(), []);
 
   // Apply theme + shape on mount and change — must sync with the inline script in index.html
   useEffect(() => {

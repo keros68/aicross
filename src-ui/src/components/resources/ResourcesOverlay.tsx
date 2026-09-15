@@ -162,7 +162,7 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
 
   const updateModel = async (
     model: ResourceModel,
-    patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note' | 'fallback_order'>>,
+    patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note' | 'fallback_order'>> & { clear_quota_exhausted?: boolean },
   ) => {
     setBusy(`update:${model.agent}:${model.provider}:${model.id}`);
     try {
@@ -174,6 +174,7 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
         tier: patch.tier ?? model.tier,
         note: patch.note ?? model.note,
         fallback_order: patch.fallback_order ?? model.fallback_order ?? [],
+        clear_quota_exhausted: patch.clear_quota_exhausted ?? false,
       });
       setStore(value);
       setError('');
@@ -392,6 +393,10 @@ export function moveFallbackOrder(order: string[], index: number, offset: number
   return next;
 }
 
+export function quotaClearVisible(model: ResourceModel): boolean {
+  return quotaExhaustedLabel(model) !== '';
+}
+
 /** 接入页的 agent 卡片。导出只为让 vitest 直接 renderToStaticMarkup（TASK-09b）。 */
 export function AgentCard({
   agent,
@@ -414,7 +419,7 @@ export function AgentCard({
   onVerifyModel: (model: ResourceModel) => Promise<void>;
   onUpdate: (
     model: ResourceModel,
-    patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note' | 'fallback_order'>>,
+    patch: Partial<Pick<ResourceModel, 'vendor' | 'tier' | 'note' | 'fallback_order'>> & { clear_quota_exhausted?: boolean },
   ) => Promise<void>;
   onRemove: (model: ResourceModel) => Promise<void>;
   onManual: () => void;
@@ -514,6 +519,16 @@ export function AgentCard({
                       onChange={(fallbackOrder) => void onUpdate(model, { fallback_order: fallbackOrder })}
                     />
                     <div className="agent-card-model-actions">
+                      {quotaClearVisible(model) && (
+                        <button
+                          className="row-action"
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() => void onUpdate(model, { clear_quota_exhausted: true })}
+                        >
+                          清除
+                        </button>
+                      )}
                       {verification !== 'native' && (
                         <button
                           className="row-action"

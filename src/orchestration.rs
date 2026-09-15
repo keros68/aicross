@@ -116,6 +116,9 @@ pub struct Reply {
     pub fallback_from: Option<String>,
     #[serde(default)]
     pub fallback_to: Option<String>,
+    /// 额度用尽结果的恢复时间；旧图缺失时为空。
+    #[serde(default)]
+    pub quota_resets_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -1454,6 +1457,15 @@ mod tests {
         let legacy: Reply = serde_json::from_str(r#"{"status":"done","text":"old"}"#).unwrap();
         assert_eq!(legacy.fallback_from, None);
         assert_eq!(legacy.fallback_to, None);
+    }
+
+    #[test]
+    fn task14_r1_reply_quota_reset_roundtrips_and_defaults_for_old_graphs() {
+        let reply = Reply { quota_resets_at: Some("2099-01-01T00:00:00+08:00".into()), ..Reply::default() };
+        let restored: Reply = serde_json::from_value(serde_json::to_value(&reply).unwrap()).unwrap();
+        assert_eq!(restored.quota_resets_at, reply.quota_resets_at);
+        let legacy: Reply = serde_json::from_str(r#"{"status":"failed","text":"old"}"#).unwrap();
+        assert_eq!(legacy.quota_resets_at, None);
     }
 
     #[test]

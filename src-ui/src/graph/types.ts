@@ -1,7 +1,7 @@
 // 对话图数据模型（TASK-02 A 节契约，字段名与 Rust 侧 serde snake_case 镜像）
 
 export type NodeKind = 'material' | 'turn' | 'accept';
-export type ReplyStatus = 'draft' | 'pending' | 'done' | 'failed';
+export type ReplyStatus = 'draft' | 'pending' | 'done' | 'failed' | 'quota_exhausted';
 export type Thinking = '关' | '低' | '中' | '高';
 export type VisibilityKind = '共享' | '盲' | '指定上游';
 export type WriteMode = '只读' | '单写者' | 'worktree';

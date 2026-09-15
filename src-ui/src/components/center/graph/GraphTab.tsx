@@ -23,7 +23,7 @@ import { NodePanel } from '../../right/orchestration/NodePanel';
 import { applyReconcile, applyRoleDefaults, dispatchableNodeIds, EMPTY_RECONCILE_UI, fallbackNoticeOf, nodeStatusLabel, parseAdvise, presetWithRoleDefaults, RECONCILE_UNKNOWN_TEXT, reconcileUiAfter, reconcileUiConverged, reconcileUiFor, redraftNode, resetPendingToDraft, type ReconcileSummary, type ReconcileUi } from '../../../graph/dispatch';
 import { useDispatchProgress } from '../../../graph/dispatch-progress';
 import { DispatchOverlay } from './DispatchOverlay';
-import { NodeProgressRow } from './DispatchBits';
+import { NodeProgressRow, QuotaResetLine } from './DispatchBits';
 import { appendMention, INSERT_MENTION_EVENT, mentionRef, openResourcesPage, RESOURCES_CHANGED_EVENT } from '../../../resources/mention';
 import { groupPickableModels, modelKey, modelOptionLabel } from '../../../resources/model-picker';
 import { stampMenuShouldClose } from '../../../graph/stamp-menu';
@@ -580,7 +580,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
         </div>
         {isFocus && (
           <div className="graph-node-actions" style={{ left: p.x, top: p.y + NODE_H + 4 }}>
-            {node.reply?.status === 'failed' && (
+            {(node.reply?.status === 'failed' || node.reply?.status === 'quota_exhausted') && (
               <button className="graph-mini-btn" onClick={(e) => { e.stopPropagation(); commit(redraftNode(graph, id)); setRetryNodes((current) => [...new Set([...current, id])]); }}>
                 重派
               </button>
@@ -679,7 +679,10 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               {fallbackNoticeOf(node.reply) && <span> · {fallbackNoticeOf(node.reply)}</span>}
             </div>
             {node.reply && node.reply.status !== 'draft' && node.reply.status !== 'pending' ? (
-              <div className="graph-msg-text">{node.reply.text}</div>
+              <>
+                <div className="graph-msg-text">{node.reply.text}</div>
+                <QuotaResetLine resetsAt={node.reply.quota_resets_at} />
+              </>
             ) : (
               // 对账判「未知」的节点（R1-10）：这句说明要看得到，不然
               // 「请检查项目目录后重派或放弃」只在 G1 里闪一次

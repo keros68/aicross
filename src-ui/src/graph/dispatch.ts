@@ -234,15 +234,23 @@ export function fallbackSpecOf(
   return { agent: fallback.agent, provider: fallback.provider ?? '', model: fallback.model, vendor: picked?.vendor ?? '' };
 }
 
-// G1 提示：可写节点（write != 只读）配了备选时提示——备选重跑只对只读/盲节点
-// 触发（引擎侧保证），可写节点主失败即终态，不自动切备选。
-export function writableFallbackHintOf(target: Target): string | null {
-  return target.write !== '只读' && !!target.fallback?.model.trim() ? '可写节点不自动切备选' : null;
+// G1 提示：可写节点配了显式或资源页备选时，说明额度切换前会先回滚。
+export function writableFallbackHintOf(target: Target, models: DispatchableModel[] = []): string | null {
+  const configured = models.find((item) =>
+    item.agent === target.agent && item.id === target.model &&
+    (item.provider ?? '') === (target.provider ?? ''))?.fallback_order ?? [];
+  const hasFallback = !!target.fallback?.model.trim() || configured.length > 0;
+  return target.write !== '只读' && hasFallback
+    ? '额度用尽时会先回滚本次改动，再切备选。'
+    : null;
 }
 
 // 结果卡：可写节点主失败但未切备选时的说明行；fallbackSkipped 空/缺省 = 未跳过。
-export function fallbackSkippedLineOf(result: Pick<BackendNodeResult, 'fallbackSkipped'>): string | null {
-  return result.fallbackSkipped ? `主失败，未切备选（${result.fallbackSkipped}）` : null;
+export function fallbackSkippedLineOf(result: Pick<BackendNodeResult, 'fallbackSkipped' | 'status'>): string | null {
+  if (!result.fallbackSkipped) return null;
+  return result.status === 'quota_exhausted'
+    ? `额度用尽，未切备选（${result.fallbackSkipped}）`
+    : `主失败，未切备选（${result.fallbackSkipped}）`;
 }
 
 export function applyDispatchResults(graph: Graph, results: BackendNodeResult[]): Graph {
@@ -256,7 +264,7 @@ export function applyDispatchResults(graph: Graph, results: BackendNodeResult[])
       : undefined;
     const body = validationText ?? (ok ? result.text : result.text || result.error);
     const reply: Reply = {
-      status: ok ? 'done' : 'failed',
+      status: ok ? 'done' : result.status === 'quota_exhausted' ? 'quota_exhausted' : 'failed',
       text: body,
       // TASK-06-3：主/备路由进字段，不再前置标记行（正文干净，不污染下游上下文）
       ...(result.fallbackFrom
@@ -359,6 +367,7 @@ export function nodeStatusLabel(node: GraphNode): string | null {
     if (node.reply.error_kind === 'validation_failed') return '验证失败';
     return '失败';
   }
+  if (node.reply?.status === 'quota_exhausted' || node.reply?.error_kind === 'quota_exhausted') return '额度用尽';
   // 对账判「未知」的节点（R1-10）：draft 但正文是那句说明，节点卡要看得出来，
   // 否则用户只在 G1 分区里见过一次，回到图上与普通「待派」没有区别。
   if (node.reply?.status === 'draft' && node.reply.text === RECONCILE_UNKNOWN_TEXT) return '待核对';

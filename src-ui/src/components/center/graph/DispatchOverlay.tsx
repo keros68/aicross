@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { commands, isTauri, type DispatchNodeResult, type DispatchStageRequest, type GitChanges, type RoleSettings, type SwarmMergeResult } from '../../../tauri';
 import { contextPartsOf, originalRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../../../graph/context';
 import {
@@ -92,11 +92,23 @@ interface Props {
 export const resultStatus = (status: string) =>
   status === 'ok' ? '完成' : status === 'quota_exhausted' ? '额度用尽' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证失败' : '失败';
 
+export function convergeQuotaSelection(
+  initialIds: string[],
+  current: string[],
+  blocked: string[],
+  touched: ReadonlySet<string>,
+): string[] {
+  const selected = new Set(current);
+  const limited = new Set(blocked);
+  return initialIds.filter((id) => selected.has(id) && (touched.has(id) || !limited.has(id)));
+}
+
 export function DispatchOverlay({ graph, models, projectDir, needsReview, retryNodes, progressStore, onCommit, onClose, onFocusNode, mergeOnly }: Props) {
   const initialIds = useMemo(() => dispatchableNodeIds(graph), [graph]);
   const reviewIds = useMemo(() => new Set(needsReview ?? []), [needsReview]);
   const quotaBlockedIds = useMemo(() => quotaBlockedNodeIds(graph, initialIds, models), [graph, initialIds, models]);
   const [nodeIds, setNodeIds] = useState(() => initialDispatchSelection(initialIds, needsReview).filter((id) => !quotaBlockedIds.includes(id)));
+  const quotaSelectionTouched = useRef(new Set<string>());
   const [phase, setPhase] = useState<Phase>(mergeOnly ? 'results' : 'confirm');
   const [runId, setRunId] = useState(() => crypto.randomUUID());
   const [targets, setTargets] = useState(() => Object.fromEntries(initialIds.map((id) => {
@@ -145,6 +157,9 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   const [planNotice, setPlanNotice] = useState<Record<string, string>>({});
   // 生成的执行节点要带「执行」角色默认目标，角色配置在引擎侧（同 OrchestrationPanel）。
   const [roles, setRoles] = useState<RoleSettings | null>(null);
+  useEffect(() => {
+    setNodeIds((current) => convergeQuotaSelection(initialIds, current, quotaBlockedIds, quotaSelectionTouched.current));
+  }, [initialIds, quotaBlockedIds]);
   useEffect(() => {
     if (!isTauri) return;
     let cancelled = false;
@@ -265,6 +280,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
       toggleRollbackOnReview(current, targets[id] ?? graph.nodes[id]?.target, id, checked));
   };
   const toggleQuotaNode = (id: string) => {
+    quotaSelectionTouched.current.add(id);
     setNodeIds((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -593,7 +609,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                       onChange={(next) => onCommit(updateNodeSwarm(graph, id, next))}
                     />
                   )}
-                  <WritableFallbackHint target={target} />
+                  <WritableFallbackHint target={target} models={models} />
                   <div className="dispatch-controls">
                     {models.length > 0 ? <label>目标<select
                       value={JSON.stringify([target.agent, target.provider ?? '', target.model])}

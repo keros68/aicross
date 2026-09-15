@@ -296,6 +296,8 @@ describe('B5 G3 逐件合并', () => {
     expect(swarmMergeReady(done, ['a', 'b'])).toBe(true);
     const failed = mkGraph([mkSwarmNode('a', 1), mkSwarmNode('b', 2, { reply: { status: 'failed', text: '' } })]);
     expect(swarmMergeReady(failed, ['a', 'b'])).toBe(true);
+    const quota = mkGraph([mkSwarmNode('a', 1), mkSwarmNode('b', 2, { reply: { status: 'quota_exhausted', text: '' } })]);
+    expect(swarmMergeReady(quota, ['a', 'b'])).toBe(true);
     const pending = mkGraph([mkSwarmNode('a', 1), mkSwarmNode('b', 2, { reply: { status: 'pending', text: '' } })]);
     expect(swarmMergeReady(pending, ['a', 'b'])).toBe(false);
     expect(swarmMergeReady(done, [])).toBe(false);
