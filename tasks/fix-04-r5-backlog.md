@@ -76,3 +76,9 @@
 47. 绿跑后取消分支丢弃验证输出；对账 unknown 的说明进不了界面、record_path 指向 .redgreen；worktree 节点的对账文案未指出是 worktree。（GLM 3 / DS E、J）
 48. .created 的 dir: 项计入 RollbackSummary.removed 的文件计数（文案）；Windows 启动失败靠英文输出特征识别，spawn 失败变体无测试。（DS F、I / GLM 4）
 49. 验证门叫停分支（R1 复审 A）无测试；核对耗时仍计入节点时长。（GLM 5）
+
+## TASK-15 R1 复审剩余（09-15，两家都判可交付；低危，择期）
+
+50. 自动直启的「真实接入」断言仍是源码文本比对；把 effect 判定抽成纯函数再单测。（DS 2）
+51. tab 条上的 claude/codex 图标仍是内联字面量副本（CLAUDE_SVG/CODEX_SVG），与 public/icons/tools 同源但各存一份；设置页与接入页两处仍直出机器 id。（DS 4/5、GLM 5）
+52. 启动器 `onShown` 每次渲染重复登记（幂等，无功能影响）；有存量默认时探测期间首屏短暂空白属有意取舍。（GLM 2/3）
