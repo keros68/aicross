@@ -35,8 +35,14 @@ import {
   parseCommanderModelValue,
   shouldShowNoCommanderModels,
   commanderStartedCallback,
+  commanderAutoStart,
+  commanderLauncherToolPatch,
+  markCommanderLauncherOpened,
+  COMMANDER_AGENT_CARD_HEIGHT,
+  COMMANDER_AGENT_GRID_TEMPLATE,
 } from '../launcher';
 import { emptyCommanderSettings } from '../types';
+import { AGENT_DISPLAY_NAMES, agentDisplayName } from '../../resources/agent-display';
 import {
   CommanderLauncher,
   CommanderModelSelect,
@@ -44,6 +50,7 @@ import {
 } from '../../components/center/CommanderLauncher';
 import type { PickableModel } from '../../resources/model-picker';
 import type { DispatchableModel } from '../../graph/types';
+
 
 const model = (over: Partial<PickableModel>): PickableModel => ({
   id: 'm',
@@ -116,6 +123,33 @@ describe('TASK-10 (1) commanderArgs 四家映射 + 空模型', () => {
 });
 
 describe('TASK-10 (2) 启动器纯函数', () => {
+  it('TASK-15：四个 agent 显示名从同一张前端表取', () => {
+    expect(AGENT_DISPLAY_NAMES).toEqual({
+      claude: 'Claude Code',
+      codex: 'Codex',
+      kimi: 'Kimi Code',
+      pi: 'pi agent',
+    });
+    expect(agentDisplayName('kimicode')).toBe('Kimi Code');
+    expect(commanderAgentLabel('pi')).toBe('pi agent');
+  });
+
+  it('TASK-15：默认有效且已安装时，新总指挥 tab 直接启动；其余情况显示启动器', () => {
+    const defaults = { ...emptyCommanderSettings(), agent: 'claude', model: 'fable' };
+    expect(commanderAutoStart(defaults, { claude: true }, true)).toBe(true);
+    expect(commanderAutoStart(null, { claude: true }, true)).toBe(false);
+    expect(commanderAutoStart(defaults, { claude: false }, true)).toBe(false);
+    expect(commanderAutoStart(defaults, { claude: true }, false)).toBe(false);
+    expect(commanderAutoStart({ ...defaults, agent: 'unknown' }, { claude: true }, true)).toBe(false);
+  });
+
+  it('TASK-15：会话细行的“更改”回到空白 graph 启动器，不落到系统终端', () => {
+    expect(commanderLauncherToolPatch()).toEqual({ tool: 'graph', toolData: '' });
+    const autoLaunchedTabs = new Set<string>();
+    expect(markCommanderLauncherOpened('tab-1', autoLaunchedTabs)).toEqual({ tool: 'graph', toolData: '' });
+    expect(autoLaunchedTabs).toEqual(new Set(['tab-1']));
+  });
+
   it('可用 agent 只列探测到的，按工具 id 查（kimi → kimicode）', () => {
     expect(
       availableCommanderAgents({ claude: true, codex: false, kimicode: true, pi: true }),
@@ -213,14 +247,14 @@ describe('TASK-10 (2) 启动器纯函数', () => {
         model: 'fable',
         cwd: 'D:\\work\\aicross',
       }),
-    ).toBe('启动总指挥 · claude · fable · aicross');
+    ).toBe('启动总指挥 · Claude Code · fable · aicross');
     // 模型留空时省掉那一段，不留一个空的点
     expect(
       commanderDefaultLine({ ...emptyCommanderSettings(), agent: 'codex', cwd: '/srv/app' }),
-    ).toBe('启动总指挥 · codex · app');
+    ).toBe('启动总指挥 · Codex · app');
     // 目录留空时给占位而不是空串
     expect(commanderDefaultLine({ ...emptyCommanderSettings(), agent: 'pi' })).toBe(
-      '启动总指挥 · pi · 未选目录',
+      '启动总指挥 · pi agent · 未选目录',
     );
     // 没存过默认（agent 空）→ null，首屏不画这一行
     expect(commanderDefaultLine(emptyCommanderSettings())).toBeNull();
@@ -228,9 +262,9 @@ describe('TASK-10 (2) 启动器纯函数', () => {
   });
 
   it('tab 标题是 agent · 模型 · 目录名', () => {
-    expect(commanderTabTitle('claude', 'fable', 'D:\\work\\aicross')).toBe('claude · fable · aicross');
-    expect(commanderTabTitle('codex', '', '/srv/app')).toBe('codex · app');
-    expect(commanderTabTitle('pi', 'glm', null)).toBe('pi · glm · 未选目录');
+    expect(commanderTabTitle('claude', 'fable', 'D:\\work\\aicross')).toBe('Claude Code · fable · aicross');
+    expect(commanderTabTitle('codex', '', '/srv/app')).toBe('Codex · app');
+    expect(commanderTabTitle('pi', 'glm', null)).toBe('pi agent · glm · 未选目录');
   });
 
   it('启动前自检：没选 agent / 选了没装的都拦住', () => {
@@ -310,8 +344,8 @@ describe('TASK-10 (2) 启动器纯函数', () => {
 
   it('agent 显示名与接入页一致', () => {
     expect(commanderAgentLabel('claude')).toBe('Claude Code');
-    expect(commanderAgentLabel('kimi')).toBe('Kimi Code CLI');
-    expect(commanderAgentLabel('pi')).toBe('pi');
+    expect(commanderAgentLabel('kimi')).toBe('Kimi Code');
+    expect(commanderAgentLabel('pi')).toBe('pi agent');
     expect(commanderAgentLabel('grok')).toBe('grok');
   });
 });
@@ -385,5 +419,23 @@ describe('TASK-10 (3) 启动器组件', () => {
       cwd: 'D:\\work\\aicross',
     };
     expect(render({ codex: true }, defaults)).not.toContain('启动总指挥 ·');
+  });
+
+  it('TASK-15：卡片网格固定列宽和行高，窄窗口可换行', async () => {
+    // tsconfig 未引入 Node 类型；Vitest 本身运行在 Node，动态读取避免把测试工具
+    // 变成产品构建依赖，同时能真正钉住 CSS 是否消费网格变量。
+    // @ts-expect-error Node built-in is only loaded by Vitest.
+    const { readFileSync } = await import('node:fs');
+    const centerPanelCss = readFileSync(
+      new URL('../../components/center/CenterPanel.css', import.meta.url),
+      'utf8',
+    );
+    expect(centerPanelCss).toMatch(/\.commander-agents\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*var\(--commander-agent-grid\)/s);
+    expect(centerPanelCss).toMatch(/\.commander-agent-card\s*\{[^}]*height:\s*var\(--commander-agent-card-height\)/s);
+    expect(COMMANDER_AGENT_GRID_TEMPLATE).toBe('repeat(auto-fit, minmax(150px, 150px))');
+    expect(COMMANDER_AGENT_CARD_HEIGHT).toBe(48);
+    const html = render({ claude: true, codex: true, kimi: true, pi: true });
+    expect(html).toContain('--commander-agent-grid:repeat(auto-fit, minmax(150px, 150px))');
+    expect(html).toContain('--commander-agent-card-height:48px');
   });
 });

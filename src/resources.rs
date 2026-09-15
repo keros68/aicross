@@ -44,15 +44,20 @@ pub const VERIFICATION_FAILED: &str = "failed";
 /// 「原生」= 原生 agent **且**没走第三方端点（修正轮 R1）：claude 挂了
 /// `ANTHROPIC_BASE_URL`（或 settings.json 的 env）就按第三方走自动验证，
 /// 静默降级正是在这条路上高发。判定见 `is_native_model`。
-const NATIVE_AGENTS: [&str; 3] = ["claude", "codex", "kimi"];
+pub(crate) const AGENT_NAME_CLAUDE: &str = "Claude Code";
+pub(crate) const AGENT_NAME_CODEX: &str = "Codex";
+pub(crate) const AGENT_NAME_KIMI: &str = "Kimi Code";
+pub(crate) const AGENT_NAME_PI: &str = "pi agent";
 
-/// 内置 agent：(id, 显示名)。二进制名与 id 相同。
-const BUILTIN_AGENTS: [(&str, &str); 4] = [
-    ("claude", "Claude Code"),
-    ("codex", "Codex"),
-    ("kimi", "Kimi Code CLI"),
-    ("pi", "pi"),
+/// 原生 agent：(机器 id, 显示名)。显示名是资源库唯一事实源。
+const NATIVE_AGENTS: [(&str, &str); 3] = [
+    ("claude", AGENT_NAME_CLAUDE),
+    ("codex", AGENT_NAME_CODEX),
+    ("kimi", AGENT_NAME_KIMI),
 ];
+
+/// pi 不是原生端点，但和原生三家共用资源库的内置 agent 骨架。
+const PI_AGENT: (&str, &str) = ("pi", AGENT_NAME_PI);
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ResourceStore {
@@ -368,7 +373,7 @@ pub(crate) fn mark_quota_exhausted(
 fn is_native_agent(agent: &str) -> bool {
     NATIVE_AGENTS
         .iter()
-        .any(|native| native.eq_ignore_ascii_case(agent.trim()))
+        .any(|(id, _)| id.eq_ignore_ascii_case(agent.trim()))
 }
 
 /// 第三方端点判定。目前只覆盖 claude（进程环境 `ANTHROPIC_BASE_URL` 或
@@ -622,7 +627,7 @@ fn verification_rank(verification: &str) -> u8 {
 pub fn ensure_agents(store: &mut ResourceStore) {
     store.version = 1;
     store.agents.retain(|agent| agent.id != "cc-switch");
-    for (id, name) in BUILTIN_AGENTS {
+    for (id, name) in NATIVE_AGENTS.into_iter().chain(std::iter::once(PI_AGENT)) {
         if store.agents.iter().all(|agent| agent.id != id) {
             store.agents.push(ResourceAgent {
                 id: id.to_string(),
@@ -3438,6 +3443,57 @@ mod tests {
         assert!(is_native_model("Codex"));
         assert!(is_native_model(" KIMI "));
         assert!(!is_native_model("pi"));
+    }
+
+    #[test]
+    fn task15_builtin_agent_display_names_are_canonical() {
+        assert_eq!(
+            NATIVE_AGENTS,
+            [
+                ("claude", "Claude Code"),
+                ("codex", "Codex"),
+                ("kimi", "Kimi Code"),
+            ]
+        );
+        assert_eq!(PI_AGENT, ("pi", "pi agent"));
+        for (id, name) in NATIVE_AGENTS.into_iter().chain(std::iter::once(PI_AGENT)) {
+            let tool_id = if id == "kimi" { "kimicode" } else { id };
+            assert_eq!(crate::tools::find(tool_id).unwrap().display_name, name);
+        }
+
+        let mut store = ResourceStore::default();
+        ensure_agents(&mut store);
+        let names: Vec<(&str, &str)> = store
+            .agents
+            .iter()
+            .map(|agent| (agent.id.as_str(), agent.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("claude", "Claude Code"),
+                ("codex", "Codex"),
+                ("kimi", "Kimi Code"),
+                ("pi", "pi agent"),
+            ]
+        );
+
+        let mut old_store = ResourceStore {
+            version: 1,
+            agents: vec![
+                ResourceAgent { id: "kimi".into(), name: "Kimi Code CLI".into(), ..Default::default() },
+                ResourceAgent { id: "pi".into(), name: "pi".into(), ..Default::default() },
+            ],
+        };
+        ensure_agents(&mut old_store);
+        assert_eq!(
+            old_store.agents.iter().find(|agent| agent.id == "kimi").unwrap().name,
+            "Kimi Code"
+        );
+        assert_eq!(
+            old_store.agents.iter().find(|agent| agent.id == "pi").unwrap().name,
+            "pi agent"
+        );
     }
 
     /// 修正轮 R1-2：provider 为空时退到 agent + id 匹配，真的会验证（原来精确

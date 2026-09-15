@@ -13,20 +13,18 @@ import {
   type CommanderAgent,
 } from './args';
 import type { CommanderSettings } from './types';
+import { agentDisplayName } from '../resources/agent-display';
+
+/** 启动器卡片网格的唯一尺寸定义，组件以 CSS 变量传给样式表。 */
+export const COMMANDER_AGENT_GRID_TEMPLATE = 'repeat(auto-fit, minmax(150px, 150px))';
+export const COMMANDER_AGENT_CARD_HEIGHT = 48;
 
 /**
  * agent 显示名。与 `src/resources.rs` 的 AGENT_LABELS 一致——同一个 agent 在
  * 接入页和这里必须同名，用户才能把两处对上。
  */
-const AGENT_LABEL: Record<CommanderAgent, string> = {
-  claude: 'Claude Code',
-  codex: 'Codex',
-  kimi: 'Kimi Code CLI',
-  pi: 'pi',
-};
-
 export function commanderAgentLabel(agent: string): string {
-  return isCommanderAgent(agent) ? AGENT_LABEL[agent] : agent;
+  return agentDisplayName(agent);
 }
 
 /**
@@ -95,22 +93,22 @@ export function cwdName(cwd: string | null | undefined): string {
 export const COMMANDER_NO_CWD = '未选目录';
 
 /**
- * 有默认配置才显示的一键行文案：`启动总指挥 · claude · fable · aicross`。
+ * 有默认配置才显示的一键行文案：`启动总指挥 · Claude Code · fable · aicross`。
  * agent 为空 = 还没存过默认，返回 null，首屏就不显示这一行。
  * 模型留空时省掉模型那一段，不写一个空的点。
  */
 export function commanderDefaultLine(settings: CommanderSettings | null): string | null {
   if (!settings || !isCommanderAgent(settings.agent)) return null;
-  const parts = ['启动总指挥', settings.agent];
+  const parts = ['启动总指挥', commanderAgentLabel(settings.agent)];
   const model = settings.model.trim();
   if (model !== '') parts.push(model);
   parts.push(cwdName(settings.cwd) || COMMANDER_NO_CWD);
   return parts.join(' · ');
 }
 
-/** tab 标题：`agent · 模型 · 目录名`。模型留空时省掉中间那段。 */
+/** tab 标题：`agent 显示名 · 模型 · 目录名`。模型留空时省掉中间那段。 */
 export function commanderTabTitle(agent: string, model: string, cwd: string | null): string {
-  const parts = [agent];
+  const parts = [commanderAgentLabel(agent)];
   const trimmed = model.trim();
   if (trimmed !== '') parts.push(trimmed);
   parts.push(cwdName(cwd) || COMMANDER_NO_CWD);
@@ -200,6 +198,29 @@ export function commanderDefaultAvailable(
   const tool = commanderToolId(settings.agent);
   return tool !== null && installed[tool] === true
     && commanderIdentifierError(settings.provider, settings.model) === null;
+}
+
+/** 新总指挥 tab 的首屏判定：默认完整、探测完成且 CLI 已安装就直接启动。 */
+export function commanderAutoStart(
+  settings: CommanderSettings | null,
+  installed: Record<string, boolean>,
+  toolsScanned: boolean,
+): boolean {
+  return commanderDefaultAvailable(settings, installed, toolsScanned);
+}
+
+/** 会话上方「更改」回到空白总指挥启动器的最小 tab 补丁。 */
+export function commanderLauncherToolPatch(): { tool: 'graph'; toolData: string } {
+  return { tool: 'graph', toolData: '' };
+}
+
+/** 用户主动点「更改」后，本 tab 保持启动器，不让默认自动启动立刻覆盖选择。 */
+export function markCommanderLauncherOpened(
+  tabId: string,
+  autoLaunchedTabs: Set<string>,
+): { tool: 'graph'; toolData: string } {
+  autoLaunchedTabs.add(tabId);
+  return commanderLauncherToolPatch();
 }
 
 export function openCommanderCli(tool: string, onOpen: (tool: string) => void): void {

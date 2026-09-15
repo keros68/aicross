@@ -17,7 +17,8 @@
 // 归属同时写进仓库 NOTICE 的 aicross 段（「THIRD-PARTY ASSETS ADDED BY
 // AICROSS」）——上游那段逐字保留，新条目不能加进去（AGENTS.md）。
 //
-// pi 没有公开标志，按任务书用 π 字形；未知 agent 退回 `agentMark` 的字母。
+// pi 的本机安装包未提供可复用的官方标志，按任务书退回 `agentMark` 的字母；
+// 未知 agent 也走同一条字母回退。
 
 export interface BrandMark {
   /** SVG viewBox，simple-icons 一律 `0 0 24 24`。 */
@@ -50,9 +51,6 @@ export const BRAND_MARKS: Record<string, BrandMark> = {
   },
 };
 
-/** agent id → 没有品牌标志时的字形。pi 按任务书用 π。 */
-const GLYPHS: Record<string, string> = { pi: 'π' };
-
 /**
  * 色相由 `resources.css` 按主题给的 slug（`.agent-badge-<slug>` + 浅色覆盖）。
  * 这几个 slug 的徽标**不许**内联 `--agent-tone`：内联自定义属性压过样式表，
@@ -77,14 +75,12 @@ export function agentSlug(agentId: string): string {
 }
 
 /**
- * 徽标该画什么：品牌标志 → 字形 → 字母。
+ * 徽标该画什么：品牌标志 → 字母。
  * 纯函数，组件只负责把它渲染出来，vitest 直接断言分支。
  */
 export function agentEmblem(agentId: string, letters: string): AgentEmblem {
   const slug = agentSlug(agentId);
   const mark = BRAND_MARKS[slug];
   if (mark) return { kind: 'mark', slug, mark };
-  const glyph = GLYPHS[slug];
-  if (glyph) return { kind: 'glyph', slug, glyph };
-  return { kind: 'letters', slug, letters };
+  return { kind: 'letters', slug, letters: slug === 'pi' ? 'pi' : letters };
 }

@@ -4,7 +4,7 @@
 /* ── agent 品牌徽标与验证标记（TASK-09；TASK-09b 换成官方标志） ───────────
    标志本体是内联 SVG（路径数据与许可见 brand-marks.ts），按 currentColor 填。
    厂商色只做小面积标识（PRODUCT.md 视觉纪律）。没有收录标志的 agent 退回
-   字形（pi → π）或字母，形状仍是同一个 18px 方槽，行高不会因家而异。
+   字母（pi → pi），形状仍是同一个 18px 方槽，行高不会因家而异。
 
    修正轮 R1（DS A1）：已知四家的 --agent-tone 写在**样式表**里，不再由
    AgentBadge 内联传。内联自定义属性在层叠里压过样式表规则（作者样式表 <
@@ -28,7 +28,7 @@
   display: block;
 }
 
-/* 字形 / 字母兜底：没有标志时给一个薄底方块，免得一个孤零零的 π 看着像正文。 */
+/* 字母兜底：没有标志时给一个薄底方块，免得标识看着像正文。 */
 .agent-badge-glyph,
 .agent-badge-letters {
   border-radius: var(--radius-xs);

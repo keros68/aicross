@@ -19,7 +19,7 @@ use super::{HistoryShape, ToolDescriptor};
 
 pub static DESCRIPTOR: ToolDescriptor = ToolDescriptor {
     id: "pi",
-    display_name: "Pi",
+    display_name: crate::resources::AGENT_NAME_PI,
     binary_name: "pi",
     skill_dir_relative: None,
     has_hook_surface: false,

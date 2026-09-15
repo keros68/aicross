@@ -6,7 +6,7 @@
 //
 // 挑什么、显示成什么字都在 `commander/launcher.ts` 的纯函数里，这个文件只画。
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { AgentBadge } from '../resources/AgentBadge';
 import { commands, isTauri } from '../../tauri';
 import type { DispatchableModel } from '../../graph/types';
@@ -23,6 +23,8 @@ import {
   commanderModelValue,
   cwdName,
   COMMANDER_NO_CWD,
+  COMMANDER_AGENT_CARD_HEIGHT,
+  COMMANDER_AGENT_GRID_TEMPLATE,
   markCommanderSelection,
   openCommanderCli,
   parseCommanderModelValue,
@@ -30,6 +32,7 @@ import {
   type CommanderCliEntry,
 } from '../../commander/launcher';
 import type { CommanderSettings } from '../../commander/types';
+import { AGENT_DISPLAY_NAMES } from '../../resources/agent-display';
 
 export interface CommanderLaunchArgs {
   agent: CommanderAgent;
@@ -240,14 +243,20 @@ export function CommanderLauncher({
           <div className="commander-empty">探测中…</div>
         ) : agents.length === 0 ? (
           <div className="commander-empty">
-            本机没探测到 Claude Code / Codex / Kimi Code CLI / pi。装好任意一个再回来。
+            本机没探测到 {Object.values(AGENT_DISPLAY_NAMES).join(' / ')}。装好任意一个再回来。
           </div>
         ) : (
           <>
             <div className="commander-row">
               <div className="commander-field commander-field--agents">
                 <div className="commander-label">agent</div>
-                <div className="commander-agents">
+                <div
+                  className="commander-agents"
+                  style={{
+                    '--commander-agent-grid': COMMANDER_AGENT_GRID_TEMPLATE,
+                    '--commander-agent-card-height': `${COMMANDER_AGENT_CARD_HEIGHT}px`,
+                  } as CSSProperties}
+                >
                   {agents.map((item) => (
                     <button
                       type="button"

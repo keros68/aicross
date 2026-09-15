@@ -158,15 +158,14 @@ describe('ResourceAgentList', () => {
   it('agent 行带品牌标志与弱化版本号；徽标不再用字母', () => {
     const markup = render();
     expect(markup).toContain('agent-badge-sm');
-    // claude → Anthropic 标志，codex → OpenAI 标志，pi → π 字形
+    // claude → Anthropic 标志，codex → OpenAI 标志，pi 没有官方标志时退回字母
     expect(markup).toContain(BRAND_MARKS.claude.path);
     expect(markup).toContain(BRAND_MARKS.codex.path);
-    expect(markup).toContain('agent-badge-pi agent-badge-glyph');
-    expect(visibleText(markup)).toContain('π');
-    // 原来的字母徽标（CO / CL / PI）不再出现
+    expect(markup).toContain('agent-badge-pi agent-badge-letters');
+    expect(visibleText(markup)).toContain('pi');
+    // 原来的字母徽标（CO / CL）不再出现
     expect(visibleText(markup)).not.toContain('CO');
     expect(visibleText(markup)).not.toContain('CL');
-    expect(visibleText(markup)).not.toContain('PI');
   });
 
   // TASK-09b：用户原话「claude 没有模型 id」。别名行里补真身，别名与 ID 相同
@@ -385,11 +384,11 @@ describe('ResourceAgentList', () => {
 // TASK-09b：品牌标志表本身。路径数据来自 simple-icons（CC0-1.0），
 // 这里钉住「四家各画什么」与「没收录的退回字母」。
 describe('agentEmblem', () => {
-  it('claude / codex / kimi 走品牌标志，pi 走 π 字形，未知退回字母', () => {
+  it('claude / codex / kimi 走品牌标志，pi 与未知项退回字母', () => {
     expect(agentEmblem('claude', 'CL')).toMatchObject({ kind: 'mark', slug: 'claude' });
     expect(agentEmblem('codex', 'CO')).toMatchObject({ kind: 'mark', slug: 'codex' });
     expect(agentEmblem('kimi', 'KI')).toMatchObject({ kind: 'mark', slug: 'kimi' });
-    expect(agentEmblem('pi', 'PI')).toEqual({ kind: 'glyph', slug: 'pi', glyph: 'π' });
+    expect(agentEmblem('pi', 'PI')).toEqual({ kind: 'letters', slug: 'pi', letters: 'pi' });
     expect(agentEmblem('manual-1x', 'MA')).toEqual({
       kind: 'letters',
       slug: 'manual1x',

@@ -32,7 +32,7 @@ use super::{HistoryShape, ToolDescriptor};
 
 pub static DESCRIPTOR: ToolDescriptor = ToolDescriptor {
     id: "kimicode",
-    display_name: "Kimi Code",
+    display_name: crate::resources::AGENT_NAME_KIMI,
     binary_name: "kimi",
     skill_dir_relative: None,
     has_hook_surface: true,
