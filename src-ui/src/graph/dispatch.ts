@@ -669,11 +669,12 @@ export function appendValidationRetry(
   const nextExecutionId = newNodeId();
   const nextAcceptanceId = newNodeId();
   const now = Date.now();
+  const upstreamReason = unpinned ? '上游测试未钉住' : '上游验证未通过';
   const skippedVerifications = verificationSiblings(graph, waitingAccept)
     .filter((node) => node.reply?.status === 'draft')
     .map((node) => [node.id, {
       ...node,
-      reply: { status: 'draft' as const, text: '', skipped_reason: '上游验证未通过' },
+      reply: { status: 'draft' as const, text: '', skipped_reason: upstreamReason },
     }] as const);
   return {
     graph: {
@@ -681,7 +682,7 @@ export function appendValidationRetry(
       nodes: {
       ...graph.nodes,
       ...Object.fromEntries(skippedVerifications),
-      [waitingAccept.id]: { ...waitingAccept, reply: { status: 'failed', text: '验证命令未通过，未送审' } },
+      [waitingAccept.id]: { ...waitingAccept, reply: { status: 'failed', text: unpinned ? '测试未钉住，未送审' : '验证命令未通过，未送审' } },
       [nextExecutionId]: {
         id: nextExecutionId,
         kind: execution.parents.length > 1 ? 'accept' : 'turn',
@@ -712,7 +713,7 @@ export function appendValidationRetry(
   };
 }
 
-function closeWaitingAcceptance(graph: Graph, executionId: string): Graph {
+function closeWaitingAcceptance(graph: Graph, executionId: string, reason: string): Graph {
   const waitingAccept = Object.values(graph.nodes).find(
     (node) => node.parents.includes(executionId) && node.target?.role === '验收' && node.reply?.status === 'draft',
   );
@@ -725,7 +726,7 @@ function closeWaitingAcceptance(graph: Graph, executionId: string): Graph {
       ...graph.nodes,
       ...Object.fromEntries(skipped.map((node) => [node.id, {
         ...node,
-        reply: { status: 'draft' as const, text: '', skipped_reason: '上游验证未通过' },
+        reply: { status: 'draft' as const, text: '', skipped_reason: reason },
       }])),
     },
   };
@@ -848,7 +849,7 @@ export function reducePipelineStep(
     for (const failure of validationFailures) {
       const count = retries[failure.nodeId] ?? 0;
       if (count >= limit) {
-        next = closeWaitingAcceptance(next, failure.nodeId);
+        next = closeWaitingAcceptance(next, failure.nodeId, failure.pinned === 'unpinned' ? '上游测试未钉住' : '上游验证未通过');
         continue;
       }
       const appended = appendValidationRetry(

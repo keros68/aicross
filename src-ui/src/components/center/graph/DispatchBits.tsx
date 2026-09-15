@@ -1,7 +1,7 @@
 // DispatchOverlay 的三处小组件（TASK-05B R2-5）：抽出来是为了能用
 // react-dom/server 做组件级断言，不只停在纯函数层。
 
-import { fallbackSkippedLineOf, idleHint, rollbackHintOf, runningDetailOf, writableFallbackHintOf, type BackendNodeResult, type ProgressSnapshot } from '../../../graph/dispatch';
+import { fallbackSkippedLineOf, idleHint, pinnedLabelOf, rollbackHintOf, runningDetailOf, writableFallbackHintOf, type BackendNodeResult, type ProgressSnapshot } from '../../../graph/dispatch';
 import { swarmResultLine, type SwarmGateState } from '../../../graph/swarm';
 import type { SwarmMergeResult } from '../../../tauri';
 import type { Target } from '../../../graph/types';
@@ -20,6 +20,17 @@ export function FallbackSkippedLine({ result }: { result: Pick<BackendNodeResult
   const line = fallbackSkippedLineOf(result);
   if (!line) return null;
   return <div className="dispatch-warning">{line}</div>;
+}
+
+export function PinnedStatus({ pinned }: { pinned?: BackendNodeResult['pinned'] }) {
+  const label = pinnedLabelOf(pinned);
+  if (!label) return null;
+  return <span className={`dispatch-pin-status${pinned === 'unpinned' ? ' unpinned' : ''}`}>{label}</span>;
+}
+
+export function PinnedNote({ result }: { result: Pick<BackendNodeResult, 'pinnedNote' | 'status'> }) {
+  if (!result.pinnedNote) return null;
+  return <div className={result.status === 'error' ? 'dispatch-warning' : 'dispatch-pin-note'}>{result.pinnedNote}</div>;
 }
 
 // G1 确认屏：目标模型的验证档提示（修正轮 R1）。未验证是第三方模型的常态，
