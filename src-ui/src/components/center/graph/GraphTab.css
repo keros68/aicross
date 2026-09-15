@@ -30,6 +30,10 @@
 .dispatch-body { overflow: auto; padding: 16px; }
 .dispatch-route-card, .dispatch-result-card { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); }
 .dispatch-route-card + .dispatch-route-card { margin-top: 8px; }
+/* 蜂群 G1：文件范围与别件重叠的那张路由卡（TASK-08 B-4）。阻断项，用警告色描边。 */
+.dispatch-route-card.swarm-overlap { border-color: var(--red); }
+.dispatch-swarm-gate { margin: 8px 0; }
+.dispatch-swarm-row + .dispatch-swarm-row { margin-top: 6px; }
 .dispatch-route-line, .dispatch-result-lines { font: 12px/1.6 var(--font-mono, monospace); color: var(--text-1); }
 /* 四个控件（目标 / 档位 / thinking / 备选）一行放不下时折行，不溢出卡片右边（TASK-06-4） */
 .dispatch-controls { display: flex; flex-wrap: wrap; gap: 12px; row-gap: 8px; margin-top: 12px; }

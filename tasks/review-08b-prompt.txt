@@ -1,0 +1,9 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/8b 分支。本期是 TASK-08 的 B 节「蜂群界面：Node.swarm 类型、builtin-swarm 预设与拆分角色、parseSwarmPlan 与按清单生成执行节点、G1 重叠/脏树门禁、G3 合并动作与逐件结果、MANUAL 蜂群一节」。先读 docs/PRODUCT.md「第 3 期草案：蜂群」、tasks/TASK-08-swarm.md（契约 + B 节）、AGENTS.md、tasks/REPORT-08B.md，再读本期改动：src-ui/src/graph/（types.ts、stamp.ts、dispatch.ts、swarm.ts 若有、__tests__/）、src-ui/src/components/center/graph/（DispatchOverlay.tsx、DispatchBits.tsx、GraphTab.tsx）、src-ui/src/components/right/orchestration/NodePanel.tsx、src-ui/src/tauri.ts、src/orchestration.rs 里内置预设定义（只读对照）、docs/MANUAL.md。不读 node_modules、target、dist、port、src/dispatch.rs。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套。
+1. 需求完整性：对照 B 节 6 条与契约逐条核对；后端未接通时的回退分支存在且可编译；上限 swarm_limit 生效。
+2. 逻辑正确性：parseSwarmPlan 取最后一个 json 围栏、字段校验、超限截断；生成的执行节点 parents/role/write/target/swarm 字段正确；G1 门禁只在本批含 swarm 节点时触发、重叠标红并禁用确认、脏树禁用、unmatched 只提示；G3 合并按钮只在全部 swarm 节点终态后出现、merged 自动 adopted、conflict/test_failed 不自动重派；与擂台/仲裁/备选/对账/回滚等既有路径不互相干扰。
+3. 安全：合并动作只调契约命令，不在前端拼 git；清单文本进 prompt 前不带项目其它上下文。
+4. 代码质量与契约：类型只追加；tauri.ts 命名与契约 camelCase 一致；内置预设数与 Rust 侧一致（需要 Rust 加 builtin-swarm 的话在报告里写明由 A 侧做）。
+5. 测试：报告里的测试是否真实存在且断言目标行为；最该补的 3 个。
+最后单独回答：对照 B 节原始需求是否完整实现？一句话 + 缺项列表（按严重度排序）。

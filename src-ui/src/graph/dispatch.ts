@@ -62,7 +62,8 @@ export function applyRoleDefaults<T extends RoleTarget & { role: string }>(
   roles: { planning: RoleTarget; execution: RoleTarget; acceptance: RoleTarget },
 ): T {
   if (target.model.trim()) return target;
-  const profile = target.role === '出方案' ? roles.planning : target.role === '执行' ? roles.execution : target.role === '验收' ? roles.acceptance : undefined;
+  // 拆分（TASK-08 蜂群）沿用「出方案」的默认目标：它出的是一份清单不是改动。
+  const profile = target.role === '出方案' || target.role === '拆分' ? roles.planning : target.role === '执行' ? roles.execution : target.role === '验收' ? roles.acceptance : undefined;
   if (!profile || !profile.model.trim()) return target;
   return { ...target, agent: profile.agent, provider: profile.provider, model: profile.model, tier: profile.tier, thinking: profile.thinking };
 }

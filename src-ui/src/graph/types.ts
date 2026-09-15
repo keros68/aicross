@@ -67,6 +67,15 @@ export interface Target {
   fallback?: FallbackTarget; // 备选；不设则主目标失败即终态
 }
 
+// 蜂群（TASK-08）：拆分清单的一件活落在执行节点上。item 是件号（从 1 起，
+// 决定合并顺序），files 是这件活声明的文件范围（glob），accept 是这件的验收
+// 命令（空则合并时回退到设置里的验证命令）。旧图没有这个字段，按缺失处理。
+export interface SwarmItem {
+  item: number;
+  files: string[];
+  accept: string;
+}
+
 export interface GraphNode {
   id: string;
   kind: NodeKind;
@@ -74,6 +83,7 @@ export interface GraphNode {
   user: Message;
   reply?: Reply;
   target?: Target;
+  swarm?: SwarmItem;
   created_at: string;
 }
 
@@ -120,6 +130,9 @@ export function roleDefaults(role: string): { visibility: VisibilityKind; write:
   if (role === '验收' || role === '验证' || role === '顾问' || role === '仲裁') {
     return { visibility: '盲', write: '只读' };
   }
+  // 拆分（TASK-08 蜂群）：看得到根材料，只出清单不改文件。值与兜底相同，
+  // 写成显式分支，兜底以后变了也不会把拆分一起改掉（R1-7）。
+  if (role === '拆分') return { visibility: '共享', write: '只读' };
   return { visibility: '共享', write: '只读' };
 }
 

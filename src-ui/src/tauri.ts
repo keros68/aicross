@@ -356,6 +356,21 @@ export const commands = {
   cancelDispatchNode: (runId: string, nodeId: string) =>
     invoke<boolean>('cancel_dispatch_node', { runId, nodeId }),
 
+  // ── 蜂群（TASK-08，引擎在另一工作树实现）──────────
+  // 只读核对拆分清单：脏树 / 范围重叠 / glob 没匹配到文件。
+  // 后端未接通时调用会 reject，调用方回退到 SWARM_CHECK_FALLBACK（graph/swarm.ts）。
+  checkSwarmPlan: (projectDir: string, items: SwarmCheckItem[]) =>
+    invoke<SwarmPlanCheck>('check_swarm_plan', { projectDir, items }),
+  // 按件号顺序 cherry-pick 各 worktree 的改动，每并一件跑一次验收命令。
+  // 后端未接通时调用方回退到全 skipped（swarmMergeFallback）。
+  mergeSwarmItems: (
+    projectDir: string,
+    runId: string,
+    items: SwarmMergeRequestItem[],
+    validateCommand: string,
+  ) =>
+    invoke<unknown>('merge_swarm_items', { projectDir, runId, items, validateCommand }),
+
   // ── 资源接入（TASK-07，镜像 src/resources.rs）────────────────────────
   // 契约类型统一从 resources/types.ts 引入（snake_case，与 Rust 一致）。
   getResources: () => invoke<ResourceStore>('get_resources'),
@@ -515,6 +530,52 @@ export interface DispatchNodeResult {
   fallbackTo: string;
   // TASK-05B R1：可写节点主失败但未切备选时带原因（"可写节点"），空/缺省 = 未跳过
   fallbackSkipped?: string;
+}
+
+// ── 蜂群契约（TASK-08）────────────────────────
+export interface SwarmCheckItem {
+  item: number;
+  files: string[];
+}
+
+export interface SwarmOverlap {
+  a: number;
+  b: number;
+  path: string;
+}
+
+export interface SwarmUnmatched {
+  item: number;
+  glob: string;
+}
+
+export interface SwarmPlanCheck {
+  dirty: boolean;
+  overlaps: SwarmOverlap[];
+  unmatched: SwarmUnmatched[];
+}
+
+export interface SwarmMergeRequestItem {
+  nodeId: string;
+  // 契约文本写的是 node_id，A 侧按哪种 serde 命名未定：两个键都发，多余的那个被 serde 忽略。
+  node_id?: string;
+  item: number;
+  worktree: string;
+  accept: string;
+}
+
+export type SwarmMergeOutcome = 'merged' | 'conflict' | 'test_failed' | 'skipped';
+
+// 任务书契约里这两个字段写的是 node_id / test_output，而 tauri.ts 里其它
+// 派发类结果都是 camelCase。引擎在另一工作树并行做，两种写法都可能
+// 出现：这里声明 camelCase，进界面前统一过 normalizeSwarmMergeResults（graph/swarm.ts）。
+export interface SwarmMergeResult {
+  nodeId: string;
+  item: number;
+  result: SwarmMergeOutcome;
+  commit: string;
+  note: string;
+  testOutput: string;
 }
 
 export interface DispatchStageResult {

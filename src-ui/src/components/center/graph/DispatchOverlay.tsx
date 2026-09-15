@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { commands, type DispatchNodeResult, type DispatchStageRequest, type GitChanges } from '../../../tauri';
+import { commands, isTauri, type DispatchNodeResult, type DispatchStageRequest, type GitChanges, type RoleSettings, type SwarmMergeResult } from '../../../tauri';
 import { contextPartsOf, originalRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../../../graph/context';
 import {
   appendArbitration,
@@ -33,8 +33,30 @@ import {
   type StageLoopState,
 } from '../../../graph/dispatch';
 import type { DispatchProgressStore } from '../../../graph/dispatch-progress';
-import { updateNodeFallback } from '../../../graph/mutate';
-import { FallbackSkippedLine, IdleHint, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, WritableFallbackHint } from './DispatchBits';
+import { updateNodeFallback, updateNodeSwarm } from '../../../graph/mutate';
+import {
+  appendSwarmNodes,
+  applySwarmMerge,
+  arbitrationCandidates,
+  normalizeSwarmMergeResults,
+  parseSwarmPlan,
+  swarmCardActions,
+  swarmCheckOf,
+  swarmGenerateNotice,
+  swarmMergeErrorResults,
+  swarmMergeSummary,
+  swarmPlanNotice,
+  SWARM_PARSE_FAILED_TEXT,
+  swarmCheckItems,
+  swarmGate,
+  swarmMergeItems,
+  swarmMergeReady,
+  swarmNodeIdsOf,
+  swarmOverlapItems,
+  type SwarmCheckState,
+} from '../../../graph/swarm';
+import { FallbackSkippedLine, IdleHint, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, SwarmGateNotice, SwarmMergeRow, WritableFallbackHint } from './DispatchBits';
+import { SwarmEditor } from '../../right/orchestration/NodePanel';
 import { presetNameOf } from '../../../graph/persist';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import type { DispatchableModel, Graph, Target, Thinking } from '../../../graph/types';
@@ -103,6 +125,22 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   const [gitChanges, setGitChanges] = useState<GitChanges | null>(null);
   // 仲裁编排（按结果阶段行）：双方选择 + 中性描述（可改）+ 第三家目标
   const [arbRows, setArbRows] = useState<Record<number, { aId: string; bId: string; text: string; targetKey: string; error: string }>>({});
+  // 蜂群（TASK-08）：G1 的只读清单核对结果，G3 的逐件合并结果。
+  // 核对是三态（R1-1）：没要核对 / 在核对 / 回来了 / 核对不了，窗口期内不放行。
+  const [swarmCheck, setSwarmCheck] = useState<SwarmCheckState>({ phase: 'idle' });
+  const [swarmProceed, setSwarmProceed] = useState(false);
+  const [mergeResults, setMergeResults] = useState<SwarmMergeResult[] | null>(null);
+  const [merging, setMerging] = useState(false);
+  // 「按清单生成执行节点」的反馈行（解析失败 / 截断 / 已生成几个），按拆分节点记。
+  const [planNotice, setPlanNotice] = useState<Record<string, string>>({});
+  // 生成的执行节点要带「执行」角色默认目标，角色配置在引擎侧（同 OrchestrationPanel）。
+  const [roles, setRoles] = useState<RoleSettings | null>(null);
+  useEffect(() => {
+    if (!isTauri) return;
+    let cancelled = false;
+    commands.loadRoles().then((value) => { if (!cancelled) setRoles(value); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const graphWithTargets = useMemo(() => {
     const nodes = { ...graph.nodes };
@@ -171,6 +209,26 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
 
   const hasWorktreeNode = nodeIds.some((id) => (targets[id] ?? graph.nodes[id]?.target)?.write === 'worktree');
   const dirtyHint = dirtyWorktreeHintOf(gitChanges, hasWorktreeNode);
+
+  // G1 蜂群清单核对（TASK-08 B-4）：本批含 swarm 节点才调，只读。核对回来之前
+  // 按 pending 拦住「确认派发」，核对不了时说「无法核对」并让用户自己决定要不要
+  // 继续（R1-1）。改了 files 之后 graph 变化会重跑这个 effect，重叠消失即解禁。
+  const swarmIds = useMemo(() => swarmNodeIdsOf(graph, nodeIds), [graph, nodeIds]);
+  useEffect(() => {
+    if (phase !== 'confirm' || swarmIds.length === 0 || projectDir === '') {
+      setSwarmCheck({ phase: 'idle' });
+      return;
+    }
+    let cancelled = false;
+    setSwarmCheck({ phase: 'pending' });
+    setSwarmProceed(false);
+    commands.checkSwarmPlan(projectDir, swarmCheckItems(graph, swarmIds))
+      .then((value) => { if (!cancelled) setSwarmCheck({ phase: 'ok', check: value }); })
+      .catch((error) => { if (!cancelled) setSwarmCheck({ phase: 'error', message: String(error) }); });
+    return () => { cancelled = true; };
+  }, [graph, phase, projectDir, swarmIds]);
+  const swarmGateState = swarmGate(swarmCheck, swarmProceed);
+  const overlapItems = new Set(swarmOverlapItems(swarmCheckOf(swarmCheck)));
 
   useEffect(() => {
     if (phase !== 'confirm' || request.nodes.length === 0 || hasMissingTargets) return;
@@ -345,6 +403,44 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     onClose();
   };
 
+  // ── 蜂群 G3（TASK-08 B-3/B-5）：按清单生成执行节点；全部件终态后逐件合并 ──
+  // R1-2：再点一次不重复建同件号的节点，件数上限在生成这一步也生效。
+  const generateSwarmNodes = (splitNodeId: string) => {
+    const plan = parseSwarmPlan(graph.nodes[splitNodeId]?.reply?.text ?? '', settings.swarmLimit);
+    if (!plan) {
+      setPlanNotice((current) => ({ ...current, [splitNodeId]: SWARM_PARSE_FAILED_TEXT }));
+      return;
+    }
+    const outcome = appendSwarmNodes(graph, splitNodeId, plan.items, roles?.execution, settings.swarmLimit);
+    if (outcome.nodeIds.length > 0) onCommit(outcome.graph);
+    const notice = [swarmPlanNotice(plan, settings.swarmLimit), swarmGenerateNotice(outcome, settings.swarmLimit)]
+      .filter((line): line is string => !!line)
+      .join('；');
+    setPlanNotice((current) => ({ ...current, [splitNodeId]: notice }));
+  };
+
+  const swarmResultIds = swarmNodeIdsOf(graph, results.map((result) => result.nodeId));
+  const swarmReady = swarmMergeReady(graph, swarmResultIds);
+  // 已并入的件不再进下一次请求（R1-3）：没剩下要并的件时按钮禁用。
+  const swarmPendingItems = swarmMergeItems(graph, swarmResultIds);
+  const mergeResultOf = (nodeId: string) => (mergeResults ?? []).find((row) => row.nodeId === nodeId);
+  const runSwarmMerge = async () => {
+    if (merging || swarmPendingItems.length === 0) return;
+    const items = swarmPendingItems;
+    setMerging(true);
+    try {
+      const raw = await commands.mergeSwarmItems(projectDir, runId, items, settings.validationCommand);
+      const merged = normalizeSwarmMergeResults(raw);
+      setMergeResults(merged);
+      if (merged.length > 0) onCommit(applySwarmMerge(graph, merged));
+    } catch (error) {
+      // 引擎没这条命令才说「未接通」；其它错误照原文说（R1-3）。
+      setMergeResults(swarmMergeErrorResults(items, error));
+    } finally {
+      setMerging(false);
+    }
+  };
+
   const plannedRoles = new Set(initialIds.map((id) => graph.nodes[id]?.target?.role));
   const economy = initialIds.some((id) => presetNameOf(graph.id, id) === '经济模式')
     || (plannedRoles.has('出方案') && plannedRoles.has('执行') && plannedRoles.has('验收'));
@@ -394,6 +490,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
             {nodeIds.length === 0 && <div className="dispatch-empty">当前没有父节点已完成的待派节点。</div>}
             {exceedsRequestLimit && <div className="dispatch-warning">本层有 {nodeIds.length} 路，超过总请求上限 {settings.maxRequests}，不能确认派发。</div>}
             {dirtyHint && <div className="dispatch-reason">{dirtyHint}</div>}
+            <SwarmGateNotice gate={swarmGateState} proceed={swarmProceed} onProceed={setSwarmProceed} />
             {reviewNodeIds.length > 0 && (
               <section className="dispatch-route-card">
                 <div className="dispatch-stage-heading">待核对</div>
@@ -429,7 +526,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 return models.find((item) => item.agent === other.agent && item.id === other.model && (item.provider ?? '') === (other.provider ?? ''))?.vendor === vendor;
               });
               return (
-                <section key={id} className="dispatch-route-card">
+                <section key={id} className={`dispatch-route-card${node.swarm && overlapItems.has(node.swarm.item) ? ' swarm-overlap' : ''}`}>
                   <div className="dispatch-route-line">{routeLine(node, models, isolation)}<ReviewPendingTag visible={reviewIds.has(id)} /></div>
                   {routeReason(node) && <div className="dispatch-reason">{routeReason(node)}</div>}
                   <RollbackBeforeHint target={target} retrying={rollbackNodes.has(id)} />
@@ -440,6 +537,14 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   )}
                   {sameVendorReview && <div className="dispatch-reason">复核，非独立验证</div>}
                   {unsmoked && <div className="dispatch-warning">该模型{picked?.status}，尚未核对真身；派发时通道会核对。</div>}
+                  {/* R1-5：判出重叠就在这张卡上改文件范围，改完自动重核对，不用关屏回节点面板 */}
+                  {node.swarm && overlapItems.has(node.swarm.item) && (
+                    <SwarmEditor
+                      swarm={node.swarm}
+                      editable={node.reply?.status === 'draft'}
+                      onChange={(next) => onCommit(updateNodeSwarm(graph, id, next))}
+                    />
+                  )}
                   <WritableFallbackHint target={target} />
                   <div className="dispatch-controls">
                     {models.length > 0 ? <label>目标<select
@@ -524,7 +629,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
             {previewError && <div className="dispatch-error">{previewError}</div>}
             <div className="dispatch-actions">
               <button onClick={onClose}>取消</button>
-              <button className="dispatch-primary" disabled={nodeIds.length === 0 || hasMissingTargets || exceedsRequestLimit || !!previewError} onClick={start}>确认派发</button>
+              <button className="dispatch-primary" disabled={nodeIds.length === 0 || hasMissingTargets || exceedsRequestLimit || swarmGateState.blocked || !!previewError} onClick={start}>确认派发</button>
             </div>
           </div>
         )}
@@ -567,6 +672,8 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
               {group.rows.map((result) => {
                 const node = graph.nodes[result.nodeId];
                 const adopted = node?.reply?.adopted === true;
+                // R1-4：蜂群件不是擂台对手，未并入不给「采纳」，已并入不给「重派 / 升级」。
+                const cardActions = swarmCardActions(node, mergeResultOf(result.nodeId));
                 return (
                 <section key={result.nodeId} className={`dispatch-result-card${adopted ? ' adopted' : ''}`}>
                   <div className="dispatch-result-head">
@@ -589,24 +696,43 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   {result.validationOutput && <details><summary>验证结果</summary><pre>{result.validationOutput}</pre></details>}
                   <div className="dispatch-card-actions">
                     <PickOneButton
-                      visible={sameParentsResultCount(graph, group.rows, result.nodeId) >= 2}
+                      visible={cardActions.showPickOne && sameParentsResultCount(graph, group.rows, result.nodeId) >= 2}
                       adopted={adopted}
                       onPick={() => {
                         onCommit(pickOne(graph, result.nodeId));
                         onFocusNode?.(result.nodeId);
                       }}
                     />
-                    <button onClick={() => onCommit(setReplyAdopted(graph, result.nodeId, !adopted))}>{adopted ? '取消采纳' : '采纳'}</button>
-                    <button onClick={() => retry(result.nodeId, false)}>重派</button>
-                    <button onClick={() => retry(result.nodeId, true)}>升级</button>
+                    {cardActions.showAdopt && <button onClick={() => onCommit(setReplyAdopted(graph, result.nodeId, !adopted))}>{adopted ? '取消采纳' : '采纳'}</button>}
+                    {cardActions.showRetry && <button onClick={() => retry(result.nodeId, false)}>重派</button>}
+                    {cardActions.showRetry && <button onClick={() => retry(result.nodeId, true)}>升级</button>}
+                    {cardActions.note !== '' && <span className="dispatch-reason">{cardActions.note}</span>}
+                    {node?.target?.role === '拆分' && result.status === 'ok' && (
+                      <button onClick={() => generateSwarmNodes(result.nodeId)}>按清单生成执行节点</button>
+                    )}
                   </div>
+                  {planNotice[result.nodeId] && <div className="dispatch-reason">{planNotice[result.nodeId]}</div>}
                 </section>
               );})}
                 </div>
               ))}
             </div>
+            {swarmResultIds.length > 0 && (
+              <section className="dispatch-route-card">
+                <div className="dispatch-stage-heading">蜂群合并</div>
+                <div className="dispatch-reason">按件号顺序 cherry-pick，每并一件跑一次验收命令；冲突与测试红交你裁决，不自动重派。</div>
+                {!swarmReady && <div className="dispatch-reason">还有件没跑完，全部结束后才能合并。</div>}
+                {swarmReady && swarmPendingItems.length === 0 && <div className="dispatch-reason">本批的件都已并入，没有要合并的了。</div>}
+                {(mergeResults ?? []).map((row) => <SwarmMergeRow key={`${row.nodeId}-${row.item}`} result={row} />)}
+                {mergeResults && <div className="dispatch-reason">{swarmMergeSummary(mergeResults)}</div>}
+                <div className="dispatch-actions">
+                  <button disabled={!swarmReady || merging || swarmPendingItems.length === 0} onClick={runSwarmMerge}>{merging ? '合并中' : '合并'}</button>
+                </div>
+              </section>
+            )}
             {resultStages.map((group) => {
-              const okRows = group.rows.filter((row) => row.status === 'ok');
+              // 蜂群件不进仲裁：件与件是分工不是分歧（GLM 4）。
+              const okRows = arbitrationCandidates(graph, group.rows);
               if (okRows.length < 2) return null;
               const row = arbFor(group.stage, okRows);
               const sideVendors = new Set(

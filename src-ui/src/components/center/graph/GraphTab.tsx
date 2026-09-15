@@ -11,6 +11,8 @@ import type { DispatchableModel, Graph, GraphNode, Preset } from '../../../graph
 import { newGraph } from '../../../graph/types';
 import { contextOf } from '../../../graph/context';
 import { childrenOf, stamp } from '../../../graph/stamp';
+import { withSwarmPreset } from '../../../graph/swarm';
+import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import { findModel, validateNode } from '../../../graph/validate';
 import { latestLeaf, layersOf, normalizeNodeKinds, pathTo, sameBranch } from '../../../graph/layout';
 import { appendTurn, defaultTurnTarget, fillRoot, parseSend, removeDraftNode } from '../../../graph/mutate';
@@ -102,7 +104,9 @@ export function GraphTab({ session }: { session: TerminalSession }) {
 
   useEffect(() => {
     if (!isTauri) return;
-    const reload = () => commands.listPresets().then((f) => setPresets(f.presets)).catch(() => {});
+    // 引擎侧还没有蜂群预设时前端兜一份（TASK-08 B-2）：图上「盖预设」菜单
+    // 与右栏走同一个出口，否则主入口里看不到蜂群模式（R1-6）。
+    const reload = () => commands.listPresets().then((f) => setPresets(withSwarmPreset(f.presets))).catch(() => {});
     window.addEventListener('aicross:presets-changed', reload);
     window.addEventListener(RESOURCES_CHANGED_EVENT, reload);
     return () => {
@@ -153,7 +157,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     commands
       .listPresets()
       .then((f) => {
-        if (!dead) setPresets(f.presets);
+        if (!dead) setPresets(withSwarmPreset(f.presets));
       })
       .catch(() => {});
     return () => {
@@ -363,7 +367,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
     const before = new Set(Object.keys(graph.nodes));
     // 擂台跳过角色默认填充：三路目标留空，G1 确认屏逐家选（不然会填成同一家）
     const effective = roles ? presetWithRoleDefaults(preset, roles) : preset;
-    const g2 = stamp(graph, nodeId, effective);
+    const g2 = stamp(graph, nodeId, effective, loadDispatchSettings().swarmLimit);
     recordStamp(
       graph.id,
       Object.keys(g2.nodes).filter((id) => !before.has(id)),
