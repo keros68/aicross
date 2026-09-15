@@ -38,9 +38,10 @@ import {
   commanderNewTabLaunch,
   commanderTabTransition,
   COMMANDER_AGENT_CARD_HEIGHT,
-  COMMANDER_AGENT_GRID_TEMPLATE,
+  COMMANDER_AGENT_GRID_TEMPLATE, commanderLauncherHidden,
 } from '../launcher';
 import { emptyCommanderSettings } from '../types';
+import type { CommanderSettings } from '../types';
 import { AGENT_DISPLAY_NAMES, agentDisplayName } from '../../resources/agent-display';
 import {
   CommanderLauncher,
@@ -482,5 +483,21 @@ describe('TASK-10 (3) 启动器组件', () => {
     expect(source).toContain("type: 'availability'");
     expect(source).toContain("type: 'changed'");
     expect(source).not.toContain('commanderLauncherToolPatch');
+  });
+});
+
+describe('TASK-15-R1 复审：启动器只在可能直启时才不画', () => {
+  const ok: CommanderSettings = { version: 1, agent: 'claude', provider: '', model: 'fable', cwd: 'C:/x', updated_at: '' };
+  const none: CommanderSettings = { ...ok, agent: '' };
+  it('默认未读到 → 不画（等一拍）；读到但没有默认 → 立刻画，探测期间也画', () => {
+    expect(commanderLauncherHidden(null, {}, false, false)).toBe(true);
+    expect(commanderLauncherHidden(none, {}, false, false)).toBe(false);
+    expect(commanderLauncherHidden(none, { claude: true }, true, false)).toBe(false);
+  });
+  it('默认有效：探测未完成不画；探测完可用且 tab 未登记不画；已登记或不可用则画', () => {
+    expect(commanderLauncherHidden(ok, {}, false, false)).toBe(true);
+    expect(commanderLauncherHidden(ok, { claude: true }, true, false)).toBe(true);
+    expect(commanderLauncherHidden(ok, { claude: true }, true, true)).toBe(false);
+    expect(commanderLauncherHidden(ok, { claude: false }, true, false)).toBe(false);
   });
 });

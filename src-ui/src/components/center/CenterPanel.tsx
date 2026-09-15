@@ -11,13 +11,12 @@ import { CommanderLauncher, type CommanderLaunchArgs } from './CommanderLauncher
 import { commanderArgs, commanderIdentifierError, commanderToolId } from '../../commander/args';
 import {
   commanderStartedCallback,
-  commanderDefaultAvailable,
   commanderNewTabLaunch,
   commanderTabTransition,
   type CommanderTabState,
   commanderTabTitle,
   graphTabTitle,
-  otherInstalledCommanderClis,
+  otherInstalledCommanderClis, commanderLauncherHidden,
 } from '../../commander/launcher';
 import { getToolScanSnapshot, publishToolScan } from '../../commander/tool-scan';
 import {
@@ -1697,10 +1696,7 @@ export function CenterPanel() {
               // 那时 graphId 仍是空串，GraphTab 照样给开始视图。
               <div className="graph-shell">
                 {isEmptyGraphSession(t) && !graphViewTabs[t.id] ? (
-                  commanderDefaults === null || !toolsScanned || (
-                    commanderDefaultAvailable(commanderDefaults, toolsInstalled, toolsScanned)
-                    && commanderTabState.current[t.id] === undefined
-                  ) ? null :
+                  commanderLauncherHidden(commanderDefaults, toolsInstalled, toolsScanned, commanderTabState.current[t.id] !== undefined) ? null :
                   <ErrorBoundary key={`commander-${t.id}`} fallbackLabel="总指挥启动器出错">
                     <CommanderLauncher
                       installed={toolsInstalled}

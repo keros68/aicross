@@ -200,6 +200,21 @@ export function shouldShowNoCommanderModels(
   return modelsLoaded && modelsError === null && agent !== '' && modelCount === 0;
 }
 
+// 空白总指挥 tab 什么时候不画启动器（R1 复审 1）：只有「可能直启」时才不画——
+// 默认还没读到、或默认有效且（探测未完成 / 探测完可用且该 tab 还没登记过）。
+// 默认读到了但没有可用默认时立刻画启动器，探测期间由启动器自己显示「探测中…」。
+export function commanderLauncherHidden(
+  settings: CommanderSettings | null,
+  installed: Record<string, boolean>,
+  toolsScanned: boolean,
+  tabRegistered: boolean,
+): boolean {
+  if (settings === null) return true;
+  if (!isCommanderAgent(settings.agent)) return false;
+  if (!toolsScanned) return true;
+  return commanderDefaultAvailable(settings, installed, toolsScanned) && !tabRegistered;
+}
+
 export function commanderDefaultAvailable(
   settings: CommanderSettings | null,
   installed: Record<string, boolean>,

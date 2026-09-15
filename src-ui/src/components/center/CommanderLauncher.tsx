@@ -235,7 +235,8 @@ export function CommanderLauncher({
                 agent: defaults.agent as CommanderAgent,
                 provider: defaults.provider,
                 model: defaults.model,
-                cwd: defaults.cwd,
+                // 一键行也按「当前工作区优先」（R1 复审 3）
+                cwd: (folderPath ?? '') !== '' ? (folderPath as string) : defaults.cwd,
               })
             }
           >
