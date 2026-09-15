@@ -1,0 +1,5 @@
+你是代码审查者，本次是 TASK-08A（蜂群引擎）修正轮 R1 的复审。仓库在当前目录，当前是 main 之上的 phase/8a 分支。先读 tasks/fix-08a-r1.md（13 条，来自 tasks/review-08a-ds.md 与 tasks/review-08a-glm.md）、tasks/TASK-08-swarm.md（契约有更新），再读 tasks/REPORT-08A.md 末尾「修正轮 R1」一节，再读 src/dispatch.rs、src/orchestration.rs、src/server.rs、fixtures/prompts/split.txt。不读 node_modules、target、dist、port、src/channels/。
+
+逐条核对 13 条：每条「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：builtin-swarm 预设与 preset_text 机制（前端只消费该字段）；合并留痕 status 只写 ok/error 且对账忽略合并记录；worktree 登记校验 canonicalize；已领先提交按序 cherry-pick、验证失败回退本件全部提交、失败件重试闭环；cherry-pick 启动失败/abort 失败分级；swarm_limit；测试是否用临时 git 仓库真跑且失败在中间时后续件继续；修正是否引入新缺陷（第 2–7 期路径无回归，尤其 run_one 只读护栏与对账）。编排者已复跑 cargo 296 / vitest 294 / build 零 warning。
+
+最后单独回答：R1 之后 TASK-08A 是否可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

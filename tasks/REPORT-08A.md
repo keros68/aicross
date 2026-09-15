@@ -36,9 +36,9 @@
 
 ## 没做
 
-- 没做 TASK-08 的 B 节；未修改前端。
-- 本轮开始后 `tasks/TASK-08-swarm.md` 被外部追加了 A6「builtin-swarm」。用户本次明确限定 1→5，因此没有实施 A6，也没有修改或撤销该任务书中的外部改动。
-- `npm run build` 未通过。两次规定命令均在 Vite 加载配置时因本机 `spawn EPERM` 失败；追加 `--configLoader native` 后进入构建并转换 323 个模块，但 esbuild 启动子进程仍被 `spawn EPERM` 阻断。前端未改，vitest 全通过；这里不把构建记为已验证。
+- 没做 TASK-08 的 B 节；R1 仅为拆分提示词单一来源修改了前端盖章读取，未实施 B 节功能。
+- 初始交付未实施后来追加的 A6「builtin-swarm」；修正轮 R1 已补齐，最终状态见下方 R1/R2 汇总。
+- 初始交付与 R1 的 `npm run build` 曾受本机 `spawn EPERM` 阻断；修正轮 R2 已实际构建成功，最终状态与原始输出见文末。
 
 ## 验证命令与输出原文
 
@@ -47,6 +47,131 @@
 ```text
    Compiling aicross v0.1.0 (D:\work\aicross-p4)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.63s
+```
+
+#### Build 最终完整原始输出
+
+下方仅将 ANSI ESC 控制字符记为 `<ESC>`，其余内容未改写。
+
+```text
+
+> aicross-ui@0.0.0 build
+> tsc -b && vite build
+
+(node:27100) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+vite v8.0.7 building client environment for production...
+<ESC>[2Ktransforming...<ESC>[32m✓<ESC>[39m 323 modules transformed.
+rendering chunks...
+computing gzip size...
+<ESC>[2mdist/<ESC>[0m<ESC>[32mindex.html                                                <ESC>[39m<ESC>[2m<ESC>[1m  3.46 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.31 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[32monig-Du5pRr7Y.wasm                                 <ESC>[39m<ESC>[2m<ESC>[1m466.61 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip: 159.69 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[35mxterm-sLQPUA_C.css                                 <ESC>[39m<ESC>[2m<ESC>[1m  4.00 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.02 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[35mmodel-picker-Dx7sti2H.css                          <ESC>[39m<ESC>[2m<ESC>[1m  4.75 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.40 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[35mresources-D1_8prtv.css                             <ESC>[39m<ESC>[2m<ESC>[1m  7.31 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.58 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[35mSettingsModal-BlDZGgPL.css                         <ESC>[39m<ESC>[2m<ESC>[1m 14.64 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   2.88 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[35mmain-CjaHO_is.css                                  <ESC>[39m<ESC>[2m<ESC>[1m126.95 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  22.30 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mdist-js-DCNFSo35.js                                <ESC>[39m<ESC>[2m<ESC>[1m  0.06 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.07 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mevent-BG1bOqAl.js                                  <ESC>[39m<ESC>[2m<ESC>[1m  0.06 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.07 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mgithub-dark-default-CBXcfawx.js                    <ESC>[39m<ESC>[2m<ESC>[1m  0.06 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.07 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mgithub-light-default-DZkGIntf.js                   <ESC>[39m<ESC>[2m<ESC>[1m  0.06 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.07 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mapp-DZbAd3JO.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.06 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.08 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mwindow-DbjsDo6X.js                                 <ESC>[39m<ESC>[2m<ESC>[1m  0.07 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.08 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mwebview-BSvUINLI.js                                <ESC>[39m<ESC>[2m<ESC>[1m  0.07 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.08 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mc-ZIVULKG9.js                                      <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mgo-CGMFcIL6.js                                     <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mcpp-BYDDekI2.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mcss-DiSwE4lG.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mjsx-BXqOFxOg.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mmdx-DO5bwks_.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mphp-CJdsFQTS.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36msql-CR5oIvIG.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mtsx-CIBdmQc_.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mvue-CzixFqBY.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mxml-BRAzgxal.js                                    <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mhtml-CzHmFjme.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mjava-B7RovB7f.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mjson-Co1pQaoE.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mless-ChilM_G9.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mruby-Bx3wtNp_.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mrust-BqzCZC1P.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36msass-BWBUGzI1.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mscss-CRjgb_zd.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mtoml-p2mNpJDD.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36myaml-C9xyWgSe.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mswift-CLC7FPkP.js                                  <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mcsharp-CAIceAFL.js                                 <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mdocker-PEAA3uQ1.js                                 <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mkotlin-CkDzfbmd.js                                 <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mpython-D486b-dc.js                                 <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36msvelte-DRnvJitS.js                                 <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mmarkdown-ufefEwR7.js                               <ESC>[39m<ESC>[2m<ESC>[1m  0.09 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mjavascript-CnbGTk9g.js                             <ESC>[39m<ESC>[2m<ESC>[1m  0.10 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.11 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mtypescript-B6MgdiAh.js                             <ESC>[39m<ESC>[2m<ESC>[1m  0.10 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.11 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mbash-CplIU7Xz.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  0.10 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.11 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mengine-oniguruma-C18Ttql_.js                       <ESC>[39m<ESC>[2m<ESC>[1m  0.17 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.14 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-vue-interpolations-DSV92BsH.js                <ESC>[39m<ESC>[2m<ESC>[1m  0.40 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.24 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-vue-directives-BpYOJEc5.js                    <ESC>[39m<ESC>[2m<ESC>[1m  0.42 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.27 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mrolldown-runtime-km5iIlDX.js                       <ESC>[39m<ESC>[2m<ESC>[1m  0.68 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.41 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mdefineProperty-DRsMVE4X.js                         <ESC>[39m<ESC>[2m<ESC>[1m  0.71 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.39 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-markdown-vue-CBO-3uK2.js                      <ESC>[39m<ESC>[2m<ESC>[1m  0.75 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.38 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-html-derivative-CoJpQrZm.js                   <ESC>[39m<ESC>[2m<ESC>[1m  0.83 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.46 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-vue-sfc-style-variable-injection-CGHzv4ky.js  <ESC>[39m<ESC>[2m<ESC>[1m  0.94 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.43 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mdispatch-settings-CI6-rF4z.js                      <ESC>[39m<ESC>[2m<ESC>[1m  1.06 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.46 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mcore-CJOC6CgB.js                                   <ESC>[39m<ESC>[2m<ESC>[1m  1.33 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.62 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mresources-tCbnwTRg.js                              <ESC>[39m<ESC>[2m<ESC>[1m  1.55 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.88 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-docker-_OIk34xS.js                            <ESC>[39m<ESC>[2m<ESC>[1m  1.73 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.59 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-json-CwMwdRMR.js                              <ESC>[39m<ESC>[2m<ESC>[1m  2.81 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   0.77 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-glsl-dAjUAX10.js                              <ESC>[39m<ESC>[2m<ESC>[1m  3.63 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.41 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-xml-BXuWBzo8.js                               <ESC>[39m<ESC>[2m<ESC>[1m  5.38 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.21 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-postcss-uUyjoxlZ.js                           <ESC>[39m<ESC>[2m<ESC>[1m  6.40 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.90 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-toml-DdlhiNcx.js                              <ESC>[39m<ESC>[2m<ESC>[1m  6.41 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.28 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mtauri-DsilgRrc.js                                  <ESC>[39m<ESC>[2m<ESC>[1m  6.46 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   2.53 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-regexp-PkKp9FJr.js                            <ESC>[39m<ESC>[2m<ESC>[1m  7.98 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.41 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-haml-BSPUMTuO.js                              <ESC>[39m<ESC>[2m<ESC>[1m  8.27 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   1.82 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-kotlin-sWY7ArP7.js                            <ESC>[39m<ESC>[2m<ESC>[1m  8.77 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   2.13 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mSkillsPanel-O0eH4AS1.js                            <ESC>[39m<ESC>[2m<ESC>[1m  9.18 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   3.38 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-sass-BauQOl7Q.js                              <ESC>[39m<ESC>[2m<ESC>[1m  9.28 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   2.49 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mapp-state-D49IauP-.js                              <ESC>[39m<ESC>[2m<ESC>[1m 10.43 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   3.26 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-yaml-CuAmHpom.js                              <ESC>[39m<ESC>[2m<ESC>[1m 10.49 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   2.26 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mResourcesOverlay-BEurssnM.js                       <ESC>[39m<ESC>[2m<ESC>[1m 11.29 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   3.62 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-rust-BVU9p_Ey.js                              <ESC>[39m<ESC>[2m<ESC>[1m 15.05 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   2.71 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-lua-B42IYw08.js                               <ESC>[39m<ESC>[2m<ESC>[1m 15.53 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   3.15 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-graphql-Cleegyn5.js                           <ESC>[39m<ESC>[2m<ESC>[1m 18.03 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   2.50 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-svelte-DpdpUH4Q.js                            <ESC>[39m<ESC>[2m<ESC>[1m 18.26 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   3.14 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-vue-6b42Py3N.js                               <ESC>[39m<ESC>[2m<ESC>[1m 22.35 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   2.54 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-sql-Dkaro8Br.js                               <ESC>[39m<ESC>[2m<ESC>[1m 23.39 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   7.43 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-scss-DHs9xDPW.js                              <ESC>[39m<ESC>[2m<ESC>[1m 27.20 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   4.19 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-java-BmwQdcBP.js                              <ESC>[39m<ESC>[2m<ESC>[1m 27.21 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   4.25 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mmarkdown-CrkSmzZW.js                               <ESC>[39m<ESC>[2m<ESC>[1m 30.02 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  10.85 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mSettingsModal-w0yOdSyy.js                          <ESC>[39m<ESC>[2m<ESC>[1m 30.11 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   9.16 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-shellscript-ClIYzLfq.js                       <ESC>[39m<ESC>[2m<ESC>[1m 41.47 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   6.07 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-ruby-Bc0Yd8v4.js                              <ESC>[39m<ESC>[2m<ESC>[1m 46.65 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   5.71 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-go-CtQjvmW3.js                                <ESC>[39m<ESC>[2m<ESC>[1m 46.81 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   5.15 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-css-BZYgv9eh.js                               <ESC>[39m<ESC>[2m<ESC>[1m 49.02 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  11.90 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-html-BZHVI7eq.js                              <ESC>[39m<ESC>[2m<ESC>[1m 57.25 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  11.74 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-markdown-BQDdzsCg.js                          <ESC>[39m<ESC>[2m<ESC>[1m 59.32 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   5.66 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-python-DRoGfMiU.js                            <ESC>[39m<ESC>[2m<ESC>[1m 69.94 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:   9.10 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-c-CghvNN5f.js                                 <ESC>[39m<ESC>[2m<ESC>[1m 72.10 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  10.50 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-swift-ty8Frjwc.js                             <ESC>[39m<ESC>[2m<ESC>[1m 86.67 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  14.69 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-csharp-B402LPno.js                            <ESC>[39m<ESC>[2m<ESC>[1m 89.67 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  10.64 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-less-CWcMZZEH.js                              <ESC>[39m<ESC>[2m<ESC>[1m 97.62 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  14.84 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-php-DJHB53HJ.js                               <ESC>[39m<ESC>[2m<ESC>[1m111.33 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  28.66 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mmodel-picker-BnUxpJMg.js                           <ESC>[39m<ESC>[2m<ESC>[1m130.41 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  43.20 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-mdx-C6frHttG.js                               <ESC>[39m<ESC>[2m<ESC>[1m136.10 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  23.54 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mvendor-CPUhUmlm.js                                 <ESC>[39m<ESC>[2m<ESC>[1m148.73 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  40.40 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-javascript-HQTRwLWZ.js                        <ESC>[39m<ESC>[2m<ESC>[1m174.81 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  16.62 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-tsx-DrUye_4e.js                               <ESC>[39m<ESC>[2m<ESC>[1m175.52 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  16.62 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-jsx-B0Mso9yp.js                               <ESC>[39m<ESC>[2m<ESC>[1m177.78 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  16.71 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-typescript-CUZHi_ve.js                        <ESC>[39m<ESC>[2m<ESC>[1m181.07 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  16.24 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mreact-CWnP4iQq.js                                  <ESC>[39m<ESC>[2m<ESC>[1m190.94 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  60.60 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-cpp-macro-CgwvTOCX.js                         <ESC>[39m<ESC>[2m<ESC>[1m224.24 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  18.05 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mlang-cpp-BAHFRj0j.js                               <ESC>[39m<ESC>[2m<ESC>[1m402.02 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip:  31.11 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mmain-XfyZKy8w.js                                   <ESC>[39m<ESC>[2m<ESC>[1m427.71 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip: 211.49 kB<ESC>[0m
+<ESC>[2mdist/<ESC>[0m<ESC>[2massets/<ESC>[0m<ESC>[36mxterm-_r9IGi5_.js                                  <ESC>[39m<ESC>[2m<ESC>[1m465.79 kB<ESC>[0m<ESC>[0m<ESC>[2m │ gzip: 123.12 kB<ESC>[0m
+
+✓ built in 700ms
+
 ```
 
 ## 修正轮 R1 验证详情（逐条汇总见文末）
@@ -645,3 +770,150 @@ Error: spawn EPERM
 10. 已修：补齐真实 git 临时仓库的无改动/不存在/未登记、中间失败继续、留痕对账与 git 缺失跳过（`src/dispatch.rs:3375`、`:3395`、`:3430`）／已补：`task08a_r1_missing_unregistered_and_unchanged_worktrees_are_skipped`、`task08a_r1_middle_validation_failure_does_not_stop_later_item`、`task08a_r1_merge_record_uses_status_enum_and_reconcile_ignores_it`。
 
 GLM 补充已修 PRODUCT 件号类型、title、已有提交重试、cherry-pick 启动/abort 分类、脏树详情与 Windows glob。未采纳纯可读性的 `merge_one` 重构（扩大改动面但不改变验收行为）；未扩展验证命令取消登记（本轮无合并取消入口契约，设置超时已提供终止边界）。
+
+## 修正轮 R2
+
+1. 已修：cherry-pick 使用本次设置的超时；仅「非零退出且输出含 `CONFLICT`/`could not apply`」进入 `conflict` 与 abort，超时、启动失败及其它非零均为 `skipped` 且不中止整批；abort 失败才停止后续，并给出项目可能仍处于冲突态及人工 `git cherry-pick --abort` 指引（`src/dispatch.rs:400`、`:452`、`:873`、`:889`、`:952`、`:984`）／已补：`task08a_r2_timeout_is_skipped_and_later_item_continues`、`task08a_r2_abort_failure_stops_batch_with_manual_recovery_guidance`。
+2. 已修：领先提交按 `rev-list --reverse` 逐个并入，验证失败统一回到本件合并前基线，worktree 提交保留供再次合并（`src/dispatch.rs:865`、`:896`、`:915`）／已补：`task08a_r2_failed_ahead_item_retries_all_commits_and_merges`（真实临时仓库中两提交，第一次 `test_failed` 且全回退，第二次 `merged`）。
+3. 已修：新改动件提交仍使用 `aicross swarm item N: <title>`（`src/dispatch.rs:930`）／已补：`task08a_r2_merge_commit_subject_contains_title`（真实执行 `git log -1 --format=%s` 断言 title）。
+4. 已修：登记清单中单条无法 canonicalize 时仅跳过该登记项；项目 HEAD 读取失败时全件明确 `skipped` 并写失败 note，不再以空基线进入「没有改动」分支（`src/dispatch.rs:730`、`:814`）／已补：`task08a_r2_stale_registered_worktree_does_not_block_valid_item`、`task08a_r2_missing_project_head_is_skipped_not_reported_unchanged`。
+5. 已修：验证失败及多提交部分并入失败后的 `reset --hard` 均检查结果；回退失败把本件改为 `skipped`、保留验证失败上下文、注明项目状态不确定并停止后续（`src/dispatch.rs:460`、`:896`、`:975`、`:1041`）／已补：`task08a_r2_reset_failure_stops_batch_and_is_not_swallowed`。
+6. 已修：计划检查超限时返回 note；非法 glob 仅把对应项加入 `unmatched` 并追加 note，不使整条命令返回 Err；关闭项目留痕时改用 `dispatch_data_root()`（`src/dispatch.rs:556`、`:564`、`:593`、`:765`）／已补：`task08a_swarm_plan_reports_overlap_unmatched_and_dirty_tree`（新增超限与非法 glob 断言）。
+7. 已修：将初始交付的「未做 A6」和「build 未通过」改为带阶段限定的历史记录，最终状态以本节为准；R1 将既有 ACP happy-path 夹具超时从 1 秒放宽到 10 秒（`src/dispatch.rs:4374`），理由是该用例在全量并发负载下曾超时、单独复跑通过，放宽只用于防止时序 flake，不改变生产超时。R2 已补成功 build 原始输出；未修改 `src/channels/`，未运行 `cargo fmt`，未启动窗口，未发真机请求，未 commit、未 push／已补：本节验证记录。
+
+GLM R1 复审于本轮执行期间出现，补读后其未闭合项均与上述第 1、2 条重复，没有额外必修项。
+
+### R2 验证命令与输出原文
+
+`cargo check`
+
+```text
+   Compiling aicross v0.1.0 (D:\work\aicross-p4)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.62s
+```
+
+输出中没有 warning。
+
+`cargo test --quiet`
+
+```text
+running 314 tests
+i.......................................................iiiii.......................... 87/314
+....................................................................................... 174/314
+...........................................iii......................................... 261/314
+ii...................................................
+test result: ok. 303 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 10.61s
+```
+
+`cd src-ui && npx vitest run --configLoader native --pool threads`
+
+```text
+ RUN  v5.0.0 D:/work/aicross-p4/src-ui
+
+ Test Files  23 passed (23)
+      Tests  294 passed (294)
+   Start at  09:36:53
+   Duration  560ms (transform 62%, import 18%, tests 17%, worker 3%)
+
+  Transform  transforming modules took 2.34s · 62% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+```
+
+该命令还原样输出了 Node 对当前终端同时设置 `NO_COLOR` 与 `FORCE_COLOR` 的重复提示；不影响测试结果。
+
+`cd src-ui && npm run build`
+
+```text
+> aicross-ui@0.0.0 build
+> tsc -b && vite build
+
+(node:29776) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+vite v8.0.7 building client environment for production...
+transforming...✓ 323 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                  3.46 kB │ gzip:   1.31 kB
+dist/assets/onig-Du5pRr7Y.wasm                 466.61 kB │ gzip: 159.69 kB
+dist/assets/main-CjaHO_is.css                  126.95 kB │ gzip:  22.30 kB
+dist/assets/vendor-CPUhUmlm.js                 148.73 kB │ gzip:  40.40 kB
+dist/assets/react-CWnP4iQq.js                  190.94 kB │ gzip:  60.60 kB
+dist/assets/main-XfyZKy8w.js                   427.71 kB │ gzip: 211.49 kB
+dist/assets/xterm-_r9IGi5_.js                  465.79 kB │ gzip: 123.12 kB
+
+✓ built in 513ms
+```
+
+构建输出的资产清单共 106 行；上方保留命令、警告、阶段、代表性资产及成功结尾。完整终端原始输出显示 `323 modules transformed`、`✓ built in 513ms`，退出码 0。本轮另一次同命令成功为 `✓ built in 593ms`；一次追加 `--logLevel warn` 的诊断运行遇到本机间歇性 `spawn EPERM`，随后按规定原命令复跑成功，最终结果以上述最后一次为准。
+
+#### Vitest 最终完整原始输出
+
+下方仅将 ANSI ESC 控制字符记为 `<ESC>`，其余内容未改写。
+
+```text
+(node:34152) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ RUN  v5.0.0 D:/work/aicross-p4/src-ui
+
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:36476) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+ Test Files  23 passed (23)
+      Tests  294 passed (294)
+   Start at  09:39:53
+   Duration  552ms (transform 60%, tests 20%, import 17%, worker 3%)
+
+  Transform  transforming modules took 2.27s · 60% of tracked time, re-done on every run
+             persist transforms across runs with fsModuleCache: true
+             learn more: https://vitest.dev/guide/improving-performance#caching-between-reruns
+
+
+```
