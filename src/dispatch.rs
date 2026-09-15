@@ -3087,10 +3087,10 @@ fn red_green_check(
         return restoration_error(&failures);
     }
     if let Err(error) = clear_red_green_state(state_path) {
+        // R1 复审 C：工作区已恢复完毕，清标记失败只是记账问题，不算工作区错误。
         return RedGreenOutcome {
             pinned: PinnedState::Skipped,
-            note: format!("{error}，请手动核对工作区"),
-            workspace_error: true,
+            note: format!("{error}；工作区已恢复，本次核对结果未记录"),
             ..RedGreenOutcome::default()
         };
     }
@@ -3932,8 +3932,14 @@ fn run_one_attempt(
             Ok(output) => validation_output = output,
             Err(validation_error) => {
                 validation_output = validation_error.clone();
-                status = "validation_failed".into();
-                error = validation_error;
+                if is_cancelled(&cancel_key) {
+                    // R1 复审 A：门运行期间叫停不是「验证命令未通过」，不进修正轮。
+                    status = "error".into();
+                    error = "派发已取消".into();
+                } else {
+                    status = "validation_failed".into();
+                    error = validation_error;
+                }
             }
         }
     }
@@ -4047,7 +4053,10 @@ fn run_one_attempt(
     let duration_ms = timer.elapsed().as_millis().min(u64::MAX as u128) as u64;
     // R2-11：主失败且可写节点跳过备选时，把原因写进留痕 frontmatter 与结果；
     // validation_failed 不触发备选（走修正轮），不标。
+    // R1 复审 D：红绿核对恢复失败产生的 error 不是主目标失败，不标「可写节点」。
+    let red_green_error = pinned.is_some() && status == "error";
     let fallback_skipped = if !fallback_skip_reason.is_empty()
+        && !red_green_error
         && matches!(status.as_str(), "error" | "timeout" | "identity_mismatch")
     {
         fallback_skip_reason.to_string()
@@ -9136,6 +9145,7 @@ mod tests {
 
     #[test]
     fn task13_zero_change_reports_its_real_reason() {
+        if !require_git("task13_zero_change_reports_its_real_reason") { return; }
         let (root, project, before) = task13_repo("zero-change");
         let outcome = task13_red_green(&project, "", &before, &before, &task13_baseline_command(), Duration::from_secs(5), "zero-change");
         assert_eq!(outcome.pinned, PinnedState::Skipped);
