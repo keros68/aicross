@@ -342,6 +342,8 @@ export const commands = {
   saveUserPresets: (presets: GraphPreset[]) =>
     invoke<void>('save_user_presets', { presets }),
   saveGraph: (graph: ConversationGraph) => invoke<void>('save_graph', { graph }),
+  adoptGraphNode: (graphId: string, nodeId: string, adopted: boolean) =>
+    invoke<ConversationGraph>('adopt_graph_node', { graphId, nodeId, adopted }),
   loadGraph: (id: string) => invoke<ConversationGraph | null>('load_graph', { id }),
   listGraphs: () => invoke<GraphMeta[]>('list_graphs'),
   loadRoles: () => invoke<RoleSettings>('load_roles'),
@@ -360,6 +362,7 @@ export const commands = {
     invoke<DispatchStageResult>('dispatch_graph_stage', { request }),
   cancelDispatchNode: (runId: string, nodeId: string) =>
     invoke<boolean>('cancel_dispatch_node', { runId, nodeId }),
+  listConsoleRuns: () => invoke<ConsoleRun[]>('list_console_runs'),
 
   // ── 蜂群（TASK-08，引擎在另一工作树实现）──────────
   // 只读核对拆分清单：脏树 / 范围重叠 / glob 没匹配到文件。
@@ -623,6 +626,40 @@ export interface DispatchProgress {
   repeatedToolCalls?: number;
   /** 最后一次工具调用的标题 */
   lastTool?: string;
+}
+
+export interface ConsoleRunNode {
+  node_id: string;
+  role: string;
+  agent: string;
+  model: string;
+  status: 'running' | 'done' | 'failed';
+  text_excerpt: string;
+  artifacts_dir: string;
+}
+
+export interface ConsoleRun {
+  run_id: string;
+  graph_id: string;
+  project: string;
+  status: 'running' | 'done' | 'failed';
+  nodes: ConsoleRunNode[];
+  leftover?: string[];
+  started_at: string;
+}
+
+export interface ConsoleRunsEvent {
+  kind: string;
+  graph_id: string;
+  node_ids: string[];
+  runs: ConsoleRun[];
+}
+
+export async function onConsoleRunsChanged(
+  cb: (event: ConsoleRunsEvent) => void,
+): Promise<() => void> {
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<ConsoleRunsEvent>('console-runs-changed', (event) => cb(event.payload));
 }
 
 // Codex-compatible plugin marketplace (a cloned git repo) + its plugins.

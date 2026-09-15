@@ -24,6 +24,7 @@ ManifestDPIAwareness PerMonitorV2
 !include "StrFunc.nsh"
 ${StrCase}
 ${StrLoc}
+${StrRep}
 
 {{#if installer_hooks}}
 !include "{{installer_hooks}}"
@@ -675,6 +676,19 @@ Section Install
   ; Save current MAINBINARYNAME for future updates
   WriteRegStr SHCTX "${UNINSTKEY}" "MainBinaryName" "${MAINBINARYNAME}.exe"
 
+  ; TASK-16: expose the main binary as the `aicross` console command.
+  ; The guarded append keeps upgrades idempotent.
+  ReadRegExpandStr $R8 HKCU "Environment" "Path"
+  ${StrLoc} $R9 ";$R8;" ";$INSTDIR;" ">"
+  ${If} $R9 == ""
+    ${If} $R8 == ""
+      WriteRegExpandStr HKCU "Environment" "Path" "$INSTDIR"
+    ${Else}
+      WriteRegExpandStr HKCU "Environment" "Path" "$R8;$INSTDIR"
+    ${EndIf}
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+  ${EndIf}
+
   ; Registry information for add/remove programs
   WriteRegStr SHCTX "${UNINSTKEY}" "DisplayName" "${PRODUCTNAME}"
   WriteRegStr SHCTX "${UNINSTKEY}" "DisplayIcon" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\""
@@ -760,6 +774,19 @@ Section Uninstall
   !insertmacro CheckIfAppIsRunning "${PRODUCTNAME}" "${PRODUCTNAME}"
 
   ; Delete the app directory and its content from disk
+  ; Remove only this installation directory from the current user's PATH.
+  ReadRegExpandStr $R8 HKCU "Environment" "Path"
+  StrCpy $R8 ";$R8;"
+  ${StrRep} $R8 "$R8" ";$INSTDIR;" ";"
+  StrCpy $R8 "$R8" "" 1
+  ${If} $R8 != ""
+    StrLen $R9 "$R8"
+    IntOp $R9 $R9 - 1
+    StrCpy $R8 "$R8" $R9
+  ${EndIf}
+  WriteRegExpandStr HKCU "Environment" "Path" "$R8"
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
+
   ; Copy main executable
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
 

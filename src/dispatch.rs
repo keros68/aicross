@@ -245,7 +245,7 @@ pub struct DispatchNodeResult {
     pub quota_resets_at: Option<String>,
     /// 仅供引擎在本轮结束后通知前端刷新资源，不进入 IPC 契约。
     #[serde(skip)]
-    resources_changed: bool,
+    pub(crate) resources_changed: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1477,7 +1477,15 @@ pub async fn dispatch_graph_stage(
     request: DispatchStageRequest,
     app: AppHandle,
 ) -> Result<DispatchStageResult, String> {
-    tauri::async_runtime::spawn_blocking(move || dispatch_stage_core(request, Some(app)))
+    dispatch_stage(request, Some(app)).await
+}
+
+/// TASK-16：界面与控制台通道共用的派发入口。
+pub(crate) async fn dispatch_stage(
+    request: DispatchStageRequest,
+    app: Option<AppHandle>,
+) -> Result<DispatchStageResult, String> {
+    tauri::async_runtime::spawn_blocking(move || dispatch_stage_core(request, app))
         .await
         .map_err(|error| format!("派发线程失败：{error}"))?
 }

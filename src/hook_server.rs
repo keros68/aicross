@@ -56,6 +56,9 @@ pub fn start(app: AppHandle) -> anyhow::Result<u16> {
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     std_listener.set_nonblocking(true)?;
     let port = std_listener.local_addr()?.port();
+    let token = crate::console_api::token_hex();
+    crate::console_api::write_manifest(port, &token)
+        .map_err(anyhow::Error::msg)?;
     eprintln!("[hook-server] listening on 127.0.0.1:{}", port);
 
     tauri::async_runtime::spawn(async move {
@@ -70,8 +73,9 @@ pub fn start(app: AppHandle) -> anyhow::Result<u16> {
             match listener.accept().await {
                 Ok((socket, _)) => {
                     let app = app.clone();
+                    let token = token.clone();
                     tauri::async_runtime::spawn(async move {
-                        handle_conn(app, socket).await;
+                        handle_conn(app, token, socket).await;
                     });
                 }
                 Err(e) => {
@@ -85,7 +89,7 @@ pub fn start(app: AppHandle) -> anyhow::Result<u16> {
     Ok(port)
 }
 
-async fn handle_conn(app: AppHandle, socket: tokio::net::TcpStream) {
+async fn handle_conn(app: AppHandle, token: String, socket: tokio::net::TcpStream) {
     let mut reader = BufReader::new(socket);
     let mut line = String::new();
     if let Err(e) = reader.read_line(&mut line).await {
@@ -96,6 +100,10 @@ async fn handle_conn(app: AppHandle, socket: tokio::net::TcpStream) {
     if trimmed.is_empty() {
         return;
     }
+    if trimmed.starts_with("GET ") || trimmed.starts_with("POST ") {
+        handle_http(app, &token, trimmed, reader).await;
+        return;
+    }
     match serde_json::from_str::<HookPayload>(trimmed) {
         Ok(payload) => dispatch(&app, payload),
         Err(e) => {
@@ -103,6 +111,73 @@ async fn handle_conn(app: AppHandle, socket: tokio::net::TcpStream) {
         }
     }
     let _ = reader.into_inner().write_all(b"{}\n").await;
+}
+
+async fn handle_http(
+    app: AppHandle,
+    token: &str,
+    request_line: &str,
+    mut reader: BufReader<tokio::net::TcpStream>,
+) {
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    let mut authorization = None;
+    let mut content_length = 0_usize;
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header).await.is_err() || header == "\r\n" || header == "\n" {
+            break;
+        }
+        if let Some((name, value)) = header.split_once(':') {
+            if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse().unwrap_or(usize::MAX);
+            }
+        }
+    }
+    let response = if content_length > 4 * 1024 * 1024 {
+        crate::console_api::ApiResponse {
+            status: 413,
+            body: serde_json::json!({ "error": "请求正文过大" }).to_string(),
+        }
+    } else {
+        let mut body = vec![0_u8; content_length];
+        let read = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut body).await;
+        if read.is_err() {
+            crate::console_api::ApiResponse {
+                status: 400,
+                body: serde_json::json!({ "error": "请求正文不完整" }).to_string(),
+            }
+        } else {
+            crate::console_api::route(
+                &crate::console_api::LiveBackend::new(app),
+                token,
+                authorization.as_deref(),
+                method,
+                path,
+                &body,
+            )
+        }
+    };
+    let reason = match response.status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        409 => "Conflict",
+        413 => "Payload Too Large",
+        _ => "Internal Server Error",
+    };
+    let wire = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        response.status,
+        reason,
+        response.body.as_bytes().len(),
+        response.body,
+    );
+    let _ = reader.into_inner().write_all(wire.as_bytes()).await;
 }
 
 /// Translate a hook payload into a Tauri event. Only the `status`

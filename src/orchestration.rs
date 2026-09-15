@@ -37,6 +37,12 @@ pub struct Graph {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: String,
+    /// TASK-16：图所属工作区。旧图缺失时保持为空，不改变既有契约。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project: String,
+    /// TASK-16：`console` 表示图由总指挥通道创建或继续。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -61,6 +67,9 @@ pub struct GraphNode {
     pub leftover: Option<Leftover>,
     #[serde(default)]
     pub created_at: String,
+    /// TASK-16：`console` 表示节点来自总指挥通道。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
 }
 
 /// 遗留清单（前端 `GraphNode.leftover` 镜像）：来源验收节点与未闭合的条目。
@@ -356,7 +365,7 @@ fn blank_target() -> Target {
     Target::default()
 }
 
-fn builtin_presets() -> Vec<Preset> {
+pub(crate) fn builtin_presets() -> Vec<Preset> {
     let shared = Preset {
         id: "builtin-shared".into(),
         name: "共享模式".into(),
@@ -586,7 +595,7 @@ fn valid_commander_identifier(value: &str) -> bool {
             }))
 }
 
-fn roles_from(root: &Path) -> RoleSettings {
+pub(crate) fn roles_from(root: &Path) -> RoleSettings {
     fs::read_to_string(roles_path(root))
         .ok()
         .and_then(|text| serde_json::from_str::<RoleSettings>(&text).ok())
@@ -604,7 +613,7 @@ fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), String> {
     write_json_atomic(&roles_path(root), settings)
 }
 
-fn fill_role_defaults(
+pub(crate) fn fill_role_defaults(
     presets: &mut [Preset],
     roles: &RoleSettings,
 ) {
@@ -748,6 +757,14 @@ fn presets_from(root: &Path) -> PresetFile {
     }
 }
 
+pub(crate) fn presets_at(root: &Path) -> PresetFile {
+    presets_from(root)
+}
+
+pub(crate) fn dispatchable_at(root: &Path) -> DispatchableModels {
+    dispatchable_from(root)
+}
+
 fn save_user_presets_in(root: &Path, presets: Vec<Preset>) -> Result<(), String> {
     // 防御性剔除 builtin=true 条目：内置不可改不可删，由 list_presets
     // 永远合并内置保证。
@@ -765,6 +782,14 @@ fn save_graph_in(root: &Path, graph: &Graph) -> Result<(), String> {
     }
     validate_graph_id(&graph.id)?;
     write_json_atomic(&graphs_dir(root).join(format!("{}.json", graph.id)), graph)
+}
+
+pub(crate) fn load_graph_at(root: &Path, id: &str) -> Result<Option<Graph>, String> {
+    load_graph_in(root, id)
+}
+
+pub(crate) fn list_graphs_at(root: &Path) -> Vec<GraphMeta> {
+    list_graphs_in(root)
 }
 
 fn load_graph_in(root: &Path, id: &str) -> Result<Option<Graph>, String> {
@@ -848,6 +873,30 @@ pub fn save_user_presets(presets: Vec<Preset>) -> Result<(), String> {
 #[tauri::command]
 pub fn save_graph(graph: Graph) -> Result<(), String> {
     save_graph_in(&aicross_root()?, &graph)
+}
+
+/// 结果卡与控制台通道共用的采纳写入口。
+#[tauri::command]
+pub fn adopt_graph_node(graph_id: String, node_id: String, adopted: bool) -> Result<Graph, String> {
+    let root = aicross_root()?;
+    adopt_graph_node_at(&root, &graph_id, &node_id, adopted)
+}
+
+pub(crate) fn adopt_graph_node_at(
+    root: &Path,
+    graph_id: &str,
+    node_id: &str,
+    adopted: bool,
+) -> Result<Graph, String> {
+    let mut graph = load_graph_in(root, graph_id)?
+        .ok_or_else(|| format!("找不到对话图：{graph_id}"))?;
+    let node = graph.nodes.get_mut(node_id)
+        .ok_or_else(|| format!("找不到节点：{node_id}"))?;
+    let reply = node.reply.as_mut().ok_or_else(|| "该节点没有可采纳的结果".to_string())?;
+    reply.adopted = Some(adopted);
+    graph.updated_at = chrono::Utc::now().to_rfc3339();
+    save_graph_in(root, &graph)?;
+    Ok(graph)
 }
 
 #[tauri::command]
@@ -942,6 +991,7 @@ mod tests {
             swarm: None,
             leftover: None,
             created_at: "2026-09-13T10:00:00Z".into(),
+            source: String::new(),
         };
         let turn = GraphNode {
             id: "n1".into(),
@@ -973,6 +1023,7 @@ mod tests {
             }),
             leftover: None,
             created_at: "2026-09-13T10:01:00Z".into(),
+            source: String::new(),
         };
         let accept = GraphNode {
             id: "n2".into(),
@@ -993,6 +1044,7 @@ mod tests {
             swarm: None,
             leftover: None,
             created_at: "2026-09-13T10:02:00Z".into(),
+            source: String::new(),
         };
         let nodes: HashMap<String, GraphNode> = [root, turn, accept]
             .into_iter()
@@ -1006,6 +1058,8 @@ mod tests {
             nodes,
             created_at: "2026-09-13T10:00:00Z".into(),
             updated_at: "2026-09-13T10:02:00Z".into(),
+            project: String::new(),
+            source: String::new(),
         }
     }
 
@@ -1675,5 +1729,15 @@ mod tests {
         let plain: GraphNode = serde_json::from_value(serde_json::json!({ "id": "x", "kind": "turn" })).unwrap();
         assert!(plain.leftover.is_none());
         assert_eq!(serde_json::to_value(&plain).unwrap()["leftover"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn task16_adopt_graph_node_uses_shared_persistence_entry() {
+        let root = temp_root("console-adopt");
+        save_graph_in(&root, &sample_graph()).unwrap();
+        let graph = adopt_graph_node_at(&root, "g-1", "n1", true).unwrap();
+        assert_eq!(graph.nodes["n1"].reply.as_ref().unwrap().adopted, Some(true));
+        let persisted = load_graph_in(&root, "g-1").unwrap().unwrap();
+        assert_eq!(persisted.nodes["n1"].reply.as_ref().unwrap().adopted, Some(true));
     }
 }

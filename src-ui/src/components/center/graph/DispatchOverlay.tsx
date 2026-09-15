@@ -31,7 +31,6 @@ import {
   routeLine,
   routeReason,
   sameParentsResultCount,
-  setReplyAdopted,
   type StageLoopState,
 } from '../../../graph/dispatch';
 import type { DispatchProgressStore } from '../../../graph/dispatch-progress';
@@ -779,7 +778,11 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                         onFocusNode?.(result.nodeId);
                       }}
                     />
-                    {cardActions.showAdopt && <button onClick={() => onCommit(setReplyAdopted(graph, result.nodeId, !adopted))}>{adopted ? '取消采纳' : '采纳'}</button>}
+                    {cardActions.showAdopt && <button onClick={() => {
+                      commands.adoptGraphNode(graph.id, result.nodeId, !adopted)
+                        .then(onCommit)
+                        .catch((error) => console.warn('[graph] 采纳失败', error));
+                    }}>{adopted ? '取消采纳' : '采纳'}</button>}
                     {cardActions.showRetry && <button onClick={() => retry(result.nodeId, false)}>重派</button>}
                     {cardActions.showRetry && <button onClick={() => retry(result.nodeId, true)}>升级</button>}
                     {cardActions.note !== '' && <span className="dispatch-reason">{cardActions.note}</span>}

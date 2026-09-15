@@ -32,6 +32,7 @@ import {
   useAppState,
   type ToolType,
 } from '../../store/app-state';
+import { consoleInflightCount, consoleTabPlan } from '../../console-channel';
 
 // Dropdown shown when a tool card's folder icon is clicked: the globally
 // recent project folders (any tool that used one) + "Open folder…" last.
@@ -127,7 +128,7 @@ interface RemoteHistoryItem {
   port: string;
   user: string;
 }
-import { isTauri, commands } from '../../tauri';
+import { isTauri, commands, onConsoleRunsChanged, type ConsoleRun } from '../../tauri';
 import { getToolDisplayName } from '../../lib/tool-info';
 import { useT } from '../../i18n/useT';
 import './CenterPanel.css';
@@ -483,6 +484,37 @@ export function CenterPanel() {
   const t = useT();
   const terminals = state.terminals;
   const activeTerminalId = state.activeTerminalId;
+  const [consoleRuns, setConsoleRuns] = useState<ConsoleRun[]>([]);
+  const consoleTabsRef = useRef({ terminals, activeTerminalId });
+  useEffect(() => { consoleTabsRef.current = { terminals, activeTerminalId }; });
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    commands.listConsoleRuns().then((runs) => { if (!disposed) setConsoleRuns(runs); }).catch(() => {});
+    onConsoleRunsChanged((event) => {
+      if (disposed) return;
+      setConsoleRuns(event.runs);
+      if (!event.graph_id) return;
+      commands.loadGraph(event.graph_id).then((graph) => {
+        if (disposed || !graph) return;
+        dispatch({ type: 'SET_GRAPH', graph });
+        const current = consoleTabsRef.current;
+        const plan = consoleTabPlan(current.terminals, current.activeTerminalId, event.graph_id);
+        if (plan.kind === 'focus') {
+          dispatch({ type: 'SET_ACTIVE_TERMINAL', id: plan.sessionId });
+          return;
+        }
+        if (plan.kind === 'background' && current.terminals.some((session) => session.tool === 'graph' && session.toolData === event.graph_id)) return;
+        const session = { id: crypto.randomUUID(), tool: 'graph' as ToolType, toolData: event.graph_id, folderPath: graph.project ?? null };
+        dispatch({ type: plan.kind === 'background' ? 'ADD_TERMINAL_BACKGROUND' : 'ADD_TERMINAL', session });
+      }).catch(() => {});
+    }).then((stop) => {
+      if (disposed) stop(); else unlisten = stop;
+    }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, [dispatch]);
+  const consoleInflight = consoleInflightCount(consoleRuns);
   // Diff tab surface: visible only in tab mode with a selection. The diff
   // chrome-tab sits in the strip beside terminal tabs; diffTabActive tracks
   // whether it (not a terminal tab) is the focused surface.
@@ -1395,12 +1427,16 @@ export function CenterPanel() {
       case 'three-split': return { icon: <SvgThreeSplit />, title: cwd ?? t('tool.three_split' as any), tooltip: pathTip };
       case 'four-split': return { icon: <SvgFourSplit />, title: cwd ?? t('tool.four_split' as any), tooltip: pathTip };
       // 对话图 tab（第 2 期）：toolData 存 graph id；标题取图标题，未打开图时显示「对话图」。
-      case 'graph': return {
-        icon: <SvgGraph />,
-        // R1 复审：只有 toolData 为空（还没进图）的 tab 才按启动器/对话图判；已开图的空标题仍是「对话图」。
-        title: graphTabTitle(session.toolData, state.graphs[session.toolData ?? '']?.title, Boolean(graphViewTabs[session.id])),
-        tooltip: undefined,
-      };
+      case 'graph': {
+        const graph = state.graphs[session.toolData ?? ''];
+        const title = graphTabTitle(session.toolData, graph?.title, Boolean(graphViewTabs[session.id]));
+        return {
+          icon: <SvgGraph />,
+          // R1 复审：只有 toolData 为空（还没进图）的 tab 才按启动器/对话图判；已开图的空标题仍是「对话图」。
+          title: graph?.source === 'console' ? `${title} · 来自总指挥` : title,
+          tooltip: undefined,
+        };
+      }
       default: return { icon: <SvgPlus active={isActive} />, title: t('tab.new'), tooltip: undefined };
     }
   };
@@ -1458,7 +1494,10 @@ export function CenterPanel() {
           // overrides the cwd basename when the tool has set a non-empty one.
           // 总指挥标题（`agent · 模型 · 目录名`）排在中间：CLI 自己报了标题就
           // 让它赢，没报时比光显示目录名多说两件事。
-          const title = session.toolTitle?.trim() || session.commanderTitle?.trim() || baseTitle;
+          const titleBase = session.toolTitle?.trim() || session.commanderTitle?.trim() || baseTitle;
+          const title = session.commanderTitle && consoleInflight > 0
+            ? `${titleBase} · ${consoleInflight} 路在飞`
+            : titleBase;
           const isDragging = tabDrag?.sessionId === session.id;
 
           // Sibling shift: while a different tab is being dragged, this

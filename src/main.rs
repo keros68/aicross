@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod channels;
+mod console_api;
+mod console_cli;
 mod dispatch;
 mod fonts;
 mod fs_watcher;
@@ -181,6 +183,9 @@ fn main() -> Result<()> {
     // with a known subcommand. This is opt-in; double-clicking the
     // executable still gets the GUI (no argv).
     let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = console_cli::run_if_subcommand(&args) {
+        std::process::exit(code);
+    }
     // `launch --tool <id> [--cwd <dir>]` doesn't short-circuit: the GUI
     // starts as usual, but the request rides along and the frontend drains
     // it on mount (see launch.rs for the cold/warm delivery paths).
