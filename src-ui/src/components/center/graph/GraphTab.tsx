@@ -760,7 +760,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               title="打开右栏「方案与编排」"
               onClick={() => window.dispatchEvent(new CustomEvent('aicross:open-orchestration'))}
             >
-              当前节点：{nodeLabel(endNode)} · {stampName ?? '手动'}
+              当前节点：{nodeLabel(endNode)} · {stampName ?? '自定义'}
             </button>
           )}
           <div className="graph-input-wrap">
@@ -768,7 +768,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               <div className="graph-at-popup">
                 {models.length === 0 && (
                   <div className="graph-at-empty">
-                    尚未接入资源{modelsError ? `（${modelsError}）` : ''}，可直接手输 agent/模型
+                    未接入资源{modelsError ? `（${modelsError}）` : ''}，可手输 agent/模型
                   </div>
                 )}
                 {grouped.map((group) => (

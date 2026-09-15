@@ -311,7 +311,7 @@ describe('06B-R1-1 换图重置对账状态', () => {
       nodes: [{ nodeId: 'a', verdict: 'unknown' }],
     });
     expect(ui.needsReview).toEqual(['a']);
-    expect(ui.note).toBe('已按留痕对账 1 个节点，1 个待核对');
+    expect(ui.note).toBe('已按派发记录核对 1 个节点，1 个待核对');
     expect(reconcileUiFor(ui, 'g1')).toBe(ui);
     expect(reconcileUiFor(ui, 'g2')).toBe(EMPTY_RECONCILE_UI);
     expect(reconcileUiFor(EMPTY_RECONCILE_UI, 'g1')).toBe(EMPTY_RECONCILE_UI);
@@ -321,7 +321,7 @@ describe('06B-R1-1 换图重置对账状态', () => {
     expect(reconcileUiAfter('g1', null)).toEqual({
       graphId: 'g1',
       needsReview: [],
-      note: '未能对账，按上次的待派节点重跑',
+      note: '未能核对，按上次的待派节点重跑',
     });
   });
 });

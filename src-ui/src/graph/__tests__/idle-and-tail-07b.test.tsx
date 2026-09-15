@@ -231,7 +231,7 @@ describe('07B-2 对账说明随派发收敛', () => {
         [b]: mkTurn(b, [base.root], { target: mkTarget(), reply: { ...unknown } }),
       },
     };
-    return { g, a, b, ui: { graphId: g.id, needsReview: [a, b], note: '已按留痕对账 2 个节点，2 个待核对' } };
+    return { g, a, b, ui: { graphId: g.id, needsReview: [a, b], note: '已按派发记录核对 2 个节点，2 个待核对' } };
   }
 
   it('reconcileUiConverged：派发完成的节点从待核对剔除，一个不剩时说明一起清', () => {

@@ -38,15 +38,15 @@ export function SkillsPanel({ showToast }: Props) {
   // Niche power-user feature — inline zh/en instead of 11-locale i18n keys.
   const L = {
     builtin: zh ? '内置' : 'Built-in',
-    add: zh ? '添加技能市场' : 'Add marketplace',
+    add: zh ? '接入技能市场' : 'Add marketplace',
     manage: zh ? '管理' : 'Manage',
-    addTitle: zh ? '添加技能市场' : 'Add skill marketplace',
+    addTitle: zh ? '接入技能市场' : 'Add skill marketplace',
     addHint: zh
-      ? '兼容 Codex 插件市场规则:仓库需含 .agents/plugins/marketplace.json'
+      ? '兼容 Codex 插件市场规则：仓库需含 .agents/plugins/marketplace.json'
       : 'Codex-compatible: the repo must contain .agents/plugins/marketplace.json',
     addPlaceholder: 'https://github.com/openai/plugins.git',
     cancel: zh ? '取消' : 'Cancel',
-    confirm: zh ? '添加' : 'Add',
+    confirm: zh ? '接入' : 'Add',
     adding: zh ? '克隆中…' : 'Cloning…',
     empty: zh ? '这个市场暂无可显示的插件。' : 'No plugins to show here.',
     none: zh ? '暂无技能。' : 'No skills available yet.',
@@ -54,7 +54,7 @@ export function SkillsPanel({ showToast }: Props) {
     upgrade: zh ? '升级' : 'Upgrade',
     upgrading: zh ? '升级中…' : 'Upgrading…',
     pluginsN: zh ? '个插件' : 'plugins',
-    noMarkets: zh ? '还没有添加任何市场。' : 'No marketplaces added yet.',
+    noMarkets: zh ? '还没有接入市场。' : 'No marketplaces added yet.',
     openDir: zh ? '打开目录' : 'Open folder',
     close: zh ? '关闭' : 'Close',
   };

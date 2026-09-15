@@ -80,12 +80,12 @@ export function NodeProgressRow({ progress, now }: { progress?: ProgressSnapshot
   );
 }
 
-// 结果卡：擂台「选它」。visible 由调用方按 sameParentsResultCount >= 2 决定。
+// 结果卡：擂台「选定」。visible 由调用方按 sameParentsResultCount >= 2 决定。
 export function PickOneButton({ visible, adopted, onPick }: { visible: boolean; adopted: boolean; onPick: () => void }) {
   if (!visible) return null;
   return (
     <button disabled={adopted} onClick={onPick}>
-      {adopted ? '已选中' : '选它'}
+      {adopted ? '已选定' : '选定'}
     </button>
   );
 }

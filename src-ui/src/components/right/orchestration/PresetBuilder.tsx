@@ -141,7 +141,7 @@ export function PresetBuilder({ initial, models, canApply, onApply, onSave, onCl
             关闭
           </button>
         </div>
-        {initial?.builtin && <div className="builder-note">内置预设不可改，保存会存成新预设。</div>}
+        {initial?.builtin && <div className="builder-note">内置预设不可改，保存后存为自定义模式。</div>}
 
         <div className="builder-stages">
           {stages.map((stage, si) => (
@@ -150,7 +150,7 @@ export function PresetBuilder({ initial, models, canApply, onApply, onSave, onCl
                 <span className="builder-stage-name">阶段 {si + 1}</span>
                 <span className="builder-stage-ops">
                   <button className="graph-mini-btn" onClick={() => addNode(si)}>
-                    添加节点
+                    新建节点
                   </button>
                   <button
                     className="graph-mini-btn"
@@ -221,7 +221,7 @@ export function PresetBuilder({ initial, models, canApply, onApply, onSave, onCl
             </div>
           ))}
           <button className="graph-mini-btn builder-add-stage" onClick={addStage}>
-            添加阶段
+            新建阶段
           </button>
         </div>
 
@@ -279,7 +279,7 @@ export function PresetBuilder({ initial, models, canApply, onApply, onSave, onCl
             onClick={() =>
               onApply({
                 id: initial?.id ?? '',
-                name: initial?.name ?? '手动编排',
+                name: initial?.name ?? '自定义模式',
                 builtin: false,
                 stages: cloneStages(stages),
               })

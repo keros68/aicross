@@ -499,7 +499,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         {phase === 'confirm' && (
           <div className="dispatch-body">
             {/* 常规提示走 dispatch-reason，红字只留给异常（TASK-07-5） */}
-            {smallTask && <div className="dispatch-reason">单步小任务，外派固定足迹不划算，建议直接 @ 一个执行者</div>}
+            {smallTask && <div className="dispatch-reason">单步小任务，建议直接 @ 一个执行者</div>}
             {nodeIds.length === 0 && <div className="dispatch-empty">当前没有父节点已完成的待派节点。</div>}
             {exceedsRequestLimit && <div className="dispatch-warning">本层有 {nodeIds.length} 路，超过总请求上限 {settings.maxRequests}，不能确认派发。</div>}
             {dirtyHint && <div className="dispatch-reason">{dirtyHint}</div>}
@@ -552,7 +552,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   <div className="dispatch-reason">理由：{userEdited.has(id) ? '用户指定' : '角色默认'}</div>
                   {missingTarget && <div className="dispatch-warning">未指定模型，不能确认派发。</div>}
                   {target.role === '执行' && ['关', '低'].includes(graph.nodes[id].target?.thinking ?? '') && target.thinking === '中' && (
-                    <div className="dispatch-warning">任务含数字或链式关键词，thinking 已调为中；可修改。</div>
+                    <div className="dispatch-warning">任务含数字或链式关键词，thinking 已调为中。</div>
                   )}
                   {sameVendorReview && <div className="dispatch-reason">复核，非独立验证</div>}
                   {/* 未验证是第三方模型的常态，走 dispatch-reason；红字只留给 failed（修正轮 R1） */}
@@ -709,7 +709,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                     <details className="dispatch-artifacts">
                       <summary>产物 · {(result.artifacts.changed_files ?? []).length} 个文件</summary>
                       {result.artifacts.worktree && <div className="dispatch-worktree">采纳前请手动合并：{result.artifacts.worktree}</div>}
-                      {!result.artifacts.worktree && <div className="dispatch-worktree">单写者产物已在项目目录，标记采纳即可。</div>}
+                      {!result.artifacts.worktree && <div className="dispatch-worktree">单写者产物已在项目目录，采纳即可。</div>}
                       <pre>{result.artifacts.diff || '无文件改动'}</pre>
                     </details>
                   )}
@@ -740,9 +740,9 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
             {mergeEntry && mergeEntry.nodeIds.length > 0 && (
               <section className="dispatch-route-card">
                 <div className="dispatch-stage-heading">蜂群合并</div>
-                <div className="dispatch-reason">按件号顺序 cherry-pick，每并一件跑一次验收命令；冲突与测试红交你裁决，不自动重派。</div>
-                {!swarmReady && <div className="dispatch-reason">还有件没跑完，全部结束后才能合并。</div>}
-                {swarmReady && swarmPendingItems.length === 0 && <div className="dispatch-reason">这些件都已并入，没有要合并的了。</div>}
+                <div className="dispatch-reason">按件号顺序 cherry-pick，每并一件跑一次验收命令；冲突与验收未通过的件由用户裁决，不自动重派。</div>
+                {!swarmReady && <div className="dispatch-reason">还有件没跑完，全部结束后可合并。</div>}
+                {swarmReady && swarmPendingItems.length === 0 && <div className="dispatch-reason">全部件已并入。</div>}
                 {/* 逐件一行按图上的状态出（08C-2）：本次合并过的件用带验收输出的行 */}
                 {mergeEntry.rows.map((row) => {
                   const fresh = mergeResultOf(row.nodeId);
@@ -788,7 +788,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
               return (
                 <section key={`arb-${group.stage}`} className="dispatch-route-card">
                   <div className="dispatch-stage-heading">第三方仲裁 · 第 {group.stage} 阶段</div>
-                  <div className="dispatch-reason">系统不判定分歧，双方由用户选</div>
+                  <div className="dispatch-reason">甲乙双方由用户选，分歧交第三家裁决</div>
                   <div className="dispatch-controls">
                     <label>甲方<select value={row.aId} onChange={(event) => pickSide('aId', event.target.value)}>
                       {okRows.map((result) => <option key={result.nodeId} value={result.nodeId}>{routeOf(result.nodeId)}</option>)}
@@ -824,10 +824,10 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 <tr className="dispatch-usage-subtotal"><td>{group.stage} 小计</td><td>{group.rows.length} 路</td><td>{group.tokensIn} / {group.tokensOut}</td><td>{group.cacheRead}</td><td>{group.durationMs} ms</td><td>—</td></tr>
               </Fragment>)}</tbody>
             </table>
-            <details className="dispatch-records"><summary>留痕</summary>
+            <details className="dispatch-records"><summary>派发记录</summary>
               {results.map((result) => <details key={result.nodeId}><summary>{result.dispatchFile || `${result.nodeId}（未写入）`}</summary><pre>{result.frontmatter}{'\n\n'}{result.outputPreview}</pre></details>)}
             </details>
-            <div className="dispatch-actions"><button className="dispatch-primary" onClick={handoff}>交人裁决</button></div>
+            <div className="dispatch-actions"><button className="dispatch-primary" onClick={handoff}>汇总裁决</button></div>
           </div>
         )}
       </div>

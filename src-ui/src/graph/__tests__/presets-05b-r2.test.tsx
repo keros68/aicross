@@ -148,7 +148,7 @@ describe('R2-5 DispatchOverlay 三处组件级断言', () => {
     expect(renderToStaticMarkup(<FallbackSkippedLine result={mkResult('n1')} />)).toBe('');
   });
 
-  it('PickOneButton：同父同 kind 同角色结果 ≥2 渲染「选它」，否则不渲染', () => {
+  it('PickOneButton：同父同 kind 同角色结果 ≥2 渲染「选定」，否则不渲染', () => {
     const g = newGraph();
     const a = newNodeId();
     const b = newNodeId();
@@ -164,11 +164,11 @@ describe('R2-5 DispatchOverlay 三处组件级断言', () => {
     const visible = sameParentsResultCount(withNodes, rows, a) >= 2;
     expect(visible).toBe(true);
     const html = renderToStaticMarkup(<PickOneButton visible={visible} adopted={false} onPick={() => {}} />);
-    expect(html).toContain('选它');
+    expect(html).toContain('选定');
     expect(renderToStaticMarkup(<PickOneButton visible={false} adopted={false} onPick={() => {}} />)).toBe('');
-    // 已采纳时按钮禁用且文案变「已选中」
+    // 已采纳时按钮禁用且文案变「已选定」
     const adoptedHtml = renderToStaticMarkup(<PickOneButton visible adopted onPick={() => {}} />);
-    expect(adoptedHtml).toContain('已选中');
+    expect(adoptedHtml).toContain('已选定');
     expect(adoptedHtml).toContain('disabled');
   });
 });

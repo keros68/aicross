@@ -19,6 +19,7 @@ import {
   swarmItemBase,
   swarmLimitLine,
   swarmMergeEntry,
+  SWARM_MERGE_MARK,
   swarmPendingMergeStage,
   swarmMergeItems,
   swarmRecordedResult,
@@ -141,6 +142,8 @@ describe('TASK-08C 蜂群联调收口', () => {
     expect(entry.rows[0].line).toBe('第 1 件：已并入 aaa');
     expect(entry.rows[2].line).toBe('第 3 件：待合并');
     expect(swarmRecordedResult(after.nodes.n3)).toBe('pending');
+    // 改名前落盘的旧记录仍按 test_failed 读
+    expect(swarmRecordedResult({ ...after.nodes.n3, reply: { status: 'done', text: `${SWARM_MERGE_MARK}第 3 件：测试红 · x` } } as GraphNode)).toBe('test_failed');
 
     // 单件重派之后（那件回 draft、本次 results 只有它）清单仍是全部三件
     const redrafted: Graph = {
