@@ -2,7 +2,7 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Fragment>
     <DirectoryRef Id="INSTALLDIR">
-      <Component Id="AicrossConsolePath" Guid="*" Win64="$(var.Win64)">
+      <Component Id="AicrossConsolePath" Guid="*" Win64="yes">
         <Environment
           Id="AicrossConsolePathEntry"
           Name="PATH"
