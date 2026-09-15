@@ -438,6 +438,8 @@ export interface DispatchSettings {
   ccSwitchPath: string;
   validationCommand: string;
   acpEnabled: boolean;
+  // TASK-12 契约：修正轮上限（默认 1）。
+  fixRoundLimit: number;
 }
 
 export interface AcpAdapterStatus {
@@ -488,6 +490,8 @@ export interface DispatchNodeRequest {
   // TASK-06 契约：为真时引擎在派发该节点前先按 before 快照回滚上次改动。
   // 单写者节点重派才带；只读与 worktree 节点不带。
   rollbackBefore?: boolean;
+  // TASK-12 契约：为真时引擎在盲目录物化后、派发前跑验证命令，输出落 VALIDATION.txt。
+  reviewMaterialValidation?: boolean;
 }
 
 export interface DispatchStageRequest {

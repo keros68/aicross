@@ -220,6 +220,8 @@ describe('TASK-08C 蜂群联调收口', () => {
     expect(swarmWireSettings({ ...DEFAULT_DISPATCH_SETTINGS, swarmLimit: 2 })).toEqual({
       timeoutSecs: 600, concurrency: 3, maxRequests: 8, redact: true, writeProjectDispatch: true,
       ccSwitchPath: '', validationCommand: '', acpEnabled: false, swarmLimit: 2,
+      // TASK-12：DispatchSettings 追加 fixRoundLimit，蜂群两条命令的 settings 一并带上
+      fixRoundLimit: 1,
     });
     // 界面设置里的 classificationModel 不发
     expect(swarmWireSettings(DEFAULT_DISPATCH_SETTINGS)).not.toHaveProperty('classificationModel');

@@ -63,19 +63,23 @@ export function applyRoleDefaults<T extends RoleTarget & { role: string }>(
 ): T {
   if (target.model.trim()) return target;
   // 拆分（TASK-08 蜂群）沿用「出方案」的默认目标：它出的是一份清单不是改动。
-  const profile = target.role === '出方案' || target.role === '拆分' ? roles.planning : target.role === '执行' ? roles.execution : target.role === '验收' ? roles.acceptance : undefined;
+  // 验证（TASK-12 经济模式验收阶段的盲审那一路）沿用验收的默认目标。
+  const profile = target.role === '出方案' || target.role === '拆分' ? roles.planning : target.role === '执行' ? roles.execution : target.role === '验收' || target.role === '验证' ? roles.acceptance : undefined;
   if (!profile || !profile.model.trim()) return target;
   return { ...target, agent: profile.agent, provider: profile.provider, model: profile.model, tier: profile.tier, thinking: profile.thinking };
 }
 
 // 盖章前把 roles.json 的角色默认填进空目标的预设节点。擂台（builtin-arena）跳过：
 // 三路目标必须留空由用户在 G1 逐家选，否则会被填成同一家（GraphTab 与
-// OrchestrationPanel 两处调用点共用）。
+// OrchestrationPanel 两处调用点共用）。盲审 / 评审的多路盲验证同理（TASK-12），
+// 与引擎侧 fill_role_defaults 的跳过名单一致。
+export const ROLE_DEFAULT_SKIPPED_PRESETS = ['builtin-arena', 'builtin-blind', 'builtin-jury'];
+
 export function presetWithRoleDefaults(
   preset: Preset,
   roles: { planning: RoleTarget; execution: RoleTarget; acceptance: RoleTarget },
 ): Preset {
-  if (preset.id === 'builtin-arena') return preset;
+  if (ROLE_DEFAULT_SKIPPED_PRESETS.includes(preset.id)) return preset;
   return {
     ...preset,
     stages: preset.stages.map((stage) => ({
@@ -88,6 +92,8 @@ export function presetWithRoleDefaults(
 export function dispatchableNodeIds(graph: Graph): string[] {
   return Object.values(graph.nodes)
     .filter((node) => {
+      // 遗留节点（TASK-12）是只读清单，永不派发。
+      if (node.leftover) return false;
       if (node.reply?.status !== 'draft' || !node.target) return false;
       return node.parents.every((parentId) => {
         const parent = graph.nodes[parentId];
@@ -330,8 +336,8 @@ export function routeLine(node: GraphNode, models: DispatchableModel[], isolatio
       item.id === target.model &&
       (item.provider ?? '') === (target.provider ?? ''),
   );
-  const correction = node.user.text.match(/^\[修正 (\d+)\/3\]\s*/);
-  const summary = correction ? `执行（修正 ${correction[1]}/3）` : node.user.text.replace(/\s+/g, ' ').trim().slice(0, 24) || target.role || '任务';
+  const correction = node.user.text.match(/^\[修正 (\d+)\/(\d+)\]\s*/);
+  const summary = correction ? `执行（修正 ${correction[1]}/${correction[2]}）` : node.user.text.replace(/\s+/g, ' ').trim().slice(0, 24) || target.role || '任务';
   const route = target.agent.trim() && target.model.trim()
     ? `${target.agent}/${target.model}`
     : '未指定模型';
@@ -344,12 +350,14 @@ export function routeLine(node: GraphNode, models: DispatchableModel[], isolatio
 }
 
 export function routeReason(node: GraphNode): string | undefined {
-  const text = node.user.text.replace(/^\[修正 \d+\/3\]\s*/, '').trim();
+  const text = node.user.text.replace(/^\[修正 \d+\/\d+\]\s*/, '').trim();
   return text.startsWith('验证命令未通过') ? text : undefined;
 }
 
 export function nodeStatusLabel(node: GraphNode): string | null {
   if (node.kind === 'material') return null;
+  // 遗留节点没有派发状态，节点卡上只挂「遗留」标签。
+  if (node.leftover) return null;
   if (node.reply?.skipped_reason) return '已跳过';
   if (node.reply?.status === 'failed') {
     if (node.reply.error_kind === 'identity_mismatch') return '真身不符';
@@ -583,11 +591,34 @@ export function appendCorrectionRound(graph: Graph, acceptId: string): { graph: 
     target: { ...accept.target, upstreams: accept.target.upstreams ? [...accept.target.upstreams] : undefined },
     created_at: new Date(now + 1).toISOString(),
   };
+  // 同阶段并行的「验证」那一路（TASK-12）跟着长：修正轮的产物同样要盲审。
+  const verifications = verificationSiblings(graph, accept).map((sibling, index): GraphNode => ({
+    id: newNodeId(),
+    kind: 'turn',
+    parents: [executionId],
+    user: { text: sibling.user.text, attachments: [] },
+    reply: { status: 'draft', text: '' },
+    target: { ...sibling.target!, upstreams: undefined },
+    created_at: new Date(now + 2 + index).toISOString(),
+  }));
+  const nodes = { ...graph.nodes, [executionId]: execution, [acceptanceId]: acceptance };
+  for (const verification of verifications) nodes[verification.id] = verification;
   return {
-    graph: { ...graph, nodes: { ...graph.nodes, [executionId]: execution, [acceptanceId]: acceptance } },
+    graph: { ...graph, nodes },
     executionId,
     acceptanceId,
   };
+}
+
+// 与验收节点同父、角色「验证」的兄弟节点（经济模式验收阶段的第二路）。
+function verificationSiblings(graph: Graph, accept: GraphNode): GraphNode[] {
+  return Object.values(graph.nodes)
+    .filter((node) =>
+      node.id !== accept.id &&
+      node.target?.role === '验证' &&
+      node.parents.length === accept.parents.length &&
+      node.parents.every((id) => accept.parents.includes(id)))
+    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
 }
 
 export function appendValidationRetry(
@@ -595,6 +626,7 @@ export function appendValidationRetry(
   executionId: string,
   detail: string,
   retryRound = 1,
+  limit: number = DEFAULT_FIX_ROUND_LIMIT,
 ): { graph: Graph; executionId?: string; acceptanceId?: string } {
   const execution = graph.nodes[executionId];
   if (!execution?.target) return { graph };
@@ -615,7 +647,7 @@ export function appendValidationRetry(
         id: nextExecutionId,
         kind: execution.parents.length > 1 ? 'accept' : 'turn',
         parents: [...execution.parents],
-        user: { text: `[修正 ${retryRound}/3] 验证命令未通过，请修正后重新运行。\n\n${detail}`, attachments: [] },
+        user: { text: `[修正 ${retryRound}/${limit}] 验证命令未通过，请修正后重新运行。\n\n${detail}`, attachments: [] },
         reply: { status: 'draft', text: '' },
         target: { ...execution.target },
         created_at: new Date(now).toISOString(),
@@ -675,12 +707,67 @@ export interface PipelineStep {
   continueRunning: boolean;
 }
 
+// ── TASK-12 修正轮上限与遗留节点 ─────────────────────────────────────────
+// 复审收益递减：修正轮默认只派一轮；到顶后未闭合的条目不再派模型，生成一个
+// 「遗留」节点挂在最后一个验收节点下，用户择期处理。设置页「修正轮上限」。
+
+export const DEFAULT_FIX_ROUND_LIMIT = 1;
+export const FIX_ROUND_LIMIT_MAX = 9;
+export const LEFTOVER_LINE_LIMIT = 20;
+
+// 验收结果里未闭合的条目：按行取「- 」/「* 」或编号开头的行；一条都取不到就
+// 整段按行截前 20 行。
+export function leftoverItems(text: string): string[] {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  const bullets = lines.filter((line) => /^(?:[-*•]\s+|\d+[.)、]\s*|（\d+）|\(\d+\))/.test(line));
+  return (bullets.length > 0 ? bullets : lines).slice(0, LEFTOVER_LINE_LIMIT);
+}
+
+// 遗留节点那一行说明：「遗留：N 条未闭合，来源 <验收节点>」。
+export function leftoverLine(count: number, source: GraphNode | undefined): string {
+  const route = source?.target && source.target.agent.trim() && source.target.model.trim()
+    ? `${source.target.agent}/${source.target.model}`
+    : '';
+  const label = `${source?.target?.role || '验收'}${route ? `（${route}）` : ''}`;
+  return `遗留：${count} 条未闭合，来源 ${label}`;
+}
+
+// 在验收节点下生成遗留节点（只读清单，不可派发）。验收节点不存在或正文为空时不生成。
+export function appendLeftover(graph: Graph, acceptId: string): { graph: Graph; leftoverId?: string } {
+  const accept = graph.nodes[acceptId];
+  if (!accept) return { graph };
+  const items = leftoverItems(accept.reply?.text ?? '');
+  if (items.length === 0) return { graph };
+  const id = newNodeId();
+  const node: GraphNode = {
+    id,
+    kind: 'turn',
+    parents: [acceptId],
+    user: { text: leftoverLine(items.length, accept), attachments: [] },
+    leftover: { source_node_id: acceptId, items },
+    created_at: new Date().toISOString(),
+  };
+  return { graph: { ...graph, nodes: { ...graph.nodes, [id]: node } }, leftoverId: id };
+}
+
+// 图上所有遗留节点，按创建时间排序（结果屏「流水线结果」展示同一清单）。
+export function leftoverNodes(graph: Graph): GraphNode[] {
+  return Object.values(graph.nodes)
+    .filter((node) => !!node.leftover)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+}
+
 // DispatchOverlay.start 只负责 IO；封顶、失败停止与修正轮生长由这个纯函数决定。
+// fixRoundLimit（TASK-12）：验证命令未通过的重派次数与验收 NEEDS_FIX 的修正轮
+// 数共用一个上限；到顶后验收 NEEDS_FIX 生成遗留节点，验证未通过则把等待中的
+// 验收标「已跳过」。
 export function reducePipelineStep(
   graph: Graph,
   results: BackendNodeResult[],
   validationRetries: Record<string, number>,
+  fixRoundLimit: number = DEFAULT_FIX_ROUND_LIMIT,
 ): PipelineStep {
+  const limit = Math.max(0, Math.floor(fixRoundLimit));
   const validationFailures = results.filter((result) => result.status === 'validation_failed');
   if (validationFailures.length > 0) {
     let next = graph;
@@ -688,7 +775,7 @@ export function reducePipelineStep(
     const retries = { ...validationRetries };
     for (const failure of validationFailures) {
       const count = retries[failure.nodeId] ?? 0;
-      if (count >= 3) {
+      if (count >= limit) {
         next = closeWaitingAcceptance(next, failure.nodeId);
         continue;
       }
@@ -697,6 +784,7 @@ export function reducePipelineStep(
         failure.nodeId,
         failure.validationOutput || failure.error,
         count + 1,
+        limit,
       );
       next = appended.graph;
       if (appended.executionId) {
@@ -720,7 +808,12 @@ export function reducePipelineStep(
   let next = graph;
   let addedCorrection = false;
   for (const result of acceptanceResults) {
-    if (parseAcceptance(result.text) !== 'NEEDS_FIX' || acceptanceRound(next, result.nodeId) > 3) continue;
+    if (parseAcceptance(result.text) !== 'NEEDS_FIX') continue;
+    // acceptanceRound 含本轮验收：已派过的修正轮数 = acceptanceRound - 1。
+    if (acceptanceRound(next, result.nodeId) > limit) {
+      next = appendLeftover(next, result.nodeId).graph;
+      continue;
+    }
     const appended = appendCorrectionRound(next, result.nodeId);
     next = appended.graph;
     addedCorrection ||= !!appended.executionId;
@@ -1010,7 +1103,15 @@ export function buildNodeRequest(
     fallback: fallbackSpecOf(target, parts.models),
     // TASK-06-2：单写者重派先回滚上次改动；只读与 worktree 节点不带这个字段
     ...(rollbackBeforeOf(target, parts.rollback) ? { rollbackBefore: true } : {}),
+    // TASK-12：盲的「验证」那一路派发前先跑验证命令，输出附成 VALIDATION.txt
+    ...(reviewMaterialValidationOf(target) ? { reviewMaterialValidation: true } : {}),
   };
+}
+
+// 审查材料附带验证输出（TASK-12）只对盲的「验证」角色开：验收那一路走验证门，
+// 顾问 / 仲裁不看产物。
+export function reviewMaterialValidationOf(target: Target): boolean {
+  return target.role === '验证' && target.visibility === '盲';
 }
 
 // 推进幂等（backlog 10 前端半边）：同一批结果送达两次只推进一层。
@@ -1230,7 +1331,7 @@ export const MISSING_TARGET_TEXT = '下一阶段有节点未指定模型，请�
 
 export async function runStageLoop<R extends BackendNodeResult, Req extends StageRequestShape, P>(
   state: StageLoopState<R>,
-  settings: { maxRequests: number },
+  settings: { maxRequests: number; fixRoundLimit?: number },
   skip: ReadonlySet<string>,
   deps: StageLoopDeps<R, Req, P>,
 ): Promise<StageLoopOutcome> {
@@ -1266,7 +1367,7 @@ export async function runStageLoop<R extends BackendNodeResult, Req extends Stag
     state.collected.push(...output.results);
     deps.onResults([...state.collected]);
     state.graph = deps.commit(applyDispatchResults(state.graph, output.results));
-    const step = reducePipelineStep(state.graph, output.results, validationRetries);
+    const step = reducePipelineStep(state.graph, output.results, validationRetries, settings.fixRoundLimit ?? DEFAULT_FIX_ROUND_LIMIT);
     validationRetries = step.validationRetries;
     if (step.graph !== state.graph) state.graph = deps.commit(step.graph);
     if (!step.continueRunning) return { kind: 'done' };

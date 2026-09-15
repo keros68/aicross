@@ -6,6 +6,8 @@ import type { GraphNode, Preset } from './types.ts';
 export function nodeLabel(node: GraphNode | undefined): string {
   if (!node) return '?';
   if (node.kind === 'material') return '材料';
+  // 遗留节点（TASK-12）没有模型，卡片与面板标题都叫「遗留」
+  if (node.leftover) return '遗留';
   const t = node.target;
   if (!t || (t.agent === '' && t.model === '')) return '未指定模型';
   if (t.agent !== '') return `${t.agent}/${t.model === '' ? '?' : t.model}`;

@@ -71,7 +71,8 @@ describe('graph dispatch helpers', () => {
 
   it('R5-2 验证重试路由显示修正轮且理由独立', () => {
     const g = graph([node('r', []), { ...node('e', ['r']), target: { ...target(), role: '执行' } }, { ...node('a', ['e'], { status: 'draft', text: '' }), target: { ...target('kimi', 'k'), role: '验收' } }]);
-    const retried = appendValidationRetry(g, 'e', 'pytest failed', 2).graph;
+    // TASK-12：上限不再写死 3，由 fixRoundLimit 传入
+    const retried = appendValidationRetry(g, 'e', 'pytest failed', 2, 3).graph;
     const retry = Object.values(retried.nodes).find(item => !g.nodes[item.id] && item.target?.role === '执行')!;
     expect(routeLine(retry, [], '部分')).toContain('执行（修正 2/3）→ codex/m');
     expect(routeReason(retry)).toContain('验证命令未通过');
@@ -280,8 +281,9 @@ describe('graph dispatch helpers', () => {
       { ...node('a', ['e'], { status: 'draft', text: '' }), target: { ...target('kimi', 'k'), role: '验收', visibility: '盲' } },
     ]);
     const validation = { nodeId: 'e', status: 'validation_failed', text: '', modelReported: '', sessionId: '', tokensIn: 0, tokensOut: 0, durationMs: 0, error: 'pytest failed' };
-    expect(reducePipelineStep(g, [validation], { e: 3 }).continueRunning).toBe(false);
-    const retried = reducePipelineStep(g, [validation], { e: 2 });
+    // TASK-12：上限由 fixRoundLimit 传入（这里按旧口径 3）
+    expect(reducePipelineStep(g, [validation], { e: 3 }, 3).continueRunning).toBe(false);
+    const retried = reducePipelineStep(g, [validation], { e: 2 }, 3);
     expect(retried.continueRunning).toBe(true);
     const retryId = Object.keys(retried.validationRetries).find((id) => id !== 'e')!;
     expect(retried.validationRetries[retryId]).toBe(3);
@@ -300,7 +302,7 @@ describe('graph dispatch helpers', () => {
     expect(reducePipelineStep(g, [{ ...base, text: 'PASS' }], {}).continueRunning).toBe(false);
   });
 
-  it('推进 reducer 超过验收修正上限时不再生长', () => {
+  it('推进 reducer 超过验收修正上限时不再派修正，只生成遗留节点', () => {
     const artifacts = { diff: 'x', changed_files: [], stdout_summary: 'ok' };
     const nodes = [node('r', [])];
     let parent = 'r';
@@ -313,9 +315,13 @@ describe('graph dispatch helpers', () => {
     }
     const g = graph(nodes);
     const result = { nodeId: 'a4', status: 'ok', text: 'NEEDS_FIX', modelReported: '', sessionId: '', tokensIn: 0, tokensOut: 0, durationMs: 0, error: '' };
-    const reduced = reducePipelineStep(g, [result], {});
+    const reduced = reducePipelineStep(g, [result], {}, 3);
     expect(reduced.continueRunning).toBe(false);
-    expect(Object.keys(reduced.graph.nodes)).toHaveLength(Object.keys(g.nodes).length);
+    // TASK-12：到顶后只多一个遗留节点，没有新的执行 / 验收
+    const added = Object.values(reduced.graph.nodes).filter((item) => !g.nodes[item.id]);
+    expect(added).toHaveLength(1);
+    expect(added[0].leftover?.source_node_id).toBe('a4');
+    expect(added[0].target).toBeUndefined();
   });
 
   it('多个验证失败节点分别追加重试', () => {

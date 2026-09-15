@@ -20,6 +20,7 @@ import {
   toggleRollbackOnReview,
   graphStage,
   groupResultsByStage,
+  leftoverNodes,
   isSmallEconomyTask,
   needsChainThinking,
   neutralDisputeSummary,
@@ -176,6 +177,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
       ccSwitchPath: settings.ccSwitchPath,
       validationCommand: settings.validationCommand,
       acpEnabled: settings.acpEnabled,
+      fixRoundLimit: settings.fixRoundLimit,
     },
     // 节点装配在 graph/dispatch.ts 的 buildNodeRequest（R1-5：请求体形状可测）
     nodes: ids.map((id) => {
@@ -460,6 +462,9 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   const smallTask = economy && isSmallEconomyTask(originalRequestOf(graph), graph.nodes[graph.root]?.user.attachments ?? []);
   const resultStages = groupResultsByStage(graph, results);
   const skippedNodes = Object.values(graph.nodes).filter((node) => !!node.reply?.skipped_reason);
+  // 遗留节点（TASK-12）：本轮验收结果到修正轮上限后生成的那些，结果屏展示同一清单。
+  const resultIds = new Set(results.map((result) => result.nodeId));
+  const leftovers = leftoverNodes(graph).filter((node) => resultIds.has(node.leftover!.source_node_id));
   const vendorNames = [...new Set(request.nodes
     .map((node) => (node.vendor || node.agent).trim())
     .filter(Boolean))];
@@ -737,6 +742,15 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 </div>
               ))}
             </div>
+            {leftovers.map((node) => (
+              <section key={node.id} className="dispatch-route-card">
+                <div className="dispatch-stage-heading">遗留</div>
+                <div className="dispatch-reason">{node.user.text}；已到修正轮上限，不再派修正。</div>
+                <ol className="dispatch-leftover">
+                  {node.leftover!.items.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
+                </ol>
+              </section>
+            ))}
             {mergeEntry && mergeEntry.nodeIds.length > 0 && (
               <section className="dispatch-route-card">
                 <div className="dispatch-stage-heading">蜂群合并</div>

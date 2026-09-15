@@ -38,6 +38,9 @@ pub struct DispatchSettings {
     pub swarm_limit: usize,
     #[serde(default)]
     pub acp_enabled: bool,
+    /// TASK-12：修正轮上限（验收 NEEDS_FIX 与验证命令未通过的重派次数），到顶后生成遗留节点。
+    #[serde(default = "default_fix_round_limit")]
+    pub fix_round_limit: usize,
 }
 
 impl Default for DispatchSettings {
@@ -52,10 +55,14 @@ impl Default for DispatchSettings {
             max_requests: default_max_requests(),
             swarm_limit: default_swarm_limit(),
             acp_enabled: false,
+            fix_round_limit: default_fix_round_limit(),
         }
     }
 }
 
+fn default_fix_round_limit() -> usize {
+    1
+}
 fn default_timeout() -> u64 {
     600
 }
@@ -118,6 +125,9 @@ pub struct DispatchNodeRequest {
     pub fallback: Option<FallbackSpec>,
     #[serde(default)]
     pub rollback_before: bool,
+    /// TASK-12：为真时引擎在盲目录物化后、派发前跑一遍验证命令，输出落 VALIDATION.txt。
+    #[serde(default)]
+    pub review_material_validation: bool,
 }
 
 /// 备选目标（图契约 Target.fallback 的三字段 + R2 追加的下发 vendor；camelCase 由外层结构继承）。
@@ -357,6 +367,9 @@ struct DispatchRecord {
     /// 项目内快照记相对路径；write_project_dispatch=false 时例外为绝对路径。
     #[serde(default)]
     before_dir: String,
+    /// TASK-12：盲目录里是否附了 VALIDATION.txt（审查材料附带验证输出）。
+    #[serde(default)]
+    validation_attached: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     swarm_item: Option<u32>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -2974,6 +2987,9 @@ fn run_one_attempt(
     } else {
         Ok(("(未发送)".to_string(), Vec::new(), 0))
     };
+    // TASK-12：审查材料附带验证输出（盲目录物化后、派发前；一处调用）。
+    let (prepared, validation_attached) =
+        attach_review_validation(project, settings, &node, &workdir, blind, timeout, prepared);
     let effective_session =
         if channels::normalize_agent(&node.agent) == "pi" && node.session_id.is_empty() {
             Uuid::new_v4().to_string()
@@ -3276,6 +3292,7 @@ fn run_one_attempt(
         write: node.write.clone(),
         fallback_skipped: fallback_skipped.clone(),
         before_dir,
+        validation_attached,
         swarm_item: None,
         merge_result: String::new(),
     };
@@ -3326,6 +3343,95 @@ fn run_one_attempt(
         fallback_skipped,
     };
     result
+}
+
+// ── TASK-12 审查材料附带验证输出 ─────────────────────────────────────────
+// 审查员只读、不能跑测试：派盲审节点前引擎先跑一遍验证命令，输出（脱敏、截断
+// 8 KB）写进盲目录 VALIDATION.txt，prompt 末尾补一句指路。只对盲节点生效；
+// 验证命令为空时写一行「未配置验证命令」，同样算附上。
+
+pub const REVIEW_VALIDATION_FILE: &str = "VALIDATION.txt";
+pub const REVIEW_VALIDATION_LIMIT: usize = 8 * 1024;
+const REVIEW_VALIDATION_PROMPT_NOTE: &str = "验证命令输出见 VALIDATION.txt";
+const REVIEW_VALIDATION_UNSET: &str = "未配置验证命令";
+
+/// 验证命令在「材料来源目录」跑：上游产物带 worktree 且目录还在就用它，否则项目目录。
+fn review_material_dir(project: &Path, node: &DispatchNodeRequest) -> PathBuf {
+    node.upstream_artifacts
+        .iter()
+        .filter_map(|artifact| artifact.worktree.as_deref())
+        .map(PathBuf::from)
+        .find(|path| path.is_dir())
+        .unwrap_or_else(|| project.to_path_buf())
+}
+
+/// VALIDATION.txt 正文：命令行 + 结果；先脱敏（不受外发开关影响）再截断，
+/// 截断落在字符边界上并注明。
+fn review_validation_text(command: &str, outcome: Result<String, String>) -> String {
+    let command = command.trim();
+    let body = if command.is_empty() {
+        REVIEW_VALIDATION_UNSET.to_string()
+    } else {
+        match outcome {
+            Ok(output) if output.trim().is_empty() => "验证命令通过（exit 0）".to_string(),
+            Ok(output) => format!("验证命令通过（exit 0）
+{output}"),
+            Err(error) => error,
+        }
+    };
+    let text = if command.is_empty() {
+        body
+    } else {
+        format!("验证命令：{command}
+
+{body}")
+    };
+    let text = safe_trace(&text);
+    if text.len() <= REVIEW_VALIDATION_LIMIT {
+        return text;
+    }
+    let mut cut = REVIEW_VALIDATION_LIMIT;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}
+…（输出超过 8 KB 已截断）", &text[..cut])
+}
+
+/// 盲目录物化成功后附 VALIDATION.txt：返回改写后的 prompt / 材料名与「是否附上」。
+/// 非盲节点、未开启、物化失败的一律原样返回且不附。
+fn attach_review_validation(
+    project: &Path,
+    settings: &DispatchSettings,
+    node: &DispatchNodeRequest,
+    workdir: &Path,
+    blind: bool,
+    timeout: Duration,
+    prepared: Result<(String, Vec<String>, usize), String>,
+) -> (Result<(String, Vec<String>, usize), String>, bool) {
+    if !blind || !node.review_material_validation {
+        return (prepared, false);
+    }
+    let Ok((mut prompt, mut names, count)) = prepared else {
+        return (prepared, false);
+    };
+    let command = settings.validation_command.trim();
+    let outcome = if command.is_empty() {
+        Ok(String::new())
+    } else {
+        let half = Duration::from_secs((timeout.as_secs() / 2).max(1));
+        run_validation(command, &review_material_dir(project, node), half)
+    };
+    let text = review_validation_text(command, outcome);
+    if let Err(error) = fs::write(workdir.join(REVIEW_VALIDATION_FILE), text.as_bytes()) {
+        return (Err(format!("写入 {REVIEW_VALIDATION_FILE} 失败：{error}")), false);
+    }
+    names.push(REVIEW_VALIDATION_FILE.to_string());
+    prompt.push_str("
+
+");
+    prompt.push_str(REVIEW_VALIDATION_PROMPT_NOTE);
+    (Ok((prompt, names, count)), true)
 }
 
 fn reset_acp_fallback(full_prompt: &str) -> (String, String) {
@@ -4596,6 +4702,7 @@ mod tests {
             upstream_artifacts: Vec::new(),
             fallback: None,
             rollback_before: false,
+            review_material_validation: false,
         }
     }
 
@@ -4869,6 +4976,7 @@ mod tests {
             write: "只读".into(),
             fallback_skipped: String::new(),
             before_dir: String::new(),
+            validation_attached: false,
             swarm_item: Some(2),
             merge_result: "merged".into(),
         };
@@ -5499,6 +5607,7 @@ mod tests {
             write: "只读".into(),
             fallback_skipped: "可写节点".into(),
             before_dir: String::new(),
+            validation_attached: false,
             swarm_item: Some(2),
             merge_result: "merged".into(),
         };
@@ -6802,6 +6911,7 @@ mod tests {
             upstream_artifacts: Vec::new(),
             fallback: None,
             rollback_before: false,
+            review_material_validation: false,
         }
     }
 
@@ -6816,6 +6926,7 @@ mod tests {
             max_requests: 8,
             swarm_limit: 4,
             acp_enabled: false,
+            fix_round_limit: 1,
         }
     }
 
@@ -7338,5 +7449,176 @@ mod tests {
             "隔离目录只应收到共同材料祖先");
         assert!(!arb_workdir.join("Cargo.toml").exists(), "隔离目录不得含项目文件");
         let _ = fs::remove_file(material);
+    }
+
+    // ── TASK-12 审查材料附带验证输出 / 修正轮上限 / 提示词固定关注点 ──────────
+
+    fn task12_temp(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("aicross-task12-{name}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn task12_blind_node(flag: bool) -> DispatchNodeRequest {
+        let mut request = node(Vec::new());
+        request.review_material_validation = flag;
+        request
+    }
+
+    #[test]
+    fn task12_settings_fix_round_limit_defaults_to_one_and_reads_camel_case() {
+        let settings: DispatchSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.fix_round_limit, 1);
+        assert_eq!(DispatchSettings::default().fix_round_limit, 1);
+        let settings: DispatchSettings = serde_json::from_str(r#"{"fixRoundLimit":3}"#).unwrap();
+        assert_eq!(settings.fix_round_limit, 3);
+        let json = serde_json::to_value(DispatchSettings::default()).unwrap();
+        assert_eq!(json["fixRoundLimit"], 1);
+    }
+
+    #[test]
+    fn task12_request_reads_review_material_validation_camel_case_default_false() {
+        let mut value = serde_json::to_value(node(Vec::new())).unwrap();
+        assert_eq!(value["reviewMaterialValidation"], false);
+        value.as_object_mut().unwrap().remove("reviewMaterialValidation");
+        let restored: DispatchNodeRequest = serde_json::from_value(value.clone()).unwrap();
+        assert!(!restored.review_material_validation);
+        value.as_object_mut().unwrap().insert("reviewMaterialValidation".into(), true.into());
+        let restored: DispatchNodeRequest = serde_json::from_value(value).unwrap();
+        assert!(restored.review_material_validation);
+    }
+
+    #[test]
+    fn task12_validation_txt_materialized_for_exit_zero_command() {
+        let root = task12_temp("exit0");
+        let project = root.join("project");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        let settings = DispatchSettings { validation_command: "echo review-ok".into(), ..DispatchSettings::default() };
+        let request = task12_blind_node(true);
+        let prepared = prepare_outbound(&request, true, &workdir, true);
+        let (prepared, attached) = attach_review_validation(&project, &settings, &request, &workdir, true, Duration::from_secs(60), prepared);
+        let (prompt, names, _) = prepared.unwrap();
+        assert!(attached);
+        let text = fs::read_to_string(workdir.join("VALIDATION.txt")).unwrap();
+        assert!(text.contains("验证命令：echo review-ok"), "{text}");
+        assert!(text.contains("exit 0"), "{text}");
+        assert!(text.contains("review-ok"), "{text}");
+        assert!(prompt.ends_with("验证命令输出见 VALIDATION.txt"), "{prompt}");
+        assert_eq!(names.last().map(String::as_str), Some("VALIDATION.txt"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task12_validation_txt_materialized_for_exit_nine_command_and_still_attached() {
+        let root = task12_temp("exit9");
+        let project = root.join("project");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        let settings = DispatchSettings { validation_command: "echo boom; exit 9".into(), ..DispatchSettings::default() };
+        let request = task12_blind_node(true);
+        let prepared = prepare_outbound(&request, true, &workdir, true);
+        let (prepared, attached) = attach_review_validation(&project, &settings, &request, &workdir, true, Duration::from_secs(60), prepared);
+        assert!(prepared.is_ok());
+        assert!(attached);
+        let text = fs::read_to_string(workdir.join("VALIDATION.txt")).unwrap();
+        assert!(text.contains("exit=9"), "{text}");
+        assert!(text.contains("boom"), "{text}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task12_validation_txt_says_unset_when_command_empty() {
+        let root = task12_temp("unset");
+        let project = root.join("project");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        let request = task12_blind_node(true);
+        let prepared = prepare_outbound(&request, true, &workdir, true);
+        let (_, attached) = attach_review_validation(&project, &DispatchSettings::default(), &request, &workdir, true, Duration::from_secs(60), prepared);
+        assert!(attached);
+        assert_eq!(fs::read_to_string(workdir.join("VALIDATION.txt")).unwrap(), "未配置验证命令");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task12_validation_txt_not_written_when_flag_off_or_not_blind() {
+        let root = task12_temp("off");
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let settings = DispatchSettings { validation_command: "echo x".into(), ..DispatchSettings::default() };
+        let off = root.join("off");
+        let prepared = prepare_outbound(&task12_blind_node(false), true, &off, true);
+        let (prepared, attached) = attach_review_validation(&project, &settings, &task12_blind_node(false), &off, true, Duration::from_secs(60), prepared);
+        assert!(!attached);
+        assert!(!prepared.unwrap().0.contains("VALIDATION.txt"));
+        assert!(!off.join("VALIDATION.txt").exists());
+        let shared = root.join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        let mut request = task12_blind_node(true);
+        request.visibility = "共享".into();
+        let prepared = prepare_outbound(&request, true, &shared, false);
+        let (_, attached) = attach_review_validation(&project, &settings, &request, &shared, false, Duration::from_secs(60), prepared);
+        assert!(!attached);
+        assert!(!shared.join("VALIDATION.txt").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task12_validation_text_truncates_at_8kb_on_char_boundary() {
+        let text = review_validation_text("cargo test", Ok("测".repeat(20_000)));
+        assert!(text.len() <= REVIEW_VALIDATION_LIMIT + "\n…（输出超过 8 KB 已截断）".len(), "{}", text.len());
+        assert!(text.ends_with("…（输出超过 8 KB 已截断）"));
+        assert!(text.starts_with("验证命令：cargo test\n\n验证命令通过（exit 0）\n测"));
+        let short = review_validation_text("cargo test", Ok("fine".into()));
+        assert!(!short.contains("已截断"));
+    }
+
+    #[test]
+    fn task12_validation_text_is_redacted() {
+        let text = review_validation_text("npm test", Err("验证命令失败（exit=1）\ntoken=sk-live-abc123\nAuthorization: Bearer xyz".into()));
+        assert!(!text.contains("abc123"), "{text}");
+        assert!(!text.contains("Bearer xyz"), "{text}");
+        assert!(text.contains("[REDACTED]"));
+        assert!(text.contains("exit=1"));
+    }
+
+    #[test]
+    fn task12_review_material_dir_prefers_existing_upstream_worktree() {
+        let root = task12_temp("dir");
+        let project = root.join("project");
+        let worktree = root.join("wt");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        let mut request = task12_blind_node(true);
+        assert_eq!(review_material_dir(&project, &request), project);
+        request.upstream_artifacts.push(DispatchArtifacts { worktree: Some(worktree.to_string_lossy().into_owned()), ..DispatchArtifacts::default() });
+        assert_eq!(review_material_dir(&project, &request), worktree);
+        request.upstream_artifacts[0].worktree = Some(root.join("gone").to_string_lossy().into_owned());
+        assert_eq!(review_material_dir(&project, &request), project);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task12_record_frontmatter_carries_validation_attached() {
+        let record = DispatchRecord { validation_attached: true, ..DispatchRecord::default() };
+        assert!(serialize_frontmatter(&record).unwrap().contains("validation_attached: true"));
+        let record = DispatchRecord::default();
+        assert!(serialize_frontmatter(&record).unwrap().contains("validation_attached: false"));
+    }
+
+    #[test]
+    fn task12_review_prompt_files_end_with_fixed_focus_points() {
+        const CONTRACT: &str = "契约（字段、命令签名、序列化大小写）有没有变";
+        const RED_TEST: &str = "新增的测试能不能红：把修复回退后该测试是否会失败";
+        for text in [
+            include_str!("../fixtures/prompts/acceptance.txt"),
+            include_str!("../fixtures/prompts/blind-prefix.txt"),
+        ] {
+            let lines: Vec<&str> = text.trim_end().lines().collect();
+            let tail = &lines[lines.len() - 2..];
+            assert!(tail[0].contains(CONTRACT), "{text}");
+            assert!(tail[1].contains(RED_TEST), "{text}");
+        }
     }
 }

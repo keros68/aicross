@@ -77,6 +77,13 @@ export interface SwarmItem {
   accept: string;
 }
 
+// 遗留（TASK-12）：修正轮到顶后未闭合的条目清单，挂在最后一个验收节点下。
+// 只读、不可派发（dispatchableNodeIds 排除）；source_node_id 是来源验收节点。
+export interface Leftover {
+  source_node_id: string;
+  items: string[];
+}
+
 export interface GraphNode {
   id: string;
   kind: NodeKind;
@@ -85,6 +92,7 @@ export interface GraphNode {
   reply?: Reply;
   target?: Target;
   swarm?: SwarmItem;
+  leftover?: Leftover;
   created_at: string;
 }
 

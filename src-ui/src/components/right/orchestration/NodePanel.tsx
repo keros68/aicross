@@ -37,6 +37,34 @@ const WRITES: WriteMode[] = ['只读', '单写者', 'worktree'];
 const MANUAL = '__manual';
 const CUSTOM_ROLE = '__custom';
 
+// 遗留节点（TASK-12）的面板：只读清单，可整份复制；没有派发目标可改。
+function LeftoverList({ line, items }: { line: string; items: string[] }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    const text = items.join('\n');
+    const write = navigator.clipboard?.writeText(text);
+    if (write) write.then(() => setCopied(true)).catch(() => setCopied(false));
+  };
+  return (
+    <div className="np-body">
+      <div className="te-row">
+        <label>遗留清单</label>
+        <div className="te-note te-readonly">{line}</div>
+      </div>
+      <ol className="np-leftover">
+        {items.map((item, index) => (
+          <li key={`${index}-${item}`}>{item}</li>
+        ))}
+      </ol>
+      <div className="te-row">
+        <button onClick={copy}>复制清单</button>
+        {copied && <span className="te-note">已复制</span>}
+      </div>
+      <p className="te-note te-readonly">遗留节点不派发；处理完可在来源验收节点上再分叉。</p>
+    </div>
+  );
+}
+
 interface TargetEditorProps {
   target: Target;
   models: DispatchableModel[];
@@ -348,7 +376,9 @@ export function NodePanel({ graph, nodeId, models, onCommit, onClose }: NodePane
         {node.reply?.status === 'failed' && (
           <div className="np-body"><button onClick={() => onCommit(redraftNode(graph, nodeId))}>重派</button></div>
         )}
-        {node.kind === 'material' ? (
+        {node.leftover ? (
+          <LeftoverList line={node.user.text} items={node.leftover.items} />
+        ) : node.kind === 'material' ? (
           <div className="np-body">
             <p className="te-note">材料节点没有派发目标。</p>
             {hints.length > 0 && (

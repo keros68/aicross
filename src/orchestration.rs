@@ -56,8 +56,20 @@ pub struct GraphNode {
     pub target: Option<Target>,
     #[serde(default)]
     pub swarm: Option<SwarmItem>,
+    /// TASK-12：遗留节点（修正轮到顶后未闭合的条目清单，只读、不可派发）。
+    #[serde(default)]
+    pub leftover: Option<Leftover>,
     #[serde(default)]
     pub created_at: String,
+}
+
+/// 遗留清单（前端 `GraphNode.leftover` 镜像）：来源验收节点与未闭合的条目。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Leftover {
+    #[serde(default)]
+    pub source_node_id: String,
+    #[serde(default)]
+    pub items: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -381,25 +393,38 @@ fn builtin_presets() -> Vec<Preset> {
                     ..blank_target()
                 }],
             },
+            // TASK-12：验收阶段两路同阶段——验收（验证命令 + 验收提示词，修正轮只看它）
+            // 与验证（盲审同一份产物，派发前附 VALIDATION.txt），互不等待，结果并排。
             Stage {
-                nodes: vec![Target {
-                    role: "验收".into(),
-                    thinking: "中".into(),
-                    visibility: "盲".into(),
-                    write: "只读".into(),
-                    ..blank_target()
-                }],
+                nodes: vec![
+                    Target {
+                        role: "验收".into(),
+                        thinking: "中".into(),
+                        visibility: "盲".into(),
+                        write: "只读".into(),
+                        ..blank_target()
+                    },
+                    Target {
+                        role: "验证".into(),
+                        thinking: "中".into(),
+                        visibility: "盲".into(),
+                        write: "只读".into(),
+                        ..blank_target()
+                    },
+                ],
             },
         ],
     };
+    // 盲审模式（TASK-12）：一段三路——一路验收跑验证命令，两路验证盲审；同阶段并行。
     let blind = Preset {
         id: "builtin-blind".into(),
         name: "盲审模式".into(),
         builtin: true,
         stages: vec![Stage {
-            nodes: (0..3)
-                .map(|_| Target {
-                    role: "验证".into(),
+            nodes: ["验收", "验证", "验证"]
+                .into_iter()
+                .map(|role| Target {
+                    role: role.into(),
                     thinking: "中".into(),
                     visibility: "盲".into(),
                     write: "只读".into(),
@@ -580,7 +605,8 @@ fn fill_role_defaults(
     roles: &RoleSettings,
 ) {
     for preset in presets {
-        if preset.id == "builtin-arena" {
+        // 擂台三路、盲审 / 评审的多路盲验证都要由用户逐家选不同厂商，不填默认。
+        if matches!(preset.id.as_str(), "builtin-arena" | "builtin-blind" | "builtin-jury") {
             continue;
         }
         for target in preset
@@ -598,7 +624,8 @@ fn fill_role_defaults(
             let profile = match target.role.as_str() {
                 "出方案" | "拆分" => roles.planning.clone(),
                 "执行" => roles.execution.clone(),
-                "验收" => roles.acceptance.clone(),
+                // 验证（TASK-12 经济模式的盲审那一路）沿用验收的默认目标。
+                "验收" | "验证" => roles.acceptance.clone(),
                 _ => continue,
             };
             if profile.model.is_empty() {
@@ -909,6 +936,7 @@ mod tests {
             reply: None,
             target: None,
             swarm: None,
+            leftover: None,
             created_at: "2026-09-13T10:00:00Z".into(),
         };
         let turn = GraphNode {
@@ -939,6 +967,7 @@ mod tests {
                 files: vec!["src/a/**".into()],
                 accept: "cargo test a".into(),
             }),
+            leftover: None,
             created_at: "2026-09-13T10:01:00Z".into(),
         };
         let accept = GraphNode {
@@ -958,6 +987,7 @@ mod tests {
                 ..blank_target()
             }),
             swarm: None,
+            leftover: None,
             created_at: "2026-09-13T10:02:00Z".into(),
         };
         let nodes: HashMap<String, GraphNode> = [root, turn, accept]
@@ -1561,5 +1591,76 @@ mod tests {
         assert_eq!(result.models[4].verification, "unverified");
         // m1/m2 缺了一大堆字段也能解析，缺字段落成空串
         assert_eq!(result.models[0].vendor, "");
+    }
+
+    // ── TASK-12 ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn task12_economy_acceptance_stage_has_acceptance_and_verification_routes() {
+        let presets = builtin_presets();
+        let economy = presets.iter().find(|p| p.id == "builtin-economy").unwrap();
+        assert_eq!(economy.stages.len(), 3);
+        let roles: Vec<&str> = economy.stages[2].nodes.iter().map(|t| t.role.as_str()).collect();
+        assert_eq!(roles, ["验收", "验证"]);
+        for target in &economy.stages[2].nodes {
+            assert_eq!((target.visibility.as_str(), target.write.as_str()), ("盲", "只读"));
+        }
+    }
+
+    #[test]
+    fn task12_blind_preset_has_one_acceptance_and_two_verification_routes() {
+        let presets = builtin_presets();
+        let blind = presets.iter().find(|p| p.id == "builtin-blind").unwrap();
+        assert_eq!(blind.stages.len(), 1);
+        let roles: Vec<&str> = blind.stages[0].nodes.iter().map(|t| t.role.as_str()).collect();
+        assert_eq!(roles, ["验收", "验证", "验证"]);
+        for target in &blind.stages[0].nodes {
+            assert_eq!((target.visibility.as_str(), target.write.as_str()), ("盲", "只读"));
+            assert!(target.model.is_empty());
+        }
+    }
+
+    #[test]
+    fn task12_fill_role_defaults_fills_economy_verification_from_acceptance_but_not_blind_preset() {
+        let mut presets = builtin_presets();
+        let roles = RoleSettings {
+            version: 1,
+            acceptance: RoleProfile {
+                agent: "kimi".into(),
+                model: "kimi-code/k3-256k".into(),
+                ..RoleProfile::default()
+            },
+            ..RoleSettings::default()
+        };
+        fill_role_defaults(&mut presets, &roles);
+        let economy = presets.iter().find(|p| p.id == "builtin-economy").unwrap();
+        for target in &economy.stages[2].nodes {
+            assert_eq!((target.agent.as_str(), target.model.as_str()), ("kimi", "kimi-code/k3-256k"), "{}", target.role);
+        }
+        let blind = presets.iter().find(|p| p.id == "builtin-blind").unwrap();
+        assert!(blind.stages[0].nodes.iter().all(|t| t.model.is_empty()));
+        let jury = presets.iter().find(|p| p.id == "builtin-jury").unwrap();
+        assert!(jury.stages[0].nodes.iter().all(|t| t.model.is_empty()));
+    }
+
+    #[test]
+    fn task12_graph_node_leftover_roundtrip_and_default_none() {
+        let json = serde_json::json!({
+            "id": "l1",
+            "kind": "turn",
+            "parents": ["a2"],
+            "user": { "text": "遗留：2 条未闭合，来源 验收", "attachments": [] },
+            "leftover": { "source_node_id": "a2", "items": ["- 测试未覆盖", "- 文案未改"] },
+            "created_at": "2026-09-15T00:00:00Z"
+        });
+        let node: GraphNode = serde_json::from_value(json).unwrap();
+        let leftover = node.leftover.as_ref().unwrap();
+        assert_eq!(leftover.source_node_id, "a2");
+        assert_eq!(leftover.items, ["- 测试未覆盖", "- 文案未改"]);
+        let back = serde_json::to_value(&node).unwrap();
+        assert_eq!(back["leftover"]["items"][1], "- 文案未改");
+        let plain: GraphNode = serde_json::from_value(serde_json::json!({ "id": "x", "kind": "turn" })).unwrap();
+        assert!(plain.leftover.is_none());
+        assert_eq!(serde_json::to_value(&plain).unwrap()["leftover"], serde_json::Value::Null);
     }
 }

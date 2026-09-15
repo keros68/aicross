@@ -17,12 +17,20 @@ function presetNodeText(target: Target, swarmLimit: number): string {
 // 擂台（builtin-arena）无固定文本，目标由用户在 G1 确认屏逐家选。
 // 蜂群（builtin-swarm）的拆分提示词不在这里：它由引擎放在 Target.preset_text 上
 // （fixtures/prompts/split.txt），再补一行本次件数上限，见 presetNodeText。
+// 经济模式 / 盲审模式（TASK-12）：验收阶段两路同阶段，「验证」那一路盲审同一份
+// 产物，派发前引擎把验证命令输出附成 VALIDATION.txt；这句只说清它的分工。
+export const VERIFICATION_ROUTE_TEXT = '盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。';
+
 export const PRESET_NODE_TEXTS: Record<string, string[]> = {
   'builtin-jury': [
     '安全评审：只从安全视角审查这批材料，指出风险、暴露面与缓释建议。',
     '性能评审：只从性能视角审查这批材料，指出瓶颈、复杂度与改进建议。',
     '',
   ],
+  // 出方案 / 执行 / 验收 不加文本，第 4 个节点是验证那一路
+  'builtin-economy': ['', '', '', VERIFICATION_ROUTE_TEXT],
+  // 验收 + 两路验证
+  'builtin-blind': ['', VERIFICATION_ROUTE_TEXT, VERIFICATION_ROUTE_TEXT],
 };
 
 // 在节点 N 上展开 preset 为子图（不改原图，返回新图）。

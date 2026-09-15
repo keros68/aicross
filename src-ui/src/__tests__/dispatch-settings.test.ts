@@ -22,4 +22,19 @@ describe('ACP dispatch settings', () => {
     saveDispatchSettings({ ...DEFAULT_DISPATCH_SETTINGS, acpEnabled: true });
     expect(loadDispatchSettings().acpEnabled).toBe(true);
   });
+
+  // TASK-12：修正轮上限默认 1，旧设置缺字段按 1，越界夹到 0–9
+  it('修正轮上限默认 1，可保存并恢复，越界夹紧', () => {
+    expect(DEFAULT_DISPATCH_SETTINGS.fixRoundLimit).toBe(1);
+    values.set('aicross-dispatch-settings', JSON.stringify({ timeoutSecs: 20 }));
+    expect(loadDispatchSettings().fixRoundLimit).toBe(1);
+    saveDispatchSettings({ ...DEFAULT_DISPATCH_SETTINGS, fixRoundLimit: 3 });
+    expect(loadDispatchSettings().fixRoundLimit).toBe(3);
+    values.set('aicross-dispatch-settings', JSON.stringify({ fixRoundLimit: 42 }));
+    expect(loadDispatchSettings().fixRoundLimit).toBe(9);
+    values.set('aicross-dispatch-settings', JSON.stringify({ fixRoundLimit: -2 }));
+    expect(loadDispatchSettings().fixRoundLimit).toBe(0);
+    values.set('aicross-dispatch-settings', JSON.stringify({ fixRoundLimit: 'x' }));
+    expect(loadDispatchSettings().fixRoundLimit).toBe(1);
+  });
 });

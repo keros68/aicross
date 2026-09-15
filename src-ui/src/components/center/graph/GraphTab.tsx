@@ -573,6 +573,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
           <div className="graph-node-row">
             {node.target?.role && <span className="graph-node-role">{node.target.role}</span>}
             {node.kind === 'accept' && <span className="graph-node-role">汇合</span>}
+            {node.leftover && <span className="graph-node-role">{node.leftover.items.length} 条未闭合</span>}
             {status && <span className="graph-node-status">{status}</span>}
             {disconnected && <span className="hint-capsule">未接入</span>}
           </div>
@@ -650,7 +651,8 @@ export function GraphTab({ session }: { session: TerminalSession }) {
   // ── 聊天面板 ────────────────────────────────────────────────────────────
   const renderTurn = (node: GraphNode) => {
     const hasUser = node.user.text !== '' || node.user.attachments.length > 0;
-    const showReplySlot = node.kind !== 'material';
+    // 遗留节点（TASK-12）只有清单，没有回复槽。
+    const showReplySlot = node.kind !== 'material' && !node.leftover;
     return (
       <div
         key={node.id}
@@ -664,6 +666,9 @@ export function GraphTab({ session }: { session: TerminalSession }) {
             {node.user.text !== '' && <div className="graph-msg-text">{node.user.text}</div>}
             {node.user.attachments.length > 0 && (
               <div className="graph-msg-att">附件：{node.user.attachments.join('、')}</div>
+            )}
+            {node.leftover && (
+              <div className="graph-msg-text graph-leftover">{node.leftover.items.join('\n')}</div>
             )}
           </div>
         )}
