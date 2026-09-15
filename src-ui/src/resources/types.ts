@@ -12,6 +12,14 @@ export interface ResourceModel {
   status: string;
   // 09-15 口径的四态。旧库里没有这个字段，读到空串时由 verificationOf 推断。
   verification: string;
+  // 别名对应的真实模型 ID（TASK-09b）。claude 的 fable/opus/sonnet/haiku 是
+  // 别名，只看别名看不出跑的是哪个模型。后端补齐；旧 fixture 读到空串时由
+  // resolvedIdOf 退回 id。
+  resolved_id: string;
+  // `resolved_id` 是哪来的（修正轮 R1）：`alias-table` = 本地静态别名表算的，
+  // `identity` = 冒烟 / 首次派发核对到的真身。空串按 `alias-table` 处理。
+  // 界面不显示它，它的用处是「别名表修正后旧库能不能被覆盖」。
+  resolved_source: string;
   source: string;
   smoked_at: string;
   smoke_model: string;
@@ -152,24 +160,20 @@ export function modelsByAgent(store: ResourceStore): ResourceAgent[] {
 }
 
 /**
- * 组内挂在多个 provider 下的同名模型 id。左栏这些行要带 provider 后缀：
- * 两行文字一模一样时，用户点哪一行都说不清自己选了哪个端点（修正轮 R1）。
+ * 模型的真实 ID。后端会补齐 `resolved_id`；旧库与手写 fixture 读到空串时退回
+ * `id`（非别名模型两者本来就相同）。
  */
-export function ambiguousModelIds(models: ResourceModel[]): Set<string> {
-  const providers = new Map<string, Set<string>>();
-  for (const model of models) {
-    const seen = providers.get(model.id) ?? new Set<string>();
-    seen.add(model.provider);
-    providers.set(model.id, seen);
-  }
-  return new Set([...providers.entries()].filter(([, set]) => set.size > 1).map(([id]) => id));
+export function resolvedIdOf(model: Pick<ResourceModel, 'id' | 'resolved_id'>): string {
+  return (model.resolved_id || '').trim() || model.id;
 }
 
-/** 左栏模型行的显示名：同名多 provider 时带 provider 后缀。 */
-export function modelRowLabel(model: ResourceModel, ambiguous: Set<string>): string {
-  return ambiguous.has(model.id) && model.provider.trim() !== ''
-    ? `${model.id} · ${model.provider}`
-    : model.id;
+/**
+ * 行内次文本：别名与真实 ID 不同时才显示真身，相同就只显示一次（TASK-09b）。
+ * claude 的四个别名是唯一会命中的一组。
+ */
+export function modelSecondaryId(model: Pick<ResourceModel, 'id' | 'resolved_id'>): string {
+  const resolved = resolvedIdOf(model);
+  return resolved === model.id ? '' : resolved;
 }
 
 /** 接入页统计：只数未验证的第三方条目，原生不计。 */
@@ -188,16 +192,80 @@ export function unverifiedSummaryText(store: ResourceStore): string {
   return count ? `${count} 个未验证（首次派发时自动验证）` : '';
 }
 
-/** 接入页卡片里的模型按 provider 分组（无 provider 的并成一组，不显示组头）。 */
-export function groupModelsByProvider(
-  models: ResourceModel[],
-): { label: string; models: ResourceModel[] }[] {
+export interface ProviderGroup {
+  /** 这一组的 provider 名（原生 agent 是空串）。是否渲染组头看 `showsGroupHeads`。 */
+  provider: string;
+  models: ResourceModel[];
+}
+
+/**
+ * 按 provider 分小组（TASK-09b）。pi 底下几十条模型混在一起没法看，分组之后
+ * 组内不再需要 `· provider` 后缀——组头已经说了是哪个端点。
+ *
+ * 组按 provider 名排序（固定 `'en'`，不跟随系统 locale——后端 `detected()` 用
+ * 的是字节序，跟着系统走会让左栏与下拉对不上），输入顺序在组内保留
+ * （`modelsByAgent` 已按 验证档 → provider → id 排过）。
+ *
+ * 修正轮 R1（DS 3）：只有一个 provider 时**照样**带上它的名字，不再抹成空串。
+ * 抹空会让单 provider 的 pi 在左栏和接入页都看不到自己挂在哪个端点上；
+ * 「不出组头」是渲染判据（`showsGroupHeads`），不是数据判据。
+ */
+export function providerGroups(models: ResourceModel[]): ProviderGroup[] {
   const groups = new Map<string, ResourceModel[]>();
   for (const model of models) {
-    const label = model.provider.trim();
-    groups.set(label, [...(groups.get(label) ?? []), model]);
+    const provider = model.provider.trim();
+    groups.set(provider, [...(groups.get(provider) ?? []), model]);
   }
-  return [...groups.entries()].map(([label, grouped]) => ({ label, models: grouped }));
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right, 'en'))
+    .map(([provider, grouped]) => ({ provider, models: grouped }));
+}
+
+/**
+ * 要不要渲染组头。一个组挂一个组头是纯噪声（原生 agent 更是一个空名组），
+ * 单组时 provider 改走行悬停（左栏）与详情块（接入页）。
+ */
+export function showsGroupHeads(groups: ProviderGroup[]): boolean {
+  return groups.length > 1;
+}
+
+/**
+ * 小组内拆成「常显」与「默认折叠」两段：已验证 / 验证失败 / 原生常显，
+ * 未验证折叠（pi 一个端点几十条未验证，全部铺开就是用户说的「很乱」）。
+ */
+export function splitUnverified(models: ResourceModel[]): {
+  shown: ResourceModel[];
+  collapsed: ResourceModel[];
+} {
+  const shown: ResourceModel[] = [];
+  const collapsed: ResourceModel[] = [];
+  for (const model of models) {
+    (verificationOf(model) === 'unverified' ? collapsed : shown).push(model);
+  }
+  return { shown, collapsed };
+}
+
+/** 折叠行的文字。这一行本身就是展开按钮。 */
+export function unverifiedToggleLabel(count: number, expanded: boolean): string {
+  return `未验证 ${count} 个 · ${expanded ? '收起' : '展开'}`;
+}
+
+/**
+ * 点一行模型时交给 `insertMention` 的三段（修正轮 R1，DS 2）。
+ * provider 是 `@agent/模型#provider` 里的 `#provider`，掉了就分不清同名模型
+ * 挂在哪个端点上——这是 TASK-09b 要保住的旧行为，单拎成纯函数好钉住。
+ * `model.agent` 可能没回填（旧库），用所在 agent 的 id 兜底。
+ */
+export function modelPickTarget(
+  model: Pick<ResourceModel, 'agent' | 'id' | 'provider'>,
+  agentId: string,
+): { agent: string; model: string; provider: string } {
+  return { agent: model.agent || agentId, model: model.id, provider: model.provider };
+}
+
+/** 小组的折叠键：同一个 provider 名可能挂在两个 agent 下，必须带 agent。 */
+export function groupKey(agentId: string, provider: string): string {
+  return `${agentId}/${provider}`;
 }
 
 /** 字母徽标上的字：agent id 前两位字母数字大写。 */
@@ -215,6 +283,9 @@ export function agentMark(id: string): string {
  */
 export function modelHint(model: ResourceModel): string {
   const lines = [model.id];
+  const resolved = modelSecondaryId(model);
+  if (resolved !== '') lines.push(`模型 ID：${resolved}`);
+  lines.push(`状态：${verificationLabel(verificationOf(model))}`);
   if (model.provider.trim() !== '') lines.push(`provider：${model.provider}`);
   lines.push(model.source || '来源未记录');
   if (model.smoked_at) {

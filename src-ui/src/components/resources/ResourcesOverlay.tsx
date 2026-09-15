@@ -13,8 +13,10 @@ import { commands, isTauri } from '../../tauri';
 import { loadDispatchSettings } from '../../graph/dispatch-settings';
 import {
   errorText,
-  groupModelsByProvider,
+  modelSecondaryId,
   parseCommandArgs,
+  providerGroups,
+  showsGroupHeads,
   unverifiedSummaryText,
   verificationOf,
   type AddManualAgentRequest,
@@ -290,7 +292,39 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
   );
 }
 
-function AgentCard({
+/**
+ * 「详情」展开后的几行说明。单独一个组件只为让 vitest 直接
+ * renderToStaticMarkup（详情默认收着，静态渲染进不去）。
+ *
+ * 修正轮 R1（DS 3）：provider 单列一行。单 provider 的 agent 不出组头，
+ * 卡片上原来就没有别的地方写着它挂在哪个端点上。
+ */
+export function AgentCardModelMeta({ model }: { model: ResourceModel }) {
+  return (
+    <>
+      {model.provider.trim() !== '' && (
+        <div className="agent-card-model-meta">provider：{model.provider}</div>
+      )}
+      <div className="agent-card-model-meta" title={model.source}>
+        {model.source || '来源未记录'}
+      </div>
+      {model.smoked_at && (
+        <div className="agent-card-model-meta">
+          最近验证：{model.smoked_at}
+          {model.smoke_model ? `（${model.smoke_model}）` : ''}
+        </div>
+      )}
+      {model.meta && <div className="agent-card-model-meta">{model.meta}</div>}
+      {model.smoke_failure && (
+        <div className="agent-card-model-meta failure">验证失败：{model.smoke_failure}</div>
+      )}
+      {model.note && <div className="agent-card-model-meta">备注：{model.note}</div>}
+    </>
+  );
+}
+
+/** 接入页的 agent 卡片。导出只为让 vitest 直接 renderToStaticMarkup（TASK-09b）。 */
+export function AgentCard({
   agent,
   busy,
   note,
@@ -314,7 +348,9 @@ function AgentCard({
   onRemove: (model: ResourceModel) => Promise<void>;
   onManual: () => void;
 }) {
-  const groups = groupModelsByProvider(agent.models);
+  const groups = providerGroups(agent.models);
+  // 只有一个小组时不出组头，provider 改进详情块（修正轮 R1，DS 3）。
+  const withHeads = showsGroupHeads(groups);
   const [openDetails, setOpenDetails] = useState<Record<string, boolean>>({});
   const detecting = busy === `detect:${agent.id}`;
   const verifyingAgent = busy === `smoke-agent:${agent.id}`;
@@ -333,8 +369,13 @@ function AgentCard({
       <div className="agent-card-models">
         {groups.length === 0 && <div className="agent-empty">暂无模型</div>}
         {groups.map((group) => (
-          <div className="agent-card-group-wrap" key={group.label || 'models'}>
-            {group.label && <div className="agent-card-group">{group.label}</div>}
+          <div className="agent-card-group-wrap" key={group.provider || 'models'}>
+            {withHeads && group.provider !== '' && (
+              <div className="agent-card-group">
+                <span className="agent-card-group-name">{group.provider}</span>
+                <span className="agent-card-group-count">{group.models.length}</span>
+              </div>
+            )}
             {group.models.map((model) => {
               const key = `${model.agent}:${model.provider}:${model.id}`;
               const verification = verificationOf(model);
@@ -347,6 +388,11 @@ function AgentCard({
                     <span className="agent-card-model-id" title={model.id}>
                       {model.id}
                     </span>
+                    {modelSecondaryId(model) !== '' && (
+                      <span className="agent-card-model-resolved" title={modelSecondaryId(model)}>
+                        {modelSecondaryId(model)}
+                      </span>
+                    )}
                     <span className="agent-card-model-state">
                       <VerificationMark verification={verification} showLabel />
                     </span>
@@ -386,24 +432,7 @@ function AgentCard({
                         </select>
                       </label>
                     </div>
-                    <div className="agent-card-model-meta" title={model.source}>
-                      {model.source || '来源未记录'}
-                    </div>
-                    {model.smoked_at && (
-                      <div className="agent-card-model-meta">
-                        最近验证：{model.smoked_at}
-                        {model.smoke_model ? `（${model.smoke_model}）` : ''}
-                      </div>
-                    )}
-                    {model.meta && <div className="agent-card-model-meta">{model.meta}</div>}
-                    {model.smoke_failure && (
-                      <div className="agent-card-model-meta failure">
-                        验证失败：{model.smoke_failure}
-                      </div>
-                    )}
-                    {model.note && (
-                      <div className="agent-card-model-meta">备注：{model.note}</div>
-                    )}
+                    <AgentCardModelMeta model={model} />
                     <div className="agent-card-model-actions">
                       {verification !== 'native' && (
                         <button

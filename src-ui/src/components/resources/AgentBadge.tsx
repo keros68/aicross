@@ -1,24 +1,37 @@
-// agent 图标徽标（TASK-09）：统一风格的字母徽标，不用任何厂商商标图。
+// agent 图标徽标（TASK-09；TASK-09b 换成品牌标志）。
 //
-// 形状与字母对所有 agent 一样（圆角方形 + agentMark 的 1–2 个字母），只有色相
-// 按家区分，符合 PRODUCT.md「视觉纪律」的厂商色一条：色相只做小面积标识。
+// 09-15 用户反馈：字母徽标不如官方标志好认。标志路径数据来自 simple-icons
+// （CC0-1.0），来源与许可写在 `brand-marks.ts` 的文件头；SVG 内联，不引任何
+// 图标运行时依赖。没有收录标志的 agent 退回字形（pi → π）或字母。
 //
-// 修正轮 R1：色相不再另立一套，统一从 `graph/vendor.ts` 取——同一个 agent 在
-// 对话图上的色点与这里的徽标必须同色。字母本身用 `--text-1`，色相只留在薄底与
-// 描边上：全饱和色相在浅色主题上做小号文字达不到 4.5:1。
+// 色相与对话图上的厂商色点同源（`graph/vendor.ts`）。已知四家的色由
+// `resources.css` 按 `.agent-badge-<slug>` 给，深浅主题各一套——**不能**内联，
+// 内联自定义属性在层叠里压过样式表，浅色主题的压暗规则会整条失效（修正轮
+// R1，DS A1）。未收录的 agent 没有主题分档，仍内联 vendor 原色兜底。
 
 import type { CSSProperties } from 'react';
 import { vendorColor } from '../../graph/vendor';
 import { agentMark } from '../../resources/types';
+import { agentEmblem, hasCssTone } from './brand-marks';
 
 export function AgentBadge({ agentId, size = 'sm' }: { agentId: string; size?: 'sm' | 'md' }) {
+  const emblem = agentEmblem(agentId, agentMark(agentId));
+  const className = `agent-badge agent-badge-${size} agent-badge-${emblem.slug} agent-badge-${emblem.kind}`;
+  const style = hasCssTone(emblem.slug)
+    ? undefined
+    : ({ '--agent-tone': vendorColor(agentId) } as CSSProperties);
+  if (emblem.kind === 'mark') {
+    return (
+      <span className={className} style={style} aria-hidden="true">
+        <svg viewBox={emblem.mark.viewBox} fill="currentColor" focusable="false" role="presentation">
+          <path d={emblem.mark.path} />
+        </svg>
+      </span>
+    );
+  }
   return (
-    <span
-      className={`agent-badge agent-badge-${size}`}
-      style={{ '--agent-tone': vendorColor(agentId) } as CSSProperties}
-      aria-hidden="true"
-    >
-      {agentMark(agentId)}
+    <span className={className} style={style} aria-hidden="true">
+      {emblem.kind === 'glyph' ? emblem.glyph : emblem.letters}
     </span>
   );
 }
