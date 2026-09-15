@@ -358,9 +358,9 @@ export const commands = {
 
   // ── 蜂群（TASK-08，引擎在另一工作树实现）──────────
   // 只读核对拆分清单：脏树 / 范围重叠 / glob 没匹配到文件。
-  // 后端未接通时调用会 reject，调用方回退到 SWARM_CHECK_FALLBACK（graph/swarm.ts）。
-  checkSwarmPlan: (projectDir: string, items: SwarmCheckItem[]) =>
-    invoke<SwarmPlanCheck>('check_swarm_plan', { projectDir, items }),
+  // 后端未接通时调用会 reject，闸门进 error 态（graph/swarm.ts 的 swarmGate）。
+  checkSwarmPlan: (projectDir: string, items: SwarmCheckItem[], settings: SwarmSettings) =>
+    invoke<SwarmPlanCheck>('check_swarm_plan', { projectDir, items, settings }),
   // 按件号顺序 cherry-pick 各 worktree 的改动，每并一件跑一次验收命令。
   // 后端未接通时调用方回退到全 skipped（swarmMergeFallback）。
   mergeSwarmItems: (
@@ -368,8 +368,9 @@ export const commands = {
     runId: string,
     items: SwarmMergeRequestItem[],
     validateCommand: string,
+    settings: SwarmSettings,
   ) =>
-    invoke<unknown>('merge_swarm_items', { projectDir, runId, items, validateCommand }),
+    invoke<unknown>('merge_swarm_items', { projectDir, runId, items, validateCommand, settings }),
 
   // ── 资源接入（TASK-07，镜像 src/resources.rs）────────────────────────
   // 契约类型统一从 resources/types.ts 引入（snake_case，与 Rust 一致）。
@@ -553,22 +554,29 @@ export interface SwarmPlanCheck {
   dirty: boolean;
   overlaps: SwarmOverlap[];
   unmatched: SwarmUnmatched[];
+  /** 引擎的说明（超上限未处理、glob 不合法）；旧引擎不发 */
+  note?: string;
+}
+
+// 两条蜂群命令的 settings：派发设置加上件数上限（引擎只处理前 N 件）。
+export interface SwarmSettings extends DispatchSettings {
+  swarmLimit: number;
 }
 
 export interface SwarmMergeRequestItem {
   nodeId: string;
-  // 契约文本写的是 node_id，A 侧按哪种 serde 命名未定：两个键都发，多余的那个被 serde 忽略。
-  node_id?: string;
   item: number;
   worktree: string;
+  /** 合并提交的标题：`aicross swarm item N: <title>` */
+  title?: string;
   accept: string;
 }
 
 export type SwarmMergeOutcome = 'merged' | 'conflict' | 'test_failed' | 'skipped';
 
-// 任务书契约里这两个字段写的是 node_id / test_output，而 tauri.ts 里其它
-// 派发类结果都是 camelCase。引擎在另一工作树并行做，两种写法都可能
-// 出现：这里声明 camelCase，进界面前统一过 normalizeSwarmMergeResults（graph/swarm.ts）。
+// 引擎按 camelCase 返回（src/dispatch.rs 的 SwarmMergeResult 是 serde
+// rename_all camelCase）。旧引擎的 node_id / test_output 写法由
+// normalizeSwarmMergeResults（graph/swarm.ts）在进界面前统一过一道。
 export interface SwarmMergeResult {
   nodeId: string;
   item: number;

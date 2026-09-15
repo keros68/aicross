@@ -1,0 +1,5 @@
+你是代码审查者，本次是 TASK-08B（蜂群界面）修正轮 R1 的复审。仓库在当前目录，当前是 main 之上的 phase/8b 分支。先读 tasks/fix-08b-r1.md（10 条，来自 tasks/review-08b-ds.md 与 tasks/review-08b-glm.md）、tasks/TASK-08-swarm.md，再读 tasks/REPORT-08B.md 末尾「修正轮 R1」一节，再读 src-ui/src/graph/swarm.ts、src-ui/src/graph/stamp.ts、src-ui/src/graph/dispatch.ts、src-ui/src/graph/__tests__/swarm-08b.test.tsx、src-ui/src/components/center/graph/（DispatchOverlay.tsx、DispatchBits.tsx、GraphTab.tsx）、src-ui/src/components/right/orchestration/NodePanel.tsx、src-ui/src/tauri.ts。不读 node_modules、target、dist、port、src/。
+
+逐条核对 10 条：每条「已核实修好 / 未修 / 改法有问题」三选一，附文件:行号与一句理由。特别核对：核对未返回时确认派发被阻断；生成幂等与上限；合并幂等、逐件结果落图、失败分级文案；蜂群件不出选它/未并入不采纳/已并入不重派；重叠件就地改范围并自动重核对；盖预设菜单两处都含蜂群；每件只带自己那条清单（指定上游 = 根）；不采纳项的理由是否成立；修正是否引入新缺陷（擂台/仲裁/备选/对账/回滚/心跳等既有路径无回归）。编排者已复跑 vitest 332 / build 全绿。
+
+最后单独回答：R1 之后 TASK-08B 是否可交付？一句话 + 仍未闭合的项列表（按严重度排序）。

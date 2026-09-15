@@ -4,16 +4,46 @@
 
 import type { Graph, GraphNode, Preset, Target, Thinking } from './types.ts';
 import { newNodeId } from './types.ts';
-import { setReplyAdopted } from './dispatch.ts';
+import { graphStage, setReplyAdopted } from './dispatch.ts';
+import type { UiDispatchSettings } from './dispatch-settings.ts';
 import type {
   SwarmCheckItem,
   SwarmMergeRequestItem,
   SwarmMergeResult,
   SwarmPlanCheck,
+  SwarmSettings,
 } from '../tauri';
+import splitPrompt from '../../../fixtures/prompts/split.txt?raw';
 
 // 与并发上限同一处设置（dispatch-settings.ts 的 swarmLimit），默认 4。
 export const SWARM_LIMIT_DEFAULT = 4;
+
+// 拆分提示词只有一份来源：冻结文件 fixtures/prompts/split.txt。引擎把它放在
+// 内置预设的 Target.preset_text 上，盖章时直接写进节点消息（stamp.ts）；这里
+// 只给「引擎清单里没有 builtin-swarm」的兜底预设用同一份文件，不另写一份文本。
+export const SWARM_SPLIT_PROMPT = splitPrompt.trim();
+
+// split.txt 写的是「不超过 N 件」，N 是本机设置里的上限：盖章时在模板后补这一行。
+export function swarmLimitLine(limit: number = SWARM_LIMIT_DEFAULT): string {
+  return `本次上限 ${Math.max(1, limit)} 件。`;
+}
+
+// 两条蜂群命令都要 settings（引擎按 swarmLimit 只处理前 N 件、按 timeoutSecs
+// 给验收命令设超时、按 writeProjectDispatch 决定留痕落在哪）。界面设置多出来的
+// classificationModel 不发。
+export function swarmWireSettings(settings: UiDispatchSettings): SwarmSettings {
+  return {
+    timeoutSecs: settings.timeoutSecs,
+    concurrency: settings.concurrency,
+    maxRequests: settings.maxRequests,
+    redact: settings.redact,
+    writeProjectDispatch: settings.writeProjectDispatch,
+    ccSwitchPath: settings.ccSwitchPath,
+    validationCommand: settings.validationCommand,
+    acpEnabled: settings.acpEnabled,
+    swarmLimit: settings.swarmLimit,
+  };
+}
 
 export interface SwarmPlanItem {
   title: string;
@@ -44,6 +74,7 @@ export const BUILTIN_SWARM_PRESET: Preset = {
           thinking: '中',
           visibility: '共享',
           write: '只读',
+          preset_text: SWARM_SPLIT_PROMPT,
         },
       ],
     },
@@ -147,8 +178,23 @@ export function swarmChildItems(graph: Graph, splitNodeId: string): number[] {
     .sort((a, b) => a - b);
 }
 
+// 件号续号（08C-3）：同图内第二个拆分节点的件从别处已用掉的最大件号 +1 起编，
+// 否则两批都从 1 起，G1 会说「第 1 件与第 1 件都会改…」、合并按件号排序两批交错。
+// 这个拆分节点自己已经生成过件时锚在它原来的起点上，重复点「生成」仍然幂等。
+export function swarmItemBase(graph: Graph, splitNodeId: string): number {
+  const own = swarmChildItems(graph, splitNodeId);
+  if (own.length > 0) return own[0] - 1;
+  let max = 0;
+  for (const node of Object.values(graph.nodes)) {
+    if (!node.swarm || node.parents.includes(splitNodeId)) continue;
+    max = Math.max(max, node.swarm.item);
+  }
+  return max;
+}
+
 // 每件一个 draft 执行节点：parents = 拆分节点，write=worktree（各自 worktree），
-// 件号从 1 起决定后面的合并顺序。可见性是「指定上游 = 根材料」而不是共享——
+// 件号决定后面的合并顺序，从 swarmItemBase +1 起编（08C-3 跨拆分节点续号）。
+// 可见性是「指定上游 = 根材料」而不是共享——
 // 共享会把拆分回复的整份清单带进每件的上下文（R1-8）。
 // 同件号已经有节点时不重复建（R1-2），总件数不超过 limit。
 export function appendSwarmNodes(
@@ -162,13 +208,14 @@ export function appendSwarmNodes(
   if (!graph.nodes[splitNodeId] || items.length === 0) return unchanged;
   const allowed = Math.max(1, limit);
   const existing = new Set(swarmChildItems(graph, splitNodeId));
+  const base = swarmItemBase(graph, splitNodeId);
   const nodes = { ...graph.nodes };
   const nodeIds: string[] = [];
   const skipped: number[] = [];
   let capped = 0;
   const nowMs = Date.now();
   items.forEach((item, index) => {
-    const number = index + 1;
+    const number = base + index + 1;
     if (existing.has(number)) {
       skipped.push(number);
       return;
@@ -226,16 +273,30 @@ export const SWARM_DIRTY_TEXT = '项目目录有未提交改动，蜂群合并�
 export const SWARM_CHECKING_TEXT = '正在核对文件范围…';
 export const SWARM_CHECK_FAILED_TEXT = '无法核对文件范围';
 export const SWARM_PROCEED_TEXT = '无法核对文件范围，已选择继续派发';
+export const SWARM_NO_PROJECT_TEXT = '未选工作目录，无法核对文件范围';
 
-export const SWARM_CHECK_FALLBACK: SwarmPlanCheck = { dirty: false, overlaps: [], unmatched: [] };
-
-// 核对三态（R1-1）：没要核对 / 在核对 / 核对回来了 / 核对不了。
+// 核对状态（R1-1）：没要核对 / 没有工作目录 / 在核对 / 核对回来了 / 核对不了。
 // 「还没查」与「查不了」以前都是 null，一律放行，窗口期内闸门形同虚设。
 export type SwarmCheckState =
   | { phase: 'idle' }
+  | { phase: 'noProject' }
   | { phase: 'pending' }
   | { phase: 'ok'; check: SwarmPlanCheck }
   | { phase: 'error'; message: string };
+
+// 闸门读的状态由「本批有几件 + 有没有工作目录 + 命令状态」推出来（08C-4）：
+// 没有蜂群件不拦；有蜂群件但没选工作目录时命令发不出去，直接阻断并说清原因；
+// 其余看命令状态。命令状态的初值是 pending，确认屏第一帧（effect 还没跑）也不
+// 留可点窗口。
+export function swarmCheckInput(
+  swarmCount: number,
+  projectDir: string,
+  state: SwarmCheckState,
+): SwarmCheckState {
+  if (swarmCount === 0) return { phase: 'idle' };
+  if (projectDir.trim() === '') return { phase: 'noProject' };
+  return state;
+}
 
 export interface SwarmGateState {
   blocked: boolean;
@@ -253,6 +314,9 @@ export function swarmCheckOf(state: SwarmCheckState): SwarmPlanCheck | null {
 // unmatched 只提示，进 hints。
 export function swarmGate(state: SwarmCheckState, proceedAnyway = false): SwarmGateState {
   if (state.phase === 'idle') return { blocked: false, reasons: [], hints: [], canProceed: false };
+  if (state.phase === 'noProject') {
+    return { blocked: true, reasons: [SWARM_NO_PROJECT_TEXT], hints: [], canProceed: false };
+  }
   if (state.phase === 'pending') {
     return { blocked: true, reasons: [], hints: [SWARM_CHECKING_TEXT], canProceed: false };
   }
@@ -272,6 +336,8 @@ export function swarmGate(state: SwarmCheckState, proceedAnyway = false): SwarmG
     reasons.push(`第 ${overlap.a} 件与第 ${overlap.b} 件都会改 ${overlap.path}，改到不重叠或合并成一件`);
   }
   const hints = unmatched.map((row) => `第 ${row.item} 件的范围 ${row.glob} 在项目里没有匹配到文件`);
+  // 引擎的说明（超上限未处理、glob 不合法）只提示，不阻断。
+  if ((check.note ?? '').trim() !== '') hints.push(check.note!.trim());
   return { blocked: check.dirty || overlaps.length > 0, reasons, hints, canProceed: false };
 }
 
@@ -321,16 +387,16 @@ export function swarmPendingMergeIds(graph: Graph, nodeIds: string[]): string[] 
 }
 
 // 按件号排序送给引擎；worktree 取本节点产物里的路径，accept 空则引擎回退到验证命令。
-// nodeId 与 node_id 两个键都发（GLM 1）：契约文本是 snake_case、其它派发类结构是
-// camelCase，A 侧选哪种都能反序列化，多出来的那个键被 serde 忽略。
+// wire 一律 camelCase（08C-5，A 侧 SwarmMergeItem 是 serde rename_all camelCase）。
+// title 是合并提交的标题（`aicross swarm item N: <title>`），取本件消息的第一行。
 export function swarmMergeItems(graph: Graph, nodeIds: string[]): SwarmMergeRequestItem[] {
   return swarmPendingMergeIds(graph, nodeIds).map((id) => {
     const node = graph.nodes[id];
     return {
       nodeId: id,
-      node_id: id,
       item: node.swarm!.item,
       worktree: node.reply?.artifacts?.worktree ?? '',
+      title: (node.user.text.split('\n')[0] ?? '').trim(),
       accept: node.swarm!.accept,
     };
   });
@@ -383,6 +449,87 @@ export function normalizeSwarmMergeResults(raw: unknown): SwarmMergeResult[] {
     });
   }
   return out;
+}
+
+// 合并入口从图上派生（08C-2）：结果屏、重开的结果屏、单件重派之后都按图算，
+// 不再绑当次 overlay 会话的 results。每件的状态取节点正文里最后一条合并留痕
+// （applySwarmMerge 写的那行），没有留痕就是还没并过。
+export type SwarmItemState = 'pending' | 'merged' | 'conflict' | 'test_failed' | 'skipped';
+
+export function swarmRecordedResult(node?: GraphNode): SwarmItemState {
+  const marked = (node?.reply?.text ?? '')
+    .split('\n')
+    .filter((line) => line.startsWith(SWARM_MERGE_MARK));
+  const last = marked[marked.length - 1] ?? '';
+  if (last === '') return node?.reply?.adopted === true ? 'merged' : 'pending';
+  if (last.includes(SWARM_MERGED_TEXT)) return 'merged';
+  if (last.includes('冲突待裁决')) return 'conflict';
+  if (last.includes('测试红')) return 'test_failed';
+  if (last.includes('已跳过')) return 'skipped';
+  return 'pending';
+}
+
+export interface SwarmEntryRow {
+  nodeId: string;
+  item: number;
+  state: SwarmItemState;
+  line: string;
+}
+
+export interface SwarmMergeEntry {
+  stage: number;
+  /** 本阶段全部蜂群件，按件号 */
+  nodeIds: string[];
+  /** 全部件终态才能合并 */
+  ready: boolean;
+  /** 可并件（还没并入的） */
+  pendingIds: string[];
+  /** 已并件 */
+  mergedIds: string[];
+  /** 待裁决件（冲突 / 测试红） */
+  disputedIds: string[];
+  rows: SwarmEntryRow[];
+}
+
+// 某一阶段上的蜂群件；stage 由 swarmStageOf 从本次相关节点推出来。
+export function swarmMergeEntry(graph: Graph, stage: number): SwarmMergeEntry {
+  const nodeIds = Object.values(graph.nodes)
+    .filter((node) => !!node.swarm && graphStage(graph, node.id) === stage)
+    .sort((a, b) => a.swarm!.item - b.swarm!.item)
+    .map((node) => node.id);
+  const rows = nodeIds.map((id) => {
+    const node = graph.nodes[id];
+    const state = swarmRecordedResult(node);
+    const marked = (node.reply?.text ?? '')
+      .split('\n')
+      .filter((line) => line.startsWith(SWARM_MERGE_MARK));
+    const last = marked[marked.length - 1] ?? '';
+    return {
+      nodeId: id,
+      item: node.swarm!.item,
+      state,
+      line: last === '' ? `第 ${node.swarm!.item} 件：待合并` : last.slice(SWARM_MERGE_MARK.length).trim(),
+    };
+  });
+  return {
+    stage,
+    nodeIds,
+    ready: swarmMergeReady(graph, nodeIds),
+    pendingIds: swarmPendingMergeIds(graph, nodeIds),
+    mergedIds: rows.filter((row) => row.state === 'merged').map((row) => row.nodeId),
+    disputedIds: rows
+      .filter((row) => row.state === 'conflict' || row.state === 'test_failed')
+      .map((row) => row.nodeId),
+    rows,
+  };
+}
+
+// 这一屏该看哪一阶段的蜂群件：本次结果与本次可派节点里第一个蜂群件所在的阶段。
+export function swarmStageOf(graph: Graph, nodeIds: string[]): number | null {
+  for (const id of nodeIds) {
+    if (graph.nodes[id]?.swarm) return graphStage(graph, id);
+  }
+  return null;
 }
 
 export function swarmResultLine(result: SwarmMergeResult): string {
@@ -460,12 +607,16 @@ export interface SwarmCardActions {
 // 蜂群件的结果卡动作（R1-4）：件与件不是擂台对手，不出「选它」；
 // 「采纳」只对已并入的件有意义；已并入的件不给「重派 / 升级」，
 // 否则 worktree 从已含该件的 HEAD 重开，再合一次就是重复应用。
+// 已并入的件也不给「取消采纳」（08C-6）：改动已经在项目目录里，清掉 adopted
+// 只会让它重回待合并清单，再并一次。
 export function swarmCardActions(node?: GraphNode, result?: SwarmMergeResult): SwarmCardActions {
   if (!node?.swarm) return { showPickOne: true, showAdopt: true, showRetry: true, note: '' };
-  const merged = result?.result === 'merged' || node.reply?.adopted === true;
+  const merged = result?.result === 'merged'
+    || swarmRecordedResult(node) === 'merged'
+    || node.reply?.adopted === true;
   return {
     showPickOne: false,
-    showAdopt: merged,
+    showAdopt: merged && node.reply?.adopted !== true,
     showRetry: !merged,
     note: merged ? SWARM_MERGED_TEXT : '',
   };

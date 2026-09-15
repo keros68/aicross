@@ -41,8 +41,10 @@ import {
   normalizeSwarmMergeResults,
   parseSwarmPlan,
   swarmCardActions,
+  swarmCheckInput,
   swarmCheckOf,
   swarmGenerateNotice,
+  swarmMergeEntry,
   swarmMergeErrorResults,
   swarmMergeSummary,
   swarmPlanNotice,
@@ -50,9 +52,10 @@ import {
   swarmCheckItems,
   swarmGate,
   swarmMergeItems,
-  swarmMergeReady,
   swarmNodeIdsOf,
   swarmOverlapItems,
+  swarmStageOf,
+  swarmWireSettings,
   type SwarmCheckState,
 } from '../../../graph/swarm';
 import { FallbackSkippedLine, IdleHint, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, SwarmGateNotice, SwarmMergeRow, VerificationHint, WritableFallbackHint } from './DispatchBits';
@@ -127,8 +130,9 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   // 仲裁编排（按结果阶段行）：双方选择 + 中性描述（可改）+ 第三家目标
   const [arbRows, setArbRows] = useState<Record<number, { aId: string; bId: string; text: string; targetKey: string; error: string }>>({});
   // 蜂群（TASK-08）：G1 的只读清单核对结果，G3 的逐件合并结果。
-  // 核对是三态（R1-1）：没要核对 / 在核对 / 回来了 / 核对不了，窗口期内不放行。
-  const [swarmCheck, setSwarmCheck] = useState<SwarmCheckState>({ phase: 'idle' });
+  // 核对分态（R1-1）：在核对 / 回来了 / 核对不了，窗口期内不放行。初值是
+  // pending 而不是 idle（08C-4）：确认屏第一帧 effect 还没跑，idle 会放行一帧。
+  const [swarmCheck, setSwarmCheck] = useState<SwarmCheckState>({ phase: 'pending' });
   const [swarmProceed, setSwarmProceed] = useState(false);
   const [mergeResults, setMergeResults] = useState<SwarmMergeResult[] | null>(null);
   const [merging, setMerging] = useState(false);
@@ -216,20 +220,20 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   // 继续（R1-1）。改了 files 之后 graph 变化会重跑这个 effect，重叠消失即解禁。
   const swarmIds = useMemo(() => swarmNodeIdsOf(graph, nodeIds), [graph, nodeIds]);
   useEffect(() => {
-    if (phase !== 'confirm' || swarmIds.length === 0 || projectDir === '') {
-      setSwarmCheck({ phase: 'idle' });
-      return;
-    }
+    if (phase !== 'confirm' || swarmIds.length === 0 || projectDir === '') return;
     let cancelled = false;
     setSwarmCheck({ phase: 'pending' });
     setSwarmProceed(false);
-    commands.checkSwarmPlan(projectDir, swarmCheckItems(graph, swarmIds))
+    commands.checkSwarmPlan(projectDir, swarmCheckItems(graph, swarmIds), swarmWireSettings(settings))
       .then((value) => { if (!cancelled) setSwarmCheck({ phase: 'ok', check: value }); })
       .catch((error) => { if (!cancelled) setSwarmCheck({ phase: 'error', message: String(error) }); });
     return () => { cancelled = true; };
-  }, [graph, phase, projectDir, swarmIds]);
-  const swarmGateState = swarmGate(swarmCheck, swarmProceed);
-  const overlapItems = new Set(swarmOverlapItems(swarmCheckOf(swarmCheck)));
+  }, [graph, phase, projectDir, settings, swarmIds]);
+  // 闸门读的状态由「有几件 + 有没有工作目录 + 命令状态」推出来（08C-4）：
+  // 没有蜂群件不拦；没选工作目录时命令发不出去，直接阻断并说清原因。
+  const swarmCheckState = swarmCheckInput(swarmIds.length, projectDir, swarmCheck);
+  const swarmGateState = swarmGate(swarmCheckState, swarmProceed);
+  const overlapItems = new Set(swarmOverlapItems(swarmCheckOf(swarmCheckState)));
 
   useEffect(() => {
     if (phase !== 'confirm' || request.nodes.length === 0 || hasMissingTargets) return;
@@ -420,17 +424,20 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     setPlanNotice((current) => ({ ...current, [splitNodeId]: notice }));
   };
 
-  const swarmResultIds = swarmNodeIdsOf(graph, results.map((result) => result.nodeId));
-  const swarmReady = swarmMergeReady(graph, swarmResultIds);
+  // 合并入口按图派生（08C-2）：本阶段图上的全部蜂群件，不是本次 results 里的那些。
+  // 关屏重开、单件重派之后清单都按当前图算，冲突件不会因为换了一批结果就没地方再并。
+  const swarmStage = swarmStageOf(graph, [...results.map((result) => result.nodeId), ...initialIds]);
+  const mergeEntry = swarmStage === null ? null : swarmMergeEntry(graph, swarmStage);
+  const swarmReady = mergeEntry?.ready === true;
   // 已并入的件不再进下一次请求（R1-3）：没剩下要并的件时按钮禁用。
-  const swarmPendingItems = swarmMergeItems(graph, swarmResultIds);
+  const swarmPendingItems = swarmMergeItems(graph, mergeEntry?.nodeIds ?? []);
   const mergeResultOf = (nodeId: string) => (mergeResults ?? []).find((row) => row.nodeId === nodeId);
   const runSwarmMerge = async () => {
     if (merging || swarmPendingItems.length === 0) return;
     const items = swarmPendingItems;
     setMerging(true);
     try {
-      const raw = await commands.mergeSwarmItems(projectDir, runId, items, settings.validationCommand);
+      const raw = await commands.mergeSwarmItems(projectDir, runId, items, settings.validationCommand, swarmWireSettings(settings));
       const merged = normalizeSwarmMergeResults(raw);
       setMergeResults(merged);
       if (merged.length > 0) onCommit(applySwarmMerge(graph, merged));
@@ -725,13 +732,23 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 </div>
               ))}
             </div>
-            {swarmResultIds.length > 0 && (
+            {mergeEntry && mergeEntry.nodeIds.length > 0 && (
               <section className="dispatch-route-card">
                 <div className="dispatch-stage-heading">蜂群合并</div>
                 <div className="dispatch-reason">按件号顺序 cherry-pick，每并一件跑一次验收命令；冲突与测试红交你裁决，不自动重派。</div>
                 {!swarmReady && <div className="dispatch-reason">还有件没跑完，全部结束后才能合并。</div>}
-                {swarmReady && swarmPendingItems.length === 0 && <div className="dispatch-reason">本批的件都已并入，没有要合并的了。</div>}
-                {(mergeResults ?? []).map((row) => <SwarmMergeRow key={`${row.nodeId}-${row.item}`} result={row} />)}
+                {swarmReady && swarmPendingItems.length === 0 && <div className="dispatch-reason">这些件都已并入，没有要合并的了。</div>}
+                {/* 逐件一行按图上的状态出（08C-2）：本次合并过的件用带验收输出的行 */}
+                {mergeEntry.rows.map((row) => {
+                  const fresh = mergeResultOf(row.nodeId);
+                  return fresh
+                    ? <SwarmMergeRow key={row.nodeId} result={fresh} />
+                    : (
+                      <div key={row.nodeId} className={row.state === 'merged' ? 'dispatch-reason' : row.state === 'pending' ? 'dispatch-reason' : 'dispatch-warning'}>
+                        {row.line}
+                      </div>
+                    );
+                })}
                 {mergeResults && <div className="dispatch-reason">{swarmMergeSummary(mergeResults)}</div>}
                 <div className="dispatch-actions">
                   <button disabled={!swarmReady || merging || swarmPendingItems.length === 0} onClick={runSwarmMerge}>{merging ? '合并中' : '合并'}</button>

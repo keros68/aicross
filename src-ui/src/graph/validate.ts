@@ -1,6 +1,10 @@
 import type { DispatchableModel, Graph, Target } from './types.ts';
 import { ancestorsOf } from './layout.ts';
 
+// 只能只读的角色（08C-8 补「拆分」）：与 NodePanel 的 ROLES 和引擎
+// src/dispatch.rs 的 readonly_role 同一份名单，手改图或旧图都绕不过去。
+export const READONLY_ROLES = ['验收', '验证', '仲裁', '拆分'];
+
 // 在已接入列表里查 Target 对应的模型（agent 留空时只按 model 匹配）。
 // 界面各处「查厂商色 / 判未接入」统一用这一个。
 export function findModel(
@@ -23,8 +27,13 @@ export function validateNode(
   const hints: string[] = [];
   const target = node.target;
 
-  if (target && (target.role === '验收' || target.role === '验证' || target.role === '仲裁') && target.write !== '只读') {
-    hints.push(target.role === '仲裁' ? '仲裁节点只能只读' : '验收/验证节点只能只读');
+  // 只读角色与 NodePanel 的 ROLES、引擎护栏（src/dispatch.rs 的 readonly_role）同口径。
+  if (target && READONLY_ROLES.includes(target.role) && target.write !== '只读') {
+    hints.push(
+      target.role === '验收' || target.role === '验证'
+        ? '验收/验证节点只能只读'
+        : `${target.role}节点只能只读`,
+    );
   }
   if (target && target.visibility === '盲' && target.write !== '只读') {
     hints.push('盲节点只能只读');
