@@ -538,7 +538,12 @@ fn restore_swarm_paths(
     if !process_succeeded(&status) || status.truncated {
         return Err(if status.truncated { "恢复后项目状态输出被截断".into() } else { process_note(&status, "恢复后复核项目状态失败") });
     }
-    let remaining = parse_git_status_paths(&status.stdout).into_iter().map(|(path, _)| path).collect::<Vec<_>>();
+    // 复核只看排除目录之外（R1 复审）：验证命令留下的 __pycache__ 之类是被容忍的残留，
+    // 与逐件脏检查同一口径，不能把「验证红」误判成「恢复失败」而整批停下。
+    let remaining = parse_git_status_paths(&status.stdout).into_iter()
+        .map(|(path, _)| path)
+        .filter(|path| !excluded_swarm_path(path))
+        .collect::<Vec<_>>();
     if !remaining.is_empty() {
         return Err(format!("恢复后项目仍有改动：{}", summarize_paths(&remaining)));
     }
@@ -4310,6 +4315,31 @@ mod tests {
         assert!(!project.join("one.txt").exists());
         assert_eq!(fs::read_to_string(project.join("shared.txt")).unwrap(), "base\n");
         assert!(test_git(&project, &["status", "--porcelain", "--untracked-files=all"]).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08d_r1_validation_red_with_cache_residue_stays_test_failed() {
+        if !require_git("task08d_r1_validation_red_with_cache_residue_stays_test_failed") { return; }
+        let (root, project, first, second) = swarm_repository("validation-cache-residue");
+        fs::write(first.join("one.txt"), "one
+").unwrap();
+        let mut item = merge_item("cache-residue", 1, &first, "");
+        item.files = vec!["one.txt".into()];
+        #[cfg(windows)]
+        { item.accept = "New-Item -ItemType Directory -Force __pycache__ | Out-Null; [IO.File]::WriteAllText('__pycache__/m.pyc','x'); exit 9".into(); }
+        #[cfg(not(windows))]
+        { item.accept = "mkdir -p __pycache__ && printf x > __pycache__/m.pyc && exit 9".into(); }
+        fs::write(second.join("two.txt"), "two
+").unwrap();
+        let mut later = merge_item("after-residue", 2, &second, "");
+        later.files = vec!["two.txt".into()];
+        let results = merge_swarm_items_core(&project, "run-validation-cache-residue", vec![item, later], "", &DispatchSettings::default()).unwrap();
+        // 验证红只回退本件，排除目录里的验证残留不算恢复失败，后件照常并入
+        assert_eq!(results.iter().map(|row| row.result.as_str()).collect::<Vec<_>>(), vec!["test_failed", "merged"], "{results:?}");
+        assert!(!results[0].note.contains("手动恢复"), "{}", results[0].note);
+        assert!(!project.join("one.txt").exists());
+        assert!(project.join("two.txt").exists());
         let _ = fs::remove_dir_all(root);
     }
 
