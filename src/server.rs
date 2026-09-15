@@ -3937,6 +3937,8 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::dispatch::preview_dispatch,
             crate::dispatch::dispatch_graph_stage,
             crate::dispatch::cancel_dispatch_node,
+            crate::dispatch::check_swarm_plan,
+            crate::dispatch::merge_swarm_items,
             crate::resources::get_resources,
             crate::resources::detect_resource_agent,
             crate::resources::detect_all_resources,

@@ -28,6 +28,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 
 # Regex (used by terminal.rs for ANSI strip)
 regex = "1"
+glob = "0.3.3"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

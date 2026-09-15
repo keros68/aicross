@@ -2,6 +2,7 @@ use crate::channels::{self, ChannelErrorKind, ChannelOutput};
 use crate::paths::aicross_root;
 use crate::process::{cancel_registered, run_process_registered, run_process_registered_with_activity, ProcessActivity};
 use chrono::{DateTime, Local, SecondsFormat};
+use glob::{MatchOptions, Pattern};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -33,6 +34,8 @@ pub struct DispatchSettings {
     pub validation_command: String,
     #[serde(default = "default_max_requests")]
     pub max_requests: usize,
+    #[serde(default = "default_swarm_limit")]
+    pub swarm_limit: usize,
     #[serde(default)]
     pub acp_enabled: bool,
 }
@@ -47,6 +50,7 @@ impl Default for DispatchSettings {
             cc_switch_path: String::new(),
             validation_command: String::new(),
             max_requests: default_max_requests(),
+            swarm_limit: default_swarm_limit(),
             acp_enabled: false,
         }
     }
@@ -60,6 +64,9 @@ fn default_concurrency() -> usize {
 }
 fn default_max_requests() -> usize {
     8
+}
+fn default_swarm_limit() -> usize {
+    4
 }
 fn default_true() -> bool {
     true
@@ -350,6 +357,579 @@ struct DispatchRecord {
     /// 项目内快照记相对路径；write_project_dispatch=false 时例外为绝对路径。
     #[serde(default)]
     before_dir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    swarm_item: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    merge_result: String,
+}
+
+fn excluded_snapshot_directory(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".dispatch"
+            | ".aicross-runtime"
+            | ".pytest_cache"
+            | "__pycache__"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | ".venv"
+            | "build"
+            | "coverage"
+            | ".next"
+            | "vendor"
+    )
+}
+
+fn git_result(
+    args: &[&str],
+    cwd: &Path,
+    registry_key: Option<&str>,
+) -> Result<crate::process::ProcessResult, String> {
+    run_process_registered(
+        Path::new("git"),
+        &args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>(),
+        None,
+        Duration::from_secs(120),
+        Some(cwd),
+        registry_key,
+    )
+}
+
+fn process_succeeded(result: &crate::process::ProcessResult) -> bool {
+    !result.timed_out && result.code == Some(0)
+}
+
+fn process_note(result: &crate::process::ProcessResult, fallback: &str) -> String {
+    if result.timed_out {
+        return format!("{fallback}：命令超时");
+    }
+    let detail = [result.stderr.trim(), result.stdout.trim()]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .unwrap_or(fallback);
+    safe_trace(detail)
+}
+
+fn existing_project_files(root: &Path) -> Result<Vec<String>, String> {
+    fn walk(root: &Path, current: &Path, files: &mut Vec<String>) -> Result<(), String> {
+        for entry in fs::read_dir(current)
+            .map_err(|error| format!("读取项目目录失败 {}：{error}", current.display()))?
+        {
+            let entry = entry.map_err(|error| format!("读取项目目录项失败：{error}"))?;
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|error| format!("读取项目文件元数据失败 {}：{error}", path.display()))?;
+            if is_link_or_junction(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() {
+                if !excluded_snapshot_directory(&entry.file_name().to_string_lossy()) {
+                    walk(root, &path, files)?;
+                }
+            } else if metadata.is_file() {
+                files.push(
+                    path.strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    walk(root, root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn compile_glob(pattern: &str) -> Result<Pattern, String> {
+    Pattern::new(pattern).map_err(|error| format!("glob {pattern:?} 无效：{error}"))
+}
+
+fn normalized_swarm_glob(pattern: &str, project: &Path) -> String {
+    let mut normalized = pattern.trim().replace('\\', "/");
+    while let Some(rest) = normalized.strip_prefix("./") {
+        normalized = rest.to_string();
+    }
+    while normalized.ends_with('/') {
+        normalized.pop();
+    }
+    if !normalized.contains(['*', '?', '[']) && project.join(&normalized).is_dir() {
+        normalized.push_str("/**");
+    }
+    normalized
+}
+
+fn check_swarm_plan_core(project: &Path, items: &[SwarmPlanItem], limit: usize) -> Result<SwarmPlanCheck, String> {
+    let status = git_result(&["status", "--porcelain"], project, None)?;
+    if !process_succeeded(&status) {
+        return Err(process_note(&status, "读取 git 状态失败"));
+    }
+    let files = existing_project_files(project)?;
+    let mut matched = Vec::new();
+    let mut unmatched = Vec::new();
+    for item in items.iter().take(limit) {
+        let mut item_matches = HashSet::new();
+        for pattern in &item.files {
+            let normalized = normalized_swarm_glob(pattern, project);
+            let matcher = compile_glob(&normalized)?;
+            let paths = files
+                .iter()
+                .filter(|path| matcher.matches_with(path, MatchOptions {
+                    case_sensitive: false,
+                    require_literal_separator: true,
+                    require_literal_leading_dot: false,
+                }))
+                .cloned()
+                .collect::<Vec<_>>();
+            if paths.is_empty() {
+                unmatched.push(SwarmUnmatched { item: item.item, glob: pattern.clone() });
+            }
+            item_matches.extend(paths);
+        }
+        matched.push((item.item, item_matches));
+    }
+    let mut overlaps = Vec::new();
+    for left in 0..matched.len() {
+        for right in (left + 1)..matched.len() {
+            if let Some(path) = matched[left].1.intersection(&matched[right].1).min().cloned() {
+                overlaps.push(SwarmOverlap { a: matched[left].0, b: matched[right].0, path });
+            }
+        }
+    }
+    Ok(SwarmPlanCheck { dirty: !status.stdout.trim().is_empty(), overlaps, unmatched })
+}
+
+#[tauri::command]
+pub async fn check_swarm_plan(project_dir: String, items: Vec<SwarmPlanItem>, settings: DispatchSettings) -> Result<SwarmPlanCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let project = project_path(&project_dir)?;
+        check_swarm_plan_core(&project, &items, settings.swarm_limit.max(1))
+    })
+    .await
+    .map_err(|error| format!("蜂群计划检查线程失败：{error}"))?
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwarmPlanItem {
+    pub item: u32,
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwarmOverlap {
+    pub a: u32,
+    pub b: u32,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwarmUnmatched {
+    pub item: u32,
+    pub glob: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwarmPlanCheck {
+    pub dirty: bool,
+    pub overlaps: Vec<SwarmOverlap>,
+    pub unmatched: Vec<SwarmUnmatched>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwarmMergeItem {
+    pub node_id: String,
+    pub item: u32,
+    pub worktree: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub accept: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwarmMergeResult {
+    pub node_id: String,
+    pub item: u32,
+    pub result: String,
+    pub commit: String,
+    pub note: String,
+    pub test_output: String,
+}
+
+fn truncate_utf8(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_string();
+    }
+    let mut end = limit;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
+fn skipped_swarm_results(items: &[SwarmMergeItem], note: &str) -> Vec<SwarmMergeResult> {
+    items
+        .iter()
+        .map(|item| SwarmMergeResult {
+            node_id: item.node_id.clone(),
+            item: item.item,
+            result: "skipped".into(),
+            note: note.into(),
+            ..SwarmMergeResult::default()
+        })
+        .collect()
+}
+
+fn append_swarm_record(project: &Path, log_dir: &Path, run_id: &str, result: &SwarmMergeResult) -> Result<(), String> {
+    ensure_log_dir(&log_dir)?;
+    let now = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
+    let record = DispatchRecord {
+        schema: "aicross-dispatch/1".into(),
+        run_id: run_id.into(),
+        node: result.node_id.clone(),
+        agent: "git".into(),
+        role: "合并".into(),
+        workdir: project.to_string_lossy().into_owned(),
+        status: if result.result == "merged" { "ok".into() } else { "error".into() },
+        started_at: now.clone(),
+        ended_at: now,
+        error: result.note.clone(),
+        swarm_item: Some(result.item),
+        merge_result: result.result.clone(),
+        ..DispatchRecord::default()
+    };
+    let frontmatter = serialize_frontmatter(&record)?;
+    write_record(
+        &log_dir,
+        &record,
+        &frontmatter,
+        "",
+        &result.note,
+        None,
+        &result.test_output,
+        "",
+    )?;
+    Ok(())
+}
+
+fn append_swarm_records(project: &Path, log_dir: &Path, run_id: &str, results: &mut [SwarmMergeResult]) {
+    for result in results {
+        if let Err(error) = append_swarm_record(project, log_dir, run_id, result) {
+            if result.note.is_empty() {
+                result.note = format!("写入合并留痕失败：{error}");
+            } else {
+                result.note.push_str(&format!("；写入合并留痕失败：{error}"));
+            }
+        }
+    }
+}
+
+fn registered_worktrees(project: &Path, cancel_key: &str) -> Result<HashSet<PathBuf>, String> {
+    let listed = git_result(&["worktree", "list", "--porcelain"], project, Some(cancel_key))?;
+    if !process_succeeded(&listed) {
+        return Err(process_note(&listed, "读取项目 worktree 清单失败"));
+    }
+    listed.stdout.lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| fs::canonicalize(path).map_err(|error| format!("规范化登记 worktree 失败 {path}：{error}")))
+        .collect()
+}
+
+fn merge_swarm_items_core(
+    project: &Path,
+    run_id: &str,
+    mut items: Vec<SwarmMergeItem>,
+    validate_command: &str,
+    settings: &DispatchSettings,
+) -> Result<Vec<SwarmMergeResult>, String> {
+    items.sort_by_key(|item| item.item);
+    let limit = settings.swarm_limit.max(1);
+    let mut overflow = if items.len() > limit {
+        skipped_swarm_results(&items.split_off(limit), "超过蜂群件数上限")
+    } else {
+        Vec::new()
+    };
+    let cancel_key = format!("swarm-merge:{run_id}");
+    let log_dir = if settings.write_project_dispatch {
+        project.join(".dispatch")
+    } else {
+        aicross_root()?.join("runs").join(run_id).join("dispatch")
+    };
+    let timeout = Duration::from_secs(settings.timeout_secs.max(1));
+    let _write_guard = match acquire_project_write(project, timeout, &cancel_key) {
+        Ok(guard) => guard,
+        Err(error) => {
+            let mut results = skipped_swarm_results(&items, &error);
+            results.append(&mut overflow);
+            append_swarm_records(project, &log_dir, run_id, &mut results);
+            return Ok(results);
+        }
+    };
+    let status = git_result(&["status", "--porcelain"], project, Some(&cancel_key));
+    let status = match status {
+        Ok(status) if process_succeeded(&status) => status,
+        Ok(status) => {
+            let mut results = skipped_swarm_results(&items, &process_note(&status, "读取 git 状态失败"));
+            results.append(&mut overflow);
+            append_swarm_records(project, &log_dir, run_id, &mut results);
+            return Ok(results);
+        }
+        Err(error) => {
+            let mut results = skipped_swarm_results(&items, &error);
+            results.append(&mut overflow);
+            append_swarm_records(project, &log_dir, run_id, &mut results);
+            return Ok(results);
+        }
+    };
+    if !status.stdout.trim().is_empty() {
+        let detail = truncate_utf8(&safe_trace(status.stdout.trim()), 1024);
+        let mut results = skipped_swarm_results(&items, &format!("项目目录有未提交改动：{detail}"));
+        results.append(&mut overflow);
+        append_swarm_records(project, &log_dir, run_id, &mut results);
+        return Ok(results);
+    }
+
+    let registered = match registered_worktrees(project, &cancel_key) {
+        Ok(worktrees) => worktrees,
+        Err(error) => {
+            let mut results = skipped_swarm_results(&items, &error);
+            results.append(&mut overflow);
+            append_swarm_records(project, &log_dir, run_id, &mut results);
+            return Ok(results);
+        }
+    };
+    let project_head = git_result(&["rev-parse", "HEAD"], project, Some(&cancel_key))
+        .ok().filter(process_succeeded).map(|result| result.stdout.trim().to_string()).unwrap_or_default();
+
+    let mut results = Vec::new();
+    let mut halt_after_item = false;
+    for (index, item) in items.iter().enumerate() {
+        let worktree = PathBuf::from(&item.worktree);
+        let mut result = SwarmMergeResult {
+            node_id: item.node_id.clone(),
+            item: item.item,
+            ..SwarmMergeResult::default()
+        };
+        if !worktree.is_dir() {
+            result.result = "skipped".into();
+            result.note = format!("worktree 不存在：{}", worktree.display());
+        } else if fs::canonicalize(&worktree).ok().is_none_or(|path| !registered.contains(&path)) {
+            result.result = "skipped".into();
+            result.note = format!("worktree 未登记在本项目：{}", worktree.display());
+        } else {
+            let add = git_result(&["add", "-A"], &worktree, Some(&cancel_key));
+            match add {
+                Err(error) => {
+                    result.result = "skipped".into();
+                    result.note = error;
+                }
+                Ok(add) if !process_succeeded(&add) => {
+                    result.result = "skipped".into();
+                    result.note = process_note(&add, "暂存 worktree 改动失败");
+                }
+                Ok(_) => {
+                    let changed = git_result(&["diff", "--cached", "--quiet"], &worktree, Some(&cancel_key));
+                    match changed {
+                        Ok(changed) if !changed.timed_out && changed.code == Some(0) => {
+                            let ahead = git_result(&["rev-list", "--reverse", &format!("{project_head}..HEAD")], &worktree, Some(&cancel_key));
+                            match ahead {
+                                Ok(ahead) if process_succeeded(&ahead) && !ahead.stdout.trim().is_empty() => {
+                                    let baseline = git_result(&["rev-parse", "HEAD"], project, Some(&cancel_key)).ok()
+                                        .filter(process_succeeded).map(|value| value.stdout.trim().to_string()).unwrap_or_default();
+                                    let commits = ahead.stdout.lines().map(str::to_string).collect::<Vec<_>>();
+                                    let mut failed = None;
+                                    for sha in &commits {
+                                        match git_result(&["cherry-pick", sha], project, Some(&cancel_key)) {
+                                            Ok(pick) if process_succeeded(&pick) => {}
+                                            Ok(pick) => { failed = Some(process_note(&pick, "cherry-pick 未成功")); break; }
+                                            Err(error) => { failed = Some(format!("无法启动 cherry-pick：{error}")); result.result = "skipped".into(); break; }
+                                        }
+                                    }
+                                    if let Some(detail) = failed {
+                                        let abort = git_result(&["cherry-pick", "--abort"], project, Some(&cancel_key));
+                                        if !baseline.is_empty() { let _ = git_result(&["reset", "--hard", &baseline], project, Some(&cancel_key)); }
+                                        if result.result.is_empty() { result.result = "conflict".into(); }
+                                        result.note = format!("{detail}；worktree：{}", worktree.display());
+                                        if abort.as_ref().is_err() || abort.as_ref().is_ok_and(|value| !process_succeeded(value)) {
+                                            result.note.push_str("；中止 cherry-pick 失败，已停止后续合并");
+                                            halt_after_item = true;
+                                        }
+                                    } else {
+                                        let command = if item.accept.trim().is_empty() { validate_command } else { &item.accept };
+                                        match run_validation(command, project, timeout) {
+                                            Ok(output) => {
+                                                result.result = "merged".into();
+                                                result.test_output = truncate_utf8(&safe_trace(&output), 8 * 1024);
+                                                result.commit = git_result(&["rev-parse", "HEAD"], project, Some(&cancel_key)).ok()
+                                                    .filter(process_succeeded).map(|value| value.stdout.trim().to_string()).unwrap_or_default();
+                                            }
+                                            Err(error) => {
+                                                result.result = "test_failed".into();
+                                                result.note = format!("验证命令未通过；worktree：{}", worktree.display());
+                                                result.test_output = truncate_utf8(&safe_trace(&error), 8 * 1024);
+                                                if !baseline.is_empty() { let _ = git_result(&["reset", "--hard", &baseline], project, Some(&cancel_key)); }
+                                            }
+                                        }
+                                    }
+                                }
+                                Ok(ahead) if process_succeeded(&ahead) => {
+                                    result.result = "skipped".into();
+                                    result.note = "worktree 没有改动".into();
+                                }
+                                Ok(ahead) => { result.result = "skipped".into(); result.note = process_note(&ahead, "检查 worktree 提交失败"); }
+                                Err(error) => { result.result = "skipped".into(); result.note = error; }
+                            }
+                        }
+                        Ok(changed) if !changed.timed_out && changed.code == Some(1) => {
+                            let title = if item.title.trim().is_empty() { &item.node_id } else { &item.title };
+                            let message = format!("aicross swarm item {}: {title}", item.item);
+                            let commit = git_result(&["commit", "-m", &message], &worktree, Some(&cancel_key));
+                            match commit {
+                                Err(error) => {
+                                    result.result = "skipped".into();
+                                    result.note = error;
+                                }
+                                Ok(commit) if !process_succeeded(&commit) => {
+                                    result.result = "skipped".into();
+                                    result.note = process_note(&commit, "提交 worktree 改动失败");
+                                }
+                                Ok(_) => {
+                                    let source = git_result(&["rev-parse", "HEAD"], &worktree, Some(&cancel_key));
+                                    match source {
+                                        Ok(source) if process_succeeded(&source) => {
+                                            let source_sha = source.stdout.trim().to_string();
+                                            let pick = git_result(&["cherry-pick", &source_sha], project, Some(&cancel_key));
+                                            match pick {
+                                                Ok(pick) if process_succeeded(&pick) => {
+                                                    let command = if item.accept.trim().is_empty() {
+                                                        validate_command
+                                                    } else {
+                                                        &item.accept
+                                                    };
+                                                    let baseline = git_result(&["rev-parse", "HEAD~1"], project, Some(&cancel_key)).ok()
+                                                        .filter(process_succeeded).map(|value| value.stdout.trim().to_string()).unwrap_or_default();
+                                                    match run_validation(command, project, timeout) {
+                                                        Ok(output) => {
+                                                            let head = git_result(&["rev-parse", "HEAD"], project, Some(&cancel_key));
+                                                            result.result = "merged".into();
+                                                            result.test_output = truncate_utf8(&safe_trace(&output), 8 * 1024);
+                                                            result.commit = head
+                                                                .ok()
+                                                                .filter(process_succeeded)
+                                                                .map(|head| head.stdout.trim().to_string())
+                                                                .unwrap_or(source_sha);
+                                                        }
+                                                        Err(error) => {
+                                                            result.result = "test_failed".into();
+                                                            result.note = format!("验证命令未通过；worktree：{}", worktree.display());
+                                                            result.test_output = truncate_utf8(&safe_trace(&error), 8 * 1024);
+                                                            let reset_target = if baseline.is_empty() { "HEAD~1" } else { &baseline };
+                                                            let reset = git_result(&["reset", "--hard", reset_target], project, Some(&cancel_key));
+                                                            if let Ok(reset) = reset {
+                                                                if !process_succeeded(&reset) {
+                                                                    result.note = process_note(&reset, "验证失败后回退提交失败");
+                                                                }
+                                                            } else if let Err(error) = reset {
+                                                                result.note = error;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Ok(pick) => {
+                                                    let detail = process_note(&pick, "cherry-pick 冲突");
+                                                    let abort = git_result(&["cherry-pick", "--abort"], project, Some(&cancel_key));
+                                                    result.result = "conflict".into();
+                                                    result.note = format!("{detail}；worktree：{}", worktree.display());
+                                                    if let Ok(abort) = abort {
+                                                        if !process_succeeded(&abort) {
+                                                            result.note.push_str(&format!("；中止 cherry-pick 失败：{}", process_note(&abort, "未知错误")));
+                                                            halt_after_item = true;
+                                                        }
+                                                    } else if let Err(error) = abort {
+                                                        result.note.push_str(&format!("；中止 cherry-pick 失败：{error}"));
+                                                        halt_after_item = true;
+                                                    }
+                                                }
+                                                Err(error) => {
+                                                    result.result = "skipped".into();
+                                                    result.note = format!("{error}；worktree：{}", worktree.display());
+                                                }
+                                            }
+                                        }
+                                        Ok(source) => {
+                                            result.result = "skipped".into();
+                                            result.note = process_note(&source, "读取 worktree 提交失败");
+                                        }
+                                        Err(error) => {
+                                            result.result = "skipped".into();
+                                            result.note = error;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(changed) => {
+                            result.result = "skipped".into();
+                            result.note = process_note(&changed, "检查 worktree 改动失败");
+                        }
+                        Err(error) => {
+                            result.result = "skipped".into();
+                            result.note = error;
+                        }
+                    }
+                }
+            }
+        }
+        if let Err(error) = append_swarm_record(project, &log_dir, run_id, &result) {
+            if result.note.is_empty() {
+                result.note = format!("写入合并留痕失败：{error}");
+            } else {
+                result.note.push_str(&format!("；写入合并留痕失败：{error}"));
+            }
+        }
+        results.push(result);
+        if halt_after_item {
+            let mut remaining = skipped_swarm_results(&items[(index + 1)..], "上一件无法恢复 cherry-pick 状态，已停止后续合并");
+            append_swarm_records(project, &log_dir, run_id, &mut remaining);
+            results.append(&mut remaining);
+            break;
+        }
+    }
+    for result in &mut overflow {
+        if let Err(error) = append_swarm_record(project, &log_dir, run_id, result) {
+            result.note.push_str(&format!("；写入合并留痕失败：{error}"));
+        }
+    }
+    results.append(&mut overflow);
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn merge_swarm_items(
+    project_dir: String,
+    run_id: String,
+    items: Vec<SwarmMergeItem>,
+    validate_command: String,
+    settings: DispatchSettings,
+) -> Result<Vec<SwarmMergeResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let project = project_path(&project_dir)?;
+        merge_swarm_items_core(&project, &run_id, items, &validate_command, &settings)
+    })
+    .await
+    .map_err(|error| format!("蜂群合并线程失败：{error}"))?
 }
 
 #[tauri::command]
@@ -464,7 +1044,7 @@ pub fn reconcile_dispatch_state(project_dir: String) -> Result<ReconcileSummary,
                     continue;
                 }
                 if let Ok((record, reply_text, artifacts)) = parse_record_file(&path) {
-                    if record.run_id == state.run_id && record.node == node_id {
+                    if record.run_id == state.run_id && record.node == node_id && record.merge_result.is_empty() {
                         let key = record_order_key(&record.ended_at, &record.status, &path);
                         if matched_key.as_ref().is_none_or(|current| &key > current) {
                             matched_key = Some(key);
@@ -596,7 +1176,7 @@ fn dispatch_stage_core(
     let mut rejected = Vec::new();
     request.nodes.retain(|node| {
         // 与前端 validateNode 同口径：验收/验证/仲裁角色只读（R2-7 补仲裁）。
-        let readonly_role = matches!(node.role.as_str(), "验收" | "验证" | "仲裁");
+        let readonly_role = matches!(node.role.as_str(), "验收" | "验证" | "仲裁" | "拆分");
         let invalid = readonly_role && node.write != "只读";
         if invalid {
             rejected.push(DispatchNodeResult {
@@ -987,22 +1567,7 @@ fn snapshot_directory_with_limits(
                 continue;
             }
             if metadata.is_dir() {
-                if matches!(
-                    name.as_str(),
-                    ".git"
-                        | ".dispatch"
-                        | ".aicross-runtime"
-                        | ".pytest_cache"
-                        | "__pycache__"
-                        | "node_modules"
-                        | "target"
-                        | "dist"
-                        | ".venv"
-                        | "build"
-                        | "coverage"
-                        | ".next"
-                        | "vendor"
-                ) {
+                if excluded_snapshot_directory(&name) {
                     continue;
                 }
                 walk(root, &path, out, file_limit, total_limit, total_read)?;
@@ -2125,6 +2690,8 @@ fn run_one_attempt(
         write: node.write.clone(),
         fallback_skipped: fallback_skipped.clone(),
         before_dir,
+        swarm_item: None,
+        merge_result: String::new(),
     };
     let frontmatter = serialize_frontmatter(&record).unwrap_or_else(|e| format!("error: {e}"));
     let record_stdout = record_stdout(&raw_stdout, run_root, &node.node_id, attempt);
@@ -2635,6 +3202,270 @@ fn running_progress(run_id: &str, node_id: &str, activity: &ProcessActivity) -> 
 mod tests {
     use super::*;
 
+    fn git_available() -> bool {
+        std::process::Command::new("git").arg("--version").output().is_ok_and(|output| output.status.success())
+    }
+
+    fn require_git(test: &str) -> bool {
+        if git_available() { true } else { eprintln!("skipping {test}: git 不存在"); false }
+    }
+
+    fn test_git(cwd: &Path, args: &[&str]) -> String {
+        let result = git_result(args, cwd, None).unwrap();
+        assert!(process_succeeded(&result), "git {args:?} failed: {}", process_note(&result, ""));
+        result.stdout.trim().to_string()
+    }
+
+    fn swarm_repository(tag: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("aicross-swarm-{tag}-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let first = root.join("item-1");
+        let second = root.join("item-2");
+        fs::create_dir_all(&project).unwrap();
+        test_git(&project, &["init"]);
+        test_git(&project, &["config", "user.name", "aicross test"]);
+        test_git(&project, &["config", "user.email", "aicross@example.invalid"]);
+        fs::write(project.join("shared.txt"), "base\n").unwrap();
+        test_git(&project, &["add", "shared.txt"]);
+        test_git(&project, &["commit", "-m", "base"]);
+        let first_arg = first.to_string_lossy().into_owned();
+        let second_arg = second.to_string_lossy().into_owned();
+        test_git(&project, &["worktree", "add", "-b", "swarm-item-1", &first_arg, "HEAD"]);
+        test_git(&project, &["worktree", "add", "-b", "swarm-item-2", &second_arg, "HEAD"]);
+        (root, project, first, second)
+    }
+
+    fn merge_item(node_id: &str, item: u32, worktree: &Path, accept: &str) -> SwarmMergeItem {
+        SwarmMergeItem {
+            node_id: node_id.into(),
+            item,
+            worktree: worktree.to_string_lossy().into_owned(),
+            title: String::new(),
+            accept: accept.into(),
+        }
+    }
+
+    #[test]
+    fn task08a_swarm_plan_reports_overlap_unmatched_and_dirty_tree() {
+        if !require_git("task08a_swarm_plan_reports_overlap_unmatched_and_dirty_tree") { return; }
+        let (root, project, _, _) = swarm_repository("plan");
+        fs::create_dir_all(project.join("src/nested")).unwrap();
+        fs::write(project.join("src/a.rs"), "a").unwrap();
+        fs::write(project.join("src/nested/b.rs"), "b").unwrap();
+        test_git(&project, &["add", "src"]);
+        test_git(&project, &["commit", "-m", "sources"]);
+        let clean = check_swarm_plan_core(&project, &[
+            SwarmPlanItem { item: 1, files: vec!["./src/".into()] },
+            SwarmPlanItem { item: 2, files: vec!["SRC/a.rs".into()] },
+            SwarmPlanItem { item: 3, files: vec!["docs/**".into()] },
+            SwarmPlanItem { item: 4, files: vec!["shared.txt".into()] },
+        ], 4).unwrap();
+        assert!(!clean.dirty);
+        assert_eq!(clean.overlaps, [SwarmOverlap { a: 1, b: 2, path: "src/a.rs".into() }]);
+        assert_eq!(clean.unmatched, [SwarmUnmatched { item: 3, glob: "docs/**".into() }]);
+        fs::write(project.join("shared.txt"), "dirty\n").unwrap();
+        assert!(check_swarm_plan_core(&project, &[], 4).unwrap().dirty);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_r1_split_role_is_rejected_when_not_readonly() {
+        let root = std::env::temp_dir().join(format!("aicross-split-guard-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut split = node(Vec::new());
+        split.role = "拆分".into();
+        split.write = "worktree".into();
+        let result = dispatch_stage_core(stage_request(root.to_string_lossy().into_owned(), vec![split]), None).unwrap();
+        assert_eq!(result.results[0].status, "error");
+        assert!(result.results[0].error.contains("拆分") && result.results[0].error.contains("只读"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_merge_two_worktrees_in_item_order_with_one_commit_each() {
+        if !require_git("task08a_merge_two_worktrees_in_item_order_with_one_commit_each") { return; }
+        let (root, project, first, second) = swarm_repository("success");
+        fs::write(first.join("one.txt"), "one\n").unwrap();
+        fs::write(second.join("two.txt"), "two\n").unwrap();
+        let results = merge_swarm_items_core(&project, "run-success", vec![
+            merge_item("second", 2, &second, ""),
+            merge_item("first", 1, &first, ""),
+        ], "", &DispatchSettings::default()).unwrap();
+        assert_eq!(results.iter().map(|result| result.item).collect::<Vec<_>>(), [1, 2]);
+        assert!(results.iter().all(|result| result.result == "merged"));
+        assert!(project.join("one.txt").exists() && project.join("two.txt").exists());
+        assert_eq!(test_git(&project, &["rev-list", "--count", "HEAD"]), "3");
+        assert!(test_git(&project, &["log", "-2", "--format=%s"]).lines().next().unwrap().contains("item 2"));
+        let records = fs::read_dir(project.join(".dispatch"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("md"))
+            .map(|entry| parse_record_file(&entry.path()).unwrap().0)
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| record.swarm_item.is_some() && record.merge_result == "merged"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_merge_conflict_aborts_second_and_keeps_first_commit() {
+        if !require_git("task08a_merge_conflict_aborts_second_and_keeps_first_commit") { return; }
+        let (root, project, first, second) = swarm_repository("conflict");
+        fs::write(first.join("shared.txt"), "first\n").unwrap();
+        fs::write(second.join("shared.txt"), "second\n").unwrap();
+        let results = merge_swarm_items_core(&project, "run-conflict", vec![
+            merge_item("first", 1, &first, ""),
+            merge_item("second", 2, &second, ""),
+        ], "", &DispatchSettings::default()).unwrap();
+        assert_eq!(results.iter().map(|result| result.result.as_str()).collect::<Vec<_>>(), ["merged", "conflict"]);
+        assert_eq!(fs::read_to_string(project.join("shared.txt")).unwrap(), "first\n");
+        assert_eq!(test_git(&project, &["rev-list", "--count", "HEAD"]), "2");
+        assert!(!project.join(".git/CHERRY_PICK_HEAD").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_failed_validation_resets_only_the_failed_item() {
+        if !require_git("task08a_failed_validation_resets_only_the_failed_item") { return; }
+        let (root, project, first, second) = swarm_repository("validation");
+        fs::write(first.join("one.txt"), "one\n").unwrap();
+        fs::write(second.join("two.txt"), "two\n").unwrap();
+        let results = merge_swarm_items_core(&project, "run-validation", vec![
+            merge_item("first", 1, &first, "exit 0"),
+            merge_item("second", 2, &second, ""),
+        ], "exit 9", &DispatchSettings::default()).unwrap();
+        assert_eq!(results.iter().map(|result| result.result.as_str()).collect::<Vec<_>>(), ["merged", "test_failed"]);
+        assert!(project.join("one.txt").exists());
+        assert!(!project.join("two.txt").exists());
+        assert_eq!(test_git(&project, &["rev-list", "--count", "HEAD"]), "2");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_dirty_project_skips_entire_merge_batch() {
+        if !require_git("task08a_dirty_project_skips_entire_merge_batch") { return; }
+        let (root, project, first, second) = swarm_repository("dirty");
+        fs::write(project.join("shared.txt"), "dirty\n").unwrap();
+        let results = merge_swarm_items_core(&project, "run-dirty", vec![
+            merge_item("first", 1, &first, ""),
+            merge_item("second", 2, &second, ""),
+        ], "", &DispatchSettings::default()).unwrap();
+        assert!(results.iter().all(|result| result.result == "skipped"));
+        assert!(results.iter().all(|result| result.note.contains("未提交改动")));
+        assert_eq!(test_git(&project, &["rev-list", "--count", "HEAD"]), "1");
+        assert_eq!(fs::read_dir(project.join(".dispatch")).unwrap().filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("md")).count(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_r1_agent_committed_worktree_head_is_merged() {
+        if !require_git("task08a_r1_agent_committed_worktree_head_is_merged") { return; }
+        let (root, project, first, _) = swarm_repository("committed");
+        fs::write(first.join("committed.txt"), "agent commit\n").unwrap();
+        test_git(&first, &["add", "committed.txt"]);
+        test_git(&first, &["commit", "-m", "agent committed"]);
+        let results = merge_swarm_items_core(&project, "run-committed", vec![merge_item("first", 1, &first, "")], "", &DispatchSettings::default()).unwrap();
+        assert_eq!(results[0].result, "merged");
+        assert_eq!(fs::read_to_string(project.join("committed.txt")).unwrap(), "agent commit\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_r1_missing_unregistered_and_unchanged_worktrees_are_skipped() {
+        if !require_git("task08a_r1_missing_unregistered_and_unchanged_worktrees_are_skipped") { return; }
+        let (root, project, first, _) = swarm_repository("skip-paths");
+        let foreign = root.join("foreign");
+        fs::create_dir_all(&foreign).unwrap();
+        test_git(&foreign, &["init"]);
+        let missing = root.join("missing");
+        let results = merge_swarm_items_core(&project, "run-skip", vec![
+            merge_item("unchanged", 1, &first, ""),
+            merge_item("missing", 2, &missing, ""),
+            merge_item("foreign", 3, &foreign, ""),
+        ], "", &DispatchSettings::default()).unwrap();
+        assert_eq!(results.iter().map(|result| result.result.as_str()).collect::<Vec<_>>(), ["skipped", "skipped", "skipped"]);
+        assert!(results[0].note.contains("没有改动"));
+        assert!(results[1].note.contains("不存在"));
+        assert!(results[2].note.contains("未登记"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_r1_middle_validation_failure_does_not_stop_later_item() {
+        if !require_git("task08a_r1_middle_validation_failure_does_not_stop_later_item") { return; }
+        let (root, project, first, second) = swarm_repository("continue");
+        let third = root.join("item-3");
+        let third_arg = third.to_string_lossy().into_owned();
+        test_git(&project, &["worktree", "add", "-b", "swarm-item-3", &third_arg, "HEAD"]);
+        fs::write(first.join("one.txt"), "one\n").unwrap();
+        fs::write(second.join("two.txt"), "two\n").unwrap();
+        fs::write(third.join("three.txt"), "three\n").unwrap();
+        let results = merge_swarm_items_core(&project, "run-continue", vec![
+            merge_item("one", 1, &first, "exit 0"),
+            merge_item("two", 2, &second, "exit 9"),
+            merge_item("three", 3, &third, "exit 0"),
+        ], "", &DispatchSettings::default()).unwrap();
+        assert_eq!(results.iter().map(|result| result.result.as_str()).collect::<Vec<_>>(), ["merged", "test_failed", "merged"]);
+        assert!(project.join("one.txt").exists() && !project.join("two.txt").exists() && project.join("three.txt").exists());
+        assert!(results[1].note.contains("验证命令未通过"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_r1_swarm_limit_processes_only_first_n_items() {
+        if !require_git("task08a_r1_swarm_limit_processes_only_first_n_items") { return; }
+        let (root, project, first, second) = swarm_repository("limit");
+        fs::write(first.join("one.txt"), "one\n").unwrap();
+        fs::write(second.join("two.txt"), "two\n").unwrap();
+        let settings = DispatchSettings { swarm_limit: 1, ..DispatchSettings::default() };
+        let results = merge_swarm_items_core(&project, "run-limit", vec![merge_item("one", 1, &first, ""), merge_item("two", 2, &second, "")], "", &settings).unwrap();
+        assert_eq!(results.iter().map(|result| result.result.as_str()).collect::<Vec<_>>(), ["merged", "skipped"]);
+        assert!(results[1].note.contains("超过蜂群件数上限"));
+        assert!(!project.join("two.txt").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_r1_merge_record_uses_status_enum_and_reconcile_ignores_it() {
+        if !require_git("task08a_r1_merge_record_uses_status_enum_and_reconcile_ignores_it") { return; }
+        let (root, project, first, _) = swarm_repository("record-status");
+        fs::write(first.join("one.txt"), "one\n").unwrap();
+        let results = merge_swarm_items_core(&project, "run-record", vec![merge_item("node-1", 1, &first, "")], "", &DispatchSettings::default()).unwrap();
+        let record_path = fs::read_dir(project.join(".dispatch")).unwrap().filter_map(Result::ok)
+            .map(|entry| entry.path()).find(|path| path.extension().and_then(|value| value.to_str()) == Some("md")).unwrap();
+        let record = parse_record_file(&record_path).unwrap().0;
+        assert_eq!((record.status.as_str(), record.merge_result.as_str()), ("ok", "merged"));
+        let status = HashMap::from([("node-1".into(), "运行中".into())]);
+        write_state(&project.join(".dispatch/STATE.md"), "run-record", 1, 1, &status, &[]).unwrap();
+        let reconciled = reconcile_dispatch_state(project.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(reconciled.nodes[0].verdict, "unknown");
+        assert_eq!(results[0].result, "merged");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task08a_tauri_swarm_contract_serializes_camel_case_and_merge_results() {
+        let request = SwarmMergeItem { node_id: "n1".into(), item: 1, worktree: "w".into(), title: "title".into(), accept: "test".into() };
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["nodeId"], "n1");
+        assert!(value.get("node_id").is_none());
+        let result = SwarmMergeResult { node_id: "n1".into(), item: 1, result: "merged".into(), ..SwarmMergeResult::default() };
+        let result_value = serde_json::to_value(result).unwrap();
+        assert_eq!(result_value["result"], "merged");
+        assert!(result_value.get("testOutput").is_some());
+        assert!(result_value.get("test_output").is_none());
+        let settings: DispatchSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.swarm_limit, 4);
+    }
+
+    #[test]
+    fn task08a_server_registers_both_swarm_commands() {
+        let server = include_str!("server.rs");
+        assert!(server.contains("crate::dispatch::check_swarm_plan,"));
+        assert!(server.contains("crate::dispatch::merge_swarm_items,"));
+    }
+
     #[derive(Debug, Default, PartialEq)]
     struct Classification {
         consensus: Vec<String>,
@@ -2932,7 +3763,7 @@ mod tests {
     }
 
     #[test]
-    fn frontmatter_roundtrips() {
+    fn task08a_dispatch_record_swarm_fields_roundtrip() {
         let record = DispatchRecord {
             schema: "aicross-dispatch/1".into(),
             run_id: "run".into(),
@@ -2969,6 +3800,8 @@ mod tests {
             write: "只读".into(),
             fallback_skipped: String::new(),
             before_dir: String::new(),
+            swarm_item: Some(2),
+            merge_result: "merged".into(),
         };
         let yaml = serde_yaml::to_string(&record).unwrap();
         let restored: DispatchRecord = serde_yaml::from_str(&yaml).unwrap();
@@ -2977,6 +3810,8 @@ mod tests {
         assert!(serialize_frontmatter(&record)
             .unwrap()
             .contains("runner: oneshot"));
+        assert!(serialize_frontmatter(&record).unwrap().contains("swarm_item: 2"));
+        assert!(serialize_frontmatter(&record).unwrap().contains("merge_result: merged"));
     }
 
     #[test]
@@ -3276,7 +4111,8 @@ mod tests {
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(&log_dir).unwrap();
-        let (request, settings, count) = acp_run_one_fixture(&root, &["--late-update"]);
+        let (request, mut settings, count) = acp_run_one_fixture(&root, &["--late-update"]);
+        settings.timeout_secs = 10;
         let result = run_one("acp-failed", &project, &root.join("runs"), &log_dir, &settings, request);
         assert_eq!(result.status, "error");
         assert_eq!(result.runner, "acp");
@@ -3368,7 +4204,7 @@ mod tests {
         assert!(invocation.args.iter().any(|arg| arg == full));
     }
 
-    // R2-11：旧留痕（没有 attempt/write/fallback_skipped 字段）照常解析，新字段取默认空。
+    // 旧留痕没有后续追加字段也照常解析，新字段取默认空。
     #[test]
     fn legacy_frontmatter_without_r2_fields_parses_with_empty_defaults() {
         let record = DispatchRecord {
@@ -3407,6 +4243,8 @@ mod tests {
             write: "只读".into(),
             fallback_skipped: "可写节点".into(),
             before_dir: String::new(),
+            swarm_item: Some(2),
+            merge_result: "merged".into(),
         };
         let yaml = serde_yaml::to_string(&record).unwrap();
         let legacy = yaml
@@ -3415,6 +4253,8 @@ mod tests {
                 !line.starts_with("attempt:")
                     && !line.starts_with("write:")
                     && !line.starts_with("fallback_skipped:")
+                    && !line.starts_with("swarm_item:")
+                    && !line.starts_with("merge_result:")
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -3422,6 +4262,8 @@ mod tests {
         assert_eq!(restored.attempt, "");
         assert_eq!(restored.write, "");
         assert_eq!(restored.fallback_skipped, "");
+        assert_eq!(restored.swarm_item, None);
+        assert_eq!(restored.merge_result, "");
     }
 
     #[test]
@@ -4716,6 +5558,7 @@ mod tests {
             cc_switch_path: String::new(),
             validation_command: String::new(),
             max_requests: 8,
+            swarm_limit: 4,
             acp_enabled: false,
         }
     }

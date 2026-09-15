@@ -1,0 +1,9 @@
+你是代码审查者。仓库在当前目录（Coffee CLI 的 fork：Rust 在根目录 src/；React + TypeScript 前端在 src-ui/），当前是 main 之上的 phase/8a 分支。本期是 TASK-08 的 A 节「蜂群引擎：Node.swarm 镜像、check_swarm_plan（glob 重叠/脏树/不匹配）、merge_swarm_items（worktree 内 commit → 项目按序 cherry-pick → 每件跑验证 → 冲突 abort / 验证红 reset）、留痕 swarm_item/merge_result、split.txt 模板与拆分角色默认」。先读 docs/PRODUCT.md「第 3 期草案：蜂群」、tasks/TASK-08-swarm.md（契约 + A 节）、AGENTS.md、tasks/REPORT-08A.md，再读本期改动：src/dispatch.rs、src/orchestration.rs、src/server.rs、fixtures/prompts/split.txt、Cargo.toml（若加了依赖）。不读 node_modules、target、dist、port、src/channels/。
+
+按维度逐条给发现，每条：文件:行号、问题、为什么、建议改法。没有的维度写"未发现"。不客套。
+1. 需求完整性：对照 A 节 5 条与契约（命令签名、返回形状 camelCase、留痕字段只追加、拆分角色默认）逐条核对。
+2. 逻辑正确性：glob 重叠判定（同一现存文件被两条 glob 匹配）、排除目录一致；合并循环的事务性——项目干净前置、每件 commit sha、冲突 abort 后项目回到并入前状态、验证失败 reset --hard HEAD~1 只退本件、worktree 无改动 → skipped、后续件不因前件失败而停；写锁；超时与非零退出都有可读 note。
+3. 安全：命令只在项目目录与登记的 worktree 内执行 git；不跟随符号链接越界；验证命令用现有 run_validation 的沙箱与超时；不 push、不改远端。
+4. 代码质量与契约：只追加；旧图/旧留痕可读；第 2–7 期路径（run_one、worktree 创建、对账、回滚、心跳）无回归；server.rs 注册。
+5. 测试：报告里的测试是否真实存在且用临时 git 仓库真跑 git；断言目标行为（两件顺序合并各一 commit、第二件冲突第一件仍在、验证失败回退、脏树全 skipped）；最该补的 3 个。
+最后单独回答：对照 A 节原始需求是否完整实现？一句话 + 缺项列表（按严重度排序）。

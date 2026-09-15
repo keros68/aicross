@@ -65,6 +65,7 @@ export interface Target {
   write: WriteMode;
   validation_command?: string;
   fallback?: FallbackTarget; // 备选；不设则主目标失败即终态
+  preset_text?: string; // 内置预设盖章时写入 user.text，由 Rust 冻结材料提供
 }
 
 export interface GraphNode {

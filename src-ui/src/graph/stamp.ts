@@ -45,7 +45,7 @@ export function stamp(graph: Graph, nodeId: string, preset: Preset): Graph {
         id,
         kind: prevLevel.length >= 2 ? 'accept' : 'turn',
         parents: [...prevLevel],
-        user: { text: '', attachments: [] },
+        user: { text: target.preset_text ?? '', attachments: [] },
         reply: { status: 'draft', text: '' },
         target: cloneTarget(target),
         created_at: new Date(nowMs + index).toISOString(),
