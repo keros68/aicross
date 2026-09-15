@@ -45,13 +45,26 @@ const PI_LOGIN_CHECK_CONCURRENCY: usize = 4;
 
 /// pi provider 的本机登录状态。它只记录 `pi auth check` 的就绪结论，
 /// 不包含、不读取也不持久化任何凭据字段。
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceLogin {
     #[default]
     Unknown,
     LoggedIn,
     LoggedOut,
+}
+
+// 读盘宽松（R1 复审 3）：resources.json 里出现认不得的值（旧版、手改、将来新增）时
+// 按「未检查」读，不让整个资源库读取失败；前端口径相同。
+impl<'de> Deserialize<'de> for ResourceLogin {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "logged_in" => ResourceLogin::LoggedIn,
+            "logged_out" => ResourceLogin::LoggedOut,
+            _ => ResourceLogin::Unknown,
+        })
+    }
 }
 
 /// 原生 CLI：自家模型清单说有就是有，不冒烟，只在 agent 级别探一次。
@@ -1101,14 +1114,25 @@ fn pi_login_from_check(result: Result<ProcessResult, String>) -> ResourceLogin {
 
 /// 反序列化时只声明顶层 readiness，不构造或访问其他 JSON 字段（包括
 /// `credentials`）。pi 有时输出 JSONL，逐行时也沿用同一窄结构。
+// 真机（pi 0.85，09-15 实测）输出的是 `{"status":"ready"|"not_ready","provider":…,"authType":…}`，
+// `ready` 布尔只作兼容形态；`credentials` 与 `reason` 字段不声明、不读取。
 #[derive(Deserialize)]
 struct PiAuthReady {
+    #[serde(default)]
+    status: Option<String>,
     #[serde(default)]
     ready: Option<bool>,
 }
 
 fn pi_auth_ready(result: &ProcessResult) -> Option<bool> {
-    let ready = |text: &str| serde_json::from_str::<PiAuthReady>(text.trim()).ok()?.ready;
+    let ready = |text: &str| {
+        let parsed = serde_json::from_str::<PiAuthReady>(text.trim()).ok()?;
+        match parsed.status.as_deref() {
+            Some("ready") => Some(true),
+            Some(_) => Some(false),
+            None => parsed.ready,
+        }
+    };
     ready(&result.stdout).or_else(|| result.stdout.lines().find_map(ready))
 }
 
@@ -2844,37 +2868,37 @@ exit /b 2
 :auth
 >> "%AICROSS_PI_ARGS_LOG%" echo %*
 if /I "%~4"=="ready" (
-  echo {"ready":true,"credentials":{"access_token":"do-not-read"}}
+  echo {"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"}}
   exit /b 0
 )
 if /I "%~4"=="bad-exit" (
-  echo {"ready":true,"credentials":{"access_token":"do-not-read"}}
+  echo {"status":"ready","provider":"bad-exit","authType":"api_key"}
   exit /b 1
 )
-if /I "%~4"=="legacy-status" (
-  echo {"status":"ready","credentials":{"access_token":"do-not-read"}}
+if /I "%~4"=="legacy-bool" (
+  echo {"ready":true,"credentials":{"access_token":"do-not-read"}}
   exit /b 0
 )
-echo {"ready":false,"credentials":{"access_token":"do-not-read"}}
-exit /b 1
+echo {"status":"not_ready","provider":"logged-out","reason":"do-not-read"}
+exit /b 0
 "#;
         #[cfg(not(windows))]
         let body = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$AICROSS_PI_ARGS_LOG"
 if [ "$4" = ready ]; then
-  printf '%s\n' '{"ready":true,"credentials":{"access_token":"do-not-read"}}'
+  printf '%s\n' '{"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"}}'
   exit 0
 fi
 if [ "$4" = bad-exit ]; then
-  printf '%s\n' '{"ready":true,"credentials":{"access_token":"do-not-read"}}'
+  printf '%s\n' '{"status":"ready","provider":"bad-exit","authType":"api_key"}'
   exit 1
 fi
-if [ "$4" = legacy-status ]; then
-  printf '%s\n' '{"status":"ready","credentials":{"access_token":"do-not-read"}}'
+if [ "$4" = legacy-bool ]; then
+  printf '%s\n' '{"ready":true,"credentials":{"access_token":"do-not-read"}}'
   exit 0
 fi
-printf '%s\n' '{"ready":false,"credentials":{"access_token":"do-not-read"}}'
-exit 1
+printf '%s\n' '{"status":"not_ready","provider":"logged-out","reason":"do-not-read"}'
+exit 0
 "#;
         let script = write_fake_pi(&root, body);
         std::env::set_var("AICROSS_PI_ARGS_LOG", &log);
@@ -2884,7 +2908,7 @@ exit 1
                 "ready".into(),
                 "logged-out".into(),
                 "bad-exit".into(),
-                "legacy-status".into(),
+                "legacy-bool".into(),
                 "ready".into(),
             ],
             Duration::from_millis(800),
@@ -2894,7 +2918,7 @@ exit 1
             checked,
             vec![
                 ("bad-exit".into(), ResourceLogin::LoggedOut),
-                ("legacy-status".into(), ResourceLogin::Unknown),
+                ("legacy-bool".into(), ResourceLogin::LoggedIn),
                 ("logged-out".into(), ResourceLogin::LoggedOut),
                 ("ready".into(), ResourceLogin::LoggedIn),
             ]
@@ -2902,7 +2926,7 @@ exit 1
         let argv = fs::read_to_string(&log).expect("fake pi argv");
         let lines = argv.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), 4, "each provider is checked once: {argv}");
-        for provider in ["ready", "logged-out", "bad-exit", "legacy-status"] {
+        for provider in ["ready", "logged-out", "bad-exit", "legacy-bool"] {
             assert!(
                 lines.iter().any(|line| *line == format!("auth check --provider {provider} --json --no-refresh")),
                 "exact auth argv missing for {provider}: {argv}"
@@ -2968,6 +2992,15 @@ exit 1
             ResourceLogin::Unknown
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task17_dirty_login_value_reads_as_unknown_instead_of_failing() {
+        let raw = r#"{"agent":"pi","id":"m","provider":"p","login":"expired"}"#;
+        let model: ResourceModel = serde_json::from_str(raw).expect("dirty login value must not fail the whole store");
+        assert_eq!(model.login, ResourceLogin::Unknown);
+        let ok: ResourceModel = serde_json::from_str(r#"{"agent":"pi","id":"m","provider":"p","login":"logged_out"}"#).unwrap();
+        assert_eq!(ok.login, ResourceLogin::LoggedOut);
     }
 
     #[test]
