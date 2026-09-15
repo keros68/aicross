@@ -1847,7 +1847,7 @@ fn dispatch_stage_core(
         let ui_status = match result.status.as_str() {
             "ok" => "完成",
             "timeout" => "超时",
-            "validation_failed" => "验证失败",
+            "validation_failed" => "验证命令未通过",
             "identity_mismatch" => "真身不符",
             _ => "失败",
         };
@@ -3651,8 +3651,8 @@ fn write_state(
     {
         body.push_str(&format!("- [ ] {node}: {state}\n"));
     }
-    body.push_str("## 验证失败\n");
-    for (node, state) in entries.iter().filter(|(_, state)| *state == "验证失败") {
+    body.push_str("## 验证命令未通过\n");
+    for (node, state) in entries.iter().filter(|(_, state)| *state == "验证命令未通过") {
         let file = by_id
             .get(node.as_str())
             .map(|result| result.dispatch_file.as_str())
@@ -5645,7 +5645,7 @@ mod tests {
         assert!(header.unfinished);
         assert_eq!(header.active_node_ids, ["a"]);
         assert!(state.contains("## 进行中\n- [ ] a: 运行中"));
-        assert!(state.contains("## 验证失败\n- [ ] c: 验证失败 → c.md"));
+        assert!(state.contains("## 验证命令未通过\n- [ ] c: 验证命令未通过 → c.md"));
         assert!(state.contains("## 失败与超时\n- [ ] b: 失败 → b.md"));
         let _ = fs::remove_dir_all(root);
     }
