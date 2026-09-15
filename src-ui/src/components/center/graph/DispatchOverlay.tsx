@@ -89,7 +89,7 @@ interface Props {
 }
 
 const resultStatus = (status: string) =>
-  status === 'ok' ? '完成' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证失败' : '失败';
+  status === 'ok' ? '完成' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证命令未通过' : '失败';
 
 export function DispatchOverlay({ graph, models, projectDir, needsReview, retryNodes, progressStore, onCommit, onClose, onFocusNode, mergeOnly }: Props) {
   const initialIds = useMemo(() => dispatchableNodeIds(graph), [graph]);

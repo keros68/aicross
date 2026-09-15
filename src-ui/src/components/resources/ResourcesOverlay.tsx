@@ -5,7 +5,7 @@
 // 09-15 口径：原生 CLI（claude / codex / kimi）的模型读清单即可用，不给「验证」
 // 按钮；第三方端点的模型显示未验证 / 已验证 / 验证失败三态，首次派发时引擎自动
 // 验一次，用户也可以在这里手动重验。
-// cc-switch 降级为发现提示：只显示「cc-switch 里有 X，建议加进 pi」。
+// cc-switch 降级为发现提示：只显示「cc-switch 里有 X，建议接入 pi」。
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -228,7 +228,7 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
             {hints.map((hint) => (
               <div className="resources-hint" key={hint.name}>
                 cc-switch 里有 {hint.name}（{hint.models.length} 个模型
-                {hint.has_token ? '' : '，未配置密钥'}），建议加进 pi
+                {hint.has_token ? '' : '，未配置密钥'}），建议接入 pi
               </div>
             ))}
           </div>

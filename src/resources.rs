@@ -1291,23 +1291,23 @@ pub fn add_model(
 ) -> Result<ResourceStore, String> {
     let id = request.id.trim();
     if id.is_empty() {
-        return Err("手动输入失败：模型 ID 不能为空".to_string());
+        return Err("手动接入失败：模型 ID 不能为空".to_string());
     }
     let Some(agent) = store
         .agents
         .iter_mut()
         .find(|agent| agent.id == request.agent_id)
     else {
-        return Err(format!("手动输入失败：未知 agent：{}", request.agent_id));
+        return Err(format!("手动接入失败：未知 agent：{}", request.agent_id));
     };
     let provider = request.provider.trim();
     if request.agent_id == "pi" && provider.is_empty() {
-        return Err("手动输入失败：pi 模型必须填写 provider".to_string());
+        return Err("手动接入失败：pi 模型必须填写 provider".to_string());
     }
     if agent.models.iter().any(|model| {
         model.id == id && model.provider == provider && model.agent == request.agent_id
     }) {
-        return Err("手动输入失败：该模型已存在".to_string());
+        return Err("手动接入失败：该模型已存在".to_string());
     }
     let verification = inferred_verification(&request.agent_id, STATUS_PENDING).to_string();
     let resolved_id = resolved_id_for(&request.agent_id, id);

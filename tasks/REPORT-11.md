@@ -227,3 +227,5 @@ test result: ok. 330 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; f
 ## 复审后补记（编排者）
 
 DeepSeek 盲审（`tasks/review-11-ds.md`）判可交付但有未闭合项，编排者直接修：`src/dispatch.rs` 两处用户可见错误串「留痕」→「派发记录」；图上「盖预设」菜单与底栏「当前节点」行改走 `presetDisplayName`（未盖预设的节点不再显示「自定义」）；`src/orchestration.rs` 的「未找到 resources.json，未接入资源」去掉与前端前缀重复的后半句；手册「不是擂台」→「不是竞争」，术语表补两处出现位置并改「接入」一行的状态说明。体检脚本对含转义的模板串有盲区（DeepSeek 8），计数不是完备清单，已知。
+
+GLM 盲审（`tasks/review-11-glm.md`）判可交付，剩余四处编排者直接修：`src/resources.rs` 四条「手动输入失败」→「手动接入失败」；「验证失败」一词两义——真身核对保留「验证失败」，验证命令非零改「验证命令未通过」（结果卡、STATE.md、术语表补一行）；AGENTS.md 角色清单补「验证」；接入页提示「加进 pi」→「接入 pi」。

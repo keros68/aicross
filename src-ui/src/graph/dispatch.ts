@@ -353,7 +353,7 @@ export function nodeStatusLabel(node: GraphNode): string | null {
   if (node.reply?.skipped_reason) return '已跳过';
   if (node.reply?.status === 'failed') {
     if (node.reply.error_kind === 'identity_mismatch') return '真身不符';
-    if (node.reply.error_kind === 'validation_failed') return '验证失败';
+    if (node.reply.error_kind === 'validation_failed') return '验证命令未通过';
     return '失败';
   }
   // 对账判「未知」的节点（R1-10）：draft 但正文是那句说明，节点卡要看得出来，
