@@ -61,3 +61,9 @@
 38. 同批既有验收 NEEDS_FIX 又有跨分支执行 validation_failed 时，修正轮早退跳过验证失败处理，等待验收停在 draft，只能手动重派执行节点；内置单链预设到不了。（GLM / DS F）
 39. 验证重派轮不重生盲「验证」兄弟（修正轮会），重派轮产物没有 VALIDATION.txt；验证缓存键只有 run_id+项目，不含材料目录/命令；`run_one` 路径不清缓存；verify 通过后叫停仍会跑完验证命令。（GLM / DS E）
 40. 第 2 条（未发送不附材料）缺 run_one 端到端负例：首次验证失败 + 盲 + review_material_validation 走 run_one，断言无 VALIDATION.txt、validation_attached=false、命令未执行。（DS C）
+
+## TASK-18 复审剩余（09-15，两家都判可交付；低危，择期）
+
+41. 右栏预设下拉的 listbox 角色混排（组标签 div、details/summary 在 listbox 内，规划项无 role=option），方向键/字母跳转不如原生 select。（DS 5 / GLM 3）
+42. 规划中两项只在右栏下拉出现，盖预设菜单与讲解页没有；盖预设菜单的源码字符串断言偏弱。（DS 7 / GLM 5）
+43. 没有用户预设时不出现「自定义模式」组；只有一个用户预设时组标签与条目同名两行。（DS 6）
