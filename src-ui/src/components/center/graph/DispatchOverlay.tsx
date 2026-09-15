@@ -24,6 +24,7 @@ import {
   needsChainThinking,
   neutralDisputeSummary,
   pickOne,
+  quotaBlockedNodeIds,
   failedNodesWithoutResults,
   redraftNode,
   routeLine,
@@ -59,14 +60,14 @@ import {
   swarmWireSettings,
   type SwarmCheckState,
 } from '../../../graph/swarm';
-import { FallbackSkippedLine, IdleHint, PickOneButton, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, SwarmGateNotice, SwarmMergeRow, VerificationHint, WritableFallbackHint } from './DispatchBits';
+import { FallbackSkippedLine, IdleHint, PickOneButton, QuotaHint, QuotaResetLine, ReviewPendingRow, ReviewPendingTag, RollbackBeforeHint, SwarmGateNotice, SwarmMergeRow, VerificationHint, WritableFallbackHint } from './DispatchBits';
 import { SwarmEditor } from '../../right/orchestration/NodePanel';
 import { presetNameOf } from '../../../graph/persist';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import type { DispatchableModel, Graph, Target, Thinking } from '../../../graph/types';
 import { findModel } from '../../../graph/validate';
 import { modelStatusSuffix } from '../../../resources/model-picker';
-import { verificationOf } from '../../../resources/types';
+import { quotaExhaustedLabel, verificationOf } from '../../../resources/types';
 
 type Phase = 'confirm' | 'running' | 'results';
 
@@ -88,13 +89,14 @@ interface Props {
   mergeOnly?: boolean;
 }
 
-const resultStatus = (status: string) =>
-  status === 'ok' ? '完成' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证失败' : '失败';
+export const resultStatus = (status: string) =>
+  status === 'ok' ? '完成' : status === 'quota_exhausted' ? '额度用尽' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证失败' : '失败';
 
 export function DispatchOverlay({ graph, models, projectDir, needsReview, retryNodes, progressStore, onCommit, onClose, onFocusNode, mergeOnly }: Props) {
   const initialIds = useMemo(() => dispatchableNodeIds(graph), [graph]);
   const reviewIds = useMemo(() => new Set(needsReview ?? []), [needsReview]);
-  const [nodeIds, setNodeIds] = useState(() => initialDispatchSelection(initialIds, needsReview));
+  const quotaBlockedIds = useMemo(() => quotaBlockedNodeIds(graph, initialIds, models), [graph, initialIds, models]);
+  const [nodeIds, setNodeIds] = useState(() => initialDispatchSelection(initialIds, needsReview).filter((id) => !quotaBlockedIds.includes(id)));
   const [phase, setPhase] = useState<Phase>(mergeOnly ? 'results' : 'confirm');
   const [runId, setRunId] = useState(() => crypto.randomUUID());
   const [targets, setTargets] = useState(() => Object.fromEntries(initialIds.map((id) => {
@@ -262,6 +264,14 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     setRollbackNodes((current) =>
       toggleRollbackOnReview(current, targets[id] ?? graph.nodes[id]?.target, id, checked));
   };
+  const toggleQuotaNode = (id: string) => {
+    setNodeIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return initialIds.filter((item) => next.has(item));
+    });
+  };
 
   const toggleMessage = (nodeId: string, key: string) => setSelection((current) => {
     const row = current[nodeId];
@@ -358,7 +368,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     const summary = results.map((result) => {
       const node = graph.nodes[result.nodeId];
       const route = node?.target ? `${node.target.agent}/${node.target.model}` : result.nodeId;
-      return `### ${route}\n${result.status === 'ok' ? result.text : `失败：${result.error}`}`;
+      return `### ${route}\n${result.status === 'ok' ? result.text : result.status === 'quota_exhausted' ? `额度用尽：${result.error}` : `失败：${result.error}`}`;
     }).join('\n\n');
     onCommit(appendDecision(graph, results.map((result) => result.nodeId), `请裁决以下结果。\n\n${summary}`));
     onClose();
@@ -519,6 +529,23 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                 ))}
               </section>
             )}
+            {quotaBlockedIds.length > 0 && (
+              <section className="dispatch-route-card">
+                <div className="dispatch-stage-heading">额度用尽</div>
+                <div className="dispatch-reason">恢复时间前默认不派，可勾选后继续。</div>
+                {quotaBlockedIds.map((id) => {
+                  const target = graph.nodes[id]?.target;
+                  const picked = target ? findModel(models, target) : undefined;
+                  return (
+                    <label className="dispatch-review-row" key={id}>
+                      <input type="checkbox" checked={nodeIds.includes(id)} onChange={() => toggleQuotaNode(id)} />
+                      <span className="dispatch-route-line">{routeLine(graph.nodes[id], models, '核对中')}</span>
+                      <span className="hint-capsule">{picked ? quotaExhaustedLabel(picked) : ''}</span>
+                    </label>
+                  );
+                })}
+              </section>
+            )}
             {nodeIds.map((id) => {
               const node = graphWithTargets.nodes[id];
               const target = targets[id];
@@ -557,6 +584,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   {sameVendorReview && <div className="dispatch-reason">复核，非独立验证</div>}
                   {/* 未验证是第三方模型的常态，走 dispatch-reason；红字只留给 failed（修正轮 R1） */}
                   <VerificationHint verification={verification} />
+                  <QuotaHint model={picked} />
                   {/* R1-5：判出重叠就在这张卡上改文件范围，改完自动重核对，不用关屏回节点面板 */}
                   {node.swarm && overlapItems.has(node.swarm.item) && (
                     <SwarmEditor
@@ -702,7 +730,9 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
                   </div>
                   {result.truncated && <div className="dispatch-warning">输出已截断</div>}
                   {result.tokensIn > 50_000 && <div className="dispatch-warning">输入超过 50k tokens</div>}
-                  {result.fallbackFrom && <div className="dispatch-reason">已切备选：主 {result.fallbackFrom} → 备 {result.fallbackTo}</div>}
+                  {result.fallbackFrom && <div className="dispatch-reason">已切备选：{result.fallbackFrom} → {result.fallbackTo}</div>}
+                  {result.runnerNote?.includes('额度用尽') && <div className="dispatch-reason">{result.runnerNote}</div>}
+                  <QuotaResetLine resetsAt={result.quotaResetsAt} />
                   <FallbackSkippedLine result={result} />
                   <div className="dispatch-result-text">{result.text || result.error}</div>
                   {result.artifacts && (

@@ -31,6 +31,7 @@ export interface Reply {
   // 正文首行「（已切备选：…）」标记不再写入，读旧图时仍由 fallbackNoticeOf 识别。
   fallback_from?: string;
   fallback_to?: string;
+  quota_resets_at?: string;
 }
 
 export interface ChangedFile {
@@ -127,6 +128,8 @@ export interface DispatchableModel {
   smoke_failure: string;
   meta: string;
   note: string;
+  fallback_order?: string[];
+  quota_exhausted_until?: string | null;
 }
 
 export function roleDefaults(role: string): { visibility: VisibilityKind; write: WriteMode } {

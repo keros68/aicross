@@ -5,7 +5,7 @@ import { fallbackSkippedLineOf, idleHint, rollbackHintOf, runningDetailOf, writa
 import { swarmResultLine, type SwarmGateState } from '../../../graph/swarm';
 import type { SwarmMergeResult } from '../../../tauri';
 import type { Target } from '../../../graph/types';
-import { verificationHint, type Verification } from '../../../resources/types';
+import { quotaExhaustedLabel, verificationHint, type Verification } from '../../../resources/types';
 
 // G1 确认屏：可写节点（write != 只读）配了备选时的提示。
 export function WritableFallbackHint({ target }: { target: Target }) {
@@ -28,6 +28,18 @@ export function VerificationHint({ verification }: { verification?: Verification
   const hint = verificationHint(verification);
   if (!hint) return null;
   return <div className={hint.tone === 'warning' ? 'dispatch-warning' : 'dispatch-reason'}>{hint.text}</div>;
+}
+
+export function QuotaHint({ model }: { model?: { quota_exhausted_until?: string | null } }) {
+  if (!model) return null;
+  const label = quotaExhaustedLabel(model);
+  if (!label) return null;
+  return <div className="dispatch-warning">{label}，默认不派。</div>;
+}
+
+export function QuotaResetLine({ resetsAt }: { resetsAt?: string | null }) {
+  if (!resetsAt) return null;
+  return <div className="dispatch-reason">恢复时间：{new Date(resetsAt).toLocaleString('zh-CN')}</div>;
 }
 
 // G1 确认屏：单写者节点重派时，说明引擎会先回滚上次改动（TASK-06-2）。

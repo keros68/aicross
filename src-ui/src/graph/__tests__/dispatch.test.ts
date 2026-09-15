@@ -19,6 +19,7 @@ import {
   needsChainThinking,
   parseAcceptance,
   promptForRole,
+  quotaBlockedNodeIds,
   reducePipelineStep,
   redraftNode,
   setReplyAdopted,
@@ -57,6 +58,16 @@ const graph = (nodes: GraphNode[]): Graph => ({
 });
 
 describe('graph dispatch helpers', () => {
+  it('TASK-14 G1 默认排除恢复时间未到的模型', () => {
+    const g = graph([node('r', []), node('a', ['r'], { status: 'draft', text: '' }), node('b', ['r'], { status: 'draft', text: '' })]);
+    g.nodes.b.target = target('kimi', 'k');
+    const models = [
+      { agent: 'codex', provider: '', id: 'm', vendor: '', billing_source: '', tier: '', thinking: '', status: '', source: '', smoked_at: '', smoke_model: '', smoke_failure: '', meta: '', note: '', quota_exhausted_until: '2026-09-15T11:00:00+08:00' },
+      { agent: 'kimi', provider: '', id: 'k', vendor: '', billing_source: '', tier: '', thinking: '', status: '', source: '', smoked_at: '', smoke_model: '', smoke_failure: '', meta: '', note: '', quota_exhausted_until: '2026-09-15T09:00:00+08:00' },
+    ];
+    expect(quotaBlockedNodeIds(g, ['a', 'b'], models, Date.parse('2026-09-15T10:00:00+08:00'))).toEqual(['a']);
+  });
+
   it('R5-1 验证重试到顶把未派验收标为已跳过', () => {
     const g = graph([
       node('r', []),

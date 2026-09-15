@@ -5,6 +5,8 @@ import {
   modelSecondaryId,
   modelsByAgent,
   parseCommandArgs,
+  quotaExhaustedLabel,
+  quotaExhaustedUntil,
   providerGroups,
   resolvedIdOf,
   showsGroupHeads,
@@ -242,6 +244,15 @@ describe('parseCommandArgs', () => {
 
   it('引号未闭合抛错', () => {
     expect(() => parseCommandArgs('--name "abc')).toThrow('引号未闭合');
+  });
+});
+
+describe('TASK-14 quotaExhaustedUntil', () => {
+  it('只保留未来的 ISO 时间，过期值不显示', () => {
+    const now = Date.parse('2026-09-15T10:00:00+08:00');
+    expect(quotaExhaustedUntil({ quota_exhausted_until: '2026-09-15T11:00:00+08:00' }, now)).toBe('2026-09-15T11:00:00+08:00');
+    expect(quotaExhaustedUntil({ quota_exhausted_until: '2026-09-15T09:00:00+08:00' }, now)).toBeNull();
+    expect(quotaExhaustedLabel({ quota_exhausted_until: '2026-09-15T11:00:00+08:00' }, now)).toContain('额度用尽至');
   });
 });
 

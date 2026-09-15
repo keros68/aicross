@@ -10,6 +10,7 @@ import acceptancePrompt from '../../../fixtures/prompts/acceptance.txt?raw';
 import executionPrompt from '../../../fixtures/prompts/execution.txt?raw';
 import planningPrompt from '../../../fixtures/prompts/planning.txt?raw';
 import advisorPrompt from '../../../fixtures/prompts/advisor.txt?raw';
+import { quotaExhaustedUntil } from '../resources/types';
 
 export interface BackendNodeResult {
   nodeId: string;
@@ -32,6 +33,7 @@ export interface BackendNodeResult {
   fallbackTo?: string;
   // TASK-05B R1：可写节点主失败但未切备选时带原因（"可写节点"），空/缺省 = 未跳过
   fallbackSkipped?: string;
+  quotaResetsAt?: string | null;
 }
 
 export function failedNodesWithoutResults(
@@ -260,6 +262,7 @@ export function applyDispatchResults(graph: Graph, results: BackendNodeResult[])
       ...(result.fallbackFrom
         ? { fallback_from: result.fallbackFrom, fallback_to: result.fallbackTo ?? '' }
         : {}),
+      ...(result.quotaResetsAt ? { quota_resets_at: result.quotaResetsAt } : {}),
       ...(ok ? {} : { error_kind: result.status }),
       model_reported: result.modelReported || undefined,
       tokens_in: result.tokensIn || undefined,
@@ -878,6 +881,21 @@ export function reconcileNeedsReview(summary: ReconcileSummary | null | undefine
 export function initialDispatchSelection(ids: string[], needsReview: string[] = []): string[] {
   const review = new Set(needsReview);
   return ids.filter((id) => !review.has(id));
+}
+
+export function quotaBlockedNodeIds(
+  graph: Graph,
+  ids: string[],
+  models: DispatchableModel[],
+  now = Date.now(),
+): string[] {
+  return ids.filter((id) => {
+    const target = graph.nodes[id]?.target;
+    if (!target) return false;
+    const model = models.find((item) => item.agent === target.agent && item.id === target.model && item.provider === (target.provider ?? ''))
+      ?? models.find((item) => item.agent === target.agent && item.id === target.model);
+    return !!model && quotaExhaustedUntil(model, now) !== null;
+  });
 }
 
 // 对账后工具条上的那点状态（R1-1）：它属于某一张图，不属于组件。带上 graphId，

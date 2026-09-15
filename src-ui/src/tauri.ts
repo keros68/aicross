@@ -536,6 +536,8 @@ export interface DispatchNodeResult {
   fallbackTo: string;
   // TASK-05B R1：可写节点主失败但未切备选时带原因（"可写节点"），空/缺省 = 未跳过
   fallbackSkipped?: string;
+  // TASK-14：额度响应里能解析出的恢复时间（ISO 8601）。
+  quotaResetsAt?: string | null;
 }
 
 // ── 蜂群契约（TASK-08）────────────────────────
