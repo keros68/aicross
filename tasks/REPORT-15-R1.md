@@ -108,3 +108,7 @@ $ cd src-ui && npm run build
 - 未启动桌面窗口，未发真机 CLI 或模型请求。
 - 未修改 `src/terminal.rs`、`src-ui/src/tauri.ts`、`src/server.rs` 或 `D:\work\aicross` 主工作树。
 - 未运行 `cargo fmt`，未 commit，未 push。
+
+## 复审后补记（编排者，f8273ef）
+
+两家复审（`tasks/review-15-r1-*.md`）都判可交付但有未闭合项。DeepSeek 新发现 1（没有可用默认时冷启动首屏空白）与 3（一键行不按「当前工作区优先」）编排者直接修：启动器的隐藏门控抽成 `commanderLauncherHidden` 纯函数——只有「可能直启」（默认未读到；或默认有效且探测未完成 / 探测完可用且该 tab 未登记）时才不画，默认读到但没有可用默认时立刻画，探测期间由启动器显示「探测中」；有存量默认时探测期间的短暂空白是有意取舍。一键行的目录改成当前工作区优先。改后 vitest 484、build 通过、cargo 383（Rust 未再动）。剩余低危（接线断言仍是源码文本、tab 条 claude/codex 图标内联副本、设置页与接入页两处机器 id、`onShown` 重复登记）记入 `tasks/fix-04-r5-backlog.md` 第 50–52 条。
