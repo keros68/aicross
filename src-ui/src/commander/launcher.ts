@@ -6,6 +6,8 @@ import type { PickableModel } from '../resources/model-picker';
 import { modelStatusSuffix } from '../resources/model-picker';
 import {
   COMMANDER_AGENTS,
+  commanderAgentOfTool,
+  commanderIdentifierError,
   commanderToolId,
   isCommanderAgent,
   type CommanderAgent,
@@ -80,7 +82,10 @@ export function commanderModelLabel(model: PickableModel & { smoke_model?: strin
 
 /** 目录显示名：末级目录名。空目录返回空串，调用方自己决定占位文案。 */
 export function cwdName(cwd: string | null | undefined): string {
-  const trimmed = (cwd ?? '').replace(/[\\/]+$/, '');
+  const original = cwd ?? '';
+  if (/^[A-Za-z]:[\\/]*$/.test(original)) return original.slice(0, 2);
+  if (/^[\\/]+$/.test(original)) return '/';
+  const trimmed = original.replace(/[\\/]+$/, '');
   if (trimmed === '') return '';
   const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
   return cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
@@ -140,8 +145,82 @@ export function parseCommanderModelValue(
 export function commanderBlockReason(
   agent: string,
   availableAgents: CommanderAgent[],
+  provider = '',
+  model = '',
 ): string | null {
   if (!isCommanderAgent(agent)) return '先选一个 agent';
   if (!availableAgents.includes(agent)) return `本机没探测到 ${commanderAgentLabel(agent)}`;
-  return null;
+  return commanderIdentifierError(provider, model);
+}
+
+export interface CommanderCliEntry {
+  key: string;
+  label: string;
+}
+
+/** 已安装且不属于四家总指挥的 AI CLI。 */
+export function otherInstalledCommanderClis(
+  catalog: { key: string | null; label: string }[],
+  installed: Record<string, boolean>,
+): CommanderCliEntry[] {
+  return catalog.flatMap((item) => (
+    item.key !== null && installed[item.key] === true && commanderAgentOfTool(item.key) === null
+      ? [{ key: item.key, label: item.label }]
+      : []
+  ));
+}
+
+/** 空白 graph tab 在显式进入对话图前属于总指挥启动器。 */
+export function emptyGraphTabTitle(graphViewSelected: boolean): string {
+  return graphViewSelected ? '对话图' : '总指挥';
+}
+
+export function shouldShowNoCommanderModels(
+  modelsLoaded: boolean,
+  modelsError: string | null,
+  agent: string,
+  modelCount: number,
+): boolean {
+  return modelsLoaded && modelsError === null && agent !== '' && modelCount === 0;
+}
+
+export function commanderDefaultAvailable(
+  settings: CommanderSettings | null,
+  installed: Record<string, boolean>,
+  toolsScanned: boolean,
+): boolean {
+  if (!toolsScanned || settings === null || !isCommanderAgent(settings.agent)) return false;
+  const tool = commanderToolId(settings.agent);
+  return tool !== null && installed[tool] === true
+    && commanderIdentifierError(settings.provider, settings.model) === null;
+}
+
+export function openCommanderCli(tool: string, onOpen: (tool: string) => void): void {
+  onOpen(tool);
+}
+
+export function markCommanderSelection<T>(
+  seeded: { current: boolean },
+  setValue: (value: T) => void,
+  value: T,
+): void {
+  seeded.current = true;
+  setValue(value);
+}
+
+export function commanderModelSelectValue(
+  picked: { provider: string; model: string } | null,
+): string {
+  if (picked === null) return '';
+  return JSON.stringify({ provider: picked.provider, model: picked.model });
+}
+
+/** 只有仍带待保存快照的 tab 才注册启动成功回调；消费后重启不会再次保存。 */
+export function commanderStartedCallback(
+  session: { id: string; commanderSettings?: CommanderSettings },
+  remember: (id: string, settings: CommanderSettings) => void,
+): (() => void) | undefined {
+  if (session.commanderSettings === undefined) return undefined;
+  const settings = session.commanderSettings;
+  return () => remember(session.id, settings);
 }

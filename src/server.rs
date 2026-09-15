@@ -803,14 +803,7 @@ fn tier_terminal_start_blocking(
     // precede it, matching "the later flag wins" for every CLI here.
     // Empty strings are dropped — an empty argv element is never meaningful
     // and CLIs differ on whether they error or silently misparse it.
-    let args: Vec<String> = match extra_args {
-        Some(extra) => {
-            let mut args = args;
-            args.extend(extra.into_iter().filter(|a| !a.trim().is_empty()));
-            args
-        }
-        None => args,
-    };
+    let args = append_per_launch_args(args, extra_args);
 
     // If a session with the same ID already exists (e.g. restart-in-place),
     // forcefully kill and remove it before spawning a fresh one.
@@ -872,6 +865,16 @@ fn tier_terminal_start_blocking(
     }
 
     Ok(())
+}
+
+fn append_per_launch_args(
+    mut configured_args: Vec<String>,
+    per_launch_args: Option<Vec<String>>,
+) -> Vec<String> {
+    if let Some(extra) = per_launch_args {
+        configured_args.extend(extra.into_iter().filter(|arg| !arg.trim().is_empty()));
+    }
+    configured_args
 }
 
 
@@ -4331,6 +4334,25 @@ mod resume_cwd_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task10_r1_per_launch_args_follow_config_and_drop_empty_values() {
+        let configured = vec!["--model".to_string(), "configured".to_string()];
+        let per_launch = Some(vec![
+            "".to_string(),
+            "   ".to_string(),
+            "--model".to_string(),
+            "picked".to_string(),
+        ]);
+        assert_eq!(
+            append_per_launch_args(configured, per_launch),
+            vec!["--model", "configured", "--model", "picked"]
+        );
+        assert_eq!(
+            append_per_launch_args(vec!["built-in".into()], None),
+            vec!["built-in"]
+        );
+    }
 
     /// Build a temp Drizzle-schema SQLite db (the `session` + `message` shape
     /// `find_drizzle_sessions_sqlite` reads), seeded with one parent session,

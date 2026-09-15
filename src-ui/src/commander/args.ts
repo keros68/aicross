@@ -45,6 +45,20 @@ export function commanderAgentOfTool(tool: string | null | undefined): Commander
   return AGENT_BY_TOOL[(tool ?? '').trim()] ?? null;
 }
 
+/**
+ * 模型 / provider 都是 CLI 标识符，不是自由文本。空串表示不指定；非空值必须
+ * 原样满足白名单，不能靠 trim 悄悄修正。前导 `-` 也拒绝，避免值被 CLI 当旗标。
+ */
+export function isCommanderIdentifier(value: string): boolean {
+  return value === '' || (!value.startsWith('-') && /^[A-Za-z0-9._:/@+-]+$/.test(value));
+}
+
+export function commanderIdentifierError(provider: string, model: string): string | null {
+  if (!isCommanderIdentifier(model)) return '模型 id 含非法字符';
+  if (!isCommanderIdentifier(provider)) return 'provider id 含非法字符';
+  return null;
+}
+
 /** 各家的模型参数名。claude / kimi 用 `--model`，codex 用 `-m`。 */
 const MODEL_FLAG: Record<CommanderAgent, string> = {
   claude: '--model',
@@ -67,15 +81,13 @@ const MODEL_FLAG: Record<CommanderAgent, string> = {
  * 不认识的 agent 返回空数组，绝不猜一个参数名出去。
  */
 export function commanderArgs(agent: string, provider: string, model: string): string[] {
-  if (!isCommanderAgent(agent)) return [];
-  const trimmedModel = model.trim();
-  const trimmedProvider = provider.trim();
+  if (!isCommanderAgent(agent) || commanderIdentifierError(provider, model) !== null) return [];
   const args: string[] = [];
-  if (agent === 'pi' && trimmedProvider !== '') {
-    args.push('--provider', trimmedProvider);
+  if (agent === 'pi' && provider !== '') {
+    args.push('--provider', provider);
   }
-  if (trimmedModel !== '') {
-    args.push(MODEL_FLAG[agent], trimmedModel);
+  if (model !== '') {
+    args.push(MODEL_FLAG[agent], model);
   }
   return args;
 }

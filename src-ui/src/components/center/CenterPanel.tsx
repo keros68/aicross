@@ -8,8 +8,14 @@ import { GraphTab } from './graph/GraphTab';
 const SkillsPanel = lazy(() => import('./SkillsPanel').then((m) => ({ default: m.SkillsPanel })));
 import { FourSplitGrid } from './FourSplitGrid';
 import { CommanderLauncher, type CommanderLaunchArgs } from './CommanderLauncher';
-import { commanderArgs, commanderToolId } from '../../commander/args';
-import { commanderTabTitle } from '../../commander/launcher';
+import { commanderArgs, commanderIdentifierError, commanderToolId } from '../../commander/args';
+import {
+  commanderStartedCallback,
+  commanderTabTitle,
+  emptyGraphTabTitle,
+  otherInstalledCommanderClis,
+} from '../../commander/launcher';
+import { getToolScanSnapshot, publishToolScan } from '../../commander/tool-scan';
 import {
   announceCommanderDefaults,
   COMMANDER_LAUNCH_EVENT,
@@ -498,7 +504,9 @@ export function CenterPanel() {
   // forces a remount → fresh animation pass each time.
   const [toast, setToast] = useState<{ msg: string; id: number } | null>(null);
   const showToast = (msg: string) => setToast({ msg, id: Date.now() });
-  const [toolsInstalled, setToolsInstalled] = useState<Record<string, boolean>>({});
+  const initialToolScan = getToolScanSnapshot();
+  const [toolsInstalled, setToolsInstalled] = useState<Record<string, boolean>>(initialToolScan.installed);
+  const [toolsScanned, setToolsScanned] = useState(initialToolScan.scanned);
   // Per-tool launch override modal (gear icon → opens settings for that tool).
   const [configModalTool, setConfigModalTool] = useState<{ key: string; label: string } | null>(null);
   const [showLibrary, setShowLibrary] = useState(false);
@@ -677,6 +685,8 @@ export function CenterPanel() {
         && keys.every(k => curr[k] === result[k]);
       return same ? curr : result;
     });
+    setToolsScanned(true);
+    publishToolScan(result);
     lastToolsScanAt.current = Date.now();
   };
 
@@ -1177,7 +1187,7 @@ export function CenterPanel() {
   // 默认挂到 tab 上。TierTerminal 确认 PTY 创建成功后才调用 save_commander。
   const launchCommander = (args: CommanderLaunchArgs, openNewTab = false) => {
     const tool = commanderToolId(args.agent);
-    if (tool === null) return;
+    if (tool === null || commanderIdentifierError(args.provider, args.model) !== null) return;
     const cwd = args.cwd.trim();
     const settings: CommanderSettings = {
       ...emptyCommanderSettings(),
@@ -1212,16 +1222,17 @@ export function CenterPanel() {
     });
   };
 
-  const rememberCommander = (settings: CommanderSettings) => {
-    if (!isTauri) {
+  const rememberCommander = (sessionId: string, settings: CommanderSettings) => {
+    const saved = () => {
+      dispatch({ type: 'CONSUME_COMMANDER_SETTINGS', id: sessionId });
       setCommanderDefaults(settings);
       announceCommanderDefaults();
+    };
+    if (!isTauri) {
+      saved();
       return;
     }
-    commands.saveCommander(settings).then(() => {
-      setCommanderDefaults(settings);
-      announceCommanderDefaults();
-    }).catch(() => {});
+    commands.saveCommander(settings).then(saved).catch(() => {});
   };
 
   // 应用启动读一次默认，填一键行。读不到就当没有默认。
@@ -1384,7 +1395,11 @@ export function CenterPanel() {
       case 'three-split': return { icon: <SvgThreeSplit />, title: cwd ?? t('tool.three_split' as any), tooltip: pathTip };
       case 'four-split': return { icon: <SvgFourSplit />, title: cwd ?? t('tool.four_split' as any), tooltip: pathTip };
       // 对话图 tab（第 2 期）：toolData 存 graph id；标题取图标题，未打开图时显示「对话图」。
-      case 'graph': return { icon: <SvgGraph />, title: state.graphs[session.toolData ?? '']?.title || '对话图', tooltip: undefined };
+      case 'graph': return {
+        icon: <SvgGraph />,
+        title: state.graphs[session.toolData ?? '']?.title || emptyGraphTabTitle(Boolean(graphViewTabs[session.id])),
+        tooltip: undefined,
+      };
       default: return { icon: <SvgPlus active={isActive} />, title: t('tab.new'), tooltip: undefined };
     }
   };
@@ -1637,11 +1652,18 @@ export function CenterPanel() {
                   <ErrorBoundary key={`commander-${t.id}`} fallbackLabel="总指挥启动器出错">
                     <CommanderLauncher
                       installed={toolsInstalled}
+                      toolsScanned={toolsScanned}
+                      otherClis={otherInstalledCommanderClis(BUILTIN_AI_CLI_FALLBACK, toolsInstalled)}
                       defaults={commanderDefaults}
                       folderPath={t.folderPath}
                       onLaunch={launchCommander}
                       onOpenTerminal={() => selectTool('terminal', undefined, lastCwdByTool['terminal'] ?? t.folderPath ?? undefined)}
                       onOpenGraph={() => setGraphViewTabs(prev => ({ ...prev, [t.id]: true }))}
+                      onOpenTool={(tool) => selectTool(
+                        tool as ToolType,
+                        undefined,
+                        lastCwdByTool[tool] ?? t.folderPath ?? undefined,
+                      )}
                     />
                   </ErrorBoundary>
                 ) : (
@@ -1664,7 +1686,7 @@ export function CenterPanel() {
                   folderPath={t.folderPath}
                   resumeToken={t.resumeToken}
                   extraArgs={t.extraArgs}
-                  onStarted={t.commanderSettings ? () => rememberCommander(t.commanderSettings as CommanderSettings) : undefined}
+                  onStarted={commanderStartedCallback(t, rememberCommander)}
                   hasBg={hasBg}
                   bgUrl={bgUrl}
                   bgType={bgType}

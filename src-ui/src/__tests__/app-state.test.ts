@@ -85,4 +85,34 @@ describe('getInitialState personalization migration', () => {
     const next = reducer({ ...state, terminals, activeTerminalId: 'g', graphFocus: { graphId: 'graph-1', nodeId: 'n1' } }, { type: 'SET_ACTIVE_TERMINAL', id: 'plain' });
     expect(next.graphFocus).toBeNull();
   });
+
+  it('TASK-10-R1 保存后消费 commanderSettings，随后重启不恢复旧快照', () => {
+    const state = getInitialState();
+    const current = {
+      ...state.terminals[0],
+      id: 'commander-tab',
+      tool: 'claude' as const,
+      commanderSettings: {
+        version: 1 as const,
+        agent: 'claude',
+        provider: '',
+        model: 'fable',
+        cwd: 'D:\\old',
+        updated_at: '2026-09-15T10:00:00Z',
+      },
+    };
+    const consumed = reducer(
+      { ...state, terminals: [current], activeTerminalId: current.id },
+      { type: 'CONSUME_COMMANDER_SETTINGS', id: current.id },
+    );
+    expect(consumed.terminals[0].commanderSettings).toBeUndefined();
+
+    const restarted = reducer(consumed, {
+      type: 'RESTART_TERMINAL',
+      id: current.id,
+      newId: 'restarted-tab',
+    });
+    expect(restarted.terminals[0].id).toBe('restarted-tab');
+    expect(restarted.terminals[0].commanderSettings).toBeUndefined();
+  });
 });

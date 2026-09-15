@@ -532,7 +532,29 @@ fn save_commander_in(root: &Path, settings: &CommanderSettings) -> Result<(), St
             settings.version
         ));
     }
-    write_json_atomic(&commander_path(root), settings)
+    for (field, value) in [("provider", settings.provider.as_str()), ("model", settings.model.as_str())] {
+        if !valid_commander_identifier(value) {
+            return Err(format!("总指挥 {field} id 含非法字符"));
+        }
+    }
+    let path = commander_path(root);
+    if let Ok(contents) = fs::read_to_string(&path) {
+        if serde_json::from_str::<CommanderSettings>(&contents).is_err() {
+            return Err(format!(
+                "{} 解析失败，为避免覆盖请先手动处理该文件",
+                path.display()
+            ));
+        }
+    }
+    write_json_atomic(&path, settings)
+}
+
+fn valid_commander_identifier(value: &str) -> bool {
+    value.is_empty()
+        || (!value.starts_with('-')
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'/' | b'@' | b'+' | b'-')
+            }))
 }
 
 fn roles_from(root: &Path) -> RoleSettings {
@@ -1260,10 +1282,41 @@ mod tests {
             fs::read_to_string(root.join("commander.json")).unwrap(),
             "not json"
         );
+        assert!(save_commander_in(&root, &settings).is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("commander.json")).unwrap(),
+            "not json"
+        );
 
-        // 写侧拒绝非 1 的 version
+        // 写侧拒绝非 1 的 version，且已有文件不变。
+        fs::write(root.join("commander.json"), serde_json::to_string(&settings).unwrap()).unwrap();
+        let before_bad_version = fs::read_to_string(root.join("commander.json")).unwrap();
         let bad = CommanderSettings { version: 2, ..CommanderSettings::default() };
         assert!(save_commander_in(&root, &bad).is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("commander.json")).unwrap(),
+            before_bad_version
+        );
+
+        // model/provider 必须原样满足标识符白名单；空格、shell 元字符、前导旗标均拒绝。
+        for (provider, model) in [
+            ("", "model id"),
+            ("", "x&calc"),
+            ("", "-danger"),
+            ("", "   "),
+            ("bad provider", "model"),
+        ] {
+            let invalid = CommanderSettings {
+                provider: provider.into(),
+                model: model.into(),
+                ..settings.clone()
+            };
+            assert!(save_commander_in(&root, &invalid).is_err());
+            assert_eq!(
+                fs::read_to_string(root.join("commander.json")).unwrap(),
+                before_bad_version
+            );
+        }
 
         let _ = fs::remove_dir_all(root);
     }

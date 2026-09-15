@@ -344,6 +344,7 @@ type Action =
   | { type: 'REORDER_TERMINAL'; sessionId: string; beforeId: string | null }
   | { type: 'SET_ACTIVE_TERMINAL'; id: string | null }
   | { type: 'SET_TERMINAL_TOOL'; id: string; tool: ToolType; toolData?: string; resumeToken?: string; extraArgs?: string[]; commanderTitle?: string; commanderSettings?: CommanderSettings }
+  | { type: 'CONSUME_COMMANDER_SETTINGS'; id: string }
   | { type: 'SET_TERMINAL_HIDDEN'; id: string; isHidden: boolean }
   | { type: 'RESTART_TERMINAL'; id: string; newId: string }
   | { type: 'OPEN_HYPER_AGENT_TAB' }
@@ -478,6 +479,13 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         terminals: state.terminals.map(t => t.id === action.id ? { ...t, tool: action.tool, toolData: action.toolData, resumeToken: action.resumeToken, extraArgs: action.extraArgs, commanderTitle: action.commanderTitle, commanderSettings: action.commanderSettings, toolTitle: undefined } : t)
+      };
+    case 'CONSUME_COMMANDER_SETTINGS':
+      return {
+        ...state,
+        terminals: state.terminals.map(t =>
+          t.id === action.id ? { ...t, commanderSettings: undefined } : t
+        )
       };
     case 'SET_TERMINAL_HIDDEN':
       return {

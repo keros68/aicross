@@ -19,7 +19,13 @@ import {
   COMMANDER_DEFAULTS_EVENT,
   requestCommanderLaunch,
 } from '../../commander/launch-request';
-import { isCommanderAgent } from '../../commander/args';
+import { commanderDefaultAvailable } from '../../commander/launcher';
+import type { CommanderSettings } from '../../commander/types';
+import {
+  getToolScanSnapshot,
+  TOOLS_INSTALLED_EVENT,
+  type ToolScanSnapshot,
+} from '../../commander/tool-scan';
 import './Explorer.css';
 
 // Snapshot lifecycle and the `+N -M` map live in lib/file-stats.tsx so the
@@ -560,16 +566,17 @@ export function Explorer() {
   // 有没有存过总指挥默认（TASK-10）。目录行的「在此启动总指挥」只在有默认时
   // 才画——没有默认就不知道该起哪个 agent、哪个模型。启动器起完一次会发
   // COMMANDER_DEFAULTS_EVENT，这里跟着重读，不用等下次开应用。
-  const [hasCommanderDefault, setHasCommanderDefault] = useState(false);
+  const [commanderDefault, setCommanderDefault] = useState<CommanderSettings | null>(null);
+  const [toolScan, setToolScan] = useState<ToolScanSnapshot>(getToolScanSnapshot);
   useEffect(() => {
     let dead = false;
     const read = () => {
       commands
         .loadCommander()
         .then((settings) => {
-          if (!dead) setHasCommanderDefault(isCommanderAgent(settings.agent));
+          if (!dead) setCommanderDefault(settings);
         })
-        .catch(() => { if (!dead) setHasCommanderDefault(false); });
+        .catch(() => { if (!dead) setCommanderDefault(null); });
     };
     read();
     window.addEventListener(COMMANDER_DEFAULTS_EVENT, read);
@@ -578,6 +585,18 @@ export function Explorer() {
       window.removeEventListener(COMMANDER_DEFAULTS_EVENT, read);
     };
   }, []);
+  useEffect(() => {
+    const update = (event: Event) => {
+      setToolScan((event as CustomEvent<ToolScanSnapshot>).detail);
+    };
+    window.addEventListener(TOOLS_INSTALLED_EVENT, update);
+    return () => window.removeEventListener(TOOLS_INSTALLED_EVENT, update);
+  }, []);
+  const hasCommanderDefault = commanderDefaultAvailable(
+    commanderDefault,
+    toolScan.installed,
+    toolScan.scanned,
+  );
 
   // Context menu state
   const [ctxMenu, setCtxMenu] = useState<CtxMenuState | null>(null);
@@ -802,8 +821,7 @@ export function Explorer() {
               : t('explorer.workspace.select-dir' as any)}
           </span>
         </button>
-        {/* TASK-10：用已存的默认 agent/模型，在这个目录再起一个总指挥。
-            还没存过默认时不画——那时点了也不知道该起谁。 */}
+        {/* TASK-10：默认存在且对应 CLI 已探测为安装时，才给目录快捷入口。 */}
         {hasCommanderDefault && activeSession.folderPath && (
           <button
             className="workspace-commander-btn"

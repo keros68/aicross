@@ -238,7 +238,7 @@ fable-5 → [gpt-5.6 | kimi-2.7 | deepseek-v4-flash] → glm-5.3
 
 问题：控制台把「派发」做深了，却把 Coffee 原生最基本的用法丢了——在项目目录里一键起一个 CLI 会话、选默认模型、日常就在这个会话里聊、原生斜杠命令照用。现在「打开终端」缩成空白对话图底部的折叠菜单，模型只能在工具设置里手填参数。没有这层，用户没有理由装 aicross 而不是只用 coffee。
 
-- **总指挥 = 原生 CLI 会话（PTY）**。新空白 tab 就是启动器：选 agent（只列已安装：Claude Code / Codex / Kimi / pi，用资源页同一套品牌标志）、选模型（读资源库：Claude 别名 + 真实 ID；Codex 模型清单；Kimi 别名；pi 按 provider/model）、选工作区目录（默认当前工作区）→ 一键起会话。参数映射：claude `--model <别名或ID>`；codex `-m <model>`；kimi `--model <id>`；pi `--provider <p> --model <m>`；工具设置里的额外参数照旧追加。跑的就是 CLI 本身，斜杠命令、续聊、权限提示全部原生。
+- **总指挥 = 原生 CLI 会话（PTY）**。新空白 tab 就是启动器：选 agent（只列已安装：Claude Code / Codex / Kimi / pi，用资源页同一套品牌标志）、选模型（读资源库：Claude 别名 + 真实 ID；Codex 模型清单；Kimi 别名；pi 按 provider/model）、选工作区目录（默认当前工作区）→ 一键起会话。参数映射：claude `--model <别名或ID>`；codex `-m <model>`；kimi `--model <id>`；pi `--provider <p> --model <m>`；工具设置里的额外参数照旧追加，本次选的模型排在最后、优先生效。跑的就是 CLI 本身，斜杠命令、续聊、权限提示全部原生。
 - **默认记住**：上次的 agent / 模型 / 目录存为默认（`~/.aicross/commander.json`），下次打开首屏直接一键「启动总指挥 · claude · fable · 目录名」；工作区 tab 的目录行给「在此启动总指挥」。
 - **派发看板退居第二 tab**：对话图从「+」菜单开；总指挥 tab 标题显示 `agent · 模型 · 目录名`。
 - **Later**：把 ai-cross skill 装给总指挥，让它能从会话里派发、控制台同步显示对话图——这是「总指挥 + 看板」闭环的最后一步。

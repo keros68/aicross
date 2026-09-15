@@ -15,13 +15,19 @@ import {
   availableCommanderAgents,
   commanderAgentLabel,
   commanderBlockReason,
+  commanderDefaultAvailable,
   commanderDefaultLine,
   commanderModelLabel,
+  commanderModelSelectValue,
   commanderModelsFor,
   commanderModelValue,
   cwdName,
   COMMANDER_NO_CWD,
+  markCommanderSelection,
+  openCommanderCli,
   parseCommanderModelValue,
+  shouldShowNoCommanderModels,
+  type CommanderCliEntry,
 } from '../../commander/launcher';
 import type { CommanderSettings } from '../../commander/types';
 
@@ -35,6 +41,10 @@ export interface CommanderLaunchArgs {
 interface Props {
   /** CenterPanel 的 `toolsInstalled`，按工具 id 存。 */
   installed: Record<string, boolean>;
+  /** 首次工具探测是否已经返回。 */
+  toolsScanned: boolean;
+  /** 已安装且不属于四家总指挥的 CLI。 */
+  otherClis: CommanderCliEntry[];
   /** 已存的默认；`agent` 为空 = 还没存过。 */
   defaults: CommanderSettings | null;
   /** 当前工作区目录，作为目录的初值。 */
@@ -42,15 +52,75 @@ interface Props {
   onLaunch: (args: CommanderLaunchArgs) => void;
   onOpenTerminal: () => void;
   onOpenGraph: () => void;
+  onOpenTool: (tool: string) => void;
+}
+
+export function CommanderModelSelect({
+  picked,
+  models,
+  onChange,
+}: {
+  picked: { provider: string; model: string } | null;
+  models: DispatchableModel[];
+  onChange: (picked: { provider: string; model: string } | null) => void;
+}) {
+  return (
+    <select
+      id="commander-model"
+      className="commander-select"
+      value={commanderModelSelectValue(picked)}
+      onChange={(event) => onChange(parseCommanderModelValue(event.target.value))}
+    >
+      <option value="">不指定（用 CLI 默认）</option>
+      {models.map((model) => (
+        <option
+          key={`${model.agent}/${model.provider}/${model.id}`}
+          value={commanderModelValue(model)}
+        >
+          {commanderModelLabel(model)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+export function CommanderOtherCliMenu({
+  otherClis,
+  onOpenTool,
+}: {
+  otherClis: CommanderCliEntry[];
+  onOpenTool: (tool: string) => void;
+}) {
+  if (otherClis.length === 0) return null;
+  return (
+    <details className="commander-other-clis">
+      <summary className="commander-link">其它 CLI</summary>
+      <div className="commander-other-menu">
+        {otherClis.map((item) => (
+          <button
+            type="button"
+            className="commander-link"
+            key={item.key}
+            onClick={() => openCommanderCli(item.key, onOpenTool)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 export function CommanderLauncher({
   installed,
+  toolsScanned,
+  otherClis,
   defaults,
   folderPath,
   onLaunch,
   onOpenTerminal,
   onOpenGraph,
+  onOpenTool,
 }: Props) {
   const agents = useMemo(() => availableCommanderAgents(installed), [installed]);
   const [models, setModels] = useState<DispatchableModel[]>([]);
@@ -130,10 +200,15 @@ export function CommanderLauncher({
       .catch(() => {});
   };
 
-  const blocked = commanderBlockReason(agent, agents);
+  const blocked = commanderBlockReason(
+    agent,
+    agents,
+    picked?.provider ?? '',
+    picked?.model ?? '',
+  );
   const launch = (args: CommanderLaunchArgs) => onLaunch(args);
 
-  const defaultAvailable = defaults !== null && agents.includes(defaults.agent as CommanderAgent);
+  const defaultAvailable = commanderDefaultAvailable(defaults, installed, toolsScanned);
   const defaultLine = defaultAvailable ? commanderDefaultLine(defaults) : null;
 
   return (
@@ -161,7 +236,9 @@ export function CommanderLauncher({
           </button>
         )}
 
-        {agents.length === 0 ? (
+        {!toolsScanned ? (
+          <div className="commander-empty">探测中…</div>
+        ) : agents.length === 0 ? (
           <div className="commander-empty">
             本机没探测到 Claude Code / Codex / Kimi Code CLI / pi。装好任意一个再回来。
           </div>
@@ -177,7 +254,7 @@ export function CommanderLauncher({
                       key={item}
                       className={`commander-agent-card${agent === item ? ' is-picked' : ''}`}
                       aria-pressed={agent === item}
-                      onClick={() => setAgent(item)}
+                      onClick={() => markCommanderSelection(seeded, setAgent, item)}
                     >
                       <AgentBadge agentId={item} />
                       <span className="commander-agent-name">{commanderAgentLabel(item)}</span>
@@ -190,26 +267,11 @@ export function CommanderLauncher({
                 <label className="commander-label" htmlFor="commander-model">
                   模型
                 </label>
-                <select
-                  id="commander-model"
-                  className="commander-select"
-                  value={picked === null ? '' : JSON.stringify(picked)}
-                  onChange={(event) => setPicked(parseCommanderModelValue(event.target.value))}
-                >
-                  <option value="">不指定（用 CLI 默认）</option>
-                  {agentModels.map((model) => (
-                    <option
-                      key={`${model.agent}/${model.provider}/${model.id}`}
-                      value={commanderModelValue(model)}
-                    >
-                      {commanderModelLabel(model)}
-                    </option>
-                  ))}
-                </select>
+                <CommanderModelSelect picked={picked} models={agentModels} onChange={setPicked} />
                 {modelsError !== null && (
                   <div className="commander-note">{modelsError}</div>
                 )}
-                {modelsError === null && agentModels.length === 0 && agent !== '' && (
+                {shouldShowNoCommanderModels(modelsLoaded, modelsError, agent, agentModels.length) && (
                   <div className="commander-note">
                     资源库里还没有 {commanderAgentLabel(agent)} 的模型，先去接入页探测。
                   </div>
@@ -253,6 +315,7 @@ export function CommanderLauncher({
           <button type="button" className="commander-link" onClick={onOpenGraph}>
             对话图
           </button>
+          <CommanderOtherCliMenu otherClis={otherClis} onOpenTool={onOpenTool} />
         </div>
       </div>
     </div>
