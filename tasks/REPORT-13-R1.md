@@ -33,3 +33,7 @@
 - 当前 Windows 环境实际运行了 Windows 恢复失败负例；Unix 的链接与权限位测试已写入 `#[cfg(unix)]`，本轮未在 Unix 主机执行。
 - 未修改 `src/server.rs`、`src/terminal.rs`、`src-ui/src/tauri.ts`，避免与 phase/16 交叉。
 - 未运行 `cargo fmt`；未启动窗口；未发送真实模型或真机请求；未 commit、未 push。
+
+## 复审后补记（编排者，f45a066）
+
+两家复审（`tasks/review-13-r1-*.md`）：GLM 判可交付，DeepSeek 判可交付但有未闭合项。编排者直接修了 DeepSeek 的 A / C / D / G：验证门运行期间叫停按「派发已取消」处理而不是「验证命令未通过」（不再多派一轮修正）；核对完成后清标记失败只记账、不算工作区错误；红绿恢复失败产生的 error 不再标「可写节点」；零改动用例补 `require_git`。改后 `cargo test` 402 passed。剩余低危记入 `tasks/fix-04-r5-backlog.md` 第 44–49 条。
