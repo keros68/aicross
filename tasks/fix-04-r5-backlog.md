@@ -97,7 +97,7 @@
 
 ## 安装包（09-15 夜）
 
-59. WiX PATH 片段（`windows/fragments/path.wxs`）在 light 阶段失败（candle 已过）：Environment 组件可能缺 KeyPath / 与 tauri 生成的 main.wxs 冲突；MSI 暂不能出包，NSIS 不受影响。修好前可在 tauri.conf.json 里去掉 fragmentPaths/componentRefs 出 MSI。
+59. ~~WiX PATH 片段在 light 阶段失败，MSI 出不了包。~~ **已修（09-16）**：报错是 `LGHT0230`——组件里只有 `Environment`、没有 KeyPath，WiX 就拿 Directory 当 KeyPath，而这种组件不允许 `Guid="*"`。改法是加一个 HKCU 标记值当 KeyPath（与 `System="no"` 的每用户 PATH 同范围）并把 GUID 写死（发布后不可再改，否则升级会重复加 PATH 项）。实测 MSI 出包 5.34 MB，`Environment` 表为 `=-PATH / [~];[INSTALLDIR]`（追加、卸载时移除），组件 KeyPath 指向该注册表行。
 
 ## TASK-19 复审剩余（09-16，低危，择期）
 
