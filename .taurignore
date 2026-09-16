@@ -1,0 +1,10 @@
+# Tauri dev 的文件监听忽略表。默认它会盯整个项目目录，于是前端侧的构建产物
+# 和测试缓存一变就触发整轮 Rust 重编 + 重启窗口——开发窗口开着时跑一次
+# vitest 就会被踢掉（09-16 实测：node_modules/.vite/vitest/**/results.json）。
+src-ui/node_modules
+src-ui/dist
+node_modules
+target
+.dispatch
+tasks
+docs
