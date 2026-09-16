@@ -1,0 +1,149 @@
+.console-chat {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  color: var(--text-1);
+  background: var(--bg-app);
+}
+
+.console-chat-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.console-chat-head span + span::before {
+  content: '·';
+  margin-right: 10px;
+  color: var(--text-3);
+}
+
+.console-message-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px max(24px, calc((100% - 820px) / 2));
+}
+
+.console-message-empty,
+.console-message-running {
+  padding: 16px 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.console-message {
+  width: fit-content;
+  max-width: min(760px, 88%);
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+}
+
+.console-message-user {
+  margin-left: auto;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.console-message-system {
+  max-width: 100%;
+  background: transparent;
+  border-style: dashed;
+}
+
+.console-message-label {
+  margin-bottom: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.console-message-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.console-message-meta {
+  margin-top: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.console-composer {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 14px max(24px, calc((100% - 820px) / 2)) 18px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-app);
+}
+
+.console-composer textarea {
+  flex: 1;
+  min-height: 72px;
+  max-height: 180px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--border-input);
+  border-radius: 8px;
+  color: var(--text-1);
+  background: var(--bg-input);
+  font: inherit;
+  line-height: 1.5;
+}
+
+.console-composer textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.console-composer > button {
+  min-width: 64px;
+  height: 36px;
+  border: 0;
+  border-radius: 7px;
+  color: #fff;
+  background: var(--accent);
+}
+
+.console-composer > button:disabled {
+  opacity: 0.45;
+}
+
+.console-mentions {
+  position: absolute;
+  left: max(24px, calc((100% - 820px) / 2));
+  bottom: calc(100% - 8px);
+  z-index: 4;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
+}
+
+.console-mentions button {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-1);
+  background: transparent;
+}
+
+.console-mentions button:hover {
+  border-color: var(--accent);
+}

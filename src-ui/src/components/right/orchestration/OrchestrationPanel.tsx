@@ -22,6 +22,7 @@ import { withSwarmPreset } from '../../../graph/swarm';
 import { loadDispatchSettings } from '../../../graph/dispatch-settings';
 import { PresetSelect } from './PresetGroups';
 import { agentModelDisplay } from '../../../resources/agent-display';
+import { canApplyOrchestration, dispatchConsoleApply } from '../../../console-session';
 import './OrchestrationPanel.css';
 
 export function OrchestrationPanel() {
@@ -43,6 +44,8 @@ export function OrchestrationPanel() {
   const focus = state.graphFocus;
   const graph: Graph | undefined = focus ? state.graphs[focus.graphId] : undefined;
   const focusNode = graph && focus ? graph.nodes[focus.nodeId] : undefined;
+  const activeSession = state.terminals.find((session) => session.id === state.activeTerminalId);
+  const consoleActive = activeSession?.tool === 'console' && Boolean(activeSession.targetAgent);
 
   const refreshPresets = () => {
     if (!isTauri) return;
@@ -130,6 +133,11 @@ export function OrchestrationPanel() {
   const selectedPreset = presets.find((p) => p.id === selectedPresetId) ?? null;
 
   const applyPreset = (preset: Preset | null) => {
+    if (preset && activeSession?.tool === 'console' && activeSession.targetAgent) {
+      dispatchConsoleApply({ sessionId: activeSession.id, preset });
+      setGhost(null);
+      return;
+    }
     if (!graph || !focus || !focusNode || !preset) return;
     const before = new Set(Object.keys(graph.nodes));
     // 擂台跳过角色默认填充：三路目标留空，G1 确认屏逐家选（不然会填成同一家）
@@ -219,7 +227,7 @@ export function OrchestrationPanel() {
         <div className="orch-toolbar-btns">
           <button
             className="orch-btn orch-btn-primary"
-            disabled={!focusNode || !selectedPreset}
+            disabled={!canApplyOrchestration(activeSession, Boolean(focusNode), selectedPreset)}
             onClick={() => applyPreset(selectedPreset)}
           >
             应用
@@ -235,7 +243,11 @@ export function OrchestrationPanel() {
 
       {/* 子图预览 */}
       <div className="orch-preview">
-        {!focusNode && <div className="orch-empty">在图上选一个节点</div>}
+        {!focusNode && (
+          <div className="orch-empty">
+            {consoleActive ? '选一个模式，或直接打字单线聊' : '在图上选一个节点'}
+          </div>
+        )}
         {focusNode && (
           <div className="orch-stages">
             {previewStages.map((ids, i) => (
@@ -288,7 +300,7 @@ export function OrchestrationPanel() {
         <PresetBuilder
           initial={selectedPreset}
           models={models}
-          canApply={!!focusNode}
+          canApply={canApplyOrchestration(activeSession, Boolean(focusNode), selectedPreset)}
           onApply={(preset) => {
             applyPreset(preset);
             setBuilderOpen(false);

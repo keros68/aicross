@@ -1,6 +1,6 @@
-# TASK-16 控制台通道：总指挥会话里直接派发（09-15 用户提出）
+# TASK-16 控制台通道：控制台会话里直接派发（09-15 用户提出）
 
-依据 `docs/PRODUCT.md`「用户 09-15 晚四点反馈的定案」第 1 条。目标：用户在总指挥（原生 CLI 会话）里干活，遇到要多家核对的地方，ai-cross skill 把派发交给正在运行的控制台，节点长在当前工作区的对话图上，结果屏、留痕、合并全部复用。控制台不在时 skill 行为不变。
+依据 `docs/PRODUCT.md`「用户 09-15 晚四点反馈的定案」第 1 条。目标：用户在控制台（原生 CLI 会话）里干活，遇到要多家核对的地方，ai-cross skill 把派发交给正在运行的控制台，节点长在当前工作区的对话图上，结果屏、留痕、合并全部复用。控制台不在时 skill 行为不变。
 
 ## 契约（只追加）
 
@@ -11,13 +11,13 @@
   - `POST /v1/runs/<run_id>/adopt`：`{ node_id }` → 采纳该节点（与结果卡「采纳」同一函数）。
   - `POST /v1/runs/<run_id>/cancel`。
 - 命令行入口 `aicross`（Rust 二进制加子命令，安装包把它加进 PATH；开发态 `cargo run -- dispatch …`）：`aicross dispatch --project <dir> --preset economy --text-file <path>`（多行走文件，不走 argv）、`aicross status <run_id> [--wait]`、`aicross adopt <run_id> <node_id>`、`aicross cancel <run_id>`。找不到 `console.json` 或端点不通 → exit 3 与一句「控制台未运行」。
-- 界面：对话图 tab 上由通道创建的图/节点标「来自总指挥」；右栏「任务」板列出在飞 run（复用心跳）。
+- 界面：对话图 tab 上由通道创建的图/节点标「来自控制台」；右栏「任务」板列出在飞 run（复用心跳）。
 
 ## 实现
 
 1. Rust：`src/console_api.rs` 挂到现有 hook-server；令牌校验；所有写图操作走现有 `save_graph` / 派发入口（`dispatch_stage`），不另造路径。
 2. `aicross` 子命令：`src/bin/aicross.rs` 或主二进制 `--` 子命令；输出 JSON 到 stdout，人读的一行到 stderr。
-3. 前端：图上「来自总指挥」标记；任务板在飞 run 行（读同一 progress store）；通道创建的图自动打开/切换到该 tab（用户在总指挥 tab 时只在标题栏计数提示，不抢焦点）。
+3. 前端：图上「来自控制台」标记；任务板在飞 run 行（读同一 progress store）；通道创建的图自动打开/切换到该 tab（用户在控制台 tab 时只在标题栏计数提示，不抢焦点）。
 4. skill 侧（本仓不改 skill；写清接口给 skill 维护者）：`docs/CONSOLE-CHANNEL.md` 写通道协议与示例命令，供 `channels.md` 加「控制台通道」。
 5. 测试：令牌错误 401；项目不存在 404；不可派 409 带原因；dispatch → status → adopt 走通（假通道）；`console.json` 写/删与权限；`aicross` 子命令对无控制台的退出码。
 

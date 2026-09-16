@@ -558,7 +558,7 @@ async fn tier_terminal_start(
     cwd: Option<String>,
     resume_token: Option<String>,
     shell: Option<String>,
-    // TASK-10 总指挥：这一次启动要额外追加的 argv（如 `--model fable`）。
+    // TASK-10 控制台：这一次启动要额外追加的 argv（如 `--model fable`）。
     // 与工具设置里的 `extra_args` 是两回事——那个是每次都加的常驻配置，
     // 这个只属于本次启动，不落盘。None / 空数组 = 与改动前完全一致。
     extra_args: Option<Vec<String>>,
@@ -795,7 +795,7 @@ fn tier_terminal_start_blocking(
         _ => (cmd, args),
     };
 
-    // ── Per-launch extra args (TASK-10 总指挥) ─────────────────────────────
+    // ── Per-launch extra args (TASK-10 控制台) ─────────────────────────────
     // The launcher picks agent + model per launch, so the model flag can't
     // live in ~/.aicross/tools.json (that file is the always-on config, and
     // writing the model into it would leak this launch's choice into every

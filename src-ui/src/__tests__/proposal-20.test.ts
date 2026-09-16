@@ -228,7 +228,7 @@ describe('复审残留：外项目建议要带出目标目录（09-16 编排者�
     expect(proposalIsForeign(proposal, 'D:/work/y', 'g-y')).toBe(true);
   });
 
-  it('总指挥兜底（没有项目上下文）也算外项目', () => {
+  it('控制台兜底（没有项目上下文）也算外项目', () => {
     expect(proposalIsForeign(proposal, '', '')).toBe(true);
   });
 });

@@ -10,7 +10,7 @@ import dispatchSource from '../graph/dispatch.ts?raw';
 const session = (value: Partial<TerminalSession> & Pick<TerminalSession, 'id' | 'tool'>): TerminalSession => ({ folderPath: 'D:/p', ...value });
 
 describe('TASK-16 R1 控制台薄中继', () => {
-  it('总指挥前台只后台开图，普通前台自动打开或切换', () => {
+  it('控制台前台只后台开图，普通前台自动打开或切换', () => {
     const commander = [session({ id: 'commander', tool: 'codex', commanderTitle: 'Codex · p' })];
     expect(consoleTabPlan(commander, 'commander', 'g')).toEqual({ kind: 'background' });
     const ordinary = [session({ id: 'terminal', tool: 'terminal' })];

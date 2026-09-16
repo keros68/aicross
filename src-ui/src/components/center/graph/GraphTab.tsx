@@ -575,7 +575,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
           </div>
           <div className="graph-node-row">
             {node.target?.role && <span className="graph-node-role">{node.target.role}</span>}
-            {node.source === 'console' && <span className="graph-node-role">来自总指挥</span>}
+            {node.source === 'console' && <span className="graph-node-role">来自控制台</span>}
             {node.kind === 'accept' && <span className="graph-node-role">汇合</span>}
             {node.leftover && <span className="graph-node-role">{node.leftover.items.length} 条未闭合</span>}
             {status && <span className="graph-node-status">{status}</span>}

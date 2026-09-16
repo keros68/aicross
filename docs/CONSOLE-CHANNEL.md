@@ -1,6 +1,6 @@
 # 控制台通道
 
-本文供 ai-cross skill 的 `channels.md` 维护者使用。控制台通道把总指挥会话中的派发交给已运行的 aicross；控制台不可用时，skill 可继续使用原有 CLI 通道。
+本文供 ai-cross skill 的 `channels.md` 维护者使用。控制台通道把控制台会话中的派发交给已运行的 aicross；控制台不可用时，skill 可继续使用原有 CLI 通道。
 
 ## 发现控制台
 

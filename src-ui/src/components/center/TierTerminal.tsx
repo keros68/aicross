@@ -413,11 +413,11 @@ interface TierTerminalProps {
    *  effect passes it to tierTerminalStart, which spawns the tool with
    *  `--resume <token>` instead of a fresh launch. */
   resumeToken?: string;
-  /** 这一次启动追加的 argv（TASK-10 总指挥的 `--model …`）。挂载时随
+  /** 这一次启动追加的 argv（TASK-10 控制台的 `--model …`）。挂载时随
    *  tierTerminalStart 一起发给后端，后端接在工具设置 `extra_args` 之后。
    *  不传 = 与 TASK-10 之前完全一致。 */
   extraArgs?: string[];
-  /** PTY 创建成功后的通知。总指挥用它在确认启动成功后保存默认。 */
+  /** PTY 创建成功后的通知。控制台用它在确认启动成功后保存默认。 */
   onStarted?: () => void;
   hasBg?: boolean;
   bgUrl?: string;

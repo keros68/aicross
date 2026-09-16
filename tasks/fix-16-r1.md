@@ -13,7 +13,7 @@
 ## 必修（两家共同：1/2/3/4/6/7；DeepSeek 独有：5/8；GLM 独有：9）
 
 1. 按上面的机制重做 `src/console_api.rs`（去掉 `run_prepared`、整图写盘、`build_node_request`、`DispatchSettings::default()`），Rust 只保留：清单、令牌、路由、事件转发、run 摘要表（容量上限 200，超过按最旧淘汰）。
-2. 前端 `src-ui/src/console-channel.ts`：事件处理、图选择（`graph.project` 真正写到 Graph 上，`newGraph` 顺手改；旧图无 project 时按 tab 目录匹配）、`startPipelineHeadless`、`console_run_update` 回报、adopt/cancel 转发；总指挥 tab 前台时不抢焦点保留。
+2. 前端 `src-ui/src/console-channel.ts`：事件处理、图选择（`graph.project` 真正写到 Graph 上，`newGraph` 顺手改；旧图无 project 时按 tab 目录匹配）、`startPipelineHeadless`、`console_run_update` 回报、adopt/cancel 转发；控制台 tab 前台时不抢焦点保留。
 3. 安全（DeepSeek 5、6、7 / GLM）：令牌常量时间比较；带 `Origin` 或 `Sec-Fetch-Site: cross-site` 的请求直接 403；令牌校验在读 body 之前（先 401 再丢 body）；`OPTIONS`/`HEAD` 不进 JSON 行分支、不刷日志；清单写入失败只告警并标「通道不可用」，hook server 照常启动；Windows 用 `%SystemRoot%` 找 icacls/whoami。
 4. CLI（DeepSeek 8、13、16）：`status --wait` 加 `--timeout <secs>`（默认 600）到点非零退出；每轮重读 `console.json`；读清单时用 `pid` 判活，进程不存在 → 删清单并报「控制台未运行（清单已过期）」；dev 构建用独立清单名 `console.dev.json`；`--text-file` 剥 BOM、非 UTF-8 给明确提示；`--text=` 一并拒绝。
 5. 安装包 PATH（DeepSeek 9）：NSIS 只增删自己那一项、保留 `REG_EXPAND_SZ` 与 `%VAR%` 形式（用 EnVar 插件或逐项解析），匹配大小写与尾反斜杠；`Path` 不存在时不写空值；WiX 同口径；把源码字符串断言换成对 PATH 解析纯函数的测试。
@@ -25,6 +25,6 @@
 
 ## 保持
 
-- `console.json` 的写/删/权限、`aicross` 子命令骨架、退出码 3 语义、「来自总指挥」标记、任务板行、hook server 首行分流——核过没问题，按上面调整后保留。
+- `console.json` 的写/删/权限、`aicross` 子命令骨架、退出码 3 语义、「来自控制台」标记、任务板行、hook server 首行分流——核过没问题，按上面调整后保留。
 
 验证：`cargo check --all-targets` 零 warning、`cargo test`、`cd src-ui && npx vitest run --configLoader native --pool threads`、`cd src-ui && npm run build`。保持文件原有换行（`src/server.rs`、`src/main.rs` CRLF；`src-ui/src/tauri.ts` 混合只做字节级最小改动）；不 `cargo fmt`；不起窗口、不发真机请求；不 commit、不 push。报告写 `tasks/REPORT-16-R1.md`（逐条对应本清单）。

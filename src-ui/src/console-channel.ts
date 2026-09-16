@@ -18,9 +18,9 @@ export type ConsoleTabPlan =
 export function consoleTabPlan(sessions: TerminalSession[], activeId: string | null, graphId: string): ConsoleTabPlan {
   const existing = sessions.find((session) => session.tool === 'graph' && session.toolData === graphId);
   const active = sessions.find((session) => session.id === activeId);
-  const commanderActive = Boolean(active?.commanderTitle);
-  if (existing) return commanderActive ? { kind: 'background' } : { kind: 'focus', sessionId: existing.id };
-  return commanderActive ? { kind: 'background' } : { kind: 'open' };
+  const consoleActive = active?.tool === 'console' || Boolean(active?.commanderTitle);
+  if (existing) return consoleActive ? { kind: 'background' } : { kind: 'focus', sessionId: existing.id };
+  return consoleActive ? { kind: 'background' } : { kind: 'open' };
 }
 
 export function consoleInflightCount(runs: ConsoleRun[]): number {
@@ -63,7 +63,7 @@ export function proposalDisplayGraphId(state: Pick<AppState, 'graphs' | 'termina
   return active?.tool === 'graph' ? (active.toolData ?? '') : '';
 }
 
-function appendConsoleMaterial(graph: Graph, text: string, attachments: string[]): { graph: Graph; nodeId: string } {
+export function appendConsoleMaterial(graph: Graph, text: string, attachments: string[]): { graph: Graph; nodeId: string } {
   const root = graph.nodes[graph.root];
   if (root && root.user.text === '' && root.parents.length === 0) {
     const filled = fillRoot(graph, text);
@@ -188,7 +188,7 @@ export function proposalsForTab(proposals: ConsoleProposal[], project: string, g
   return matching.length > 0 || !commander ? matching : proposals;
 }
 
-// 兜底显示（目标项目没有打开的 tab，或总指挥条代显）时，条上要带出目标目录，
+// 兜底显示（目标项目没有打开的 tab，或控制台条代显）时，条上要带出目标目录，
 // 否则项目 X 的建议画在项目 Y 的 tab 上，用户无从分辨就采纳了（09-16 复审 GLM 4）。
 export function proposalIsForeign(proposal: ConsoleProposal, project: string, graphId = ''): boolean {
   if (graphId !== '' && proposal.graph_id === graphId) return false;
@@ -367,7 +367,7 @@ export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: C
   const preset = presetWithRoleDefaults(selected, roles);
   const existing = selectConsoleGraph(context.getState(), event.project);
   const base = existing ?? newGraph(event.project);
-  // R1 复审 N3：只有新建的图标「来自总指挥」，续写用户自己的图保留原来源。
+  // R1 复审 N3：只有新建的图标「来自控制台」，续写用户自己的图保留原来源。
   const graphSource = existing ? existing.source : ('console' as const);
   const material = appendConsoleMaterial({ ...base, project: event.project, source: graphSource }, event.text, event.attachments ?? []);
   let graph = stamp(material.graph, material.nodeId, preset, settings.swarmLimit);
