@@ -21,6 +21,7 @@ import { useAppState, isSplitTool, paneSessionId, matchHotkeyScheme } from '../.
 import { getTabActions } from '../../lib/tab-actions';
 import { getFocusedPane } from '../../lib/pane-focus';
 import { Gambit } from './Gambit';
+import { requestLocalProposal } from '../../console-channel';
 
 export function ActiveGambit() {
   const { state, dispatch } = useAppState();
@@ -74,6 +75,16 @@ export function ActiveGambit() {
     return actions.paste(text);
   }, [activeId, activeSession?.tool]);
 
+  const handlePropose = useCallback((text: string, attachments: string[]) => {
+    if (!activeSession?.folderPath) return;
+    void requestLocalProposal({
+      project: activeSession.folderPath,
+      graphId: activeSession.tool === 'graph' ? activeSession.toolData : '',
+      text,
+      attachments,
+    });
+  }, [activeSession?.folderPath, activeSession?.tool, activeSession?.toolData]);
+
   // Global open/close hotkey (settings → 妙手). Registered in the CAPTURE
   // phase on document so it fires BEFORE the focused xterm's own keydown —
   // preventDefault then stops the combo (e.g. Ctrl+~) from leaking a control
@@ -120,6 +131,8 @@ export function ActiveGambit() {
       onDraftChange={handleDraftChange}
       onClose={handleClose}
       onSend={handleSend}
+      onPropose={handlePropose}
+      showPropose={Boolean(activeSession?.commanderProfile || activeSession?.commanderTitle || activeSession?.tool === 'graph')}
       leftPanelHidden={state.leftPanelHidden}
       rightPanelHidden={state.rightPanelHidden}
     />

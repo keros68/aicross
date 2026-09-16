@@ -1,4 +1,4 @@
-//! `aicross dispatch/status/adopt/cancel` 命令行入口。
+//! `aicross dispatch/propose/status/adopt/cancel` 命令行入口。
 
 use crate::console_api::ConsoleManifest;
 use serde_json::{json, Value};
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
-    if !matches!(args.get(1).map(String::as_str), Some("dispatch" | "status" | "adopt" | "cancel")) {
+    if !matches!(args.get(1).map(String::as_str), Some("dispatch" | "propose" | "status" | "adopt" | "cancel")) {
         return None;
     }
     attach_parent_console();
@@ -96,9 +96,16 @@ struct CliRequest {
 
 fn build_request(args: &[String]) -> Result<CliRequest, String> {
     match args.get(1).map(String::as_str) {
-        Some("dispatch") => {
+        Some(command @ ("dispatch" | "propose")) => {
             if args.iter().any(|arg| arg == "--text" || arg.starts_with("--text=")) {
                 return Err("派发文本必须使用 --text-file".into());
+            }
+            if command == "propose" && args.iter().any(|arg| arg == "--reason") && option_value(args, "--reason").is_none() {
+                return Err("缺少 --reason 的值".into());
+            }
+            let reason = if command == "propose" { option_value(args, "--reason") } else { None };
+            if reason.as_deref().is_some_and(|value| value.contains(['\r', '\n'])) {
+                return Err("--reason 只能是一句话".into());
             }
             let project = option_value(args, "--project").ok_or_else(|| "缺少 --project".to_string())?;
             let text_file = option_value(args, "--text-file").ok_or_else(|| "缺少 --text-file".to_string())?;
@@ -112,9 +119,11 @@ fn build_request(args: &[String]) -> Result<CliRequest, String> {
                 "blind" => "builtin-blind",
                 other => other,
             };
+            let mut body = json!({ "project": project, "preset": preset, "text": text });
+            if let Some(reason) = reason { body["reason"] = Value::String(reason); }
             Ok(CliRequest {
-                method: "POST".into(), path: "/v1/dispatch".into(),
-                body: Some(json!({ "project": project, "preset": preset, "text": text })), wait: false, timeout: Duration::from_secs(30),
+                method: "POST".into(), path: format!("/v1/{command}"),
+                body: Some(body), wait: false, timeout: Duration::from_secs(30),
             })
         }
         Some("status") => {
@@ -329,5 +338,39 @@ mod tests {
         assert_eq!(adopt.body.unwrap()["node_id"], "node-1");
         let cancel = build_request(&["aicross".into(), "cancel".into(), "run-1".into()]).unwrap();
         assert_eq!((cancel.method.as_str(), cancel.path.as_str()), ("POST", "/v1/runs/run-1/cancel"));
+    }
+
+    #[test]
+    fn propose_uses_text_file_reason_and_dispatch_exit_codes() {
+        let root = std::env::temp_dir().join(format!("aicross-cli-propose-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("prompt.txt");
+        fs::write(&path, "第一行\n第二行").unwrap();
+        let args = vec![
+            "aicross".into(), "propose".into(), "--project".into(), root.to_string_lossy().into(),
+            "--preset".into(), "blind".into(), "--reason".into(), "需要独立核对".into(),
+            "--text-file".into(), path.to_string_lossy().into(),
+        ];
+        let request = build_request(&args).unwrap();
+        assert_eq!((request.method.as_str(), request.path.as_str()), ("POST", "/v1/propose"));
+        assert_eq!(request.body.as_ref().unwrap()["preset"], "builtin-blind");
+        assert_eq!(request.body.as_ref().unwrap()["reason"], "需要独立核对");
+        assert_eq!(request.body.as_ref().unwrap()["text"], "第一行\n第二行");
+
+        let invalid = vec!["aicross".into(), "propose".into(), "--project".into(), "D:/p".into(), "--text".into(), "正文".into()];
+        assert!(matches!(build_request(&invalid), Err(error) if error == "派发文本必须使用 --text-file"));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(run_at(&invalid, &root, &mut stdout, &mut stderr), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn propose_rejects_multiline_reason() {
+        let args = vec![
+            "aicross".into(), "propose".into(), "--project".into(), "D:/p".into(),
+            "--reason".into(), "第一行\n第二行".into(), "--text-file".into(), "D:/prompt.txt".into(),
+        ];
+        assert!(matches!(build_request(&args), Err(error) if error == "--reason 只能是一句话"));
     }
 }

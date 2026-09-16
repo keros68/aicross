@@ -648,6 +648,16 @@ export function SettingsModal() {
             {section === 'dispatch' && (
               <>
                 <div className="settings-section-label">执行</div>
+                <div className="settings-key-row">
+                  <button
+                    className={`settings-key-card${dispatchSettings.classifyProposals ? ' active' : ''}`}
+                    onClick={() => setDispatchOption('classifyProposals', !dispatchSettings.classifyProposals)}
+                    aria-pressed={dispatchSettings.classifyProposals}
+                  >
+                    <span className="settings-key-combo">用归类模型二次判断</span>
+                    <span className="settings-key-sub">{dispatchSettings.classifyProposals ? '已开启' : '已关闭'}</span>
+                  </button>
+                </div>
                 <div className="settings-dispatch-grid">
                   <label className="settings-dispatch-field">
                     <span>默认超时（秒）</span>
@@ -709,13 +719,19 @@ export function SettingsModal() {
                   </label>
                   <label className="settings-dispatch-field settings-dispatch-wide">
                     <span>归类模型</span>
-                    <input
+                    <select
                       value={dispatchSettings.classificationModel}
-                      placeholder="默认取已接入的低档模型"
-                      disabled
-                      title="归类未接入"
-                    />
-                    <span>未接入，当前不可用</span>
+                      disabled={!dispatchSettings.classifyProposals}
+                      onChange={(e) => setDispatchOption('classificationModel', e.target.value)}
+                    >
+                      <option value="">自动选择低档模型</option>
+                      {roleModels.map((model) => (
+                        <option key={JSON.stringify([model.agent, model.provider, model.id])} value={JSON.stringify([model.agent, model.provider, model.id])}>
+                          {model.agent}/{model.provider ? `${model.provider}/` : ''}{model.id}{modelStatusSuffix(model)}
+                        </option>
+                      ))}
+                    </select>
+                    <span>开启后，仅在生成建议时额外判断一次。</span>
                   </label>
                   <label className="settings-dispatch-field settings-dispatch-wide">
                     <span>cc_switch.py 路径</span>

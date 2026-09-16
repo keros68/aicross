@@ -19,12 +19,16 @@ export interface DialogRoot {
   querySelector(selector: string): unknown;
 }
 
+export function hasOpenModal(root: DialogRoot): boolean {
+  return Boolean(root.querySelector('[aria-modal="true"]'));
+}
+
 export function shouldEnforceTerminalFocus(
   active: FocusCandidate | null | undefined,
   root: DialogRoot,
 ): boolean {
   if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return false;
   if (active?.closest?.('[role="dialog"]')) return false;
-  if (root.querySelector('[aria-modal="true"]')) return false;
+  if (hasOpenModal(root)) return false;
   return true;
 }

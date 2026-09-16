@@ -26,6 +26,8 @@ aicross 发布版启动后写入当前用户目录下的 `~/.aicross/console.jso
 
 `POST /v1/dispatch`
 
+请求体中的 `reason` 仅供 `/v1/propose` 使用；`/v1/dispatch` 收到该字段时忽略。
+
 ```json
 {
   "project": "D:\\work\\project",
@@ -56,11 +58,40 @@ Rust 只校验并中继请求；前端用与确认派发相同的 `stamp()`、G1
 
 为保持既有契约，首个响应仍保留空的 `graph_id` 与 `node_ids`；真实图 id 与节点摘要在前端开始处理后通过状态接口提供。界面未运行或 5 秒内没有回执时返回 503。run 同时在飞默认最多 3 个，可在设置的“通道在飞上限”调整；超过上限返回 409。
 
+### 建议派发
+
+`POST /v1/propose`
+
+请求体与 `/v1/dispatch` 相同，可额外带一句 `reason`：
+
+```json
+{
+  "project": "D:\\work\\project",
+  "text": "分别核对实现与测试。",
+  "preset": "builtin-blind",
+  "reason": "需要独立核对"
+}
+```
+
+该接口只登记建议，不执行派发。成功返回：
+
+```json
+{ "proposal_id": "…", "accepted": true }
+```
+
+建议在界面顶部显示；用户采纳后才走与 `/v1/dispatch` 相同的前端流水线，忽略后不执行。命中单步小任务时不登记，返回：
+
+```json
+{ "proposal_id": "", "skipped": "单步小任务" }
+```
+
+`proposed` 不计入通道在飞上限。设置中显式开启“用归类模型二次判断”后，生成建议时会额外调用一次所选归类模型；默认关闭。
+
 ### 查询、采纳与取消
 
 - `GET /v1/runs/<run_id>` 查询状态。
 - `POST /v1/runs/<run_id>/adopt`，正文为 `{ "node_id": "…" }`。
-- `POST /v1/runs/<run_id>/cancel`，正文可为 `{}`。
+- `POST /v1/runs/<run_id>/cancel`，正文可为 `{}`；对 `proposed` 状态执行后转为 `dismissed`。
 
 查询响应：
 
@@ -85,7 +116,7 @@ Rust 只校验并中继请求；前端用与确认派发相同的 `stamp()`、G1
 }
 ```
 
-run 的 `status` 为 `running`、`done`、`failed` 或 `rejected`。节点状态保留图上的原状态词，包括 `draft`、`pending`、`done`、`failed` 与 `quota_exhausted`；额度用尽不改写为 `failed`，有恢复时间时写在 `quota_resets_at`。`leftover` 从遗留节点汇总，仅在有遗留项时出现；`reason` 说明 rejected 或失败原因；`in_flight_node_ids` 是当时真正执行中的节点。
+run 的 `status` 为 `proposed`、`running`、`done`、`failed`、`rejected` 或 `dismissed`。建议采纳后从 `proposed` 转为 `running`，忽略后转为 `dismissed`。节点状态保留图上的原状态词，包括 `draft`、`pending`、`done`、`failed` 与 `quota_exhausted`；额度用尽不改写为 `failed`，有恢复时间时写在 `quota_resets_at`。`leftover` 从遗留节点汇总，仅在有遗留项时出现；`reason` 说明建议理由、rejected 或失败原因；`in_flight_node_ids` 是当时真正执行中的节点。
 
 ### 状态码
 
@@ -105,13 +136,14 @@ run 的 `status` 为 `running`、`done`、`failed` 或 `rejected`。节点状态
 
 ```powershell
 aicross dispatch --project D:\work\project --preset economy --text-file D:\tmp\dispatch.txt
+aicross propose --project D:\work\project --preset blind --reason "需要独立核对" --text-file D:\tmp\dispatch.txt
 aicross status <run_id>
 aicross status <run_id> --wait --timeout 600
 aicross adopt <run_id> <node_id>
 aicross cancel <run_id>
 ```
 
-`--timeout` 单位为秒，默认 600。`--text-file` 接受 UTF-8，可带 UTF-8 BOM；其它编码返回参数错误。`--text` 与 `--text=...` 均不接受。
+`--timeout` 单位为秒，默认 600。`--text-file` 接受 UTF-8，可带 UTF-8 BOM；其它编码返回参数错误。`dispatch` 与 `propose` 均不接受 `--text` 或 `--text=...`；`propose` 的 `--reason` 只能是一句话。
 
 预设别名如下：
 
@@ -125,7 +157,10 @@ aicross cancel <run_id>
 
 ```powershell
 cargo run -- dispatch --project D:\work\project --preset economy --text-file D:\tmp\dispatch.txt
+cargo run -- propose --project D:\work\project --preset blind --reason "需要独立核对" --text-file D:\tmp\dispatch.txt
 ```
+
+ai-cross skill 收到 `/派发` 时，把当前请求写入 UTF-8 临时文件后调用 `aicross propose`；`/派发 共享`、`/派发 经济`、`/派发 盲审` 分别传 `--preset shared|economy|blind`。命令只生成建议，用户仍需在控制台采纳。脚本需要直接执行时继续使用 `aicross dispatch`。
 
 命令把 JSON 写到 stdout，把一行说明写到 stderr。每轮状态查询都会重读清单。HTTP 客户端单次请求总超时为 30 秒；`status --wait` 到时以退出码 1 结束。HTTP 200 但正文不是 JSON 时，以退出码 1 结束，并输出原文首行。
 

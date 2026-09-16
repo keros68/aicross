@@ -3987,6 +3987,7 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::orchestration::load_commander,
             crate::orchestration::save_commander,
             crate::console_api::list_console_runs,
+            crate::console_api::console_register_proposal,
             crate::console_api::console_run_update,
             crate::console_api::console_action_ack,
         ])

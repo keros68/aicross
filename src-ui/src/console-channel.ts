@@ -1,13 +1,13 @@
-import { commands, onConsoleAction, onConsoleDispatch, type ConsoleActionEvent, type ConsoleDispatchEvent, type ConsoleRun, type ConsoleRunNode, type DispatchNodeResult, type DispatchStageRequest } from './tauri';
+import { commands, onConsoleAction, onConsoleDispatch, onConsolePropose, type ConsoleActionEvent, type ConsoleDispatchEvent, type ConsoleProposal, type ConsoleProposalEvent, type ConsoleRun, type ConsoleRunNode, type DispatchNodeResult, type DispatchStageRequest } from './tauri';
 import type { AppState, TerminalSession } from './store/app-state';
-import type { Graph, GraphNode, Preset } from './graph/types';
+import type { DispatchableModel, Graph, GraphNode, Preset } from './graph/types';
 import { newGraph, newNodeId } from './graph/types';
 import { latestLeaf } from './graph/layout';
 import { fillRoot } from './graph/mutate';
 import { stamp } from './graph/stamp';
 import { loadDispatchSettings } from './graph/dispatch-settings';
 import { originalRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from './graph/context';
-import { buildNodeRequest, continuationRunner, continuationSession, dirtyWorktreeHintOf, dispatchableNodeIds, failedNodesWithoutResults, graphStage, leftoverNodes, presetWithRoleDefaults, quotaBlockedNodeIds, setReplyAdopted, startPipelineHeadless } from './graph/dispatch';
+import { buildNodeRequest, continuationRunner, continuationSession, dirtyWorktreeHintOf, dispatchableNodeIds, failedNodesWithoutResults, graphStage, isSmallEconomyTask, leftoverNodes, presetWithRoleDefaults, quotaBlockedNodeIds, setReplyAdopted, startPipelineHeadless } from './graph/dispatch';
 import { validateNode } from './graph/validate';
 
 export type ConsoleTabPlan =
@@ -50,6 +50,19 @@ export function selectConsoleGraph(state: Pick<AppState, 'graphs' | 'terminals' 
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
+export function proposalDisplayGraphId(state: Pick<AppState, 'graphs' | 'terminals' | 'activeTerminalId'>, project: string, requested = ''): string {
+  if (requested) return requested;
+  const wanted = normalizedPath(project);
+  const matching = state.terminals.find((tab) => {
+    if (tab.tool !== 'graph' || !tab.toolData) return false;
+    const graph = state.graphs[tab.toolData];
+    return normalizedPath(tab.folderPath) === wanted || normalizedPath(graph?.project) === wanted;
+  });
+  if (matching?.toolData) return matching.toolData;
+  const active = state.terminals.find((tab) => tab.id === state.activeTerminalId);
+  return active?.tool === 'graph' ? (active.toolData ?? '') : '';
+}
+
 function appendConsoleMaterial(graph: Graph, text: string, attachments: string[]): { graph: Graph; nodeId: string } {
   const root = graph.nodes[graph.root];
   if (root && root.user.text === '' && root.parents.length === 0) {
@@ -62,7 +75,7 @@ function appendConsoleMaterial(graph: Graph, text: string, attachments: string[]
 }
 
 function consolePreset(event: ConsoleDispatchEvent, presets: Preset[]): Preset | undefined {
-  if (event.targets?.length) return { id: `console-${event.run_id}`, name: '自定义模式', builtin: false, stages: [{ nodes: event.targets }] };
+  if (event.targets?.length) return { id: `console-${event.run_id}`, name: '', builtin: false, stages: [{ nodes: event.targets }] };
   return presets.find((preset) => preset.id === (event.preset ?? 'builtin-economy'));
 }
 
@@ -84,7 +97,245 @@ export interface ConsoleChannelContext {
   dispatch: (action: any) => void;
 }
 
-type ChannelCommands = Pick<typeof commands, 'listDispatchableModels' | 'listPresets' | 'loadRoles' | 'gitChanges' | 'previewDispatch' | 'dispatchGraphStage' | 'saveGraph' | 'consoleRunUpdate' | 'listConsoleRuns' | 'cancelDispatchNode' | 'consoleActionAck'>;
+type ChannelCommands = Pick<typeof commands, 'listDispatchableModels' | 'listPresets' | 'loadRoles' | 'gitChanges' | 'previewDispatch' | 'dispatchGraphStage' | 'saveGraph' | 'consoleRegisterProposal' | 'consoleRunUpdate' | 'listConsoleRuns' | 'cancelDispatchNode' | 'consoleActionAck'>;
+
+interface ProposalRuntime extends ConsoleProposal {
+  text: string;
+  attachments: string[];
+  targets?: ConsoleDispatchEvent['targets'];
+  customTargets?: ConsoleDispatchEvent['targets'];
+  local: boolean;
+  presets: Preset[];
+}
+
+interface LocalProposalInput {
+  project: string;
+  graphId?: string;
+  text: string;
+  attachments?: string[];
+}
+
+type ProposalInputEvent = ConsoleProposalEvent & { graph_id?: string; local?: boolean };
+
+export interface ConsoleProposalNotice {
+  id: string;
+  project: string;
+  graph_id: string;
+  text: string;
+}
+
+let proposalContext: ConsoleChannelContext | null = null;
+let proposalItems: ProposalRuntime[] = [];
+let proposalSnapshot: ConsoleProposal[] = [];
+let proposalNoticeSnapshot: ConsoleProposalNotice[] = [];
+const proposalListeners = new Set<() => void>();
+
+function publishProposals(next: ProposalRuntime[]): void {
+  proposalItems = next;
+  proposalSnapshot = next.map(({ presets: _presets, text: _text, attachments: _attachments, targets: _targets, customTargets: _customTargets, local: _local, ...proposal }) => proposal);
+  proposalListeners.forEach((listener) => listener());
+}
+
+function mergeProposal(proposal: ProposalRuntime): void {
+  proposalNoticeSnapshot = proposalNoticeSnapshot.filter((notice) =>
+    notice.graph_id !== proposal.graph_id && normalizedPath(notice.project) !== normalizedPath(proposal.project));
+  publishProposals([proposal, ...proposalItems.filter((item) => item.proposal_id !== proposal.proposal_id)]);
+}
+
+function proposalNotice(project: string, graphId: string, text: string): void {
+  proposalNoticeSnapshot = [
+    { id: crypto.randomUUID(), project, graph_id: graphId, text },
+    ...proposalNoticeSnapshot.filter((notice) => notice.graph_id !== graphId || normalizedPath(notice.project) !== normalizedPath(project)),
+  ];
+  proposalListeners.forEach((listener) => listener());
+}
+
+export function clearProposalNotice(id: string): void {
+  proposalNoticeSnapshot = proposalNoticeSnapshot.filter((notice) => notice.id !== id);
+  proposalListeners.forEach((listener) => listener());
+}
+
+export function subscribeConsoleProposals(listener: () => void): () => void {
+  proposalListeners.add(listener);
+  return () => proposalListeners.delete(listener);
+}
+
+export function getConsoleProposals(): ConsoleProposal[] { return proposalSnapshot; }
+export function getConsoleProposalNotices(): ConsoleProposalNotice[] { return proposalNoticeSnapshot; }
+
+export function proposalPresets(proposalId: string): Preset[] {
+  return proposalItems.find((item) => item.proposal_id === proposalId)?.presets ?? [];
+}
+
+export function updateProposalPreset(proposalId: string, presetId: string): void {
+  const next = proposalItems.map((item) => {
+    if (item.proposal_id !== proposalId) return item;
+    const preset = item.presets.find((value) => value.id === presetId);
+    return preset ? {
+      ...item,
+      preset_id: preset.id,
+      node_count: preset.stages.reduce((count, stage) => count + stage.nodes.length, 0),
+      targets: preset.id === `console-${item.proposal_id}` ? item.customTargets : undefined,
+    } : item;
+  });
+  publishProposals(next);
+}
+
+export function proposalsForTab(proposals: ConsoleProposal[], project: string, graphId = '', commander = false): ConsoleProposal[] {
+  const wanted = normalizedPath(project);
+  const matching = proposals.filter((proposal) =>
+    (graphId !== '' && proposal.graph_id === graphId) || (wanted !== '' && normalizedPath(proposal.project) === wanted));
+  return matching.length > 0 || !commander ? matching : proposals;
+}
+
+export function proposalForTab(proposals: ConsoleProposal[], project: string, graphId = '', commander = false): ConsoleProposal | undefined {
+  return proposalsForTab(proposals, project, graphId, commander)[0];
+}
+
+export function proposalNoticeForTab(notices: ConsoleProposalNotice[], project: string, graphId = '', commander = false): ConsoleProposalNotice | undefined {
+  const wanted = normalizedPath(project);
+  return notices.find((notice) =>
+    (graphId !== '' && notice.graph_id === graphId) || (wanted !== '' && normalizedPath(notice.project) === wanted))
+    ?? (commander ? notices[0] : undefined);
+}
+
+export function buildLocalProposalEvent(input: LocalProposalInput, idFactory: () => string = () => crypto.randomUUID()): ProposalInputEvent {
+  return {
+    proposal_id: idFactory(), project: input.project, graph_id: input.graphId ?? '', text: input.text,
+    attachments: input.attachments ?? [], preset: 'builtin-economy', reason: '', local: true,
+  };
+}
+
+export async function proposalDecision(
+  text: string,
+  attachments: string[],
+  useClassifier: boolean,
+  classify: () => Promise<boolean>,
+): Promise<{ propose: true } | { propose: false; skipped: string }> {
+  if (isSmallEconomyTask(text, attachments)) return { propose: false, skipped: '单步小任务' };
+  if (!useClassifier) return { propose: true };
+  try {
+    return await classify() ? { propose: true } : { propose: false, skipped: '归类模型判定不必派发' };
+  } catch (error) {
+    const reason = String(error).replace(/^Error:\s*/, '');
+    return { propose: false, skipped: `分类失败，已按不派处理${reason ? `：${reason}` : ''}` };
+  }
+}
+
+export function classificationTarget(value: string, models: DispatchableModel[]): DispatchableModel | undefined {
+  if (value) {
+    try {
+      const [agent, provider, model] = JSON.parse(value) as string[];
+      const selected = models.find((item) => item.agent === agent && item.provider === provider && item.id === model);
+      if (selected) return selected;
+    } catch {}
+    throw new Error('所选归类模型当前不可用');
+  }
+  return models.find((model) => /low|haiku|flash|mini/i.test(`${model.tier} ${model.id}`)) ?? models[0];
+}
+
+export function proposalClassificationVerdict(text: string): boolean {
+  return text.match(/\b(DISPATCH|SINGLE)\b/i)?.[1].toUpperCase() === 'DISPATCH';
+}
+
+export async function classifyProposal(event: ProposalInputEvent, settings: ReturnType<typeof loadDispatchSettings>, io: ChannelCommands): Promise<boolean> {
+  const resources = await io.listDispatchableModels();
+  const model = classificationTarget(settings.classificationModel, resources.models);
+  if (!model) throw new Error('没有可用的归类模型');
+  const prompt = `只判断下面任务是否值得交给多个模型或多个阶段并行处理。只输出 DISPATCH 或 SINGLE。\n\n任务：${event.text}`;
+  const result = await io.dispatchGraphStage({
+    runId: 'proposal-classify',
+    stage: 1,
+    projectDir: event.project,
+    settings: { timeoutSecs: Math.min(settings.timeoutSecs, 20), concurrency: 1, maxRequests: 1, redact: settings.redact, writeProjectDispatch: false, ccSwitchPath: settings.ccSwitchPath, validationCommand: '', acpEnabled: false, fixRoundLimit: 0 },
+    nodes: [{
+      nodeId: 'proposal-classify', stage: 1, agent: model.agent, provider: model.provider, model: model.id,
+      vendor: model.vendor, billingSource: model.billing_source, role: '顾问', tier: model.tier, thinking: model.thinking,
+      visibility: '共享', prompt, currentMessage: event.text, materials: event.attachments ?? [], sessionId: '', previousRunner: '', write: '只读',
+      originalRequest: event.text, upstreamArtifacts: [],
+    }],
+  });
+  const answer = result.results[0];
+  if (answer?.status !== 'ok') throw new Error(answer?.text || '归类调用失败');
+  return proposalClassificationVerdict(answer.text);
+}
+
+export async function runConsoleProposal(event: ProposalInputEvent, context: ConsoleChannelContext, io: ChannelCommands = commands): Promise<void> {
+  const settings = loadDispatchSettings();
+  const decision = await proposalDecision(event.text, event.attachments ?? [], settings.classifyProposals, () => classifyProposal(event, settings, io));
+  if (!decision.propose) {
+    if (!event.local) await io.consoleRunUpdate({ run_id: event.proposal_id, graph_id: '', status: 'skipped', nodes: [], leftover: [], in_flight_node_ids: [], reason: decision.skipped });
+    else proposalNotice(event.project, event.graph_id ?? '', decision.skipped);
+    return;
+  }
+  const [presetFile, roles] = await Promise.all([io.listPresets(), io.loadRoles()]);
+  const selected = event.targets?.length
+    ? { id: `console-${event.proposal_id}`, name: '', builtin: false, stages: [{ nodes: event.targets }] }
+    : presetFile.presets.find((preset) => preset.id === (event.preset ?? 'builtin-economy'));
+  if (!selected) {
+    if (!event.local) await io.consoleRunUpdate({ run_id: event.proposal_id, graph_id: '', status: 'rejected', nodes: [], leftover: [], in_flight_node_ids: [], reason: `找不到预设：${event.preset ?? 'builtin-economy'}` });
+    return;
+  }
+  const preset = presetWithRoleDefaults(selected, roles);
+  const graphId = proposalDisplayGraphId(context.getState(), event.project, event.graph_id);
+  const proposal: ProposalRuntime = {
+    proposal_id: event.proposal_id, project: event.project, graph_id: graphId, preset_id: preset.id,
+    node_count: preset.stages.reduce((count, stage) => count + stage.nodes.length, 0), reason: event.reason ?? '', created_at: new Date().toISOString(),
+    text: event.text, attachments: event.attachments ?? [], targets: event.targets, customTargets: event.targets, local: event.local === true,
+    presets: event.targets?.length ? [preset, ...presetFile.presets] : presetFile.presets.map((value) => presetWithRoleDefaults(value, roles)),
+  };
+  if (event.local) {
+    await io.consoleRegisterProposal(proposal.proposal_id, proposal.project, proposal.graph_id, proposal.reason);
+  } else {
+    await io.consoleRunUpdate({ run_id: event.proposal_id, graph_id: graphId, status: 'proposed', nodes: [], leftover: [], in_flight_node_ids: [], reason: proposal.reason });
+  }
+  mergeProposal(proposal);
+}
+
+export async function requestLocalProposal(input: LocalProposalInput): Promise<void> {
+  if (!proposalContext || input.text.trim() === '') return;
+  try {
+    await runConsoleProposal(buildLocalProposalEvent(input), proposalContext);
+  } catch (error) {
+    proposalNotice(input.project, input.graphId ?? '', `建议生成失败：${String(error).replace(/^Error:\s*/, '')}`);
+  }
+}
+
+export async function acceptConsoleProposal(proposalId: string, io: ChannelCommands = commands, contextOverride: ConsoleChannelContext | null = proposalContext): Promise<void> {
+  const proposal = proposalItems.find((item) => item.proposal_id === proposalId);
+  const context = contextOverride;
+  if (!proposal || !context) return;
+  try {
+    const limit = loadDispatchSettings().consoleRunLimit;
+    const activeRuns = await io.listConsoleRuns();
+    if (activeRuns.filter((run) => run.status === 'running' && run.run_id !== proposal.proposal_id).length >= limit) {
+      throw new Error(`同时在飞 run 已达上限 ${limit}`);
+    }
+    await io.consoleRunUpdate({ run_id: proposal.proposal_id, graph_id: proposal.graph_id, status: 'running', nodes: [], leftover: [], in_flight_node_ids: [], reason: proposal.reason });
+    publishProposals(proposalItems.filter((item) => item.proposal_id !== proposalId));
+    const event: ConsoleDispatchEvent = {
+      run_id: proposal.proposal_id, project: proposal.project, text: proposal.text, preset: proposal.preset_id,
+      attachments: proposal.attachments, targets: proposal.targets, reason: proposal.reason,
+    };
+    await runConsoleDispatch(event, context, io);
+  } catch (error) {
+    publishProposals(proposalItems.filter((item) => item.proposal_id !== proposalId));
+    const reason = String(error).replace(/^Error:\s*/, '');
+    proposalNotice(proposal.project, proposal.graph_id, reason.includes('同时在飞 run 已达上限') ? '在飞已满，稍后再采纳' : `采纳失败：${reason}`);
+  }
+}
+
+export async function dismissConsoleProposal(proposalId: string, io: Pick<ChannelCommands, 'consoleRunUpdate'> = commands): Promise<void> {
+  const proposal = proposalItems.find((item) => item.proposal_id === proposalId);
+  if (!proposal) return;
+  try {
+    await io.consoleRunUpdate({ run_id: proposal.proposal_id, graph_id: proposal.graph_id, status: 'dismissed', nodes: [], leftover: [], in_flight_node_ids: [], reason: proposal.reason });
+  } catch (error) {
+    const reason = String(error).replace(/^Error:\s*/, '');
+    proposalNotice(proposal.project, proposal.graph_id, `忽略失败：${reason}`);
+  }
+  publishProposals(proposalItems.filter((item) => item.proposal_id !== proposalId));
+}
 
 // 把流水线这次落图（previous → next 的差）合到 store 里的最新图 latest 上：
 // 只带走本次改动或新增的节点，其余节点以 latest 为准（用户的并发编辑保留）。纯函数，可测。
@@ -237,12 +488,31 @@ export async function runConsoleAction(event: ConsoleActionEvent, context: Conso
   }
 }
 
+export async function dismissStaleConsoleProposals(io: Pick<ChannelCommands, 'listConsoleRuns' | 'consoleRunUpdate'> = commands): Promise<void> {
+  const stale = (await io.listConsoleRuns()).filter((run) => run.status === 'proposed');
+  await Promise.all(stale.map((run) => io.consoleRunUpdate({
+    run_id: run.run_id,
+    graph_id: run.graph_id,
+    status: 'dismissed',
+    nodes: run.nodes,
+    leftover: run.leftover ?? [],
+    in_flight_node_ids: [],
+    reason: run.reason ?? '',
+  }).catch(() => {})));
+}
+
 export async function installConsoleChannel(context: ConsoleChannelContext): Promise<() => void> {
-  const [stopDispatch, stopAction] = await Promise.all([
-    onConsoleDispatch((event) => { void runConsoleDispatch(event, context).catch((error) => commands.consoleRunUpdate({ run_id: event.run_id, graph_id: '', status: 'rejected', nodes: [], leftover: [], in_flight_node_ids: [], reason: String(error) })); }),
+  proposalContext = context;
+  if (proposalItems.length === 0) await dismissStaleConsoleProposals();
+  const [stopDispatch, stopProposal, stopAction] = await Promise.all([
+    onConsoleDispatch((event) => { void runConsoleDispatch(event, context).catch((error) => commands.consoleRunUpdate({ run_id: event.run_id, graph_id: '', status: 'rejected', nodes: [], leftover: [], in_flight_node_ids: [], reason: String(error) }).catch(() => {})); }),
+    onConsolePropose((event) => { void runConsoleProposal(event, context).catch((error) => commands.consoleRunUpdate({ run_id: event.proposal_id, graph_id: '', status: 'rejected', nodes: [], leftover: [], in_flight_node_ids: [], reason: String(error) }).catch(() => {})); }),
     onConsoleAction((event) => { void runConsoleAction(event, context); }),
   ]);
-  return () => { stopDispatch(); stopAction(); };
+  return () => {
+    if (proposalContext === context) proposalContext = null;
+    stopDispatch(); stopProposal(); stopAction();
+  };
 }
 
 export function addWindowsPathEntry(value: string | null, entry: string): string | null {

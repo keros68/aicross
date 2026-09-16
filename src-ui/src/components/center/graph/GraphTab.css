@@ -18,6 +18,9 @@
    上沿，按钮文字就比左边的「可派 N 路」高出一截。高度交给基类的 min-height，
    正好填满 40px 减去 4px 上下 padding 的内容盒。 */
 .graph-dispatch-toolbar .graph-primary-btn { margin: 0; align-self: center; }
+.graph-propose-btn { flex: 0 0 auto; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--text-2); }
+.graph-propose-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.graph-propose-btn:disabled { opacity: .45; }
 .graph-resume { margin-right: auto; color: var(--text-2); }
 .graph-resume button { margin-left: 8px; height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: transparent; color: var(--text-1); }
 
@@ -538,6 +541,13 @@
 
 .graph-input-wrap {
   position: relative;
+  flex: 1 1 auto;
+}
+
+.graph-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .graph-input {
