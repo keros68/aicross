@@ -102,3 +102,9 @@
 ## TASK-19 复审剩余（09-16，低危，择期）
 
 60. `src-ui/src/components/left/Explorer.css` 仍有既有的 `12.5px` 字号，与 12 / 13 / 14 / 15 / 16 / 18 的整数阶梯不一致；本期不扩大到 Explorer 的全量字号整理。
+
+## TASK-19 R1 复审剩余（09-16，两家都判可交付；低危，择期）
+
+61. 缩放回退的幂等只在当前 JS 会话内（`appliedZoomModes` 是内存 WeakMap）；页面重载后若 WebView2 残留倍率且首次 setZoom 失败，仍可能叠一次 CSS 倍率。（DS 2）
+62. `rail-density-19.test.tsx` 的结构正则是贪婪匹配，状态槽之后再插一列不会红；只有插在名字与状态之间才红。（GLM 3）
+63. `docs/PRODUCT.md` 字号阶梯未记「终端与 pre 例外」，与清理后仅剩的两处 11px 字面上不一致。（GLM 4）
