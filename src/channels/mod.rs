@@ -68,7 +68,7 @@ pub fn classify_quota(
     let embedded_status = {
         static STATUS: OnceLock<Regex> = OnceLock::new();
         STATUS
-            .get_or_init(|| Regex::new(r#"(?ix)(?:\bhttp(?:\s+status)?\s+|[\"']?status[\"']?\s*[:=]\s*|\bcode\s*[:=]\s*|\bapi[_ -]?error(?:[_ -]?(?:status|code))?\s*[:=]?\s*)(402|403|429)\b"#).expect("quota status regex"))
+            .get_or_init(|| Regex::new(r#"(?ix)(?:\bhttp(?:/\d+(?:\.\d+)?|\s+status)?\s+|[\"']?status[\"']?(?:\s*[:=]\s*|\s+)|\bcode\s*[:=]\s*|\bapi[_ -]?error(?:[_ -]?(?:status|code))?\s*[:=]?\s*)(402|403|429)\b"#).expect("quota status regex"))
             .captures(stderr_or_body)
             .and_then(|capture| capture.get(1))
             .and_then(|value| value.as_str().parse::<u16>().ok())
@@ -82,7 +82,7 @@ pub fn classify_quota(
     let reset_limit = {
         static RESET: OnceLock<Regex> = OnceLock::new();
         RESET
-            .get_or_init(|| Regex::new(r"(?i)\bresets?\s+(?:at\b|in\b|\d)").expect("quota reset marker regex"))
+            .get_or_init(|| Regex::new(r"(?i)(?:\bresets?\s+(?:at|in)\b|\bretry[-_ ]?after\b)").expect("quota reset marker regex"))
             .is_match(stderr_or_body)
     };
     let chinese_limit = {
@@ -156,8 +156,9 @@ fn parse_quota_reset(text: &str) -> Option<String> {
     }
     static ISO: OnceLock<Regex> = OnceLock::new();
     if let Some(value) = ISO
-        .get_or_init(|| Regex::new(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})\b").expect("quota ISO regex"))
-        .find(text)
+        .get_or_init(|| Regex::new(r"(?i)(?:\bresets?\b(?:\s+(?:at|on))?|\bretry[-_ ]?after\b)\s*[:=]?\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})\b)").expect("quota ISO regex"))
+        .captures(text)
+        .and_then(|capture| capture.get(1))
     {
         if DateTime::parse_from_rfc3339(value.as_str()).is_ok() {
             return Some(value.as_str().to_string());
@@ -996,6 +997,7 @@ mod tests {
         for text in [
             "error at src/lib.rs:429:5",
             "server resets the connection",
+            "server resets 3 connections",
             "403 forbidden",
             "额度配置已加载",
             "配额字段不能为空",
@@ -1003,6 +1005,29 @@ mod tests {
         ] {
             assert!(classify_quota(text, Some(1), None).is_none(), "误判：{text}");
         }
+    }
+
+    #[test]
+    fn task34_quota_reset_does_not_use_unrelated_reset_prose_or_log_timestamp() {
+        let reset_prose_detected = classify_quota("server resets 3 connections", Some(1), None).is_some();
+        let hit = classify_quota(
+            "2026-09-16T08:30:00+08:00 ERROR usage limit reached",
+            Some(1),
+            None,
+        ).unwrap();
+        assert!(
+            !reset_prose_detected && hit.resets_at.is_none(),
+            "reset_prose_detected={reset_prose_detected}, log_reset={:?}",
+            hit.resets_at,
+        );
+    }
+
+    #[test]
+    fn task35_quota_classifier_accepts_status_code_context_without_bare_numbers() {
+        let status_space = classify_quota("status 429", Some(1), None).is_some();
+        let http_version = classify_quota("HTTP/1.1 429 Too Many Requests", Some(1), None).is_some();
+        let bare_number = classify_quota("worker returned 429 records", Some(1), None).is_some();
+        assert!(status_space && http_version && !bare_number, "status_space={status_space}, http_version={http_version}, bare_number={bare_number}");
     }
 
     #[test]
