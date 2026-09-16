@@ -30,12 +30,12 @@
 
 ## 08D-R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
-21. 验证窗口内用户写入项目的未跟踪文件会被回退定点删除（rollback 集 = 暂存 ∪ 验证后脏路径，分不清验证产物与用户文件）；至少在 note 明列被删路径，理想是移入隔离目录而非删除。（GLM 1）
-22. `unmerged_swarm_paths` 查询失败/截断一律按空处理 → 真冲突可能降成 skipped 且丢冲突清单；区分「无 unmerged」与「无法判定」。（GLM 2）
+21. ~~验证窗口内用户写入项目的未跟踪文件会被回退定点删除（rollback 集 = 暂存 ∪ 验证后脏路径，分不清验证产物与用户文件）；至少在 note 明列被删路径，理想是移入隔离目录而非删除。（GLM 1）~~ 已修（09-16，TASK-24）
+22. ~~`unmerged_swarm_paths` 查询失败/截断一律按空处理 → 真冲突可能降成 skipped 且丢冲突清单；区分「无 unmerged」与「无法判定」。（GLM 2）~~ 已修（09-16，TASK-24）
 23. ~~补丁新建文件回退后留下空目录。（GLM 3 / DS 3）~~ 已修（09-16，TASK-23）
 24. ~~验证脏路径 note 未走 20 条截断。（DS 4）~~ 已修（09-16，TASK-23）
-25. 临时补丁文件在系统 temp（含项目 diff），进程被强杀时残留；改落 `.dispatch/` 或加启动清理。（DS 5）
-26. 入口脏检查不过滤排除目录，批中验证留下的 `__pycache__` 会让下一批入口整批 skipped；plan 侧 `check_swarm_plan` 的 status 也未带 `-uall`。（DS 6/9、GLM 4）
+25. ~~临时补丁文件在系统 temp（含项目 diff），进程被强杀时残留；改落 `.dispatch/` 或加启动清理。（DS 5）~~ 已修（09-16，TASK-24）
+26. ~~入口脏检查不过滤排除目录，批中验证留下的 `__pycache__` 会让下一批入口整批 skipped；plan 侧 `check_swarm_plan` 的 status 也未带 `-uall`。（DS 6/9、GLM 4）~~ 已修（09-16，TASK-24）
 ## TASK-10 R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
 27. 损坏的 commander.json 拒写后前端 `.catch(() => {})` 吞错，快照不消费，每次重启 tab 反复重试且无提示；给保存失败一个可见提示。（GLM 1）
@@ -50,14 +50,14 @@
 
 ## TASK-14 R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
-33. 额度回滚失败只改返回前端的结果，该次尝试的派发记录 frontmatter/runner_note 里没有「回滚失败」。（GLM 2）
+33. ~~额度回滚失败只改返回前端的结果，该次尝试的派发记录 frontmatter/runner_note 里没有「回滚失败」。（GLM 2）~~ 已修（09-16，TASK-24）
 34. ~~`resets \d` 仍会命中「server resets 3 connections」；无 reset/retry 语义时 ISO 兜底取正文第一个时间戳。（GLM 3）~~ 已修（09-16，TASK-23）
 35. ~~`status 429`（空格无冒号）与 `HTTP/1.1 429` 不识别，方向是漏判。（GLM 4）~~ 已修（09-16，TASK-23）
 36. G1 收敛的「手动改过」集合不含「待核对」分区的勾选；provider 为空的目标写回额度会静默落空（与首次验证按 agent+id 命中不一致）。（DS 5/6）
 
 ## TASK-12 R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
-37. 结果屏「已跳过」行取全图所有带 skipped_reason 的节点，不按本轮过滤（与遗留卡同型，可随步状态收集本轮 id）。（GLM）
+37. ~~结果屏「已跳过」行取全图所有带 skipped_reason 的节点，不按本轮过滤（与遗留卡同型，可随步状态收集本轮 id）。（GLM）~~ 已修（09-16，TASK-24）
 38. 同批既有验收 NEEDS_FIX 又有跨分支执行 validation_failed 时，修正轮早退跳过验证失败处理，等待验收停在 draft，只能手动重派执行节点；内置单链预设到不了。（GLM / DS F）
 39. 验证重派轮不重生盲「验证」兄弟（修正轮会），重派轮产物没有 VALIDATION.txt；验证缓存键只有 run_id+项目，不含材料目录/命令；`run_one` 路径不清缓存；verify 通过后叫停仍会跑完验证命令。（GLM / DS E）
 40. 第 2 条（未发送不附材料）缺 run_one 端到端负例：首次验证失败 + 盲 + review_material_validation 走 run_one，断言无 VALIDATION.txt、validation_attached=false、命令未执行。（DS C）

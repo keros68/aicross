@@ -11,6 +11,7 @@ import manualSource from '../../../../docs/MANUAL.md?raw';
 import explainSource from '../../components/right/orchestration/ExplainOverlay.tsx?raw';
 import settingsSource from '../../components/common/SettingsModal.tsx?raw';
 import dispatchOverlaySource from '../../components/center/graph/DispatchOverlay.tsx?raw';
+import { collectRunSkippedIds, skippedNodesForRun } from '../../components/center/graph/DispatchOverlay';
 import {
   appendCorrectionRound,
   appendLeftover,
@@ -238,6 +239,21 @@ describe('TASK-12 修正轮上限与遗留节点', () => {
     expect(leftoverNodes(second.graph)).toHaveLength(1);
     expect(second.leftoverIds).toEqual([id]);
     expect(second.graph.nodes[id].leftover?.items).toEqual(['- 新条目']);
+  });
+
+  it('TASK-24 结果屏只收集并显示本轮新增的已跳过节点', () => {
+    const oldSkipped = node('old', ['r'], { reply: { status: 'draft', text: '', skipped_reason: '上一轮' }, target: target({ role: '验收' }) });
+    const current = node('current', ['r'], { reply: { status: 'draft', text: '' }, target: target({ role: '验收' }) });
+    const before = graph([node('r', []), oldSkipped, current]);
+    const after = { ...before, nodes: {
+      ...before.nodes,
+      current: { ...current, reply: { status: 'draft' as const, text: '', skipped_reason: '本轮' } },
+    } };
+    const ids = collectRunSkippedIds(before, after, new Set<string>());
+    expect([...ids]).toEqual(['current']);
+    expect(skippedNodesForRun(after, ids).map((item) => item.id)).toEqual(['current']);
+    expect(dispatchOverlaySource).toContain('skippedNodesForRun(graph, currentSkippedIds)');
+    expect(dispatchOverlaySource).not.toContain('Object.values(graph.nodes).filter((node) => !!node.reply?.skipped_reason)');
   });
 
   it('runStageLoop 把设置里的上限传给推进函数', async () => {

@@ -496,6 +496,8 @@ thread_local! {
     static SWARM_TEST_FAIL_PROJECT_HEAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SWARM_TEST_TRUNCATE_NEXT_CHANGED_STATUS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SWARM_TEST_DIRTY_BEFORE_ITEM: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static SWARM_TEST_UNMERGED_QUERY: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    static SWARM_TEST_LAST_PATCH_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 fn process_succeeded(result: &crate::process::ProcessResult) -> bool {
@@ -520,7 +522,7 @@ fn reset_swarm_item(
     created_directories: &[PathBuf],
     cancel_key: &str,
     timeout: Duration,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     if baseline.is_empty() {
         return Err("无法确定回退基线".into());
     }
@@ -542,7 +544,7 @@ fn restore_after_apply_conflict(
     created_directories: &[PathBuf],
     cancel_key: &str,
     timeout: Duration,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     #[cfg(test)]
     if SWARM_TEST_FAIL_NEXT_RESTORE.with(|flag| flag.replace(false)) {
         return Err("测试注入的定向恢复失败".into());
@@ -556,9 +558,9 @@ fn restore_swarm_paths(
     created_directories: &[PathBuf],
     cancel_key: &str,
     timeout: Duration,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     if selected.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut reset_args = vec!["reset", "-q", "HEAD", "--"];
     reset_args.extend(selected.iter().map(String::as_str));
@@ -589,12 +591,14 @@ fn restore_swarm_paths(
         return Err(if status.truncated { "恢复后项目状态输出被截断".into() } else { process_note(&status, "恢复后检查项目状态失败") });
     }
     let selected_set = selected.iter().map(String::as_str).collect::<HashSet<_>>();
+    let mut removed = Vec::new();
     for (path, untracked) in parse_git_status_paths(&status.stdout) {
         if untracked && selected_set.contains(path.as_str()) {
             let target = project.join(&path);
             let metadata = fs::symlink_metadata(&target).map_err(|error| format!("清理残留未跟踪文件失败 {}：{error}", target.display()))?;
             if metadata.is_file() || metadata.file_type().is_symlink() {
                 fs::remove_file(&target).map_err(|error| format!("清理残留未跟踪文件失败 {}：{error}", target.display()))?;
+                removed.push(path);
             }
         }
     }
@@ -624,7 +628,9 @@ fn restore_swarm_paths(
     if !remaining.is_empty() {
         return Err(format!("恢复后项目仍有改动：{}", summarize_paths(&remaining)));
     }
-    Ok(())
+    removed.sort();
+    removed.dedup();
+    Ok(removed)
 }
 
 fn missing_parent_directories(project: &Path, selected: &[String]) -> Vec<PathBuf> {
@@ -702,10 +708,15 @@ fn normalized_swarm_glob(pattern: &str, project: &Path) -> String {
 }
 
 fn check_swarm_plan_core(project: &Path, items: &[SwarmPlanItem], limit: usize) -> Result<SwarmPlanCheck, String> {
-    let status = git_result(&["status", "--porcelain"], project, None)?;
+    let status = git_result(&["status", "--porcelain=v1", "-z", "--untracked-files=all"], project, None)?;
     if !process_succeeded(&status) {
         return Err(process_note(&status, "读取 git 状态失败"));
     }
+    if status.truncated {
+        return Err("读取 git 状态失败：输出被截断".into());
+    }
+    let dirty = parse_git_status_paths(&status.stdout).into_iter()
+        .any(|(path, _)| !excluded_swarm_path(&path));
     let files = existing_project_files(project)?;
     let mut matched = Vec::new();
     let mut unmatched = Vec::new();
@@ -749,7 +760,7 @@ fn check_swarm_plan_core(project: &Path, items: &[SwarmPlanItem], limit: usize) 
             }
         }
     }
-    Ok(SwarmPlanCheck { dirty: !status.stdout.trim().is_empty(), overlaps, unmatched, note: notes.join("；") })
+    Ok(SwarmPlanCheck { dirty, overlaps, unmatched, note: notes.join("；") })
 }
 
 #[tauri::command]
@@ -1076,7 +1087,10 @@ fn project_dirty_paths(project: &Path, cancel_key: &str) -> Result<Vec<String>, 
     if status.truncated {
         return Err("读取 git 状态失败：输出被截断".into());
     }
-    Ok(parse_git_status_paths(&status.stdout).into_iter().map(|(path, _)| path).collect())
+    Ok(parse_git_status_paths(&status.stdout).into_iter()
+        .map(|(path, _)| path)
+        .filter(|path| !excluded_swarm_path(path))
+        .collect())
 }
 
 fn audit_staged_swarm_paths(
@@ -1115,11 +1129,17 @@ fn audit_staged_swarm_paths(
 
 fn write_swarm_patch(
     worktree: &Path,
+    log_dir: &Path,
     base: &str,
     selected: &[String],
     cancel_key: &str,
 ) -> Result<PathBuf, String> {
-    let patch_path = std::env::temp_dir().join(format!("aicross-swarm-{}.patch", Uuid::new_v4()));
+    let patch_dir = log_dir.join("patches");
+    fs::create_dir_all(&patch_dir)
+        .map_err(|error| format!("创建临时补丁目录失败 {}：{error}", patch_dir.display()))?;
+    let patch_path = patch_dir.join(format!("swarm-{}.patch", Uuid::new_v4()));
+    #[cfg(test)]
+    SWARM_TEST_LAST_PATCH_PATH.with(|path| *path.borrow_mut() = Some(patch_path.clone()));
     let output_arg = format!("--output={}", patch_path.to_string_lossy());
     let mut args = vec!["diff", "--binary", "--full-index", "--cached", base, output_arg.as_str(), "--"];
     args.extend(selected.iter().map(String::as_str));
@@ -1141,17 +1161,28 @@ fn write_swarm_patch(
     }
 }
 
-fn unmerged_swarm_paths(project: &Path, cancel_key: &str) -> Vec<String> {
-    let listed = match git_result(&["ls-files", "-u", "-z"], project, Some(cancel_key)) {
-        Ok(listed) if process_succeeded(&listed) && !listed.truncated => listed,
-        _ => return Vec::new(),
+fn unmerged_swarm_paths(project: &Path, cancel_key: &str) -> Result<Vec<String>, String> {
+    #[cfg(test)]
+    let query_mode = SWARM_TEST_UNMERGED_QUERY.with(|mode| mode.replace(0));
+    #[cfg(not(test))]
+    let query_mode = 0;
+    if query_mode == 1 {
+        return Err("冲突状态无法判定：测试注入的查询失败".into());
+    }
+    let listed = git_result(&["ls-files", "-u", "-z"], project, Some(cancel_key))
+        .map_err(|error| format!("冲突状态无法判定：{error}"))?;
+    if query_mode == 2 || listed.truncated {
+        return Err("冲突状态无法判定：git ls-files 输出被截断".into());
+    }
+    if !process_succeeded(&listed) {
+        return Err(format!("冲突状态无法判定：{}", process_note(&listed, "读取冲突文件清单失败")));
     };
     let mut paths = listed.stdout.split_terminator('\0')
         .filter_map(|record| record.split_once('\t').map(|(_, path)| path.replace('\\', "/")))
         .collect::<Vec<_>>();
     paths.sort();
     paths.dedup();
-    paths
+    Ok(paths)
 }
 
 fn merge_swarm_items_core(
@@ -1323,7 +1354,7 @@ fn merge_swarm_items_core(
                                                     append_note(&mut result.note, "范围内没有改动");
                                                     break 'merge_item;
                                                 }
-                                                let patch = match write_swarm_patch(&worktree, &base, &staged, &cancel_key) {
+                                                let patch = match write_swarm_patch(&worktree, &log_dir, &base, &staged, &cancel_key) {
                                                     Ok(path) => path,
                                                     Err(error) => {
                                                         result.result = "skipped".into();
@@ -1387,13 +1418,19 @@ fn merge_swarm_items_core(
                                                         }
                                                     }
                                                     Ok(apply) if !process_succeeded(&apply) => {
-                                                        let conflicts = unmerged_swarm_paths(project, &cancel_key);
-                                                        if conflicts.is_empty() {
-                                                            result.result = "skipped".into();
-                                                            append_note(&mut result.note, &format!("应用声明范围补丁失败：{}；worktree：{}", process_note(&apply, "git apply 未成功"), worktree.display()));
-                                                        } else {
-                                                            result.result = "conflict".into();
-                                                            append_note(&mut result.note, &format!("范围内文件冲突：{}；worktree：{}", summarize_paths(&conflicts), worktree.display()));
+                                                        match unmerged_swarm_paths(project, &cancel_key) {
+                                                            Ok(conflicts) if conflicts.is_empty() => {
+                                                                result.result = "skipped".into();
+                                                                append_note(&mut result.note, &format!("应用声明范围补丁失败：{}；worktree：{}", process_note(&apply, "git apply 未成功"), worktree.display()));
+                                                            }
+                                                            Ok(conflicts) => {
+                                                                result.result = "conflict".into();
+                                                                append_note(&mut result.note, &format!("范围内文件冲突：{}；worktree：{}", summarize_paths(&conflicts), worktree.display()));
+                                                            }
+                                                            Err(error) => {
+                                                                result.result = "conflict".into();
+                                                                append_note(&mut result.note, &format!("{error}；应用声明范围补丁失败；worktree：{}", worktree.display()));
+                                                            }
                                                         }
                                                         if let Err(error) = restore_after_apply_conflict(project, &staged, &created_directories, &cancel_key, timeout) {
                                                             result.result = "skipped".into();
@@ -1460,16 +1497,24 @@ fn merge_swarm_items_core(
                                                                             Err(error) => append_note(&mut result.note, &error),
                                                                             _ => {}
                                                                         }
-                                                                        if let Err(reset_error) = reset_swarm_item(project, &baseline, &rollback_paths, &created_directories, &cancel_key, timeout) {
-                                                                            result.result = "skipped".into();
-                                                                            append_note(&mut result.note, &format!("{reset_error}，项目状态不确定"));
-                                                                            halt_after_item = true;
-                                                                            halt_note = "上一件回退失败，项目状态不确定，已停止后续合并".into();
-                                                                        } else if cleanup_failed {
-                                                                            result.result = "skipped".into();
-                                                                            append_note(&mut result.note, "清理失败，已停止后续合并，请人工核对项目状态");
-                                                                            halt_after_item = true;
-                                                                            halt_note = "上一件清理失败，已停止后续合并，请人工核对项目状态".into();
+                                                                        match reset_swarm_item(project, &baseline, &rollback_paths, &created_directories, &cancel_key, timeout) {
+                                                                            Err(reset_error) => {
+                                                                                result.result = "skipped".into();
+                                                                                append_note(&mut result.note, &format!("{reset_error}，项目状态不确定"));
+                                                                                halt_after_item = true;
+                                                                                halt_note = "上一件回退失败，项目状态不确定，已停止后续合并".into();
+                                                                            }
+                                                                            Ok(removed) => {
+                                                                                if !removed.is_empty() {
+                                                                                    append_note(&mut result.note, &format!("回退删除了未跟踪路径：{}", summarize_paths(&removed)));
+                                                                                }
+                                                                                if cleanup_failed {
+                                                                                    result.result = "skipped".into();
+                                                                                    append_note(&mut result.note, "清理失败，已停止后续合并，请人工核对项目状态");
+                                                                                    halt_after_item = true;
+                                                                                    halt_note = "上一件清理失败，已停止后续合并，请人工核对项目状态".into();
+                                                                                }
+                                                                            }
                                                                         }
                                                                     }
                                                                 }
@@ -3367,7 +3412,7 @@ fn run_one_with_activity(
                 }
                 Err(error) => {
                     result.fallback_skipped = "回滚失败".into();
-                    append_runner_note(&mut result.runner_note, &format!("额度用尽，回滚本次改动失败：{error}"));
+                    append_result_runner_note(&mut result, &format!("额度用尽，回滚本次改动失败：{error}"));
                     current_attempt_rolled_back = true;
                     break;
                 }
@@ -3408,7 +3453,7 @@ fn run_one_with_activity(
             Ok(note) => quota_notes.push(note),
             Err(error) => {
                 result.fallback_skipped = "回滚失败".into();
-                append_runner_note(&mut result.runner_note, &format!("额度用尽，回滚本次改动失败：{error}"));
+                append_result_runner_note(&mut result, &format!("额度用尽，回滚本次改动失败：{error}"));
             }
         }
     }
@@ -4565,6 +4610,35 @@ fn append_runner_note(target: &mut String, note: &str) {
     target.push_str(note);
 }
 
+fn append_result_runner_note(result: &mut DispatchNodeResult, note: &str) {
+    append_runner_note(&mut result.runner_note, note);
+    if result.dispatch_file.is_empty() || result.frontmatter.is_empty() {
+        return;
+    }
+    if let Err(error) = sync_result_record_runner_note(result) {
+        append_runner_note(&mut result.runner_note, &format!("更新派发记录失败：{error}"));
+    }
+}
+
+fn sync_result_record_runner_note(result: &mut DispatchNodeResult) -> Result<(), String> {
+    let old_frontmatter = result.frontmatter.clone();
+    let yaml = old_frontmatter.strip_prefix("---\n")
+        .and_then(|value| value.strip_suffix("---"))
+        .ok_or_else(|| "派发记录 frontmatter 格式无效".to_string())?;
+    let mut record: DispatchRecord = serde_yaml::from_str(yaml)
+        .map_err(|error| format!("解析派发记录 frontmatter 失败：{error}"))?;
+    record.runner_note = result.runner_note.clone();
+    let frontmatter = serialize_frontmatter(&record)?;
+    let path = Path::new(&result.dispatch_file);
+    let body = fs::read_to_string(path)
+        .map_err(|error| format!("读取派发记录失败 {}：{error}", path.display()))?;
+    let suffix = body.strip_prefix(&old_frontmatter)
+        .ok_or_else(|| "派发记录 frontmatter 已变化".to_string())?;
+    write_atomic(path, format!("{frontmatter}{suffix}").as_bytes())?;
+    result.frontmatter = frontmatter;
+    Ok(())
+}
+
 fn strip_ansi(text: &str) -> String {
     static ANSI: OnceLock<Regex> = OnceLock::new();
     ANSI.get_or_init(|| Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\](?:[^\x1b\x07]|\x1b[^\\])*(?:\x07|\x1b\\))").expect("ansi regex"))
@@ -4987,6 +5061,57 @@ mod tests {
     }
 
     #[test]
+    fn task24_unmerged_query_failure_or_truncation_is_not_downgraded_to_skip() {
+        if !require_git("task24_unmerged_query_failure_or_truncation_is_not_downgraded_to_skip") { return; }
+        for mode in [1_u8, 2_u8] {
+            let (root, project, first, second) = swarm_repository(&format!("task24-unmerged-{mode}"));
+            track_in_project_and_worktrees(&project, &[&first, &second], "image.bin", &[0_u8, 1, 2, 3, 4]);
+            fs::write(first.join("image.bin"), [0_u8, 5, 6, 7, 8]).unwrap();
+            test_git(&project, &["rm", "image.bin"]);
+            fs::create_dir_all(project.join("image.bin")).unwrap();
+            fs::write(project.join("image.bin/child.txt"), "replacement\n").unwrap();
+            test_git(&project, &["add", "image.bin/child.txt"]);
+            test_git(&project, &["commit", "-m", "replace binary with directory"]);
+            SWARM_TEST_UNMERGED_QUERY.with(|value| value.set(mode));
+            let mut item = merge_item("unknown-conflict", 1, &first, "");
+            item.files = vec!["image.bin".into()];
+            let results = merge_swarm_items_core(
+                &project,
+                &format!("run-task24-unmerged-{mode}"),
+                vec![item],
+                "",
+                &DispatchSettings::default(),
+            ).unwrap();
+            assert_eq!(results[0].result, "conflict", "{results:?}");
+            assert!(results[0].note.contains("冲突状态无法判定"), "{}", results[0].note);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn task24_unmerged_query_distinguishes_conflict_none_and_unknown() {
+        if !require_git("task24_unmerged_query_distinguishes_conflict_none_and_unknown") { return; }
+        let (root, project, first, _) = swarm_repository("task24-unmerged-states");
+        assert!(unmerged_swarm_paths(&project, "task24-unmerged-none").unwrap().is_empty());
+
+        fs::write(first.join("shared.txt"), "worktree\n").unwrap();
+        test_git(&first, &["add", "shared.txt"]);
+        test_git(&first, &["commit", "-m", "worktree conflict"]);
+        fs::write(project.join("shared.txt"), "project\n").unwrap();
+        test_git(&project, &["add", "shared.txt"]);
+        test_git(&project, &["commit", "-m", "project conflict"]);
+        let merge = git_result(&["merge", "--no-edit", "swarm-item-1"], &project, None).unwrap();
+        assert!(!process_succeeded(&merge));
+        assert_eq!(unmerged_swarm_paths(&project, "task24-unmerged-conflict").unwrap(), ["shared.txt"]);
+        test_git(&project, &["merge", "--abort"]);
+
+        SWARM_TEST_UNMERGED_QUERY.with(|mode| mode.set(1));
+        let unknown = unmerged_swarm_paths(&project, "task24-unmerged-unknown").unwrap_err();
+        assert!(unknown.contains("冲突状态无法判定"), "{unknown}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn task08a_failed_validation_resets_only_the_failed_item() {
         if !require_git("task08a_failed_validation_resets_only_the_failed_item") { return; }
         let (root, project, first, second) = swarm_repository("validation");
@@ -5047,6 +5172,57 @@ mod tests {
         assert!(results[0].note.contains("dirty-19.txt"), "{}", results[0].note);
         assert!(!results[0].note.contains("dirty-20.txt"), "{}", results[0].note);
         assert!(results[0].note.contains("等 21 项"), "{}", results[0].note);
+        assert!(results[0].note.contains("回退删除了未跟踪路径："), "{}", results[0].note);
+        let record_path = fs::read_dir(project.join(".dispatch")).unwrap().filter_map(Result::ok)
+            .map(|entry| entry.path()).find(|path| path.extension().and_then(|value| value.to_str()) == Some("md")).unwrap();
+        let record = parse_record_file(&record_path).unwrap().0;
+        assert!(record.error.contains("回退删除了未跟踪路径："), "{}", record.error);
+        assert!(record.error.contains("等 21 项"), "{}", record.error);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task24_excluded_cache_does_not_dirty_plan_or_skip_merge_entry() {
+        if !require_git("task24_excluded_cache_does_not_dirty_plan_or_skip_merge_entry") { return; }
+        let (root, project, first, _) = swarm_repository("task24-entry-cache");
+        fs::create_dir_all(project.join("src/__pycache__")).unwrap();
+        fs::write(project.join("src/__pycache__/generated.pyc"), b"cache").unwrap();
+        fs::write(first.join("one.txt"), "one\n").unwrap();
+        let plan = check_swarm_plan_core(
+            &project,
+            &[SwarmPlanItem { item: 1, files: vec!["one.txt".into()] }],
+            4,
+        ).unwrap();
+        assert!(!plan.dirty, "排除目录不应让计划检查显示项目脏");
+        let results = merge_swarm_items_core(
+            &project,
+            "run-task24-entry-cache",
+            vec![merge_item("cache-safe", 1, &first, "")],
+            "",
+            &DispatchSettings::default(),
+        ).unwrap();
+        assert_eq!(results[0].result, "merged", "{results:?}");
+        assert!(project.join("one.txt").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task24_swarm_patch_is_created_under_this_dispatch_directory() {
+        if !require_git("task24_swarm_patch_is_created_under_this_dispatch_directory") { return; }
+        let (root, project, first, _) = swarm_repository("task24-patch-location");
+        fs::write(first.join("one.txt"), "one\n").unwrap();
+        SWARM_TEST_LAST_PATCH_PATH.with(|path| path.borrow_mut().take());
+        let results = merge_swarm_items_core(
+            &project,
+            "run-task24-patch-location",
+            vec![merge_item("patch-location", 1, &first, "")],
+            "",
+            &DispatchSettings::default(),
+        ).unwrap();
+        assert_eq!(results[0].result, "merged", "{results:?}");
+        let patch = SWARM_TEST_LAST_PATCH_PATH.with(|path| path.borrow_mut().take()).expect("patch path");
+        assert!(patch.starts_with(project.join(".dispatch")), "{}", patch.display());
+        assert!(!patch.exists(), "补丁应用后应删除：{}", patch.display());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -7822,6 +7998,10 @@ mod tests {
         assert!(result.fallback_to.is_empty());
         assert_eq!(fs::read_to_string(marker).unwrap().lines().collect::<Vec<_>>(), ["p0"]);
         assert!(result.runner_note.contains("回滚本次改动失败"), "{}", result.runner_note);
+        let record_body = fs::read_to_string(&result.dispatch_file).unwrap();
+        assert!(record_body.contains("回滚本次改动失败"), "{record_body}");
+        let record = parse_record_file(Path::new(&result.dispatch_file)).unwrap().0;
+        assert!(record.runner_note.contains("回滚本次改动失败"), "{}", record.runner_note);
         let _ = fs::remove_dir_all(root);
     }
 

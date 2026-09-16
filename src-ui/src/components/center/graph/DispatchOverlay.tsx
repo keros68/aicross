@@ -104,6 +104,22 @@ interface Props {
 export const resultStatus = (status: string) =>
   status === 'ok' ? '完成' : status === 'quota_exhausted' ? '额度用尽' : status === 'timeout' ? '超时' : status === 'identity_mismatch' ? '真身不符' : status === 'validation_failed' ? '验证命令未通过' : '失败';
 
+export function collectRunSkippedIds(
+  previous: Graph,
+  next: Graph,
+  current: ReadonlySet<string>,
+): Set<string> {
+  const collected = new Set(current);
+  for (const node of Object.values(next.nodes)) {
+    if (node.reply?.skipped_reason && previous.nodes[node.id] !== node) collected.add(node.id);
+  }
+  return collected;
+}
+
+export function skippedNodesForRun(graph: Graph, nodeIds: ReadonlySet<string>) {
+  return Object.values(graph.nodes).filter((node) => nodeIds.has(node.id) && !!node.reply?.skipped_reason);
+}
+
 export function convergeQuotaSelection(
   initialIds: string[],
   current: string[],
@@ -187,6 +203,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
   // （TASK-07C），本屏只消费。状态词也从同一份快照读，心跳还没到的行显示「排队」。
   const [results, setResults] = useState<DispatchNodeResult[]>([]);
   const [runLeftoverIds, setRunLeftoverIds] = useState<string[]>([]);
+  const [runSkippedIds, setRunSkippedIds] = useState<string[]>([]);
   const [runError, setRunError] = useState('');
   const [restartNodes, setRestartNodes] = useState<Set<string>>(new Set());
   const [settings] = useState(loadDispatchSettings);
@@ -362,6 +379,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     setPhase('running');
     setRunError('');
     setRunLeftoverIds([]);
+    setRunSkippedIds([]);
     // 新一轮先清进度（R1-2）：快照以 nodeId 为键、跨轮存活，上一轮没收到终态
     // 的快照（叫停、抛错、丢事件）会让新一行一出现就显示上一轮的耗时、甚至
     // 立刻挂空转胶囊。beginRun 同时把共享层的 runId 换成本轮的。
@@ -369,6 +387,8 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     // R1-7：确认屏取消勾选的「待核对」节点不进实际派发集合——这一层不派，
     // 后续层重算时也不再捡起来。
     const skipIds = new Set([...reviewIds].filter((id) => !nodeIds.includes(id)));
+    let workingGraph = graphWithTargets;
+    let collectedSkippedIds = new Set<string>();
     const pipeline = await startPipelineHeadless({
       graph: graphWithTargets,
       settings,
@@ -380,7 +400,12 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
         buildRequest,
         preview: (stageRequest: DispatchStageRequest) => commands.previewDispatch(stageRequest),
         dispatch: (stageRequest: DispatchStageRequest) => commands.dispatchGraphStage(stageRequest),
-        commit: onCommit,
+        commit: (next) => {
+          collectedSkippedIds = collectRunSkippedIds(workingGraph, next, collectedSkippedIds);
+          const committed = onCommit(next);
+          workingGraph = committed;
+          return committed;
+        },
         onPreview: (stagePreview) => { setPreview(stagePreview); setPreviewError(''); },
         onStage: (stageRequest) => setCurrentNodes(stageRequest.nodes),
         onResults: (collected) => setResults([...collected]),
@@ -398,6 +423,7 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     }
     if (pipeline.error) setRunError(pipeline.error);
     setRunLeftoverIds(pipeline.leftoverIds);
+    setRunSkippedIds([...collectedSkippedIds]);
     setResults([...pipeline.results]);
     setPhase('results');
   };
@@ -531,7 +557,8 @@ export function DispatchOverlay({ graph, models, projectDir, needsReview, retryN
     || (plannedRoles.has('出方案') && plannedRoles.has('执行') && plannedRoles.has('验收'));
   const smallTask = economy && isSmallEconomyTask(originalRequestOf(graph), graph.nodes[graph.root]?.user.attachments ?? []);
   const resultStages = groupResultsByStage(graph, results);
-  const skippedNodes = Object.values(graph.nodes).filter((node) => !!node.reply?.skipped_reason);
+  const currentSkippedIds = new Set(runSkippedIds);
+  const skippedNodes = skippedNodesForRun(graph, currentSkippedIds);
   // 遗留节点（TASK-12）：本轮验收结果到修正轮上限后生成的那些，结果屏展示同一清单。
   const currentLeftoverIds = new Set(runLeftoverIds);
   const leftovers = leftoverNodes(graph).filter((node) => currentLeftoverIds.has(node.id));
