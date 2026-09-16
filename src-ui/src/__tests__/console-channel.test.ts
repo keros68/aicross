@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { addWindowsPathEntry, consoleCancelTargets, consoleInflightCount, consoleTabPlan, mergeConsoleCommit, removeWindowsPathEntry, selectConsoleGraph } from '../console-channel';
+import { normalizedPath, addWindowsPathEntry, consoleCancelTargets, consoleInflightCount, consoleTabPlan, mergeConsoleCommit, removeWindowsPathEntry, selectConsoleGraph } from '../console-channel';
 import { newGraph } from '../graph/types';
 import { startPipelineHeadless } from '../graph/dispatch';
 import type { TerminalSession } from '../store/app-state';
@@ -99,5 +99,26 @@ describe('console cancel targets (R1 review N1)', () => {
     const graph = { ...base, nodes: { ...base.nodes, a: { ...base.nodes[base.root], id: 'a', parents: [base.root], reply: { status: 'pending', text: '' } }, b: { ...base.nodes[base.root], id: 'b', parents: [base.root], reply: { status: 'done', text: 'x' } } } } as typeof base;
     expect(consoleCancelTargets({ in_flight_node_ids: ['b'] }, graph).sort()).toEqual(['a', 'b']);
     expect(consoleCancelTargets({ in_flight_node_ids: [] }, undefined)).toEqual([]);
+  });
+});
+
+describe('project path normalization (09-16 live run)', () => {
+  it('strips the Windows extended-length prefix so a canonicalized path matches a tab folder', () => {
+    const fromRust = String.raw`\\?\C:\Users\me\AppData\Local\Temp\aicross-demo`;
+    const fromTab = String.raw`C:\Users\me\AppData\Local\Temp\aicross-demo`;
+    expect(normalizedPath(fromRust)).toBe(normalizedPath(fromTab));
+    expect(normalizedPath(fromRust)).toBe('c:/users/me/appdata/local/temp/aicross-demo');
+    expect(normalizedPath(String.raw`\\?\UNC\server\share\proj`)).toBe('//server/share/proj');
+    expect(normalizedPath('')).toBe('');
+  });
+
+  it('selectConsoleGraph finds the user graph opened in a tab when Rust sends a canonicalized path', () => {
+    const graph = { ...newGraph(String.raw`C:\proj`), id: 'g1', updated_at: '2026-09-16T00:00:00Z' };
+    const state = {
+      graphs: { g1: graph },
+      terminals: [{ id: 't1', tool: 'graph', toolData: 'g1', folderPath: String.raw`C:\proj` } as unknown as TerminalSession],
+      activeTerminalId: 't1',
+    };
+    expect(selectConsoleGraph(state, String.raw`\\?\C:\proj`)?.id).toBe('g1');
   });
 });

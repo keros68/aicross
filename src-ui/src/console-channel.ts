@@ -28,7 +28,14 @@ export function consoleInflightCount(runs: ConsoleRun[]): number {
     .reduce((count, run) => count + (run.in_flight_node_ids?.length ?? run.nodes.filter((node) => node.status === 'running').length), 0);
 }
 
-const normalizedPath = (value: string | null | undefined) => (value ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLocaleLowerCase();
+// Windows 扩展长度前缀要先剥掉（09-16 真机）：Rust 侧 canonicalize 给出的是
+// `\\?\C:\...`，而标签页的目录是 `C:\...`，不剥就永远认不出用户已开的那张图。
+export const normalizedPath = (value: string | null | undefined) => (value ?? '')
+  .replace(/^\\\\\?\\UNC\\/i, '//')
+  .replace(/^\\\\\?\\/, '')
+  .replace(/\\/g, '/')
+  .replace(/\/+$/, '')
+  .toLocaleLowerCase();
 
 export function selectConsoleGraph(state: Pick<AppState, 'graphs' | 'terminals' | 'activeTerminalId'>, project: string): Graph | undefined {
   const wanted = normalizedPath(project);
