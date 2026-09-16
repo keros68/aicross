@@ -160,18 +160,35 @@ impl ConsoleBackend for LiveBackend {
     }
     fn cancel(&self, run_id: &str) -> Result<ConsoleRun, ApiError> {
         let run = run_by_id(run_id)?;
-        if run.status == "proposed" {
-            let snapshot = dismiss_proposed_run(run)?;
-            emit_runs(&self.app, "proposal", &snapshot.graph_id, &[]);
-            return Ok(snapshot);
+        match cancel_kind(&run.status) {
+            CancelKind::Dismiss => {
+                let snapshot = dismiss_proposed_run(run)?;
+                emit_runs(&self.app, "proposal", &snapshot.graph_id, &[]);
+                Ok(snapshot)
+            }
+            CancelKind::NoOp => Ok(run),
+            CancelKind::Relay => {
+                relay_action(&self.app, "cancel", run_id, None)?;
+                run_by_id(run_id)
+            }
         }
-        if !should_relay_cancel(&run.status) { return Ok(run); }
-        relay_action(&self.app, "cancel", run_id, None)?;
-        run_by_id(run_id)
     }
 }
 
 fn should_relay_cancel(status: &str) -> bool { status == "running" }
+
+// cancel 对一条 run 该做什么，只看状态。抽成纯函数是为了把「重复 cancel 是无操作」
+// 这条钉死：建议第一次 cancel 会转成 dismissed，第二次再来时状态已不是 proposed，
+// 必须落到 NoOp 返回当前快照，不能再进 dismiss 分支报 409（09-16 复审 GLM 3 提出的
+// 场景，实测走不到，这里用测试锁住）。
+#[derive(Debug, PartialEq)]
+enum CancelKind { Dismiss, Relay, NoOp }
+
+fn cancel_kind(status: &str) -> CancelKind {
+    if status == "proposed" { return CancelKind::Dismiss; }
+    if should_relay_cancel(status) { return CancelKind::Relay; }
+    CancelKind::NoOp
+}
 
 fn dismiss_proposed_run(run: ConsoleRun) -> Result<ConsoleRun, ApiError> {
     apply_run_update(ConsoleRunUpdate {
@@ -789,6 +806,16 @@ mod tests {
         let snapshot = dismiss_proposed_run(run_by_id("proposal").unwrap()).unwrap();
         assert_eq!(snapshot.status, "dismissed");
         assert_eq!(run_by_id("proposal").unwrap().status, "dismissed");
+    }
+
+    #[test]
+    fn repeated_cancel_on_a_dismissed_proposal_is_a_noop() {
+        // 复审提出「第二次 cancel 会 409」，实测走不到 dismiss 分支：
+        // 第一次之后状态已是 dismissed，落 NoOp 返回当前快照。
+        assert_eq!(cancel_kind("proposed"), CancelKind::Dismiss);
+        assert_eq!(cancel_kind("dismissed"), CancelKind::NoOp);
+        assert_eq!(cancel_kind("running"), CancelKind::Relay);
+        assert_eq!(cancel_kind("done"), CancelKind::NoOp);
     }
 
     #[test]

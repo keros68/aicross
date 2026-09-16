@@ -11,6 +11,7 @@ import {
   proposalClassificationVerdict,
   proposalDecision,
   proposalDisplayGraphId,
+  proposalIsForeign,
   proposalPresets,
   proposalsForTab,
   runConsoleProposal,
@@ -170,7 +171,7 @@ describe('TASK-20 建议判定与本地入口', () => {
     await acceptConsoleProposal('limit-proposal', limitIo, context);
     expect(consoleRunUpdate).not.toHaveBeenCalled();
     expect(getConsoleProposals().some((item) => item.proposal_id === 'limit-proposal')).toBe(false);
-    expect(getConsoleProposalNotices().find((item) => item.project === 'D:/limit')?.text).toBe('在飞已满，稍后再采纳');
+    expect(getConsoleProposalNotices().find((item) => item.project === 'D:/limit')?.text).toBe('在飞已满，建议已撤回');
   });
 
   it('启动时把无法重建正文的遗留建议翻成 dismissed', async () => {
@@ -206,5 +207,28 @@ describe('TASK-20 建议判定与本地入口', () => {
     } as any;
     await expect(classifyProposal({ proposal_id: 'p', project: 'D:/p', text: '实现功能并补测试' }, { timeoutSecs: 600, classificationModel: '' } as any, io)).resolves.toBe(true);
     expect(requests[0]).toMatchObject({ runId: 'proposal-classify', settings: { timeoutSecs: 20 }, nodes: [{ nodeId: 'proposal-classify' }] });
+  });
+});
+
+describe('复审残留：外项目建议要带出目标目录（09-16 编排者补）', () => {
+  const proposal = {
+    proposal_id: 'p1', project: 'D:/work/x', graph_id: 'g-x', preset_id: 'builtin-economy',
+    node_count: 2, reason: '', created_at: '', text: '', attachments: [], local: false,
+  } as never;
+
+  it('同一张图上的建议不算外项目', () => {
+    expect(proposalIsForeign(proposal, 'D:/work/x', 'g-x')).toBe(false);
+  });
+
+  it('同一个项目目录（大小写不同）也不算外项目', () => {
+    expect(proposalIsForeign(proposal, 'd:/work/X', '')).toBe(false);
+  });
+
+  it('画在别的项目 tab 上时算外项目', () => {
+    expect(proposalIsForeign(proposal, 'D:/work/y', 'g-y')).toBe(true);
+  });
+
+  it('总指挥兜底（没有项目上下文）也算外项目', () => {
+    expect(proposalIsForeign(proposal, '', '')).toBe(true);
   });
 });

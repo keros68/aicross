@@ -188,6 +188,14 @@ export function proposalsForTab(proposals: ConsoleProposal[], project: string, g
   return matching.length > 0 || !commander ? matching : proposals;
 }
 
+// 兜底显示（目标项目没有打开的 tab，或总指挥条代显）时，条上要带出目标目录，
+// 否则项目 X 的建议画在项目 Y 的 tab 上，用户无从分辨就采纳了（09-16 复审 GLM 4）。
+export function proposalIsForeign(proposal: ConsoleProposal, project: string, graphId = ''): boolean {
+  if (graphId !== '' && proposal.graph_id === graphId) return false;
+  const wanted = normalizedPath(project);
+  return wanted === '' || normalizedPath(proposal.project) !== wanted;
+}
+
 export function proposalForTab(proposals: ConsoleProposal[], project: string, graphId = '', commander = false): ConsoleProposal | undefined {
   return proposalsForTab(proposals, project, graphId, commander)[0];
 }
@@ -321,7 +329,7 @@ export async function acceptConsoleProposal(proposalId: string, io: ChannelComma
   } catch (error) {
     publishProposals(proposalItems.filter((item) => item.proposal_id !== proposalId));
     const reason = String(error).replace(/^Error:\s*/, '');
-    proposalNotice(proposal.project, proposal.graph_id, reason.includes('同时在飞 run 已达上限') ? '在飞已满，稍后再采纳' : `采纳失败：${reason}`);
+    proposalNotice(proposal.project, proposal.graph_id, reason.includes('同时在飞 run 已达上限') ? '在飞已满，建议已撤回' : `采纳失败：${reason}`);
   }
 }
 

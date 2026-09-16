@@ -9,6 +9,7 @@ import {
   getConsoleProposals,
   proposalNoticeForTab,
   proposalForTab,
+  proposalIsForeign,
   proposalPresets,
   proposalsForTab,
   subscribeConsoleProposals,
@@ -195,11 +196,13 @@ export function ProposalBar({ project, graphId = '', commander = false }: { proj
   };
   const keys = proposalKeyText(ctrlEnter, inputFocused);
   const remaining = matching.length > 1 ? ` · 还有 ${matching.length - 1} 条` : '';
+  // 这条建议属于别的项目、只是兜底画在这里时，把目标目录带出来（09-16 复审 GLM 4）
+  const foreign = proposalIsForeign(proposal, project, graphId) ? ` · 目标 ${proposal.project}` : '';
   return (
     <div ref={barRef} className="proposal-bar" role="status" aria-label={proposalBarText(modeName, proposal.node_count, proposal.reason, ctrlEnter, inputFocused)}>
       <span>建议派发 · </span>
       <button type="button" className="proposal-bar-mode" disabled={busy} onClick={cycle}>{modeName}</button>
-      <span> · {proposal.node_count} 路 · {keys}{remaining}</span>
+      <span> · {proposal.node_count} 路 · {keys}{remaining}{foreign}</span>
       {proposal.reason && <span className="proposal-bar-reason"> · {proposal.reason}</span>}
       <span className="proposal-bar-actions">
         <button type="button" className="proposal-bar-action" disabled={busy} onClick={() => runAction('accept')}>采纳</button>
