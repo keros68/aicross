@@ -28,8 +28,8 @@
 4. **盲审**（两家、只读、不带主线程判断；提示词写到 scratchpad 的 task 文件，只描述契约与关注点）：
    - GLM-5.3-Flash：`python D:\work\agentteam\dist\ai-cross\references\cc_switch.py exec --provider "Zhipu GLM" --tier haiku --task-file <file> --timeout 1500`（默认工具 Read,Grep,Glob；15–25 分钟）。
    - 第二家默认是 **Antigravity 的 Gemini**（订阅额度，本机原本没有的厂商轴）：材料**全部内联**进 prompt，一行 NDJSON 走 stdin——
-     `cat in.ndjson | "C:/Users/keros68/AppData/Local/agy/bin/agy.exe" --model gemini-3.1-pro-high --print-timeout 10m --input-format stream-json --output-format stream-json`，
-     `in.ndjson` 是一行 `{"event":"user","message":{"role":"user","content":"…"}}`，结果取 `{"event":"result"}` 行的 `result.response`。
+     `cat in.ndjson | "C:/Users/keros68/AppData/Local/agy/bin/agy.exe" --model gemini-3.8-flash-high --print-timeout 10m --input-format stream-json --output-format stream-json`，
+     **用 3.8 Flash 档，不要用 3.1 Pro**（用户 09-16 指定）。`in.ndjson` 是一行 `{"event":"user","message":{"role":"user","content":"…"}}`，结果取 `{"event":"result"}` 行的 `result.response`。
      **它在无头模式下读不了文件**（权限被自动拒），所以 `git diff`、任务书、相关源码都要内联进去；prompt 里明写「不要使用任何工具」。别加 `--dangerously-skip-permissions`。
    - DeepSeek（`pi --provider deepseek --model deepseek-v4-flash -p --mode json --tools read,grep,find,ls --no-extensions --no-context-files --no-session`，用 `ds_extract.py` 取文本）**按次真扣钱，排最后**：
      只在 GLM 与 Antigravity 都不可用、或确实需要它的视角时才派，并在汇报里写明为什么非它不可（用户 09-16 明确要求少用）。
