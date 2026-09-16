@@ -118,3 +118,8 @@
 66. 右栏预设下拉（`PresetGroups.tsx` 的 `PresetSelect`）的 Esc 关闭挂在冒泡阶段，会被建议条的捕获监听短路：有建议条时打开下拉按 Esc，下拉不收、建议反被忽略。这是第三处 document 级 Esc（前两处 modal 已放行）。代价是再按一次 Esc，可接受；要收口就把下拉打开时的根节点并入放行判定。（GLM 2）
 67. `proposalTargetFlags` 用 `closest('input,textarea,[contenteditable]')`，属性选择器会把 `contenteditable="false"`（显式不可编辑）也算成输入控件，多排除一次按键。方向安全（多放行少抢键），元素罕见。改法：`[contenteditable="true"]`。（GLM 5）
 68. 归类调用固定了 `runId/nodeId = 'proposal-classify'`，两条建议并发走归类时 `runs/proposal-classify/dispatch/` 下的 STATE.md 与 raw 文件同名互写，最后写者胜。判定只取回复文本不读 STATE，结果不受影响，仅并发时日志失真。（GLM 6）
+
+## TASK-21 复审剩余（09-16，两家都判可交付；低危）
+
+69. 旧库重判比 `channels::known_model_route` 严一档：重判闭包多要求「响应的 provider 等于路由表 provider」，而 channels 侧只比模型名。当前唯一路由（deepseek 两边同 provider）下两者一致；将来若出现跨 provider 的官方路由，实跑冒烟能过、旧失败记录却翻不了案。方向保守，先记着。（GLM 4）
+70. 重判结果只在内存，落盘要等下一次任意写。所有消费方都走 `load()` 所以行为正确，与 `ensure_verification` / `ensure_resolved_id` 同一既有约定，盘上 `resources.json` 会长期保持旧值。（GLM 5）
