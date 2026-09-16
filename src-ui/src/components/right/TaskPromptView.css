@@ -103,7 +103,7 @@
 .task-prompt-count {
   flex-shrink: 0;
   font-family: var(--font, system-ui);
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--text-3, rgba(255, 255, 255, 0.3));
 }

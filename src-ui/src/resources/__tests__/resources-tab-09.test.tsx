@@ -168,14 +168,13 @@ describe('ResourceAgentList', () => {
     expect(markup).not.toContain('agent-badge-letters">CL');
   });
 
-  // TASK-09b：用户原话「claude 没有模型 id」。别名行里补真身，别名与 ID 相同
-  // 的模型只显示一次。
-  it('claude 别名行显示别名 + 真实 ID，非别名模型只显示一次', () => {
-    const text = visibleText(render());
+  // TASK-19：左栏只显示名称；别名真身进入悬停提示，不形成第二列。
+  it('claude 别名行只显示别名，真实 ID 进入悬停提示', () => {
+    const markup = render();
+    const text = visibleText(markup);
     expect(text).toContain('fable');
-    expect(text).toContain('claude-fable-5-1');
-    // claude-opus-5 的 resolved_id 与 id 相同：整栏里只出现一次
-    expect(text.split('claude-opus-5')).toHaveLength(2);
+    expect(markup).toContain('模型 ID：claude-fable-5-1');
+    expect(markup).not.toContain('resource-model-resolved');
   });
 
   // TASK-09b：多 provider 的 agent 按 provider 分小组，组内不再带后缀；
@@ -480,6 +479,7 @@ describe('modelHint', () => {
     expect(hint.split('\n')).toEqual([
       'glm-4.5',
       '状态：验证失败',
+      '登录状态：已登录',
       SOURCE,
       '最近验证：2026-09-15T10:02:00+08:00（zai/glm-4.5）',
       '失败原因：401: invalid api key',
@@ -490,9 +490,9 @@ describe('modelHint', () => {
   // 「来源未记录」——多 provider 的同名模型光看 source 分不清是哪个端点。
   it('provider 单列一行，没记来源退到「来源未记录」', () => {
     expect(modelHint(model({ id: 'a', agent: 'pi', provider: 'zai' }))).toBe(
-      'a\n状态：未验证\nprovider：zai\n来源未记录',
+      'a\n状态：未验证\nprovider：zai\n登录状态：已登录\n来源未记录',
     );
-    expect(modelHint(model({ id: 'a', agent: 'pi' }))).toBe('a\n状态：未验证\n来源未记录');
+    expect(modelHint(model({ id: 'a', agent: 'pi' }))).toBe('a\n状态：未验证\n登录状态：已登录\n来源未记录');
   });
 
   // TASK-09b：状态词与真身都进悬停——行内只剩一个点，这是唯一的读法。
@@ -660,7 +660,7 @@ describe('resources.css 的视觉纪律（修正轮 R1）', () => {
     expect(badge).toContain('height: 18px');
     expect(badge).toContain('color: var(--agent-tone');
     const fallback = /\.agent-badge-letters\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
-    expect(fallback).toContain('font-size: 11px');
+    expect(fallback).toContain('font-size: 12px');
     expect(css).not.toContain('font-size: 9px');
   });
 
@@ -722,7 +722,7 @@ describe('resources.css 的视觉纪律（修正轮 R1）', () => {
 
   it('已验证的绿点在浅色主题有专用深绿（--green 只有 2.2:1）', () => {
     expect(css).toContain('--verify-green: #1f7a3d');
-    const dot = /\.verify-verified \.verify-dot\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
+    const dot = /\.verify-dot\.verify-verified\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
     expect(dot).toContain('var(--verify-green)');
   });
 
@@ -735,7 +735,12 @@ describe('resources.css 的视觉纪律（修正轮 R1）', () => {
       '.resource-unverified-toggle',
       '.resource-manage-link',
     ]) {
-      const rule = new RegExp(`\\${selector}\\s*\\{[^}]*\\}`).exec(css)?.[0] ?? '';
+      const selectorIndex = css.indexOf(selector);
+      const openBrace = css.indexOf('{', selectorIndex);
+      const closeBrace = css.indexOf('}', openBrace);
+      const rule = selectorIndex >= 0 && openBrace >= 0 && closeBrace >= 0
+        ? css.slice(css.lastIndexOf('}', selectorIndex) + 1, closeBrace + 1)
+        : '';
       expect(rule, selector).not.toBe('');
       for (const [, value] of rule.matchAll(/(?:padding|gap):\s*([^;]+);/g)) {
         for (const size of value.trim().split(/\s+/)) {

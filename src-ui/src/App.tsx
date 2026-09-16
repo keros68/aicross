@@ -1,7 +1,13 @@
 // App.tsx — 3-panel IDE layout (frameless window)
 
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useAppState, useAppDispatch, matchHotkeyScheme } from './store/app-state';
+import {
+  UI_SCALE_CHANGED_EVENT,
+  createUiScaleShortcutController,
+  initializeUiScale,
+  type UiScale,
+} from './settings/ui-scale';
 import { retryInvoke } from './tauri';
 import { subscribeAgentStatus } from './lib/agent-status-bus';
 import { routeFileDrop } from './lib/file-drop';
@@ -101,6 +107,21 @@ export function App() {
 
   const leftPanel = useSlidingPanel(state.leftPanelHidden);
   const rightPanel = useSlidingPanel(state.rightPanelHidden);
+
+  useLayoutEffect(() => {
+    const initialScale = initializeUiScale();
+    const controller = createUiScaleShortcutController(initialScale);
+    const onKeyDown = (event: KeyboardEvent) => controller.handleKeyDown(event);
+    const onScaleChanged = (event: Event) => {
+      controller.sync((event as CustomEvent<UiScale>).detail);
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener(UI_SCALE_CHANGED_EVENT, onScaleChanged);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener(UI_SCALE_CHANGED_EVENT, onScaleChanged);
+    };
+  }, []);
 
   // Keep the documented side-panel shortcuts without mounting the retired
   // merged-input overlay. Matching events are captured before xterm can

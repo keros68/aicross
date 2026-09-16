@@ -40,7 +40,7 @@
   border-radius: var(--radius-xs);
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.02em;
   background: color-mix(in srgb, var(--agent-tone, var(--text-3)) 18%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent-tone, var(--text-3)) 40%, transparent);
@@ -110,15 +110,6 @@
   --verify-green: #1f7a3d;
 }
 
-.verify-dot-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--text-3);
-}
-
 .verify-dot {
   display: inline-block;
   flex-shrink: 0;
@@ -128,33 +119,12 @@
   background: var(--verify-gray);
 }
 
-/* 左栏里点是独立元素（没有 .verify-dot-wrap 外壳），色按自身 class 走；
-   接入页里点在外壳内，色按外壳 class 走。两套选择器都要留。 */
-.verify-dot.verify-verified,
-.verify-verified .verify-dot {
+.verify-dot.verify-verified {
   background: var(--verify-green);
 }
 
-.verify-dot.verify-failed,
-.verify-failed .verify-dot {
+.verify-dot.verify-failed {
   background: var(--red);
-}
-
-.verify-text {
-  font-size: 11px;
-  color: var(--text-3);
-  white-space: nowrap;
-}
-
-/* 胶囊只给异常状态（视觉纪律）：四态里只有「验证失败」配胶囊。 */
-.verify-pill {
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  font-size: 11px;
-  white-space: nowrap;
-  color: var(--red);
-  background: color-mix(in srgb, var(--red) 12%, transparent);
 }
 
 .resources-sr-only {
@@ -183,7 +153,7 @@
   border: 1px solid var(--red);
   border-radius: var(--radius-xs);
   color: var(--red);
-  font-size: 12px;
+  font-size: 13px;
   white-space: pre-wrap;
 }
 
@@ -201,7 +171,7 @@
   gap: 8px;
   padding: 24px 8px;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .resources-empty-link {
@@ -209,7 +179,7 @@
   border: none;
   padding: 0;
   color: var(--accent);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 
@@ -227,7 +197,7 @@
   border: none;
   border-radius: var(--radius-xs);
   color: var(--text-1);
-  font-size: 12px;
+  font-size: 14px;
   cursor: pointer;
   text-align: left;
 }
@@ -251,6 +221,7 @@
 }
 
 .resource-agent-name {
+  font-size: 14px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -261,7 +232,7 @@
   margin-left: auto;
   color: var(--text-3);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   opacity: 0.75;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -287,7 +258,7 @@
   gap: 8px;
   padding: 4px 8px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 16px;
 }
 
@@ -316,7 +287,8 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 4px 8px;
+  height: 30px;
+  padding: 0 8px;
   background: none;
   border: none;
   border-radius: var(--radius-xs);
@@ -341,33 +313,27 @@
   background: none;
 }
 
-/* 模型名用界面正文字体（TASK-09b）：左栏满屏都是模型名，等宽字在 12px 上
-   字距过宽、中英混排更挤。真身 ID 才是结构性文字，留等宽。 */
-.resource-model-id {
+/* 模型行只留名称与状态槽；真实 ID、provider 与时间进入悬停说明。 */
+.resource-model-name {
   flex: 1 1 auto;
   min-width: 0;
   color: var(--text-1);
-  font-size: 12px;
+  font-size: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 别名行的次文本：claude 的 fable → claude-fable-5-1。别名与 ID 相同的
-   模型不渲染这一段（modelSecondaryId 返回空串）。 */
-.resource-model-resolved {
-  flex: 0 1 auto;
-  min-width: 0;
-  color: var(--text-3);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.resource-model-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 8px;
 }
 
 /* 未验证清单的折叠行。它本身就是展开按钮，度量与模型行一致。 */
-.resource-unverified-toggle {
+.resource-unverified-toggle,
+.agent-card-unverified-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -377,18 +343,21 @@
   border: none;
   border-radius: var(--radius-xs);
   color: var(--text-3);
-  font-size: 11px;
+  min-height: 30px;
+  font-size: 12px;
   line-height: 16px;
   cursor: pointer;
   text-align: left;
 }
 
-.resource-unverified-toggle:hover {
+.resource-unverified-toggle:hover,
+.agent-card-unverified-toggle:hover {
   background: var(--bg-hover);
   color: var(--text-2);
 }
 
-.resource-unverified-toggle:focus-visible {
+.resource-unverified-toggle:focus-visible,
+.agent-card-unverified-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -404,7 +373,7 @@
   border: none;
   border-radius: var(--radius-xs);
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 16px;
   cursor: pointer;
   text-align: left;
@@ -429,7 +398,7 @@
   gap: 8px;
   padding: 4px 8px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 16px;
 }
 
@@ -460,7 +429,7 @@
   border: none;
   border-top: 1px solid var(--border);
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   text-align: left;
 }
@@ -499,13 +468,13 @@
 .resources-lead {
   margin: 0 0 16px;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .resources-count {
   margin: -8px 0 16px;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .resources-detect-all {
@@ -525,7 +494,7 @@
   border: 1px solid var(--border-input);
   border-radius: var(--radius-sm);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 
@@ -547,7 +516,7 @@
   border-radius: var(--radius-xs);
   background: var(--accent-bg);
   color: var(--text-2);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 /* ── agent 卡片网格 ───────────────────────────────────────────────────── */
@@ -581,7 +550,7 @@
 }
 
 .agent-card-name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -590,7 +559,7 @@
 
 .detection {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
   flex-shrink: 0;
 }
 
@@ -605,7 +574,7 @@
 .agent-card-version {
   color: var(--text-3);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -621,7 +590,7 @@
 
 .agent-empty {
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 /* 组头与左栏同一套：provider 名 + 计数（TASK-09b）。 */
@@ -631,7 +600,7 @@
   gap: 8px;
   margin: 4px 0;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 16px;
 }
 
@@ -661,20 +630,10 @@
   gap: 8px;
 }
 
-.agent-card-model-id {
+.agent-card-model-name {
+  flex: 1 1 auto;
   min-width: 0;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Claude 卡片上的别名 + 真实 ID（TASK-09b）。 */
-.agent-card-model-resolved {
-  min-width: 0;
-  color: var(--text-3);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -684,13 +643,8 @@
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  flex-shrink: 0;
-}
-
-.agent-card-model-quota {
-  color: var(--warning, #c18401);
-  font-size: 11px;
-  white-space: nowrap;
+  justify-content: center;
+  flex: 0 0 8px;
 }
 
 .fallback-order-editor {
@@ -703,7 +657,7 @@
   display: grid;
   gap: 4px;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .fallback-order-editor select {
@@ -714,7 +668,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .fallback-order-row span {
@@ -736,7 +690,7 @@
   background: none;
   border: none;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -760,7 +714,7 @@
   align-items: center;
   gap: 8px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .agent-card-model-fields select {
@@ -768,13 +722,13 @@
   border: 1px solid var(--border-input);
   border-radius: var(--radius-xs);
   color: var(--text-1);
-  font-size: 11px;
+  font-size: 12px;
   padding: 2px 8px;
 }
 
 .agent-card-model-meta {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 2px;
   word-break: break-all;
 }
@@ -795,7 +749,7 @@
   border: none;
   padding: 0;
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -814,13 +768,13 @@
 
 .agent-card-model-saving {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .agent-card-note {
   min-height: 14px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .agent-card-actions {
@@ -844,7 +798,7 @@
   border: 1px solid var(--border-input);
   border-radius: var(--radius-sm);
   color: var(--text-1);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1;
   cursor: pointer;
 }
@@ -906,7 +860,7 @@
   flex-direction: column;
   gap: 4px;
   color: var(--text-2);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .res-field input,
@@ -915,7 +869,7 @@
   border: 1px solid var(--border-input);
   border-radius: var(--radius-xs);
   color: var(--text-1);
-  font-size: 12px;
+  font-size: 13px;
   padding: 6px 8px;
 }
 

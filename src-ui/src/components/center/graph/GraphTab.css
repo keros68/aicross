@@ -25,7 +25,7 @@
 .dispatch-modal { width: min(1120px, 94vw); max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 18px 60px rgba(0,0,0,.35); }
 .dispatch-head { min-height: 56px; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
 .dispatch-title { color: var(--text-1); font-size: 16px; font-weight: 600; }
-.dispatch-sub { margin-top: 4px; color: var(--text-3); font: 11px var(--font-mono, monospace); }
+.dispatch-sub { margin-top: 4px; color: var(--text-3); font: 12px var(--font-mono, monospace); }
 .dispatch-close, .dispatch-actions button, .dispatch-card-actions button, .dispatch-running-row button, .dispatch-controls button { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: transparent; color: var(--text-2); line-height: 1; }
 .dispatch-body { overflow: auto; padding: 16px; }
 .dispatch-route-card, .dispatch-result-card { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); }
@@ -54,32 +54,32 @@
 .dispatch-running-row { display: grid; grid-template-columns: 1fr 90px auto; align-items: center; gap: 12px; min-height: 48px; border-bottom: 1px solid var(--border); font: 12px var(--font-mono, monospace); }
 /* 运行中一行：左列是路由 + 「已运行 / 工具」，右列是疑似空转胶囊 + 叫停（TASK-07-1） */
 .dispatch-running-main { display: grid; gap: 4px; min-width: 0; }
-.dispatch-running-detail { color: var(--text-3); font-size: 11px; }
+.dispatch-running-detail { color: var(--text-3); font-size: 12px; }
 .dispatch-running-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .dispatch-result-lines { margin-bottom: 12px; }
 .dispatch-result-grid { display: grid; gap: 12px; overflow-x: auto; }
 .dispatch-stage-column { display: grid; align-content: start; gap: 12px; min-width: 260px; }
 .dispatch-stage-heading { color: var(--text-2); font-size: 12px; font-weight: 600; }
 .dispatch-result-card.adopted { border-color: var(--accent); }
-.dispatch-result-head { display: flex; justify-content: space-between; gap: 8px; color: var(--text-2); font: 11px var(--font-mono, monospace); }
+.dispatch-result-head { display: flex; justify-content: space-between; gap: 8px; color: var(--text-2); font: 12px var(--font-mono, monospace); }
 .dispatch-result-status { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .dispatch-pin-status { color: var(--text-2); }
 .dispatch-pin-status.unpinned, .dispatch-pin-note { color: var(--warning, #c18401); }
 .dispatch-pin-note { margin-top: 8px; font-size: 12px; white-space: pre-wrap; }
 .dispatch-result-text { margin-top: 12px; max-height: 320px; overflow: auto; color: var(--text-1); font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 .dispatch-card-actions { display: flex; gap: 8px; margin-top: 12px; }
-.dispatch-usage { width: 100%; margin-top: 16px; border-collapse: collapse; color: var(--text-2); font: 11px var(--font-mono, monospace); }
+.dispatch-usage { width: 100%; margin-top: 16px; border-collapse: collapse; color: var(--text-2); font: 12px var(--font-mono, monospace); }
 .dispatch-usage th, .dispatch-usage td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; }
 .dispatch-usage-subtotal { color: var(--text-1); font-weight: 600; background: var(--bg-panel); }
 .dispatch-records { margin-top: 16px; color: var(--text-2); font-size: 12px; }
 .dispatch-records pre { max-height: 260px; overflow: auto; padding: 12px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-xs); white-space: pre-wrap; }
 .dispatch-empty { color: var(--text-3); font-size: 13px; }
-.dispatch-reason { margin-top: 4px; color: var(--text-3); font-size: 11px; }
+.dispatch-reason { margin-top: 4px; color: var(--text-3); font-size: 12px; }
 .dispatch-leftover { margin: 6px 0 0; padding-left: 20px; font-size: 12px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
 .dispatch-collapsed { position: fixed; right: 20px; bottom: 20px; z-index: 12000; display: inline-flex; align-items: center; height: 36px; padding: 0 16px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--bg-app); color: var(--text-1); box-shadow: 0 8px 28px rgba(0,0,0,.3); }
 .dispatch-artifacts { margin-top: 12px; color: var(--text-2); font-size: 12px; }
 .dispatch-artifacts pre, .dispatch-result-card details pre { max-height: 240px; overflow: auto; padding: 8px; background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-xs); white-space: pre-wrap; }
-.dispatch-worktree { margin: 6px 0; font: 11px var(--font-mono, monospace); overflow-wrap: anywhere; }
+.dispatch-worktree { margin: 6px 0; font: 12px var(--font-mono, monospace); overflow-wrap: anywhere; }
 
 /* ── 开始视图 ── */
 
@@ -152,7 +152,7 @@
 }
 
 .graph-start-item-time {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
@@ -248,12 +248,12 @@
 }
 
 .graph-node-role {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-2);
 }
 
 .graph-node-status {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 
@@ -271,7 +271,7 @@
 
 .graph-node-elapsed {
   flex: 1 1 100%;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--text-3);
   white-space: nowrap;
@@ -295,7 +295,7 @@
 
 .graph-mini-btn {
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-2);
   background: var(--bg-app);
   border: 1px solid var(--border);
@@ -374,7 +374,7 @@
 }
 
 .graph-col-ctx {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-2);
   background: transparent;
   border: 1px solid var(--border);
@@ -399,7 +399,7 @@
 
 /* 提示胶囊：黄色小胶囊，只标注不阻止（校验提示与疑似空转共用） */
 .hint-capsule {
-  font-size: 11px;
+  font-size: 12px;
   color: #d9a13b;
   border: 1px solid #d9a13b55;
   border-radius: var(--radius-pill);
@@ -434,7 +434,7 @@
 }
 
 .graph-ctx-att {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   font-family: var(--mono);
 }
@@ -483,7 +483,7 @@
 
 .graph-msg-meta {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   margin-bottom: 4px;
 }
@@ -503,7 +503,7 @@
 }
 
 .graph-msg-att {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   font-family: var(--mono);
   margin-top: 4px;
@@ -524,7 +524,7 @@
 
 .graph-current-node {
   align-self: flex-start;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-2);
   background: transparent;
   border: none;
@@ -573,7 +573,7 @@
 }
 
 .graph-at-group {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
   padding: 4px 12px 2px;
 }
@@ -668,7 +668,7 @@
   border: 1px solid var(--border);
   border-radius: 50%;
   color: var(--text-3);
-  font: 11px/1 var(--font-mono, monospace);
+  font: 12px/1 var(--font-mono, monospace);
 }
 
 .graph-firstrun-step.done .graph-firstrun-ord {
@@ -693,7 +693,7 @@
 
 .graph-firstrun-done {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
 }
 
