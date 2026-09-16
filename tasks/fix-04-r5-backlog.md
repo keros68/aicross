@@ -123,3 +123,10 @@
 
 69. 旧库重判比 `channels::known_model_route` 严一档：重判闭包多要求「响应的 provider 等于路由表 provider」，而 channels 侧只比模型名。当前唯一路由（deepseek 两边同 provider）下两者一致；将来若出现跨 provider 的官方路由，实跑冒烟能过、旧失败记录却翻不了案。方向保守，先记着。（GLM 4）
 70. 重判结果只在内存，落盘要等下一次任意写。所有消费方都走 `load()` 所以行为正确，与 `ensure_verification` / `ensure_resolved_id` 同一既有约定，盘上 `resources.json` 会长期保持旧值。（GLM 5）
+
+## TASK-22 R1 复审剩余（09-16，Gemini 判可交付；低危）
+
+71. 单线聊天路径没有额度预检：额度用尽的 `@` 目标照样派出，错误要等引擎回来才以消息形式出现。补全列表也不过滤 `quota_exhausted_until`。（GLM 6）
+72. 续聊 id 与消息流只在内存，关 tab 或重启即失。`docs/MANUAL.md` 已写明现状，第二期接持久化或 HistoryBoard 式恢复。（GLM 4）
+73. 直启路径的遗留辅助函数（`commanderNewTabLaunch` / `commanderTabTransition` / `commanderArgs`）已无生产调用方，只剩测试供养；第二期收口直启路径时一并删。（GLM 7）
+74. 改名只还原了 `tasks/` 下的 `review-*` / `REPORT-*` / `fix-*`；扫描测试目前只钉住前两类。`fix-*.md` 这类当时的任务清单同属历史记录，扫描范围可一并扩上。

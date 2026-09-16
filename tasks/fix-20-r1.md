@@ -8,13 +8,13 @@
 
 建议条的交互按下面三条定死，**文案必须与真正生效的键一致**：
 
-1. **鼠标路径永远存在**：建议条上加两个可点按钮「采纳」「忽略」，模式名本身可点（点一次换下一档，与 Tab 同序）。现在整条 `div` 没有任何 `onClick`，控制台 tab 里等于没有出路——这是底线，不是可选项。
+1. **鼠标路径永远存在**：建议条上加两个可点按钮「采纳」「忽略」，模式名本身可点（点一次换下一档，与 Tab 同序）。现在整条 `div` 没有任何 `onClick`，总指挥 tab 里等于没有出路——这是底线，不是可选项。
 2. **终端有焦点时只认 `Ctrl+Enter`**：`Esc` 与 `Tab` 一律放行给 PTY。在活着的 codex 会话里吞掉 Esc（打断生成）和 Tab（补全）是真实损失，不做。此时文案写「Ctrl+Enter 采纳 · 或点右侧按钮」，不出现 Esc / Tab 字样。
 3. **焦点在任何输入控件里时，一个键都不抢**：`INPUT` / `TEXTAREA` / contenteditable 全部排除（**单行 `input` 也算**，这正是第 2 条缺陷的来源）。只有焦点不在任何输入里时，才认「回车采纳 / Esc 忽略 / Tab 换模式」。
 
 ## 必修
 
-1. **控制台 tab 里建议条完全无法裁决（DS 1 / GLM 1 / 编排者已实测）**：xterm 的输入承载就是 `<textarea class="xterm-helper-textarea">`，PTY 有焦点时 `isPtyTarget` 与 `isMultilineTarget` **同时为真**，`proposalShortcutAction` 第一行 `targetMultiline` 早退，于是 Enter / Ctrl+Enter / Esc / Tab **一个都不归建议条**，而文案偏偏显示「Ctrl+Enter 采纳」。
+1. **总指挥 tab 里建议条完全无法裁决（DS 1 / GLM 1 / 编排者已实测）**：xterm 的输入承载就是 `<textarea class="xterm-helper-textarea">`，PTY 有焦点时 `isPtyTarget` 与 `isMultilineTarget` **同时为真**，`proposalShortcutAction` 第一行 `targetMultiline` 早退，于是 Enter / Ctrl+Enter / Esc / Tab **一个都不归建议条**，而文案偏偏显示「Ctrl+Enter 采纳」。
    编排者实测（临时用例，两条都红）：`{key:'Enter',ctrlKey:true,targetMultiline:true}` + `{commander:true,ptyFocused:true}` → `null`；`{key:'Escape',targetMultiline:true}` 同样 → `null`。
    **注意两家审查在这里的描述都不完全对**：GLM 说「PTY 聚焦时 Esc 被建议条抢走、codex 收不到」，以及它「核过没问题」里写的「PTY 聚焦时纯回车还给终端、Ctrl+Enter 采纳且文案同步」——这两句都与实测不符，真实情况是四个键全死。按上面的裁决 2 改：PTY 分支要先于 `targetMultiline` 判定，且只放行 `Ctrl+Enter`。
 2. **对话图输入框按回车 = 静默起一次真派发（DS 2 / GLM 2，最严重）**：捕获阶段的 `document` 监听 + `stopPropagation()` 把回车掐在到达 `graph-input` 之前，`sendInColumn` 根本不触发；用户以为在发消息，实际执行了采纳、真的开跑并花额度、可能写文件，草稿还留在框里像没发出去。按裁决 3 改：单行 `input` 一并排除。这条直接违反「永不自动执行」的定案，必须有一条能红的用例钉住。
