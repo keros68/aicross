@@ -3,6 +3,7 @@ import { DEFAULT_FIX_ROUND_LIMIT, FIX_ROUND_LIMIT_MAX } from './dispatch.ts';
 
 export interface UiDispatchSettings extends DispatchSettings {
   classificationModel: string;
+  classifyProposals: boolean;
   // 蜂群一次最多几件（TASK-08）：与并发上限同一处，默认 4，也是解析清单时的截断线。
   swarmLimit: number;
   consoleRunLimit: number;
@@ -13,6 +14,7 @@ export const DEFAULT_DISPATCH_SETTINGS: UiDispatchSettings = {
   concurrency: 3,
   maxRequests: 8,
   classificationModel: '',
+  classifyProposals: false,
   swarmLimit: 4,
   consoleRunLimit: 3,
   redact: true,
@@ -49,6 +51,7 @@ export function loadDispatchSettings(): UiDispatchSettings {
         ? Math.max(1, Math.min(100, Number(parsed.maxRequests)))
         : 8,
       classificationModel: typeof parsed.classificationModel === 'string' ? parsed.classificationModel : '',
+      classifyProposals: parsed.classifyProposals === true,
       swarmLimit: Number.isFinite(parsed.swarmLimit)
         ? Math.max(1, Math.min(4, Number(parsed.swarmLimit)))
         : 4,

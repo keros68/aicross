@@ -31,6 +31,8 @@ import { requestOrchestrationPanel } from '../../../lib/open-orchestration';
 import { FirstRunGuide } from './FirstRunGuide';
 import { shouldShowFirstRun, type FirstRunStepKey } from './first-run';
 import { PresetGroups } from '../../right/orchestration/PresetGroups';
+import { requestLocalProposal } from '../../../console-channel';
+import { LocalProposalButton } from '../ProposalBar';
 import './GraphTab.css';
 
 // 节点卡固定尺寸，图区横向滚动；不做缩放、不做拖拽（任务书硬约束）。
@@ -762,6 +764,7 @@ export function GraphTab({ session }: { session: TerminalSession }) {
               当前节点：{nodeLabel(endNode)}{stampName ? ` · ${stampName}` : ''}
             </button>
           )}
+          <div className="graph-input-row">
           <div className="graph-input-wrap">
             {atMatch && (
               <div className="graph-at-popup">
@@ -802,6 +805,12 @@ export function GraphTab({ session }: { session: TerminalSession }) {
                 if (e.key === 'Enter' && !e.nativeEvent.isComposing) sendInColumn(colIdx);
               }}
             />
+          </div>
+          <LocalProposalButton
+            text={value}
+            className="graph-propose-btn"
+            onPropose={(text, attachments) => void requestLocalProposal({ project: graph.project || session.folderPath || '', graphId: graph.id, text, attachments })}
+          />
           </div>
         </div>
       </div>

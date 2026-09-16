@@ -19,6 +19,7 @@ const CONSOLE_VERSION: u32 = 1;
 const RUN_LIMIT: usize = 200;
 const INFLIGHT_LIMIT: usize = 3;
 const FRONTEND_TIMEOUT: Duration = Duration::from_secs(5);
+const PROPOSAL_TIMEOUT: Duration = Duration::from_secs(25);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ConsoleManifest {
@@ -36,6 +37,7 @@ pub struct ConsoleDispatchRequest {
     #[serde(default)] pub preset: Option<String>,
     #[serde(default)] pub targets: Option<Vec<Target>>,
     #[serde(default)] pub attachments: Option<Vec<String>>,
+    #[serde(default)] pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -44,6 +46,13 @@ pub struct ConsoleDispatchResponse {
     pub accepted: bool,
     #[serde(default)] pub graph_id: String,
     #[serde(default)] pub node_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ConsoleProposalResponse {
+    pub proposal_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")] pub accepted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")] pub skipped: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -86,6 +95,12 @@ pub struct ConsoleDispatchEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ConsoleProposalEvent {
+    pub proposal_id: String,
+    #[serde(flatten)] pub request: ConsoleDispatchRequest,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ConsoleActionEvent {
     pub request_id: String,
     pub action: String,
@@ -116,6 +131,7 @@ pub struct ApiResponse { pub status: u16, pub body: String }
 
 pub trait ConsoleBackend: Send + Sync {
     fn dispatch(&self, request: ConsoleDispatchRequest) -> Result<ConsoleDispatchResponse, ApiError>;
+    fn propose(&self, request: ConsoleDispatchRequest) -> Result<ConsoleProposalResponse, ApiError>;
     fn status(&self, run_id: &str) -> Result<ConsoleRun, ApiError>;
     fn adopt(&self, run_id: &str, node_id: &str) -> Result<ConsoleRun, ApiError>;
     fn cancel(&self, run_id: &str) -> Result<ConsoleRun, ApiError>;
@@ -130,6 +146,9 @@ impl ConsoleBackend for LiveBackend {
     fn dispatch(&self, request: ConsoleDispatchRequest) -> Result<ConsoleDispatchResponse, ApiError> {
         relay_dispatch(request, FRONTEND_TIMEOUT, |event| self.app.emit("aicross:console-dispatch", event).map_err(|_| ()))
     }
+    fn propose(&self, request: ConsoleDispatchRequest) -> Result<ConsoleProposalResponse, ApiError> {
+        relay_proposal(request, PROPOSAL_TIMEOUT, |event| self.app.emit("aicross:console-propose", event).map_err(|_| ()))
+    }
     fn status(&self, run_id: &str) -> Result<ConsoleRun, ApiError> { run_by_id(run_id) }
     fn adopt(&self, run_id: &str, node_id: &str) -> Result<ConsoleRun, ApiError> {
         let run = run_by_id(run_id)?;
@@ -141,13 +160,47 @@ impl ConsoleBackend for LiveBackend {
     }
     fn cancel(&self, run_id: &str) -> Result<ConsoleRun, ApiError> {
         let run = run_by_id(run_id)?;
-        if !should_relay_cancel(&run.status) { return Ok(run); }
-        relay_action(&self.app, "cancel", run_id, None)?;
-        run_by_id(run_id)
+        match cancel_kind(&run.status) {
+            CancelKind::Dismiss => {
+                let snapshot = dismiss_proposed_run(run)?;
+                emit_runs(&self.app, "proposal", &snapshot.graph_id, &[]);
+                Ok(snapshot)
+            }
+            CancelKind::NoOp => Ok(run),
+            CancelKind::Relay => {
+                relay_action(&self.app, "cancel", run_id, None)?;
+                run_by_id(run_id)
+            }
+        }
     }
 }
 
 fn should_relay_cancel(status: &str) -> bool { status == "running" }
+
+// cancel 对一条 run 该做什么，只看状态。抽成纯函数是为了把「重复 cancel 是无操作」
+// 这条钉死：建议第一次 cancel 会转成 dismissed，第二次再来时状态已不是 proposed，
+// 必须落到 NoOp 返回当前快照，不能再进 dismiss 分支报 409（09-16 复审 GLM 3 提出的
+// 场景，实测走不到，这里用测试锁住）。
+#[derive(Debug, PartialEq)]
+enum CancelKind { Dismiss, Relay, NoOp }
+
+fn cancel_kind(status: &str) -> CancelKind {
+    if status == "proposed" { return CancelKind::Dismiss; }
+    if should_relay_cancel(status) { return CancelKind::Relay; }
+    CancelKind::NoOp
+}
+
+fn dismiss_proposed_run(run: ConsoleRun) -> Result<ConsoleRun, ApiError> {
+    apply_run_update(ConsoleRunUpdate {
+        run_id: run.run_id,
+        graph_id: run.graph_id,
+        status: "dismissed".into(),
+        nodes: run.nodes,
+        leftover: run.leftover,
+        in_flight_node_ids: Vec::new(),
+        reason: run.reason,
+    }).map_err(|reason| ApiError::new(409, reason))
+}
 
 pub fn route<B: ConsoleBackend>(backend: &B, token: &str, authorization: Option<&str>, method: &str, path: &str, body: &[u8]) -> ApiResponse {
     if !authorized(token, authorization) { return json_error(401, "令牌无效"); }
@@ -155,6 +208,10 @@ pub fn route<B: ConsoleBackend>(backend: &B, token: &str, authorization: Option<
         serde_json::from_slice::<ConsoleDispatchRequest>(body)
             .map_err(|error| ApiError::new(400, format!("请求 JSON 无效：{error}")))
             .and_then(|request| backend.dispatch(request)).and_then(json_value)
+    } else if method == "POST" && path == "/v1/propose" {
+        serde_json::from_slice::<ConsoleDispatchRequest>(body)
+            .map_err(|error| ApiError::new(400, format!("请求 JSON 无效：{error}")))
+            .and_then(|request| backend.propose(request)).and_then(json_value)
     } else if method == "GET" {
         run_path(path, "", |run_id| backend.status(run_id)).and_then(json_value)
     } else if method == "POST" && path.ends_with("/adopt") {
@@ -209,6 +266,16 @@ fn pending_actions() -> &'static Mutex<HashMap<String, mpsc::SyncSender<Result<(
     PENDING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+struct PendingProposal {
+    response: mpsc::SyncSender<Result<ConsoleProposalResponse, ApiError>>,
+    run: ConsoleRun,
+}
+
+fn pending_proposals() -> &'static Mutex<HashMap<String, PendingProposal>> {
+    static PENDING: OnceLock<Mutex<HashMap<String, PendingProposal>>> = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 #[tauri::command]
 pub fn list_console_runs() -> Vec<ConsoleRun> {
     runs().lock().map(|values| sorted_runs(&values)).unwrap_or_default()
@@ -232,10 +299,7 @@ fn emit_runs(app: &AppHandle, kind: &str, graph_id: &str, node_ids: &[String]) {
 
 fn relay_dispatch<F>(mut request: ConsoleDispatchRequest, timeout: Duration, emit: F) -> Result<ConsoleDispatchResponse, ApiError>
 where F: FnOnce(ConsoleDispatchEvent) -> Result<(), ()> {
-    if request.text.trim().is_empty() { return Err(ApiError::new(409, "派发文本不能为空")); }
-    let project = fs::canonicalize(PathBuf::from(request.project.trim())).map_err(|_| ApiError::new(404, "项目目录不存在"))?;
-    if !project.is_dir() { return Err(ApiError::new(404, "项目目录不存在")); }
-    request.project = project.to_string_lossy().into_owned();
+    validate_request(&mut request)?;
     let run_id = Uuid::new_v4().to_string();
     insert_inflight_run(ConsoleRun {
         run_id: run_id.clone(), graph_id: String::new(), project: request.project.clone(), status: "running".into(), nodes: Vec::new(),
@@ -257,6 +321,40 @@ where F: FnOnce(ConsoleDispatchEvent) -> Result<(), ()> {
     }
 }
 
+fn validate_request(request: &mut ConsoleDispatchRequest) -> Result<(), ApiError> {
+    if request.text.trim().is_empty() { return Err(ApiError::new(409, "派发文本不能为空")); }
+    let project = fs::canonicalize(PathBuf::from(request.project.trim())).map_err(|_| ApiError::new(404, "项目目录不存在"))?;
+    if !project.is_dir() { return Err(ApiError::new(404, "项目目录不存在")); }
+    request.project = project.to_string_lossy().into_owned();
+    Ok(())
+}
+
+fn relay_proposal<F>(mut request: ConsoleDispatchRequest, timeout: Duration, emit: F) -> Result<ConsoleProposalResponse, ApiError>
+where F: FnOnce(ConsoleProposalEvent) -> Result<(), ()> {
+    if request.reason.as_deref().is_some_and(|reason| reason.contains(['\r', '\n'])) {
+        return Err(ApiError::new(400, "reason 只能是一句话"));
+    }
+    validate_request(&mut request)?;
+    let proposal_id = Uuid::new_v4().to_string();
+    let run = ConsoleRun {
+        run_id: proposal_id.clone(), graph_id: String::new(), project: request.project.clone(), status: "proposed".into(), nodes: Vec::new(),
+        leftover: Vec::new(), started_at: Utc::now().to_rfc3339(), reason: request.reason.clone().unwrap_or_default(), in_flight_node_ids: Vec::new(),
+    };
+    let (sender, receiver) = mpsc::sync_channel(1);
+    pending_proposals().lock().map_err(|_| ApiError::new(409, "运行状态不可用"))?
+        .insert(proposal_id.clone(), PendingProposal { response: sender, run });
+    if emit(ConsoleProposalEvent { proposal_id: proposal_id.clone(), request }).is_err() {
+        pending_proposals().lock().ok().and_then(|mut pending| pending.remove(&proposal_id));
+        return Err(ApiError::new(503, "控制台界面未就绪"));
+    }
+    let response = receiver.recv_timeout(timeout);
+    pending_proposals().lock().ok().and_then(|mut pending| pending.remove(&proposal_id));
+    match response {
+        Ok(result) => result,
+        Err(_) => Err(ApiError::new(503, "控制台界面未就绪")),
+    }
+}
+
 fn relay_action(app: &AppHandle, action: &str, run_id: &str, node_id: Option<&str>) -> Result<(), ApiError> {
     let request_id = Uuid::new_v4().to_string();
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -271,7 +369,6 @@ fn relay_action(app: &AppHandle, action: &str, run_id: &str, node_id: Option<&st
     result
 }
 
-#[cfg(test)]
 fn insert_run(run: ConsoleRun) -> Result<(), ApiError> {
     let mut values = runs().lock().map_err(|_| ApiError::new(409, "运行状态不可用"))?;
     if values.len() >= RUN_LIMIT {
@@ -300,8 +397,37 @@ fn reject_run(run_id: &str, reason: &str) {
 }
 
 fn apply_run_update(update: ConsoleRunUpdate) -> Result<ConsoleRun, String> {
+    if let Some(mut pending) = pending_proposals().lock().map_err(|_| "运行状态不可用".to_string())?.remove(&update.run_id) {
+        if update.status == "skipped" {
+            let _ = pending.response.send(Ok(ConsoleProposalResponse { proposal_id: String::new(), accepted: None, skipped: Some(update.reason) }));
+            pending.run.status = "dismissed".into();
+            return Ok(pending.run);
+        }
+        if update.status == "rejected" {
+            let _ = pending.response.send(Err(ApiError::new(409, update.reason.clone())));
+            pending.run.status = "rejected".into();
+            pending.run.reason = update.reason;
+            return Ok(pending.run);
+        }
+        if update.status != "proposed" {
+            let _ = pending.response.send(Err(ApiError::new(409, "建议回执状态无效")));
+            return Err("建议回执状态无效".into());
+        }
+        pending.run.graph_id = update.graph_id;
+        insert_run(pending.run.clone()).map_err(|error| error.reason)?;
+        let _ = pending.response.send(Ok(ConsoleProposalResponse { proposal_id: update.run_id, accepted: Some(true), skipped: None }));
+        return Ok(pending.run);
+    }
     let mut values = runs().lock().map_err(|_| "运行状态不可用".to_string())?;
+    let running_count = values.values().filter(|value| value.status == "running").count();
     let run = values.get_mut(&update.run_id).ok_or_else(|| format!("找不到 run：{}", update.run_id))?;
+    if run.status == "proposed" && !matches!(update.status.as_str(), "running" | "dismissed") {
+        return Err("建议只能采纳或忽略".into());
+    }
+    if run.status == "dismissed" { return Err("已忽略的建议不能再更改".into()); }
+    if run.status == "proposed" && update.status == "running" && running_count >= INFLIGHT_LIMIT {
+        return Err(format!("同时在飞 run 已达上限 {INFLIGHT_LIMIT}"));
+    }
     // R1 复审 N2：终态（rejected / done / failed）的 run 不接受再被改回 running，
     // 否则 5 秒超时后迟到的前端回报会把已回 503 的 run 翻成运行中。
     if matches!(run.status.as_str(), "rejected" | "done" | "failed") && update.status == "running" {
@@ -325,9 +451,28 @@ fn apply_run_update(update: ConsoleRunUpdate) -> Result<ConsoleRun, String> {
 }
 
 #[tauri::command]
+pub fn console_register_proposal(app: AppHandle, proposal_id: String, project: String, graph_id: String, reason: String) -> Result<(), String> {
+    let snapshot = ConsoleRun {
+        run_id: proposal_id,
+        graph_id,
+        project,
+        status: "proposed".into(),
+        nodes: Vec::new(),
+        leftover: Vec::new(),
+        started_at: Utc::now().to_rfc3339(),
+        reason,
+        in_flight_node_ids: Vec::new(),
+    };
+    insert_run(snapshot.clone()).map_err(|error| error.reason)?;
+    emit_runs(&app, "proposal", &snapshot.graph_id, &[]);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn console_run_update(app: AppHandle, update: ConsoleRunUpdate) -> Result<(), String> {
     let snapshot = apply_run_update(update)?;
-    emit_runs(&app, "progress", &snapshot.graph_id, &snapshot.in_flight_node_ids);
+    let kind = if matches!(snapshot.status.as_str(), "proposed" | "dismissed") { "proposal" } else { "progress" };
+    emit_runs(&app, kind, &snapshot.graph_id, &snapshot.in_flight_node_ids);
     Ok(())
 }
 
@@ -437,7 +582,11 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
     }
 
-    fn clear_runs() { runs().lock().unwrap().clear(); pending_dispatches().lock().unwrap().clear(); }
+    fn clear_runs() {
+        runs().lock().unwrap().clear();
+        pending_dispatches().lock().unwrap().clear();
+        pending_proposals().lock().unwrap().clear();
+    }
 
     fn run(id: &str, status: &str, started: &str) -> ConsoleRun {
         ConsoleRun { run_id: id.into(), graph_id: "g".into(), project: "p".into(), status: status.into(), nodes: Vec::new(), leftover: Vec::new(), started_at: started.into(), reason: String::new(), in_flight_node_ids: Vec::new() }
@@ -450,6 +599,9 @@ mod tests {
         fn dispatch(&self, _request: ConsoleDispatchRequest) -> Result<ConsoleDispatchResponse, ApiError> {
             *self.run.lock().unwrap() = Some(run("run-1", "done", "2026-09-15T00:00:00Z"));
             Ok(ConsoleDispatchResponse { run_id: "run-1".into(), accepted: true, graph_id: String::new(), node_ids: Vec::new() })
+        }
+        fn propose(&self, _request: ConsoleDispatchRequest) -> Result<ConsoleProposalResponse, ApiError> {
+            Ok(ConsoleProposalResponse { proposal_id: "proposal-1".into(), accepted: Some(true), skipped: None })
         }
         fn status(&self, id: &str) -> Result<ConsoleRun, ApiError> { self.run.lock().unwrap().clone().filter(|value| value.run_id == id).ok_or_else(|| ApiError::new(404, "missing")) }
         fn adopt(&self, id: &str, _node: &str) -> Result<ConsoleRun, ApiError> { self.status(id) }
@@ -467,6 +619,16 @@ mod tests {
     #[test]
     fn wrong_token_is_401_before_routing() {
         assert_eq!(route(&FakeBackend::default(), "secret", Some("Bearer wrong"), "POST", "/v1/dispatch", b"not-json").status, 401);
+    }
+
+    #[test]
+    fn propose_route_returns_proposal_contract() {
+        let response = route(
+            &FakeBackend::default(), "secret", Some("Bearer secret"), "POST", "/v1/propose",
+            r#"{"project":"D:/p","text":"实现并验证修改","reason":"需要独立核对"}"#.as_bytes(),
+        );
+        assert_eq!(response.status, 200);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&response.body).unwrap(), serde_json::json!({ "proposal_id": "proposal-1", "accepted": true }));
     }
 
     #[test]
@@ -559,6 +721,7 @@ mod tests {
     #[test]
     fn completed_cancel_does_not_relay_or_change_status() {
         assert!(should_relay_cancel("running"));
+        assert!(!should_relay_cancel("proposed"));
         assert!(!should_relay_cancel("done"));
         assert!(!should_relay_cancel("failed"));
         assert!(!should_relay_cancel("rejected"));
@@ -591,5 +754,88 @@ mod tests {
         remove_manifest_at(&root).unwrap();
         assert!(!path.exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn proposal_frontend_ack_registers_without_dispatching() {
+        let _guard = test_guard();
+        clear_runs();
+        let project = std::env::temp_dir().join(format!("aicross-proposal-{}", Uuid::new_v4()));
+        fs::create_dir_all(&project).unwrap();
+        let response = relay_proposal(
+            ConsoleDispatchRequest { project: project.to_string_lossy().into(), text: "实现并验证修改".into(), ..Default::default() },
+            Duration::from_secs(1),
+            |event| {
+                std::thread::spawn(move || {
+                    apply_run_update(ConsoleRunUpdate { run_id: event.proposal_id, graph_id: "graph-1".into(), status: "proposed".into(), nodes: vec![], leftover: vec![], in_flight_node_ids: vec![], reason: String::new() }).unwrap();
+                });
+                Ok(())
+            },
+        ).unwrap();
+        assert_eq!(response.accepted, Some(true));
+        assert_eq!(run_by_id(&response.proposal_id).unwrap().status, "proposed");
+        let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn proposed_run_transitions_only_to_running_or_dismissed() {
+        let _guard = test_guard();
+        clear_runs();
+        insert_run(run("accepted", "proposed", "1")).unwrap();
+        let accepted = apply_run_update(ConsoleRunUpdate { run_id: "accepted".into(), graph_id: "g".into(), status: "running".into(), nodes: vec![], leftover: vec![], in_flight_node_ids: vec![], reason: String::new() }).unwrap();
+        assert_eq!(accepted.status, "running");
+
+        insert_run(run("ignored", "proposed", "2")).unwrap();
+        let ignored = apply_run_update(ConsoleRunUpdate { run_id: "ignored".into(), graph_id: "g".into(), status: "dismissed".into(), nodes: vec![], leftover: vec![], in_flight_node_ids: vec![], reason: String::new() }).unwrap();
+        assert_eq!(ignored.status, "dismissed");
+        assert!(apply_run_update(ConsoleRunUpdate { run_id: "ignored".into(), graph_id: "g".into(), status: "running".into(), nodes: vec![], leftover: vec![], in_flight_node_ids: vec![], reason: String::new() }).is_err());
+
+        clear_runs();
+        for index in 0..INFLIGHT_LIMIT { insert_inflight_run(run(&format!("r{index}"), "running", &format!("r{index}"))).unwrap(); }
+        insert_run(run("blocked", "proposed", "9")).unwrap();
+        let error = apply_run_update(ConsoleRunUpdate { run_id: "blocked".into(), graph_id: "g".into(), status: "running".into(), nodes: vec![], leftover: vec![], in_flight_node_ids: vec![], reason: String::new() }).unwrap_err();
+        assert!(error.contains("同时在飞 run 已达上限"));
+        assert_eq!(run_by_id("blocked").unwrap().status, "proposed");
+    }
+
+    #[test]
+    fn cancel_dismisses_proposed_run_without_relay() {
+        let _guard = test_guard();
+        clear_runs();
+        insert_run(run("proposal", "proposed", "1")).unwrap();
+        let snapshot = dismiss_proposed_run(run_by_id("proposal").unwrap()).unwrap();
+        assert_eq!(snapshot.status, "dismissed");
+        assert_eq!(run_by_id("proposal").unwrap().status, "dismissed");
+    }
+
+    #[test]
+    fn repeated_cancel_on_a_dismissed_proposal_is_a_noop() {
+        // 复审提出「第二次 cancel 会 409」，实测走不到 dismiss 分支：
+        // 第一次之后状态已是 dismissed，落 NoOp 返回当前快照。
+        assert_eq!(cancel_kind("proposed"), CancelKind::Dismiss);
+        assert_eq!(cancel_kind("dismissed"), CancelKind::NoOp);
+        assert_eq!(cancel_kind("running"), CancelKind::Relay);
+        assert_eq!(cancel_kind("done"), CancelKind::NoOp);
+    }
+
+    #[test]
+    fn skipped_small_proposal_is_not_registered() {
+        let _guard = test_guard();
+        clear_runs();
+        let project = std::env::temp_dir().join(format!("aicross-proposal-small-{}", Uuid::new_v4()));
+        fs::create_dir_all(&project).unwrap();
+        let response = relay_proposal(
+            ConsoleDispatchRequest { project: project.to_string_lossy().into(), text: "解释这句话".into(), ..Default::default() },
+            Duration::from_secs(1),
+            |event| {
+                std::thread::spawn(move || {
+                    apply_run_update(ConsoleRunUpdate { run_id: event.proposal_id, graph_id: String::new(), status: "skipped".into(), nodes: vec![], leftover: vec![], in_flight_node_ids: vec![], reason: "单步小任务".into() }).unwrap();
+                });
+                Ok(())
+            },
+        ).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), serde_json::json!({ "proposal_id": "", "skipped": "单步小任务" }));
+        assert!(list_console_runs().is_empty());
+        let _ = fs::remove_dir_all(project);
     }
 }

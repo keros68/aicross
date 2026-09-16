@@ -23,6 +23,7 @@ import { useAppState } from '../../store/app-state';
 import { registerFileDropTarget, formatPathsForInsert } from '../../lib/file-drop';
 import { parseFrontmatter, localizedField } from '../../utils/skill-meta';
 import './Gambit.css';
+import { LocalProposalButton } from './ProposalBar';
 
 interface GambitProps {
   sessionId: string;
@@ -35,6 +36,8 @@ interface GambitProps {
    *  signal to decide whether to clear the draft — failed sends preserve
    *  the text so the user never loses what they typed. */
   onSend: (text: string) => boolean;
+  onPropose: (text: string, attachments: string[]) => void;
+  showPropose: boolean;
   /** Whether the left/right side panels are currently hidden. When Gambit
    *  is docked at the bottom it spans the center panel only, so we need
    *  to know which sides are absent to compute the inset offsets. */
@@ -88,6 +91,8 @@ function GambitImpl({
   onDraftChange,
   onClose,
   onSend,
+  onPropose,
+  showPropose,
   leftPanelHidden,
   rightPanelHidden,
 }: GambitProps) {
@@ -909,6 +914,9 @@ function GambitImpl({
             {t('gambit.send_empty_hint')}
           </span>
         )}
+        {showPropose && (
+          <LocalProposalButton text={draft} attachments={pastedImagePaths} className="gambit-propose" onPropose={onPropose} />
+        )}
         <button
           className={`gambit-send${sendFailed ? ' gambit-send--failed' : ''}${!draft.trim() && attachedSkills.length === 0 ? ' gambit-send--empty' : ''}`}
           onClick={handleSend}
@@ -1003,4 +1011,3 @@ function fileToBase64(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
-

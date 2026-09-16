@@ -27,5 +27,5 @@ export function presetGroupOf(preset: Pick<Preset, 'id' | 'builtin'>): PresetGro
 
 export function presetDisplayName(preset: Pick<Preset, 'name' | 'builtin'>, userPresetCount: number): string {
   if (preset.builtin) return preset.name;
-  return userPresetCount > 1 ? `${USER_PRESET_LABEL} · ${preset.name}` : USER_PRESET_LABEL;
+  return userPresetCount > 1 && preset.name.trim() !== '' ? `${USER_PRESET_LABEL} · ${preset.name}` : USER_PRESET_LABEL;
 }

@@ -361,6 +361,7 @@ export const commands = {
   cancelDispatchNode: (runId: string, nodeId: string) =>
     invoke<boolean>('cancel_dispatch_node', { runId, nodeId }),
   listConsoleRuns: () => invoke<ConsoleRun[]>('list_console_runs'),
+  consoleRegisterProposal: (proposalId: string, project: string, graphId: string, reason: string) => invoke<void>('console_register_proposal', { proposalId, project, graphId, reason }),
   consoleRunUpdate: (update: ConsoleRunUpdate) => invoke<void>('console_run_update', { update }),
   consoleActionAck: (requestId: string, error?: string) => invoke<void>('console_action_ack', { requestId, error }),
 
@@ -646,11 +647,21 @@ export interface ConsoleRunNode {
   quota_resets_at?: string | null;
 }
 
+export interface ConsoleProposal {
+  proposal_id: string;
+  project: string;
+  graph_id: string;
+  preset_id: string;
+  node_count: number;
+  reason: string;
+  created_at: string;
+}
+
 export interface ConsoleRun {
   run_id: string;
   graph_id: string;
   project: string;
-  status: 'running' | 'done' | 'failed' | 'rejected';
+  status: 'proposed' | 'running' | 'done' | 'failed' | 'rejected' | 'dismissed';
   nodes: ConsoleRunNode[];
   leftover?: string[];
   started_at: string;
@@ -661,7 +672,7 @@ export interface ConsoleRun {
 export interface ConsoleRunUpdate {
   run_id: string;
   graph_id: string;
-  status: ConsoleRun['status'];
+  status: ConsoleRun['status'] | 'skipped';
   nodes: ConsoleRunNode[];
   leftover: string[];
   in_flight_node_ids: string[];
@@ -675,6 +686,11 @@ export interface ConsoleDispatchEvent {
   preset?: string;
   targets?: import('./graph/types').Target[];
   attachments?: string[];
+  reason?: string;
+}
+
+export interface ConsoleProposalEvent extends Omit<ConsoleDispatchEvent, 'run_id'> {
+  proposal_id: string;
 }
 
 export interface ConsoleActionEvent {
@@ -701,6 +717,11 @@ export async function onConsoleRunsChanged(
 export async function onConsoleDispatch(cb: (event: ConsoleDispatchEvent) => void): Promise<() => void> {
   const { listen } = await import('@tauri-apps/api/event');
   return listen<ConsoleDispatchEvent>('aicross:console-dispatch', (event) => cb(event.payload));
+}
+
+export async function onConsolePropose(cb: (event: ConsoleProposalEvent) => void): Promise<() => void> {
+  const { listen } = await import('@tauri-apps/api/event');
+  return listen<ConsoleProposalEvent>('aicross:console-propose', (event) => cb(event.payload));
 }
 
 export async function onConsoleAction(cb: (event: ConsoleActionEvent) => void): Promise<() => void> {

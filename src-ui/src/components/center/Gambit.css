@@ -482,6 +482,27 @@
     transition: background 0.12s, transform 0.08s, opacity 0.12s, filter 0.12s;
 }
 
+.gambit-propose {
+  min-width: 46px;
+  height: 30px;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.gambit-propose:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.gambit-propose:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
 .gambit-send:hover:not(.gambit-send--empty) {
     filter: brightness(1.12);
     transform: translateY(-1px);

@@ -5,6 +5,7 @@ import { shouldEnforceTerminalFocus } from '../../lib/focus-enforcer';
 import { onWindowForeground } from '../../lib/window-focus-filter';
 import { TierTerminal } from './TierTerminal';
 import { GraphTab } from './graph/GraphTab';
+import { ProposalBar } from './ProposalBar';
 // 技能面板按需载入（TASK-05 C 拆包）：它是启动页里的一个次级 tab。
 const SkillsPanel = lazy(() => import('./SkillsPanel').then((m) => ({ default: m.SkillsPanel })));
 import { FourSplitGrid } from './FourSplitGrid';
@@ -512,7 +513,7 @@ export function CenterPanel() {
     onConsoleRunsChanged((event) => {
       if (disposed) return;
       setConsoleRuns(event.runs);
-      if (!event.graph_id) return;
+      if (!event.graph_id || event.kind === 'proposal') return;
       commands.loadGraph(event.graph_id).then((graph) => {
         if (disposed || !graph) return;
         dispatch({ type: 'SET_GRAPH', graph });
@@ -1713,6 +1714,13 @@ export function CenterPanel() {
               position: 'relative'
             }}
           >
+            {(t.tool === 'graph' || t.commanderProfile || t.commanderTitle) && (
+              <ProposalBar
+                project={(t.toolData ? state.graphs[t.toolData]?.project : '') || t.folderPath || ''}
+                graphId={t.tool === 'graph' ? (t.toolData ?? '') : ''}
+                commander={Boolean(t.commanderProfile || t.commanderTitle)}
+              />
+            )}
             {t.tool === 'two-split' ? (
               <FourSplitGrid
                 tab={t}
