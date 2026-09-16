@@ -33,13 +33,15 @@ describe('TASK-18 模式做减法', () => {
     expect(presetGroupOf(preset('builtin-economy', '同名自定义', false))).toBe('自定义模式');
   });
 
-  it('右栏下拉按基础、自定义、更多排序，默认收起更多模式且经济模式仍为当前项', () => {
+  it('右栏下拉不带组头：基础、自定义、更多顺序不变，默认收起更多模式且经济模式仍为当前项', () => {
     const html = renderToStaticMarkup(
       <PresetSelect presets={PRESETS} selectedId="builtin-economy" onSelect={() => {}} />,
     );
     expect(html).toMatch(/<summary class="orch-preset-select"[^>]*>经济模式<\/summary>/);
     expect(html).toMatch(/aria-selected="true"[^>]*>经济模式<\/button>/);
-    expect(html.indexOf('基础模式')).toBeLessThan(html.indexOf('自定义模式'));
+    // 09-16：组头去掉，只剩「更多模式」那个折叠标题；顺序仍是 基础 → 自定义 → 更多
+    expect(html).not.toContain('>基础模式<');
+    expect(html.indexOf('共享模式')).toBeLessThan(html.indexOf('自定义模式'));
     expect(html.indexOf('自定义模式')).toBeLessThan(html.indexOf('更多模式'));
     expect(html).toMatch(/<details class="preset-more">/);
     expect(html).not.toMatch(/<details class="preset-more" open=""/);

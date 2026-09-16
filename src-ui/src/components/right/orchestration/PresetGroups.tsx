@@ -51,16 +51,12 @@ export function PresetGroups({ presets, onSelect, selectedId, includeFuture = fa
   if (presets.length === 0) {
     return <div className="preset-groups"><div className="preset-group-item" aria-disabled="true">无可用预设</div></div>;
   }
+  // 组头去掉（09-16 用户反馈）：基础三个 + 自定义就几行，加标题反而碎。
+  // 只有「更多模式」保留折叠标题，因为它要能收起来。
   return (
     <div className="preset-groups" role="listbox">
-      <div className="preset-group-label">基础模式</div>
       {items(basic)}
-      {custom.length > 0 && (
-        <>
-          <div className="preset-group-label">自定义模式</div>
-          {items(custom)}
-        </>
-      )}
+      {items(custom)}
       <details className="preset-more">
         <summary className="preset-group-label">更多模式</summary>
         {items(more)}
