@@ -269,3 +269,19 @@ describe('复审补漏（09-16 编排者）', () => {
     expect(hits).toEqual([]);
   });
 });
+
+
+describe('控制台聊天的布局（09-16 用户反馈）', () => {
+  it('聊天块占满父高，输入框才贴底', () => {
+    // 外层 .graph-shell 有高度但不是 flex 容器，只写 flex:1 会落空、整块缩成
+    // 内容高度，输入框就贴在标题下面、下方一大片空白。
+    const css = readFileSync(new URL('../components/center/ConsoleChat.css', import.meta.url), 'utf8');
+    const block = css.slice(css.indexOf('.console-chat {'), css.indexOf('}', css.indexOf('.console-chat {')));
+    expect(block).toContain('height: 100%');
+    expect(block).toContain('flex-direction: column');
+    // 消息列表吃掉剩余空间并自己滚动
+    const list = css.slice(css.indexOf('.console-message-list {'), css.indexOf('}', css.indexOf('.console-message-list {')));
+    expect(list).toContain('flex: 1');
+    expect(list).toContain('overflow: auto');
+  });
+});

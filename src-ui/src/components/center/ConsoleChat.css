@@ -1,5 +1,9 @@
 .console-chat {
   display: flex;
+  /* 外层 .graph-shell 有高度但不是 flex 容器，只写 flex:1 会落空、整块缩成内容
+     高度，于是输入框贴在标题下面、下方一大片空白（09-16 用户反馈）。这里显式
+     占满父高，消息列表才拿得到剩余空间、输入框才贴底。 */
+  height: 100%;
   flex: 1;
   min-height: 0;
   flex-direction: column;
