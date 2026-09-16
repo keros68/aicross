@@ -112,3 +112,9 @@
 64. ~~Tauri dev 的文件监听把 `src-ui/node_modules/.vite/vitest/**/results.json` 也算成变更，在开发窗口开着时跑 vitest 会触发整轮 Rust 重编 + 重启 app（09-16 窗口实测）。~~ 已加 `.taurignore`（09-16）；**下次启动 dev 时才生效，当时运行中的窗口未重启验证**。
 
 65. 接入管理页（`ResourcesOverlay`，`aria-modal="true"`）没有 Esc 关闭，只能点「关闭」。它内部有 17 处编辑态（手工添加 agent、模型详情等），直接加 Esc 会有「一键丢弃未保存输入」的风险，要先想清楚层级：Esc 先关子弹窗、都关完了再关整页。设置弹窗的 Esc 已在 `b20edbc` 修好（焦点守卫 + 打开即取焦点），这条是同一类。
+
+## TASK-20 R1 复审剩余（09-16，两家都判可交付；低危）
+
+66. 右栏预设下拉（`PresetGroups.tsx` 的 `PresetSelect`）的 Esc 关闭挂在冒泡阶段，会被建议条的捕获监听短路：有建议条时打开下拉按 Esc，下拉不收、建议反被忽略。这是第三处 document 级 Esc（前两处 modal 已放行）。代价是再按一次 Esc，可接受；要收口就把下拉打开时的根节点并入放行判定。（GLM 2）
+67. `proposalTargetFlags` 用 `closest('input,textarea,[contenteditable]')`，属性选择器会把 `contenteditable="false"`（显式不可编辑）也算成输入控件，多排除一次按键。方向安全（多放行少抢键），元素罕见。改法：`[contenteditable="true"]`。（GLM 5）
+68. 归类调用固定了 `runId/nodeId = 'proposal-classify'`，两条建议并发走归类时 `runs/proposal-classify/dispatch/` 下的 STATE.md 与 raw 文件同名互写，最后写者胜。判定只取回复文本不读 STATE，结果不受影响，仅并发时日志失真。（GLM 6）
