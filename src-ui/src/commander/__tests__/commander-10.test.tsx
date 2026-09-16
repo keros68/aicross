@@ -486,7 +486,7 @@ describe('TASK-10 (3) 启动器组件', () => {
   });
 });
 
-describe('TASK-15-R1 复审：启动器只在可能直启时才不画', () => {
+describe('启动器什么时候不画（09-16 裁决：不再按默认直启）', () => {
   const ok: CommanderSettings = { version: 1, agent: 'claude', provider: '', model: 'fable', cwd: 'C:/x', updated_at: '' };
   const none: CommanderSettings = { ...ok, agent: '' };
   it('默认未读到 → 不画（等一拍）；读到但没有默认 → 立刻画，探测期间也画', () => {
@@ -494,10 +494,12 @@ describe('TASK-15-R1 复审：启动器只在可能直启时才不画', () => {
     expect(commanderLauncherHidden(none, {}, false, false)).toBe(false);
     expect(commanderLauncherHidden(none, { claude: true }, true, false)).toBe(false);
   });
-  it('默认有效：探测未完成不画；探测完可用且 tab 未登记不画；已登记或不可用则画', () => {
-    expect(commanderLauncherHidden(ok, {}, false, false)).toBe(true);
-    expect(commanderLauncherHidden(ok, { claude: true }, true, false)).toBe(true);
-    expect(commanderLauncherHidden(ok, { claude: true }, true, true)).toBe(false);
+  it('有可用默认也照样画：不替用户按下启动（09-16 用户裁决）', () => {
+    // 原来这一格期望 true（直接起会话）。用户实测：每开一个新 tab 就无声起一个
+    // codex，想换一家得先关掉它。上次的选择仍会作为预选项填好，只是不自动按下。
+    expect(commanderLauncherHidden(ok, {}, false, false)).toBe(true); // 还没扫完，过渡态
+    expect(commanderLauncherHidden(ok, { claude: true }, true, false)).toBe(false);
+    expect(commanderLauncherHidden(ok, { claude: true }, true, true)).toBe(true); // 已起过就别盖回来
     expect(commanderLauncherHidden(ok, { claude: false }, true, false)).toBe(false);
   });
 });

@@ -203,6 +203,17 @@ export function shouldShowNoCommanderModels(
 // 空白总指挥 tab 什么时候不画启动器（R1 复审 1）：只有「可能直启」时才不画——
 // 默认还没读到、或默认有效且（探测未完成 / 探测完可用且该 tab 还没登记过）。
 // 默认读到了但没有可用默认时立刻画启动器，探测期间由启动器自己显示「探测中…」。
+/**
+ * 启动器什么时候**不**显示。
+ *
+ * 09-16 用户裁决：**永远先让用户自己选 agent，不要用上次的默认直接把会话起起来。**
+ * 原来的规则是「有可用默认就直接起」（09-15 定案），实测下来每开一个新 tab 都会
+ * 无声地起一个 codex——用户想换一家得先把它关掉，等于替用户做了决定。
+ *
+ * 现在只在两种「还不知道该显示什么」的过渡态下隐藏：设置还没读回来（`settings === null`），
+ * 或者本机 agent 还没扫完（`!toolsScanned`）。这两种都是一帧的事，不是直启。
+ * 上次的选择仍然有用——启动器会把它作为预选项填好，回车即可，只是不再替用户按下去。
+ */
 export function commanderLauncherHidden(
   settings: CommanderSettings | null,
   installed: Record<string, boolean>,
@@ -212,7 +223,8 @@ export function commanderLauncherHidden(
   if (settings === null) return true;
   if (!isCommanderAgent(settings.agent)) return false;
   if (!toolsScanned) return true;
-  return commanderDefaultAvailable(settings, installed, toolsScanned) && !tabRegistered;
+  // 这个 tab 已经起过会话了，就别再把启动器盖回去。
+  return tabRegistered;
 }
 
 export function commanderDefaultAvailable(
