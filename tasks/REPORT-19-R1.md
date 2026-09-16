@@ -105,3 +105,7 @@ vite v8.0.7 building client environment for production...
 - 第 4 条的 90% / 100% / 150% 接入页、左栏与终端布局，以及 Ctrl + = / - / 0 的真机行为，按任务分工留给编排者窗口核对。
 - 多窗口缩放不联动；detached 窗口需要重启后读取新档位。
 - `Explorer.css` 的既有 `12.5px` 未在本轮扩改，已进入 backlog 60。
+
+## 复审后补记（编排者）
+
+第 9 条核过：`zoom_hotkeys_enabled` 是 tauri-utils 2.8.3 的真实配置键（`config.rs:1868`），且**默认就是 false**——GLM 担心的「WebView2 原生加速键与 setZoom 双轨触发」在当前版本不存在，本条改动只是把默认值写显式，无害。编排者复跑：cargo 439 / vitest 535 / build 通过。
