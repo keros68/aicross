@@ -216,7 +216,9 @@ export function shouldShowNoCommanderModels(
  */
 export function commanderLauncherHidden(
   settings: CommanderSettings | null,
-  installed: Record<string, boolean>,
+  // 不再参与判定（09-16 起不按默认直启），但签名保持不变：调用点与测试都按四个
+  // 参数传，改签名会牵动一串无关文件。
+  _installed: Record<string, boolean>,
   toolsScanned: boolean,
   tabRegistered: boolean,
 ): boolean {

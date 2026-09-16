@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import dispatchRustSource from '../../../../src/dispatch.rs?raw';
 import manualSource from '../../../../docs/MANUAL.md?raw';
 import appSource from '../../App.tsx?raw';
-import { AgentCard, AgentCardModelMeta, FallbackOrderEditor, moveFallbackOrder, quotaClearVisible } from '../../components/resources/ResourcesOverlay';
+import { AgentCard, AgentCardModelMeta, FallbackOrderEditor, moveFallbackOrder, quotaClearVisible, resourcesEscTarget } from '../../components/resources/ResourcesOverlay';
 import resourcesOverlaySource from '../../components/resources/ResourcesOverlay.tsx?raw';
 import resourcesBridgeSource from '../mention.ts?raw';
 import type { ResourceAgent, ResourceModel } from '../types';
@@ -209,5 +209,22 @@ describe('TASK-14 额度结果组件', () => {
   it('TASK-14 R1 统一使用恢复时间术语', () => {
     expect(manualSource).toContain('| 模型额度重新可用的时间 | 恢复时间 |');
     expect(manualSource).not.toContain('重置时间');
+  });
+});
+
+
+describe('接入页的 Esc 按层级关（backlog 65）', () => {
+  it('子弹窗开着时先关子弹窗，不关整页', () => {
+    // 直接给整页加 Esc 会把用户在子弹窗里没保存的输入一起丢掉。
+    expect(resourcesEscTarget({ modelDialog: true, agentDialog: false })).toBe('model-dialog');
+    expect(resourcesEscTarget({ modelDialog: false, agentDialog: true })).toBe('agent-dialog');
+  });
+
+  it('两个子弹窗都开着时，先关模型那个', () => {
+    expect(resourcesEscTarget({ modelDialog: true, agentDialog: true })).toBe('model-dialog');
+  });
+
+  it('都关完了才关整页', () => {
+    expect(resourcesEscTarget({ modelDialog: false, agentDialog: false })).toBe('overlay');
   });
 });

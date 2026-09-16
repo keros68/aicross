@@ -157,7 +157,12 @@ describe('TASK-19 界面缩放', () => {
     expect(settings).toContain('Ctrl + = / - / 0');
     expect(manual).toContain('Ctrl + = / - / 0');
     expect(manual).toMatch(/\| 界面整体显示比例 \| 界面缩放 \| 设置页「外观」、本手册 \|/);
-    const decisions = product.slice(product.indexOf('## 用户 09-15 晚四点反馈的定案'), product.indexOf('## 顺序'));
+    // 切到**下一个二级标题**为止，不要一路切到「## 顺序」：中间再插一节定案
+    // （09-16 就插了「控制台就是对话窗」）会把别节的编号也算进来（backlog 62 同型）。
+    const start = product.indexOf('## 用户 09-15 晚四点反馈的定案');
+    const rest = product.slice(start + 1);
+    const nextHeading = rest.search(/^## /m);
+    const decisions = nextHeading < 0 ? rest : rest.slice(0, nextHeading);
     expect([...decisions.matchAll(/^(\d+)\. /gm)].map((match) => Number(match[1]))).toEqual([1, 2, 3, 4, 5]);
     expect(backlog).toContain('Explorer.css');
     expect(backlog).toContain('12.5px');
@@ -169,5 +174,59 @@ describe('TASK-19 界面缩放', () => {
     expect(report).toContain('90% / 100% / 150%');
     expect(report).toContain('多窗口缩放不联动');
     expect(report).toContain('detached');
+  });
+});
+
+describe('缩放回退跨页面重载也幂等（backlog 61）', () => {
+  const fakeStore = (seed: Record<string, string> = {}) => {
+    const map = new Map(Object.entries(seed));
+    return {
+      getItem: (key: string) => map.get(key) ?? null,
+      setItem: (key: string, value: string) => { map.set(key, value); },
+      dump: () => Object.fromEntries(map),
+    };
+  };
+
+  it('上一次是 webview 倍率、重载后首个 setZoom 失败：先把 webview 归 1，不叠 CSS', async () => {
+    // 重载后内存里的 WeakMap 是空的，只能靠存档知道上次生效的是 webview 倍率。
+    const store = fakeStore({ 'aicross.ui-scale.mode': 'webview' });
+    const root = { style: { zoom: '' } };
+    const calls: number[] = [];
+    const setZoom = async (factor: number) => {
+      calls.push(factor);
+      if (factor !== 1) throw new Error('setZoom 不可用');
+    };
+    const mode = await applyUiScale(125, setZoom, root as never, store);
+    expect(calls).toEqual([1.25, 1]); // 失败后先把 webview 归 1
+    expect(mode).toBe('css');
+    expect(root.style.zoom).toBe('1.25'); // 只有一处倍率
+  });
+
+  it('没有存档（真的第一次用）时不会去调归 1', async () => {
+    const store = fakeStore();
+    const root = { style: { zoom: '' } };
+    const calls: number[] = [];
+    const setZoom = async (factor: number) => { calls.push(factor); throw new Error('nope'); };
+    const mode = await applyUiScale(125, setZoom, root as never, store);
+    expect(calls).toEqual([1.25]);
+    expect(mode).toBe('css');
+  });
+
+  it('成功走 webview 时把模式记进存档，供下次重载读', async () => {
+    const store = fakeStore();
+    const root = { style: { zoom: '9' } };
+    const mode = await applyUiScale(150, async () => {}, root as never, store);
+    expect(mode).toBe('webview');
+    expect(root.style.zoom).toBe('');
+    expect(store.dump()['aicross.ui-scale.mode']).toBe('webview');
+  });
+
+  it('存储不可用时不抛错，退回只靠内存', async () => {
+    const broken = {
+      getItem: () => { throw new Error('blocked'); },
+      setItem: () => { throw new Error('blocked'); },
+    };
+    const root = { style: { zoom: '' } };
+    await expect(applyUiScale(110, async () => {}, root as never, broken)).resolves.toBe('webview');
   });
 });

@@ -64,6 +64,22 @@ function operationErrors(operation: ResourceOperation): string {
   return operation.errors.length > 0 ? operation.errors.join('\n') : '';
 }
 
+// 接入页的 Esc 该关谁（backlog 65）。
+//
+// 这一页里最多可能叠三层：整页覆盖层、某个 agent 的「手工接入模型」子弹窗、
+// 「手工接入 agent」子弹窗。直接给整页加 Esc 会把用户在子弹窗里没保存的输入
+// 一起丢掉，所以按层级来：**先关最上面那一层，都关完了才关整页。**
+export type ResourcesEscTarget = 'model-dialog' | 'agent-dialog' | 'overlay';
+
+export function resourcesEscTarget(open: {
+  modelDialog: boolean;
+  agentDialog: boolean;
+}): ResourcesEscTarget {
+  if (open.modelDialog) return 'model-dialog';
+  if (open.agentDialog) return 'agent-dialog';
+  return 'overlay';
+}
+
 export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
   const [store, setStore] = useState<ResourceStore | null>(null);
   const [hints, setHints] = useState<CcSwitchHint[]>([]);
@@ -72,6 +88,21 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
+
+  // Esc 按层级关（backlog 65）：先关子弹窗，都关完了才关整页。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.isComposing) return;
+      const target = resourcesEscTarget({ modelDialog: modelAgent !== null, agentDialog: manualAgentOpen });
+      event.preventDefault();
+      event.stopPropagation();
+      if (target === 'model-dialog') setModelAgent(null);
+      else if (target === 'agent-dialog') setManualAgentOpen(false);
+      else onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [modelAgent, manualAgentOpen, onClose]);
 
   useEffect(() => {
     if (!isTauri) {

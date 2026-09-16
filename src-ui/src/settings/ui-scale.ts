@@ -27,6 +27,39 @@ type InitializeUiScaleOptions = {
 
 const appliedZoomModes = new WeakMap<ZoomRoot, 'webview' | 'css'>();
 
+// 上一次生效的是 webview 倍率还是 CSS 倍率，要跨页面重载记住（backlog 61）。
+// 只靠内存里的 WeakMap 的话，重载后这张表是空的：如果 WebView2 还留着上次的
+// 倍率，而这次首个 setZoom 又失败，就会把 CSS 倍率叠到残留倍率上（150% 之后
+// 回退到 125%，实际约 1.875 倍）。
+const ZOOM_MODE_KEY = 'aicross.ui-scale.mode';
+
+type ModeStorage = { getItem(key: string): string | null; setItem(key: string, value: string): void };
+
+function safeModeStorage(): ModeStorage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function rememberedMode(storage: ModeStorage | null): 'webview' | 'css' | undefined {
+  try {
+    const raw = storage?.getItem(ZOOM_MODE_KEY);
+    return raw === 'webview' || raw === 'css' ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberMode(storage: ModeStorage | null, mode: 'webview' | 'css'): void {
+  try {
+    storage?.setItem(ZOOM_MODE_KEY, mode);
+  } catch {
+    // 记不住只是丢掉跨重载的幂等，本次运行仍靠 WeakMap。
+  }
+}
+
 export function parseUiScale(raw: string | null | undefined): UiScale {
   if (raw === null || raw === undefined || raw.trim() === '') return 100;
   const value = Number(raw);
@@ -75,13 +108,16 @@ export async function applyUiScale(
   scale: UiScale,
   setWebviewZoom: (factor: number) => Promise<void> = (factor) => getCurrentWebview().setZoom(factor),
   root: ZoomRoot = document.documentElement,
+  modeStorage: ModeStorage | null = safeModeStorage(),
 ): Promise<'webview' | 'css'> {
   const factor = scale / 100;
-  const previousMode = appliedZoomModes.get(root);
+  // 内存里没有就问存档：重载后 WeakMap 是空的，但 WebView2 的倍率还在（backlog 61）。
+  const previousMode = appliedZoomModes.get(root) ?? rememberedMode(modeStorage);
   try {
     await setWebviewZoom(factor);
     root.style.zoom = '';
     appliedZoomModes.set(root, 'webview');
+    rememberMode(modeStorage, 'webview');
     return 'webview';
   } catch {
     if (previousMode === 'webview') {
@@ -95,6 +131,7 @@ export async function applyUiScale(
     }
     root.style.zoom = String(factor);
     appliedZoomModes.set(root, 'css');
+    rememberMode(modeStorage, 'css');
     return 'css';
   }
 }
