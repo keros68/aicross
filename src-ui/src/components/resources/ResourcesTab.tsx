@@ -2,8 +2,8 @@
 // 按 agent 折叠分组；点模型把 @agent/模型 插进当前对话图主面板输入框。
 //
 // TASK-09b（用户反馈「现在很乱」）：多 provider 的 agent（pi）再按 provider
-// 分小组，组内未验证的默认折成一行；行内只剩「模型名 +（别名时）真实 ID +
-// 状态点」，状态词、来源路径与最近验证时间都在悬停里——左栏宽度有限。
+// 分小组，组内未验证的默认折成一行；行内只剩「模型名 + 状态点」，真实 ID、
+// provider、状态与时间都在悬停里——左栏宽度有限。
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { commands, isTauri } from '../../tauri';
@@ -15,10 +15,8 @@ import {
   loginCheckHint,
   loggedOutProvidersToggleLabel,
   loginLabel,
-  loginOf,
   modelHint,
   modelPickTarget,
-  modelSecondaryId,
   modelsByAgent,
   providerLoginOf,
   providerGroups,
@@ -423,7 +421,6 @@ function ResourceModelRow({
   // 按节点取唯一键：拼 id 再把非字母数字换成 `-` 会让 `glm-4.7` 与 `glm-4-7`
   // 撞成同一个 DOM id，aria-describedby 指到第一条（修正轮 R1，DS 10）。
   const hintId = useId();
-  const secondary = modelSecondaryId(model);
   return (
     <>
       <button
@@ -438,12 +435,10 @@ function ResourceModelRow({
           onPick(target.agent, target.model, target.provider);
         }}
       >
-        <span className="resource-model-id">{model.id}</span>
-        {secondary !== '' && <span className="resource-model-resolved">{secondary}</span>}
-        {agentId === 'pi' && loginOf(model) !== 'logged_in' && (
-          <span className="resource-group-login">{loginLabel(loginOf(model))}</span>
-        )}
-        <VerificationMark verification={verificationOf(model)} />
+        <span className="resource-model-name">{model.id}</span>
+        <span className="resource-model-status">
+          <VerificationMark verification={verificationOf(model)} />
+        </span>
       </button>
       <span className="resources-sr-only" id={hintId}>
         {hint}

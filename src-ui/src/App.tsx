@@ -2,6 +2,7 @@
 
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useAppState, useAppDispatch, matchHotkeyScheme } from './store/app-state';
+import { initializeUiScale, readUiScale, uiScaleForShortcut, updateUiScale } from './settings/ui-scale';
 import { retryInvoke } from './tauri';
 import { subscribeAgentStatus } from './lib/agent-status-bus';
 import { routeFileDrop } from './lib/file-drop';
@@ -101,6 +102,19 @@ export function App() {
 
   const leftPanel = useSlidingPanel(state.leftPanelHidden);
   const rightPanel = useSlidingPanel(state.rightPanelHidden);
+
+  useEffect(() => {
+    initializeUiScale();
+    const onKeyDown = (event: KeyboardEvent) => {
+      const next = uiScaleForShortcut(readUiScale(), event);
+      if (next === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) updateUiScale(next);
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, []);
 
   // Keep the documented side-panel shortcuts without mounting the retired
   // merged-input overlay. Matching events are captured before xterm can

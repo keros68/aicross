@@ -223,6 +223,19 @@
   color: var(--text-1, #fff);
 }
 
+.settings-scale-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-scale-hint {
+  color: var(--text-3, rgba(255, 255, 255, 0.4));
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* ── Icon-theme chips ──────────────────────────────────────────────────── */
 .settings-icon-row { gap: 6px; }
 .settings-icon-chip {

@@ -364,7 +364,7 @@ export function agentMark(id: string): string {
 }
 
 /**
- * 左栏模型行的悬停提示：provider、来源路径、最近验证时间与真身、失败原因
+ * 模型行的悬停提示：provider、登录状态、来源路径、最近验证时间与真身、失败原因
  * 都收在这里。09-15 起这些不再进行内正文——左栏宽度有限，每行顶一条
  * `读:C:\Users\…` 会把模型名挤没。
  *
@@ -379,6 +379,10 @@ export function modelHint(model: ResourceModel): string {
   const quota = quotaExhaustedLabel(model);
   if (quota) lines.push(quota);
   if (model.provider.trim() !== '') lines.push(`provider：${model.provider}`);
+  if (model.agent === 'pi' || model.login_checked_at) {
+    lines.push(`登录状态：${loginLabel(loginOf(model))}`);
+  }
+  if (model.login_checked_at) lines.push(`最近登录检查：${model.login_checked_at}`);
   lines.push(model.source || '来源未记录');
   if (model.smoked_at) {
     lines.push(`最近验证：${model.smoked_at}${model.smoke_model ? `（${model.smoke_model}）` : ''}`);

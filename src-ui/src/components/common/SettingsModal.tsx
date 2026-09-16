@@ -23,6 +23,13 @@ import { FontPicker } from './FontPicker';
 import { THEME_COLORS, LANGUAGES, TASK_VIEW_MODES } from '../../lib/personalization';
 import { fixRoundLimitFromInput, loadDispatchSettings, saveDispatchSettings, type UiDispatchSettings } from '../../graph/dispatch-settings';
 import { FIX_ROUND_LIMIT_MAX, ROLE_PROMPT_TEMPLATES } from '../../graph/dispatch';
+import {
+  UI_SCALE_CHANGED_EVENT,
+  UI_SCALE_LEVELS,
+  readUiScale,
+  updateUiScale,
+  type UiScale,
+} from '../../settings/ui-scale';
 import './SettingsModal.css';
 
 type Section = 'appearance' | 'terminal' | 'roles' | 'dispatch' | 'premises' | 'tasks' | 'language' | 'feedback';
@@ -115,6 +122,7 @@ export function SettingsModal() {
   const [section, setSection] = useState<Section>('appearance');
   const [version, setVersion] = useState('');
   const [dispatchSettings, setDispatchSettings] = useState<UiDispatchSettings>(loadDispatchSettings);
+  const [uiScale, setUiScale] = useState<UiScale>(readUiScale);
   const [roleSettings, setRoleSettings] = useState<RoleSettings>({
     version: 1,
     planning: { agent: '', provider: '', model: '', tier: '', thinking: '高' },
@@ -168,6 +176,14 @@ export function SettingsModal() {
     return () => document.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  useEffect(() => {
+    const onScaleChanged = (event: Event) => {
+      setUiScale((event as CustomEvent<UiScale>).detail);
+    };
+    window.addEventListener(UI_SCALE_CHANGED_EVENT, onScaleChanged);
+    return () => window.removeEventListener(UI_SCALE_CHANGED_EVENT, onScaleChanged);
+  }, []);
 
   // Lazy-load the system font list + probe available shells when the
   // Terminal section is first shown. Both come from the Rust side and are
@@ -424,6 +440,24 @@ export function SettingsModal() {
                       </button>
                     );
                   })}
+                </div>
+
+                <div className="settings-section-label">界面缩放</div>
+                <div className="settings-scale-row">
+                  <div className="settings-chip-row" role="group" aria-label="界面缩放">
+                    {UI_SCALE_LEVELS.map((level) => (
+                      <button
+                        key={level}
+                        type="button"
+                        className={`settings-chip${uiScale === level ? ' active' : ''}`}
+                        aria-pressed={uiScale === level}
+                        onClick={() => updateUiScale(level)}
+                      >
+                        {level}%
+                      </button>
+                    ))}
+                  </div>
+                  <span className="settings-scale-hint">Ctrl + / - / 0</span>
                 </div>
 
               </>

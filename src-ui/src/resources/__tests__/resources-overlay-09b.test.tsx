@@ -66,7 +66,7 @@ describe('AgentCard（接入页）', () => {
     expect(markup).toContain('src="/icons/tools/claude.svg"');
   });
 
-  it('Claude 卡片显示别名 + 真实 ID；两者相同的模型只显示一次', () => {
+  it('Claude 卡片主行只显示别名，真实 ID 进入悬停与详情', () => {
     const markup = card(
       agent('claude', 'Claude Code', [
         model({ agent: 'claude', id: 'fable', resolved_id: 'claude-fable-5-1' }),
@@ -74,9 +74,8 @@ describe('AgentCard（接入页）', () => {
       ]),
     );
     expect(markup).toContain('>fable<');
-    expect(markup).toContain('class="agent-card-model-resolved" title="claude-fable-5-1"');
-    // 别名与 ID 相同的那条不长出次文本
-    expect(markup).not.toContain('class="agent-card-model-resolved" title="claude-opus-5"');
+    expect(markup).toContain('模型 ID：claude-fable-5-1');
+    expect(markup).not.toContain('agent-card-model-resolved');
   });
 
   it('多 provider 的卡片按 provider 分组，组头带计数；单 provider 不出组头', () => {

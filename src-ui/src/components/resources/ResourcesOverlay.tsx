@@ -14,6 +14,7 @@ import { loadDispatchSettings } from '../../graph/dispatch-settings';
 import {
   errorText,
   loginCheckHint,
+  modelHint,
   modelSecondaryId,
   parseCommandArgs,
   providerLoginOf,
@@ -333,8 +334,15 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
 export function AgentCardModelMeta({ model }: { model: ResourceModel }) {
   return (
     <>
+      <div className="agent-card-model-meta">模型 ID：{modelSecondaryId(model) || model.id}</div>
       {model.provider.trim() !== '' && (
         <div className="agent-card-model-meta">provider：{model.provider}</div>
+      )}
+      {(model.agent === 'pi' || model.login_checked_at) && (
+        <div className="agent-card-model-meta">登录状态：{loginLabel(loginOf(model))}</div>
+      )}
+      {model.login_checked_at && (
+        <div className="agent-card-model-meta">最近登录检查：{model.login_checked_at}</div>
       )}
       <div className="agent-card-model-meta" title={model.source}>
         {model.source || '来源未记录'}
@@ -501,24 +509,13 @@ export function AgentCard({
               const removing = busy === `remove:${key}`;
               return (
                 <div className="agent-card-model" key={`${model.provider}:${model.id}`}>
-                  <div className="agent-card-model-main">
-                    <span className="agent-card-model-id" title={model.id}>
+                  <div className="agent-card-model-main" title={modelHint(model)}>
+                    <span className="agent-card-model-name">
                       {model.id}
                     </span>
-                    {modelSecondaryId(model) !== '' && (
-                      <span className="agent-card-model-resolved" title={modelSecondaryId(model)}>
-                        {modelSecondaryId(model)}
-                      </span>
-                    )}
                     <span className="agent-card-model-state">
-                      <VerificationMark verification={verification} showLabel />
+                      <VerificationMark verification={verification} />
                     </span>
-                    {agent.id === 'pi' && loginOf(model) !== 'logged_in' && (
-                      <span className="agent-card-group-login">{loginLabel(loginOf(model))}</span>
-                    )}
-                    {quotaExhaustedLabel(model) && (
-                      <span className="agent-card-model-quota">{quotaExhaustedLabel(model)}</span>
-                    )}
                   </div>
                   <div className="agent-card-model-detail">
                     <button type="button" className="agent-card-detail-toggle" onClick={() => setOpenDetails((current) => ({ ...current, [key]: !current[key] }))}>详情</button>
