@@ -27,7 +27,12 @@
 3. **独立复跑**（不信报告）：`cargo check --all-targets` 零 warning、`cargo test`、`cd src-ui && npx vitest run --configLoader native --pool threads`、`cd src-ui && npm run build`；再用 python 数每个改动文件的 CRLF/LF 与 HEAD 比对（`server.rs` CRLF，其它 Rust LF，`src-ui/src/tauri.ts` 混合）。复跑与盲审同时起，不串行。
 4. **盲审**（两家、只读、不带主线程判断；提示词写到 scratchpad 的 task 文件，只描述契约与关注点）：
    - GLM-5.3-Flash：`python D:\work\agentteam\dist\ai-cross\references\cc_switch.py exec --provider "Zhipu GLM" --tier haiku --task-file <file> --timeout 1500`（默认工具 Read,Grep,Glob；15–25 分钟）。
-   - DeepSeek：`pi --provider deepseek --model deepseek-v4-flash -p --mode json --tools read,grep,find,ls --no-extensions --no-context-files --no-session "<prompt>"` 输出 jsonl，用 `ds_extract.py` 取最后一条 assistant 文本。官方账户 402 时先告诉用户。
+   - 第二家默认是 **Antigravity 的 Gemini**（订阅额度，本机原本没有的厂商轴）：材料**全部内联**进 prompt，一行 NDJSON 走 stdin——
+     `cat in.ndjson | "C:/Users/keros68/AppData/Local/agy/bin/agy.exe" --model gemini-3.1-pro-high --print-timeout 10m --input-format stream-json --output-format stream-json`，
+     `in.ndjson` 是一行 `{"event":"user","message":{"role":"user","content":"…"}}`，结果取 `{"event":"result"}` 行的 `result.response`。
+     **它在无头模式下读不了文件**（权限被自动拒），所以 `git diff`、任务书、相关源码都要内联进去；prompt 里明写「不要使用任何工具」。别加 `--dangerously-skip-permissions`。
+   - DeepSeek（`pi --provider deepseek --model deepseek-v4-flash -p --mode json --tools read,grep,find,ls --no-extensions --no-context-files --no-session`，用 `ds_extract.py` 取文本）**按次真扣钱，排最后**：
+     只在 GLM 与 Antigravity 都不可用、或确实需要它的视角时才派，并在汇报里写明为什么非它不可（用户 09-16 明确要求少用）。
    - 审查员没有 shell，「测试能否红」是静态推演，主线程要自己验（见 6）。
 5. **修正轮**：两份审查合成 `tasks/fix-NN-r1.md`（标出两家共同 / 各自独有；编排者已核实的条目注明；「不改」项写原因），派 codex sol。**只做一轮复审。** 复审新出的中等项若改动小，主线程直接修并附回归测试；低危进 `tasks/fix-04-r5-backlog.md` 编号续排，不派第三轮。
 6. **自己验能不能红**：修正轮新增的关键测试，把修复暂时回退再跑一次，红了才算数（08D-R1 这样验过一次）。
