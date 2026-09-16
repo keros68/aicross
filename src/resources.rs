@@ -561,7 +561,9 @@ fn rejudge_stored_smoke_failures(store: &mut ResourceStore) {
                     &model.note,
                     &format!("按已知路由别名重判（{date}）"),
                 );
-            } else {
+            } else if model.verification != VERIFICATION_VERIFIED {
+                // 已验证的记录不因为留着旧失败原因被每次加载静默降档
+                // （09-16 复审 GLM 2；当前写路径造不出这个状态，纯消隐患）。
                 model.status = STATUS_FAILED.to_string();
                 model.verification = VERIFICATION_FAILED.to_string();
             }

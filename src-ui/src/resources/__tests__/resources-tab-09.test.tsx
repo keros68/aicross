@@ -90,6 +90,16 @@ const store: ResourceStore = {
       ],
     },
     {
+      id: 'kimi',
+      name: 'Kimi Code',
+      kind: '内置',
+      detected: true,
+      version: '0.42.0',
+      models: [
+        model({ agent: 'kimi', provider: '', id: 'kimi-code/k3-256k', source: SOURCE, verification: 'native' }),
+      ],
+    },
+    {
       id: 'pi',
       name: 'pi',
       kind: '内置',
@@ -105,7 +115,7 @@ const store: ResourceStore = {
   ],
 };
 
-const EXPANDED = ['codex', 'claude', 'pi'];
+const EXPANDED = ['codex', 'claude', 'kimi', 'pi'];
 
 function render(openUnverified: string[] = []) {
   return renderToStaticMarkup(
@@ -758,5 +768,15 @@ describe('resources.css 的视觉纪律（修正轮 R1）', () => {
         }
       }
     }
+  });
+});
+
+
+describe('TASK-21 左栏接线（09-16 复审 GLM 3 补）', () => {
+  it('行内模型名去掉与组头同义的厂商前缀', () => {
+    const markup = render();
+    // 只测纯函数会漏掉接线：这里断言的是左栏真正渲染出来的那行文字。
+    expect(markup).toContain('>k3-256k<');
+    expect(markup).not.toContain('>kimi-code/k3-256k<');
   });
 });

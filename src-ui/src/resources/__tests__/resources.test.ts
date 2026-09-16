@@ -103,6 +103,11 @@ describe('TASK-21 version display', () => {
   it('falls back to the original output when no version is present', () => {
     expect(cliVersionNumber('development build')).toBe('development build');
   });
+
+  it('带 v 前缀时不截掉主版本号（09-16 复审 GLM 1）', () => {
+    expect(cliVersionNumber('v2.1.272 (Claude Code)')).toBe('2.1.272');
+    expect(cliVersionNumber('kimi v0.42.0')).toBe('0.42.0');
+  });
 });
 
 describe('TASK-21 model display and details', () => {

@@ -94,7 +94,9 @@ export const STATUS_FAILED = '冒烟失败';
 /** `--version` 原样输出中供行内显示的版本号；无法识别时保留原文。 */
 export function cliVersionNumber(raw: string): string {
   const value = raw.trim();
-  return value.match(/\b\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? value;
+  // 前面不能是数字或点，否则 `v2.1.272` 里 `\b` 在 v 与 2 之间不成立，引擎会从 `.` 后重开
+  // 匹配成 `1.272`，界面静默显示错版本（09-16 复审 GLM 1）。
+  return value.match(/(?<![\d.])\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?/)?.[0] ?? value;
 }
 
 export function resourceModelKey(model: Pick<ResourceModel, 'agent' | 'provider' | 'id'>): string {
