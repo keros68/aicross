@@ -90,7 +90,10 @@ describe('TASK-19 左栏资源行', () => {
       })} />,
     );
     expect(detail).toContain('状态：已验证');
-    expect(detail).toContain('额度用尽至 15:45');
+    // 期望值用同一个 formatter 算：写死「15:45」只在 UTC+8 的机器上过（09-16 复审）
+    const expected = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+      .format(new Date('2099-01-01T15:45:00+08:00'));
+    expect(detail).toContain(`额度用尽至 ${expected}`);
   });
 
   it('关闭对话图时悬停提示仍保留模型详情', () => {
