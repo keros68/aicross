@@ -1,5 +1,5 @@
 // TASK-09b 第 5 条「接入页同步」：接入页的 agent 卡片和左栏用同一套品牌图标
-// 与 provider 分组，Claude 卡片同时显示别名和真实 ID。
+// 与 provider 分组，Claude 卡片主行显示别名，真实 ID 进入悬停与详情。
 
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';

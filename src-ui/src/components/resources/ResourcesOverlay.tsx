@@ -30,6 +30,7 @@ import {
   unknownProvidersToggleLabel,
   unverifiedSummaryText,
   unverifiedToggleLabel,
+  verificationLabel,
   verificationOf,
   type AddManualAgentRequest,
   type CcSwitchHint,
@@ -332,6 +333,7 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
  * 卡片上原来就没有别的地方写着它挂在哪个端点上。
  */
 export function AgentCardModelMeta({ model }: { model: ResourceModel }) {
+  const quota = quotaExhaustedLabel(model);
   return (
     <>
       <div className="agent-card-model-meta">模型 ID：{modelSecondaryId(model) || model.id}</div>
@@ -343,6 +345,10 @@ export function AgentCardModelMeta({ model }: { model: ResourceModel }) {
       )}
       {model.login_checked_at && (
         <div className="agent-card-model-meta">最近登录检查：{model.login_checked_at}</div>
+      )}
+      <div className="agent-card-model-meta">状态：{verificationLabel(verificationOf(model))}</div>
+      {quota && (
+        <div className="agent-card-model-meta">{quota}</div>
       )}
       <div className="agent-card-model-meta" title={model.source}>
         {model.source || '来源未记录'}

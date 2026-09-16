@@ -417,7 +417,7 @@ function ResourceModelRow({
   graphOpen: boolean;
   onPick: (agent: string, model: string, provider: string) => void;
 }) {
-  const hint = graphOpen ? modelHint(model) : '先打开对话图';
+  const hint = graphOpen ? modelHint(model) : `先打开对话图\n${modelHint(model)}`;
   // 按节点取唯一键：拼 id 再把非字母数字换成 `-` 会让 `glm-4.7` 与 `glm-4-7`
   // 撞成同一个 DOM id，aria-describedby 指到第一条（修正轮 R1，DS 10）。
   const hintId = useId();

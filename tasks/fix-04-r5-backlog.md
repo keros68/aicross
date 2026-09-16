@@ -98,3 +98,7 @@
 ## 安装包（09-15 夜）
 
 59. WiX PATH 片段（`windows/fragments/path.wxs`）在 light 阶段失败（candle 已过）：Environment 组件可能缺 KeyPath / 与 tauri 生成的 main.wxs 冲突；MSI 暂不能出包，NSIS 不受影响。修好前可在 tauri.conf.json 里去掉 fragmentPaths/componentRefs 出 MSI。
+
+## TASK-19 复审剩余（09-16，低危，择期）
+
+60. `src-ui/src/components/left/Explorer.css` 仍有既有的 `12.5px` 字号，与 12 / 13 / 14 / 15 / 16 / 18 的整数阶梯不一致；本期不扩大到 Explorer 的全量字号整理。

@@ -457,7 +457,7 @@ export function SettingsModal() {
                       </button>
                     ))}
                   </div>
-                  <span className="settings-scale-hint">Ctrl + / - / 0</span>
+                  <span className="settings-scale-hint">Ctrl + = / - / 0</span>
                 </div>
 
               </>

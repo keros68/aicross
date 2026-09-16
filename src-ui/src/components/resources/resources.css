@@ -332,7 +332,8 @@
 }
 
 /* 未验证清单的折叠行。它本身就是展开按钮，度量与模型行一致。 */
-.resource-unverified-toggle {
+.resource-unverified-toggle,
+.agent-card-unverified-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -349,12 +350,14 @@
   text-align: left;
 }
 
-.resource-unverified-toggle:hover {
+.resource-unverified-toggle:hover,
+.agent-card-unverified-toggle:hover {
   background: var(--bg-hover);
   color: var(--text-2);
 }
 
-.resource-unverified-toggle:focus-visible {
+.resource-unverified-toggle:focus-visible,
+.agent-card-unverified-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -642,12 +645,6 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 8px;
-}
-
-.agent-card-model-quota {
-  color: var(--warning, #c18401);
-  font-size: 12px;
-  white-space: nowrap;
 }
 
 .fallback-order-editor {

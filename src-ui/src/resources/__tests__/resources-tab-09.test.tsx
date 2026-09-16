@@ -735,7 +735,12 @@ describe('resources.css 的视觉纪律（修正轮 R1）', () => {
       '.resource-unverified-toggle',
       '.resource-manage-link',
     ]) {
-      const rule = new RegExp(`\\${selector}\\s*\\{[^}]*\\}`).exec(css)?.[0] ?? '';
+      const selectorIndex = css.indexOf(selector);
+      const openBrace = css.indexOf('{', selectorIndex);
+      const closeBrace = css.indexOf('}', openBrace);
+      const rule = selectorIndex >= 0 && openBrace >= 0 && closeBrace >= 0
+        ? css.slice(css.lastIndexOf('}', selectorIndex) + 1, closeBrace + 1)
+        : '';
       expect(rule, selector).not.toBe('');
       for (const [, value] of rule.matchAll(/(?:padding|gap):\s*([^;]+);/g)) {
         for (const size of value.trim().split(/\s+/)) {

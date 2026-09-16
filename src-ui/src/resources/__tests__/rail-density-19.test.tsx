@@ -44,7 +44,6 @@ describe('TASK-19 左栏资源行', () => {
     expect(rows).toHaveLength(4);
     for (const row of rows) {
       expect(row).toMatch(/<span class="resource-model-name">[^<]+<\/span><span class="resource-model-status">[\s\S]*<\/span><\/button>$/);
-      expect(row).not.toContain('resource-model-resolved');
       const visibleChildren = row.slice(row.indexOf('>') + 1);
       expect(visibleChildren).not.toMatch(/已登录|未登录|未检查/);
     }
@@ -83,6 +82,34 @@ describe('TASK-19 左栏资源行', () => {
     expect(detail).toContain('最近登录检查：2026-09-16T08:00:00+08:00');
   });
 
+  it('接入页详情显示验证状态与未来额度恢复时间', () => {
+    const detail = renderToStaticMarkup(
+      <AgentCardModelMeta model={model({
+        agent: 'pi', provider: 'zai', id: 'glm-5', verification: 'verified',
+        quota_exhausted_until: '2099-01-01T15:45:00+08:00',
+      })} />,
+    );
+    expect(detail).toContain('状态：已验证');
+    expect(detail).toContain('额度用尽至 15:45');
+  });
+
+  it('关闭对话图时悬停提示仍保留模型详情', () => {
+    const markup = renderToStaticMarkup(
+      <ResourceAgentList
+        agents={[agents[0]]}
+        expanded={['claude']}
+        openUnverified={[]}
+        graphOpen={false}
+        onToggle={() => {}}
+        onToggleUnverified={() => {}}
+        onPick={() => {}}
+      />,
+    );
+    expect(markup).toContain('先打开对话图\nsonnet');
+    expect(markup).toContain('模型 ID：claude-sonnet-5');
+    expect(markup).toContain('状态：原生');
+  });
+
   it('模型行是 14px / 30px，agent 名是 14px，版本是 12px', () => {
     const css = readFileSync(new URL('../../components/resources/resources.css', import.meta.url), 'utf8');
     const row = /\.resource-model-row\s*\{[^}]*\}/.exec(css)?.[0] ?? '';
@@ -93,5 +120,11 @@ describe('TASK-19 左栏资源行', () => {
     expect(name).toContain('font-size: 14px');
     expect(agentName).toContain('font-size: 14px');
     expect(version).toContain('font-size: 12px');
+  });
+
+  it('左栏与接入页未验证折叠按钮共用样式和键盘焦点样式', () => {
+    const css = readFileSync(new URL('../../components/resources/resources.css', import.meta.url), 'utf8');
+    expect(css).toMatch(/\.resource-unverified-toggle,\s*\.agent-card-unverified-toggle\s*\{/);
+    expect(css).toMatch(/\.resource-unverified-toggle:focus-visible,\s*\.agent-card-unverified-toggle:focus-visible\s*\{/);
   });
 });

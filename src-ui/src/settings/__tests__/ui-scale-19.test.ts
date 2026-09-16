@@ -6,12 +6,15 @@ import { readFileSync } from 'node:fs';
 import {
   UI_SCALE_LEVELS,
   applyUiScale,
+  createUiScaleShortcutController,
+  initializeUiScale,
   parseUiScale,
   persistUiScale,
   readUiScale,
   serializeUiScale,
   stepUiScale,
   uiScaleForShortcut,
+  updateUiScale,
 } from '../ui-scale';
 
 describe('TASK-19 界面缩放', () => {
@@ -61,14 +64,110 @@ describe('TASK-19 界面缩放', () => {
     expect(fallbackRoot.style.zoom).toBe('1.25');
   });
 
-  it('设置页、启动应用与 Tauri 权限接到同一缩放模块', () => {
+  it('成功、回退、再成功时始终只有一处倍率生效', async () => {
+    const root = { style: { zoom: '' } };
+    let webviewFactor = 1;
+    const setZoom = vi.fn(async (factor: number) => {
+      if (factor === 1.25) throw new Error('temporary failure');
+      webviewFactor = factor;
+    });
+
+    await expect(applyUiScale(150, setZoom, root)).resolves.toBe('webview');
+    await expect(applyUiScale(125, setZoom, root)).resolves.toBe('css');
+    expect(webviewFactor).toBe(1);
+    expect(root.style.zoom).toBe('1.25');
+
+    await expect(applyUiScale(110, setZoom, root)).resolves.toBe('webview');
+    expect(webviewFactor).toBe(1.1);
+    expect(root.style.zoom).toBe('');
+    expect(setZoom.mock.calls.map(([factor]) => factor)).toEqual([1.5, 1.25, 1, 1.1]);
+  });
+
+  it('updateUiScale 持久化、应用并发送带 detail 的事件', () => {
+    const storage = { setItem: vi.fn() };
+    const apply = vi.fn();
+    const dispatched: Event[] = [];
+    const eventTarget = { dispatchEvent: vi.fn((event: Event) => { dispatched.push(event); return true; }) };
+
+    updateUiScale(125, { storage, apply, eventTarget });
+
+    expect(storage.setItem).toHaveBeenCalledWith('aicross-ui-scale', '125');
+    expect(apply).toHaveBeenCalledWith(125);
+    const event = dispatched[0] as CustomEvent<number>;
+    expect(event.type).toBe('aicross:ui-scale-changed');
+    expect(event.detail).toBe(125);
+  });
+
+  it('initializeUiScale 从注入存储读取并调用应用函数', () => {
+    const storage = { getItem: vi.fn(() => '110') };
+    const apply = vi.fn();
+
+    expect(initializeUiScale({ storage, apply })).toBe(110);
+    expect(storage.getItem).toHaveBeenCalledWith('aicross-ui-scale');
+    expect(apply).toHaveBeenCalledWith(110);
+  });
+
+  it('快捷键用内存当前档递进，存储不可用不影响连续步进', () => {
+    const update = vi.fn();
+    const controller = createUiScaleShortcutController(100, update);
+    const shortcut = () => ({
+      key: '=', ctrlKey: true, metaKey: false, altKey: false, repeat: false,
+      preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    });
+
+    controller.handleKeyDown(shortcut());
+    controller.handleKeyDown(shortcut());
+    expect(update.mock.calls.map(([scale]) => scale)).toEqual([110, 125]);
+
+    controller.sync(150);
+    controller.handleKeyDown({ ...shortcut(), key: '-' });
+    expect(update).toHaveBeenLastCalledWith(125);
+  });
+
+  it('首帧前初始化缩放，WebView 原生缩放热键保持关闭', () => {
     const settings = readFileSync(new URL('../../components/common/SettingsModal.tsx', import.meta.url), 'utf8');
     const app = readFileSync(new URL('../../App.tsx', import.meta.url), 'utf8');
     const capability = readFileSync(new URL('../../../../capabilities/default.json', import.meta.url), 'utf8');
+    const tauriConfig = JSON.parse(readFileSync(new URL('../../../../tauri.conf.json', import.meta.url), 'utf8'));
     expect(settings).toContain('UI_SCALE_LEVELS.map');
-    expect(settings).toContain('updateUiScale(level)');
-    expect(app).toContain('initializeUiScale()');
-    expect(app).toContain('uiScaleForShortcut(readUiScale(), event)');
+    expect(app).toMatch(/useLayoutEffect\(\(\) => \{\s*const initialScale = initializeUiScale\(\)/);
     expect(capability).toContain('core:webview:allow-set-webview-zoom');
+    expect(tauriConfig.app.windows[0].zoomHotkeysEnabled).toBe(false);
+  });
+
+  it('非终端与非代码块界面不再保留 11px 辅助文字', () => {
+    const paths = [
+      '../../components/common/SettingsModal.css',
+      '../../components/center/CenterPanel.css',
+      '../../components/center/ContributionHeatmap.css',
+      '../../components/center/Gambit.css',
+      '../../styles/global.css',
+    ];
+    for (const path of paths) {
+      const css = readFileSync(new URL(path, import.meta.url), 'utf8');
+      expect(css, path).not.toMatch(/font-size:\s*11px/);
+    }
+  });
+
+  it('快捷键文案、术语表、定案编号与 Explorer 字号遗留记录一致', () => {
+    const settings = readFileSync(new URL('../../components/common/SettingsModal.tsx', import.meta.url), 'utf8');
+    const manual = readFileSync(new URL('../../../../docs/MANUAL.md', import.meta.url), 'utf8');
+    const product = readFileSync(new URL('../../../../docs/PRODUCT.md', import.meta.url), 'utf8');
+    const backlog = readFileSync(new URL('../../../../tasks/fix-04-r5-backlog.md', import.meta.url), 'utf8');
+    expect(settings).toContain('Ctrl + = / - / 0');
+    expect(manual).toContain('Ctrl + = / - / 0');
+    expect(manual).toMatch(/\| 界面整体显示比例 \| 界面缩放 \| 设置页「外观」、本手册 \|/);
+    const decisions = product.slice(product.indexOf('## 用户 09-15 晚四点反馈的定案'), product.indexOf('## 顺序'));
+    expect([...decisions.matchAll(/^(\d+)\. /gm)].map((match) => Number(match[1]))).toEqual([1, 2, 3, 4, 5]);
+    expect(backlog).toContain('Explorer.css');
+    expect(backlog).toContain('12.5px');
+  });
+
+  it('修正报告保留窗口核对项与多窗口缩放限制', () => {
+    const report = readFileSync(new URL('../../../../tasks/REPORT-19-R1.md', import.meta.url), 'utf8');
+    expect(report).toContain('待窗口核对');
+    expect(report).toContain('90% / 100% / 150%');
+    expect(report).toContain('多窗口缩放不联动');
+    expect(report).toContain('detached');
   });
 });
