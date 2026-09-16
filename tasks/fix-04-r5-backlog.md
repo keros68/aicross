@@ -110,3 +110,5 @@
 63. `docs/PRODUCT.md` 字号阶梯未记「终端与 pre 例外」，与清理后仅剩的两处 11px 字面上不一致。（GLM 4）
 
 64. ~~Tauri dev 的文件监听把 `src-ui/node_modules/.vite/vitest/**/results.json` 也算成变更，在开发窗口开着时跑 vitest 会触发整轮 Rust 重编 + 重启 app（09-16 窗口实测）。~~ 已加 `.taurignore`（09-16）；**下次启动 dev 时才生效，当时运行中的窗口未重启验证**。
+
+65. 接入管理页（`ResourcesOverlay`，`aria-modal="true"`）没有 Esc 关闭，只能点「关闭」。它内部有 17 处编辑态（手工添加 agent、模型详情等），直接加 Esc 会有「一键丢弃未保存输入」的风险，要先想清楚层级：Esc 先关子弹窗、都关完了再关整页。设置弹窗的 Esc 已在 `b20edbc` 修好（焦点守卫 + 打开即取焦点），这条是同一类。
