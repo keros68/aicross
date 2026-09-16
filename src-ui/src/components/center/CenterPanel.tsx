@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { focusTerminal } from '../../lib/focus-registry';
+import { shouldEnforceTerminalFocus } from '../../lib/focus-enforcer';
 import { onWindowForeground } from '../../lib/window-focus-filter';
 import { TierTerminal } from './TierTerminal';
 import { GraphTab } from './graph/GraphTab';
@@ -818,8 +819,9 @@ export function CenterPanel() {
         // broke the multi-agent quadrant — every pane has its own xterm
         // helper, and stealing the focus always landed on the wrong one.
         // The enforcer now only pulls focus back when it wanders to
-        // genuinely non-input DOM (<div>, <body>, a clicked tab bar).
-        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+        // genuinely non-input DOM (<div>, <body>, a clicked tab bar), and
+        // never while a modal dialog is up — see shouldEnforceTerminalFocus.
+        if (!shouldEnforceTerminalFocus(el, document)) {
           return;
         }
         const id = activeIdRef.current;

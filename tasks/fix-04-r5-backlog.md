@@ -108,3 +108,5 @@
 61. 缩放回退的幂等只在当前 JS 会话内（`appliedZoomModes` 是内存 WeakMap）；页面重载后若 WebView2 残留倍率且首次 setZoom 失败，仍可能叠一次 CSS 倍率。（DS 2）
 62. `rail-density-19.test.tsx` 的结构正则是贪婪匹配，状态槽之后再插一列不会红；只有插在名字与状态之间才红。（GLM 3）
 63. `docs/PRODUCT.md` 字号阶梯未记「终端与 pre 例外」，与清理后仅剩的两处 11px 字面上不一致。（GLM 4）
+
+64. Tauri dev 的文件监听把 `src-ui/node_modules/.vite/vitest/**/results.json` 也算成变更，在开发窗口开着时跑 vitest 会触发整轮 Rust 重编 + 重启 app（09-16 窗口实测）。给 `tauri.conf.json` 的 watch 加忽略即可。

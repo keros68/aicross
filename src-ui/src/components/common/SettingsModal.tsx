@@ -10,7 +10,7 @@
 // Dispatch + persistence mirror the former Explorer wiring exactly so behaviour
 // is unchanged; only the presentation moved.
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useAppState, useAppDispatch, type ThemeColor } from '../../store/app-state';
 import { useT } from '../../i18n/useT';
 import { IS_WINDOWS } from '../../lib/platform';
@@ -156,6 +156,7 @@ export function SettingsModal() {
   } | null>(null);
 
   const open = state.settingsOpen;
+  const modalRef = useRef<HTMLDivElement>(null);
   const close = () => dispatch({ type: 'SET_SETTINGS_OPEN', open: false });
 
   // App version for the rail footer — pulled from the Tauri runtime (matches
@@ -175,6 +176,14 @@ export function SettingsModal() {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // 打开时把焦点收进弹窗（09-16 窗口实测）：不收的话 CenterPanel 的全局焦点
+  // 守卫会在 10ms 后把焦点抢回终端，Esc 直接走进 PTY，上面这条监听收不到。
+  // 用 layout effect 是为了赶在那个 10ms 之前落地。
+  useLayoutEffect(() => {
+    if (!open) return;
+    modalRef.current?.focus();
   }, [open]);
 
   useEffect(() => {
@@ -387,6 +396,8 @@ export function SettingsModal() {
         onMouseDown={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        ref={modalRef}
+        tabIndex={-1}
       >
         <aside className="settings-rail">
           <div className="settings-rail-title">{t('settings.title' as any)}</div>
