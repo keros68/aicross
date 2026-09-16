@@ -76,7 +76,7 @@ describe('TASK-19 左栏资源行', () => {
         login_checked_at: '2026-09-16T08:00:00+08:00',
       })} />,
     );
-    expect(detail).toContain('模型 ID：glm-5');
+    expect(detail).toContain('派发名：alias');
     expect(detail).toContain('provider：zai');
     expect(detail).toContain('登录状态：已登录');
     expect(detail).toContain('最近登录检查：2026-09-16T08:00:00+08:00');
@@ -108,8 +108,8 @@ describe('TASK-19 左栏资源行', () => {
         onPick={() => {}}
       />,
     );
-    expect(markup).toContain('先打开对话图\nsonnet');
-    expect(markup).toContain('模型 ID：claude-sonnet-5');
+    expect(markup).toContain('先打开对话图\nclaude-sonnet-5');
+    expect(markup).toContain('派发名：sonnet');
     expect(markup).toContain('状态：原生');
   });
 

@@ -184,12 +184,13 @@ describe('ResourceAgentList', () => {
     expect(visibleText(markup)).not.toContain('codex-cli');
   });
 
-  // TASK-19：左栏只显示名称；别名真身进入悬停提示，不形成第二列。
-  it('claude 别名行只显示别名，真实 ID 进入悬停提示', () => {
+  // 左栏只显示名称、不形成第二列（TASK-19）；行上显示的是真实模型 ID，
+  // 派发时要输的那个词进悬停（09-16 用户裁决）。
+  it('claude 行显示真实模型 ID，派发名进入悬停提示', () => {
     const markup = render();
     const text = visibleText(markup);
-    expect(text).toContain('fable');
-    expect(markup).toContain('模型 ID：claude-fable-5-1');
+    expect(text).toContain('claude-fable-5-1');
+    expect(markup).toContain('派发名：fable');
     expect(markup).not.toContain('resource-model-resolved');
   });
 
@@ -494,7 +495,7 @@ describe('modelHint', () => {
     );
     expect(hint.split('\n')).toEqual([
       'glm-4.5',
-      '模型 ID：glm-4.5',
+      '派发名：glm-4.5',
       '状态：验证失败',
       '来源：读取 ~\\.codex\\models_cache.json · 2026-09-15',
       '登录状态：已登录',
@@ -507,21 +508,21 @@ describe('modelHint', () => {
   // 来源也固定占第四行，缺失时明确写日期未知。
   it('provider 单列一行，没记来源仍保持固定四行', () => {
     expect(modelHint(model({ id: 'a', agent: 'pi', provider: 'zai' }))).toBe(
-      'a\n模型 ID：a\n状态：未验证\n来源：未记录 · 日期未知\nprovider：zai\n登录状态：已登录',
+      'a\n派发名：a\n状态：未验证\n来源：未记录 · 日期未知\nprovider：zai\n登录状态：已登录',
     );
     expect(modelHint(model({ id: 'a', agent: 'pi' }))).toBe(
-      'a\n模型 ID：a\n状态：未验证\n来源：未记录 · 日期未知\n登录状态：已登录',
+      'a\n派发名：a\n状态：未验证\n来源：未记录 · 日期未知\n登录状态：已登录',
     );
   });
 
   // TASK-09b：状态词与真身都进悬停——行内只剩一个点，这是唯一的读法。
-  it('别名的真身与状态词都进悬停提示', () => {
+  it('别名行的首行是真身，派发名与状态词都进悬停提示', () => {
     const hint = modelHint(
       model({ agent: 'claude', id: 'fable', resolved_id: 'claude-fable-5-1', source: SOURCE }),
     );
     expect(hint.split('\n')).toEqual([
-      'fable',
-      '模型 ID：claude-fable-5-1',
+      'claude-fable-5-1',
+      '派发名：fable',
       '状态：原生',
       '来源：读取 ~\\.codex\\models_cache.json · 2026-09-15',
     ]);

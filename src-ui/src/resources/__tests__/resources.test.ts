@@ -129,7 +129,7 @@ describe('TASK-21 model display and details', () => {
       ).slice(0, 4),
     ).toEqual([
       'gpt-5.6-sol',
-      '模型 ID：gpt-5.6-sol',
+      '派发名：gpt-5.6-sol',
       '状态：原生',
       '来源：读取 ~\\.codex\\models_cache.json · 2026-09-15',
     ]);

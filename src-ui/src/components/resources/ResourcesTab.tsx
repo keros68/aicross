@@ -43,16 +43,47 @@ import { AgentBadge } from './AgentBadge';
 import { VerificationMark } from './VerificationMark';
 // The left-pane tab shares resources.css with ResourcesOverlay, which is lazy since
 // TASK-05 C; import it here too so the tab is styled before the overlay ever opens.
+import {
+  initialExpanded,
+  readRailState,
+  toggleInList,
+  writeRailState,
+} from '../../resources/rail-state';
 import './resources.css';
 
 export function ResourcesTab() {
   const { state } = useAppState();
   const [store, setStore] = useState<ResourceStore | null>(null);
-  const [expanded, setExpanded] = useState<string[]>([]);
+  // 折叠状态存在组件外（09-16 用户实测）：切到「工作区」时 Explorer 会把本组件
+  // 整个卸载，留在 useState 里的展开状态和 initialized ref 一起清零，回来又被
+  // 首次加载分支全部展开，用户刚折叠好的状态每次切标签都被推翻。
+  const persisted = useRef(readRailState());
+  const [expanded, setExpandedState] = useState<string[]>(persisted.current.expanded ?? []);
   // 展开了未验证清单的小组，键是 `agentId/provider`。默认全折叠。
-  const [openUnverified, setOpenUnverified] = useState<string[]>([]);
-  const [openLoggedOut, setOpenLoggedOut] = useState<string[]>([]);
-  const [openUnknown, setOpenUnknown] = useState<string[]>([]);
+  const [openUnverified, setOpenUnverifiedState] = useState<string[]>(persisted.current.openUnverified);
+  const [openLoggedOut, setOpenLoggedOutState] = useState<string[]>(persisted.current.openLoggedOut);
+  const [openUnknown, setOpenUnknownState] = useState<string[]>(persisted.current.openUnknown);
+
+  const setExpanded = (next: string[]) => {
+    setExpandedState(next);
+    persisted.current = { ...persisted.current, expanded: next };
+    writeRailState(persisted.current);
+  };
+  const setOpenUnverified = (next: string[]) => {
+    setOpenUnverifiedState(next);
+    persisted.current = { ...persisted.current, openUnverified: next };
+    writeRailState(persisted.current);
+  };
+  const setOpenLoggedOut = (next: string[]) => {
+    setOpenLoggedOutState(next);
+    persisted.current = { ...persisted.current, openLoggedOut: next };
+    writeRailState(persisted.current);
+  };
+  const setOpenUnknown = (next: string[]) => {
+    setOpenUnknownState(next);
+    persisted.current = { ...persisted.current, openUnknown: next };
+    writeRailState(persisted.current);
+  };
   const [checkingProvider, setCheckingProvider] = useState<string | null>(null);
   const [error, setError] = useState('');
   const initialized = useRef(false);
@@ -69,7 +100,7 @@ export function ResourcesTab() {
       const value = await commands.getResources();
       setStore(value);
       if (!initialized.current) {
-        setExpanded(modelsByAgent(value).map((agent) => agent.id));
+        setExpanded(initialExpanded(persisted.current, modelsByAgent(value).map((agent) => agent.id)));
         initialized.current = true;
       }
       setError('');
@@ -88,25 +119,13 @@ export function ResourcesTab() {
     return <div className="resources-pane">{error || '正在读取资源…'}</div>;
   }
 
-  const toggle = (agentId: string) =>
-    setExpanded((value) =>
-      value.includes(agentId) ? value.filter((id) => id !== agentId) : [...value, agentId],
-    );
+  const toggle = (agentId: string) => setExpanded(toggleInList(expanded, agentId));
 
-  const toggleUnverified = (key: string) =>
-    setOpenUnverified((value) =>
-      value.includes(key) ? value.filter((item) => item !== key) : [...value, key],
-    );
+  const toggleUnverified = (key: string) => setOpenUnverified(toggleInList(openUnverified, key));
 
-  const toggleLoggedOut = (agentId: string) =>
-    setOpenLoggedOut((value) =>
-      value.includes(agentId) ? value.filter((item) => item !== agentId) : [...value, agentId],
-    );
+  const toggleLoggedOut = (agentId: string) => setOpenLoggedOut(toggleInList(openLoggedOut, agentId));
 
-  const toggleUnknown = (agentId: string) =>
-    setOpenUnknown((value) =>
-      value.includes(agentId) ? value.filter((item) => item !== agentId) : [...value, agentId],
-    );
+  const toggleUnknown = (agentId: string) => setOpenUnknown(toggleInList(openUnknown, agentId));
 
   const recheckProvider = async (provider: string) => {
     setCheckingProvider(provider);

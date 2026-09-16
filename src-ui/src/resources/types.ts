@@ -224,15 +224,20 @@ export function modelSecondaryId(model: Pick<ResourceModel, 'id' | 'resolved_id'
  * 比较时忽略空格、连字符等分隔符，因此 `kimi-code` 与 `Kimi Code` 同义。
  */
 export function modelDisplayName(
-  model: Pick<ResourceModel, 'agent' | 'id'>,
+  model: Pick<ResourceModel, 'agent' | 'id' | 'resolved_id'>,
   displayName = agentDisplayName(model.agent, model.agent),
 ): string {
-  const slash = model.id.indexOf('/');
-  if (slash <= 0 || slash === model.id.length - 1) return model.id;
+  // 行上显示**真实模型 ID**（用户 09-16 裁决）：原来显示的是「派发时写进命令行
+  // 的那个词」，于是 Claude 是别名 sonnet、Codex 是真名 gpt-5.6-sol，四家行上
+  // 是两种东西。派发词不会丢——它挪进了详情的「派发名」一行，派发本身仍用
+  // `model.id`（见 modelPickTarget）。
+  const name = resolvedIdOf(model);
+  const slash = name.indexOf('/');
+  if (slash <= 0 || slash === name.length - 1) return name;
   const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
-  return normalize(model.id.slice(0, slash)) === normalize(displayName)
-    ? model.id.slice(slash + 1)
-    : model.id;
+  return normalize(name.slice(0, slash)) === normalize(displayName)
+    ? name.slice(slash + 1)
+    : name;
 }
 
 function shortenHomePath(value: string): string {
@@ -431,7 +436,8 @@ export function agentMark(id: string): string {
 export function modelDetailLines(model: ResourceModel): string[] {
   const lines = [
     modelDisplayName(model),
-    `模型 ID：${resolvedIdOf(model)}`,
+    // 行上已经是真实 ID 了，这一行改成派发时要输的那个词，信息不丢。
+    `派发名：${model.id}`,
     `状态：${verificationLabel(verificationOf(model))}`,
     normalizeModelSource(model.source),
   ];

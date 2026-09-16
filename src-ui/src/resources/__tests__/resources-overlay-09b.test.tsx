@@ -73,8 +73,8 @@ describe('AgentCard（接入页）', () => {
         model({ agent: 'claude', id: 'claude-opus-5', resolved_id: 'claude-opus-5' }),
       ]),
     );
-    expect(markup).toContain('>fable<');
-    expect(markup).toContain('模型 ID：claude-fable-5-1');
+    expect(markup).toContain('>claude-fable-5-1<');
+    expect(markup).toContain('派发名：fable');
     expect(markup).not.toContain('agent-card-model-resolved');
   });
 
