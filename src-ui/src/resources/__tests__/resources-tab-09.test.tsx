@@ -63,7 +63,7 @@ const store: ResourceStore = {
       name: 'Codex',
       kind: '内置',
       detected: true,
-      version: '0.58.0',
+      version: 'codex-cli 0.154.0',
       models: [model({ agent: 'codex', id: 'gpt-5.6-luna', source: SOURCE, verification: 'native' })],
     },
     {
@@ -166,6 +166,12 @@ describe('ResourceAgentList', () => {
     expect(markup).toContain('agent-badge-pi agent-badge-inline-svg');
     expect(markup).not.toContain('agent-badge-letters">CO');
     expect(markup).not.toContain('agent-badge-letters">CL');
+  });
+
+  it('agent 行只显示版本号，悬停保留 --version 原样输出', () => {
+    const markup = render();
+    expect(markup).toContain('title="codex-cli 0.154.0">0.154.0</span>');
+    expect(visibleText(markup)).not.toContain('codex-cli');
   });
 
   // TASK-19：左栏只显示名称；别名真身进入悬停提示，不形成第二列。
@@ -478,21 +484,24 @@ describe('modelHint', () => {
     );
     expect(hint.split('\n')).toEqual([
       'glm-4.5',
+      '模型 ID：glm-4.5',
       '状态：验证失败',
+      '来源：读取 ~\\.codex\\models_cache.json · 2026-09-15',
       '登录状态：已登录',
-      SOURCE,
       '最近验证：2026-09-15T10:02:00+08:00（zai/glm-4.5）',
       '失败原因：401: invalid api key',
     ]);
   });
 
-  // 修正轮 R1：provider 单列一行（原来它只是 source 的兜底），没记来源仍退到
-  // 「来源未记录」——多 provider 的同名模型光看 source 分不清是哪个端点。
-  it('provider 单列一行，没记来源退到「来源未记录」', () => {
+  // 修正轮 R1：provider 单列一行（原来它只是 source 的兜底）；TASK-21 起
+  // 来源也固定占第四行，缺失时明确写日期未知。
+  it('provider 单列一行，没记来源仍保持固定四行', () => {
     expect(modelHint(model({ id: 'a', agent: 'pi', provider: 'zai' }))).toBe(
-      'a\n状态：未验证\nprovider：zai\n登录状态：已登录\n来源未记录',
+      'a\n模型 ID：a\n状态：未验证\n来源：未记录 · 日期未知\nprovider：zai\n登录状态：已登录',
     );
-    expect(modelHint(model({ id: 'a', agent: 'pi' }))).toBe('a\n状态：未验证\n登录状态：已登录\n来源未记录');
+    expect(modelHint(model({ id: 'a', agent: 'pi' }))).toBe(
+      'a\n模型 ID：a\n状态：未验证\n来源：未记录 · 日期未知\n登录状态：已登录',
+    );
   });
 
   // TASK-09b：状态词与真身都进悬停——行内只剩一个点，这是唯一的读法。
@@ -504,7 +513,7 @@ describe('modelHint', () => {
       'fable',
       '模型 ID：claude-fable-5-1',
       '状态：原生',
-      SOURCE,
+      '来源：读取 ~\\.codex\\models_cache.json · 2026-09-15',
     ]);
   });
 });

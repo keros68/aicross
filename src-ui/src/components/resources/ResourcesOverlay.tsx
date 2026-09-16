@@ -13,9 +13,11 @@ import { commands, isTauri } from '../../tauri';
 import { loadDispatchSettings } from '../../graph/dispatch-settings';
 import {
   errorText,
+  cliVersionNumber,
   loginCheckHint,
+  modelDetailLines,
+  modelDisplayName,
   modelHint,
-  modelSecondaryId,
   parseCommandArgs,
   providerLoginOf,
   providerGroups,
@@ -30,7 +32,6 @@ import {
   unknownProvidersToggleLabel,
   unverifiedSummaryText,
   unverifiedToggleLabel,
-  verificationLabel,
   verificationOf,
   type AddManualAgentRequest,
   type CcSwitchHint,
@@ -333,37 +334,16 @@ export function ResourcesOverlay({ onClose }: { onClose: () => void }) {
  * 卡片上原来就没有别的地方写着它挂在哪个端点上。
  */
 export function AgentCardModelMeta({ model }: { model: ResourceModel }) {
-  const quota = quotaExhaustedLabel(model);
   return (
     <>
-      <div className="agent-card-model-meta">模型 ID：{modelSecondaryId(model) || model.id}</div>
-      {model.provider.trim() !== '' && (
-        <div className="agent-card-model-meta">provider：{model.provider}</div>
-      )}
-      {(model.agent === 'pi' || model.login_checked_at) && (
-        <div className="agent-card-model-meta">登录状态：{loginLabel(loginOf(model))}</div>
-      )}
-      {model.login_checked_at && (
-        <div className="agent-card-model-meta">最近登录检查：{model.login_checked_at}</div>
-      )}
-      <div className="agent-card-model-meta">状态：{verificationLabel(verificationOf(model))}</div>
-      {quota && (
-        <div className="agent-card-model-meta">{quota}</div>
-      )}
-      <div className="agent-card-model-meta" title={model.source}>
-        {model.source || '来源未记录'}
-      </div>
-      {model.smoked_at && (
-        <div className="agent-card-model-meta">
-          最近验证：{model.smoked_at}
-          {model.smoke_model ? `（${model.smoke_model}）` : ''}
+      {modelDetailLines(model).map((line, index) => (
+        <div
+          className={`agent-card-model-meta${line.startsWith('失败原因：') ? ' failure' : ''}`}
+          key={`${index}:${line}`}
+        >
+          {line}
         </div>
-      )}
-      {model.meta && <div className="agent-card-model-meta">{model.meta}</div>}
-      {model.smoke_failure && (
-        <div className="agent-card-model-meta failure">验证失败：{model.smoke_failure}</div>
-      )}
-      {model.note && <div className="agent-card-model-meta">备注：{model.note}</div>}
+      ))}
     </>
   );
 }
@@ -490,7 +470,9 @@ export function AgentCard({
           {agent.detected ? '已检测' : '未检测'}
         </span>
       </div>
-      <div className="agent-card-version">{agent.version || '版本未知'}</div>
+      <div className="agent-card-version" title={agent.version || '版本未知'}>
+        {agent.version ? cliVersionNumber(agent.version) : '版本未知'}
+      </div>
       <div className="agent-card-models">
         {groups.length === 0 && loggedOut.length === 0 && unknown.length === 0 && <div className="agent-empty">暂无模型</div>}
         {groups.map((group) => {
@@ -517,7 +499,7 @@ export function AgentCard({
                 <div className="agent-card-model" key={`${model.provider}:${model.id}`}>
                   <div className="agent-card-model-main" title={modelHint(model)}>
                     <span className="agent-card-model-name">
-                      {model.id}
+                      {modelDisplayName(model)}
                     </span>
                     <span className="agent-card-model-state">
                       <VerificationMark verification={verification} />

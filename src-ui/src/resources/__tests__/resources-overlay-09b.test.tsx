@@ -78,6 +78,14 @@ describe('AgentCard（接入页）', () => {
     expect(markup).not.toContain('agent-card-model-resolved');
   });
 
+  it('模型行去掉同义 agent 前缀，版本行只显示版本号并保留原文悬停', () => {
+    const value = agent('kimi', 'Kimi Code', [model({ agent: 'kimi', id: 'kimi-code/k3-256k' })]);
+    value.version = 'kimi-code 0.42.0';
+    const markup = card(value);
+    expect(markup).toContain('class="agent-card-model-name">k3-256k</span>');
+    expect(markup).toContain('title="kimi-code 0.42.0">0.42.0</div>');
+  });
+
   it('多 provider 的卡片按 provider 分组，组头带计数；单 provider 不出组头', () => {
     const many = card(
       agent('pi', 'pi', [
@@ -112,7 +120,7 @@ describe('AgentCardModelMeta（接入页详情）', () => {
       <AgentCardModelMeta model={model({ agent: 'pi', provider: 'bigmodel', id: 'glm-4.6' })} />,
     );
     expect(third).toContain('provider：bigmodel');
-    expect(third).toContain('读:fixture');
+    expect(third).toContain('来源：读取 fixture · 日期未知');
 
     const native = renderToStaticMarkup(
       <AgentCardModelMeta model={model({ agent: 'claude', id: 'fable' })} />,
@@ -120,7 +128,7 @@ describe('AgentCardModelMeta（接入页详情）', () => {
     expect(native).not.toContain('provider：');
   });
 
-  it('来源、最近验证、失败原因与备注仍在', () => {
+  it('来源、最近验证与失败原因按固定顺序显示', () => {
     const markup = renderToStaticMarkup(
       <AgentCardModelMeta
         model={model({
@@ -135,7 +143,9 @@ describe('AgentCardModelMeta（接入页详情）', () => {
       />,
     );
     expect(markup).toContain('最近验证：2026-09-15T10:02:00+08:00（zai/glm-4.5）');
-    expect(markup).toContain('验证失败：401: invalid api key');
+    expect(markup).toContain('失败原因：401: invalid api key');
+    // 备注与 meta 必须留在详情末尾：前一版为了统一形状把这两行删了，
+    // 用户手写备注、「未在事实源中」标记、翻案留痕都会被抹掉（09-16 复审 Gemini 1）。
     expect(markup).toContain('备注：手动加的');
   });
 });

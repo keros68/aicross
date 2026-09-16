@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   agentMark,
+  cliVersionNumber,
   groupKey,
+  modelDetailLines,
+  modelDisplayName,
   modelSecondaryId,
   modelsByAgent,
+  normalizeModelSource,
   parseCommandArgs,
   quotaExhaustedLabel,
   quotaExhaustedUntil,
@@ -83,6 +87,60 @@ describe('verificationOf', () => {
     expect(verificationOf({ agent: 'pi', status: '待冒烟', verification: '' })).toBe('unverified');
     expect(verificationOf({ agent: 'pi', status: '', verification: '' })).toBe('unverified');
     expect(verificationOf({ agent: 'pi', status: '', verification: '乱写' })).toBe('unverified');
+  });
+});
+
+describe('TASK-21 version display', () => {
+  it.each([
+    ['2.1.272 (Claude Code)', '2.1.272'],
+    ['codex-cli 0.154.0', '0.154.0'],
+    ['0.42.0', '0.42.0'],
+    ['0.85.1', '0.85.1'],
+  ])('extracts the version from %s', (raw, expected) => {
+    expect(cliVersionNumber(raw)).toBe(expected);
+  });
+
+  it('falls back to the original output when no version is present', () => {
+    expect(cliVersionNumber('development build')).toBe('development build');
+  });
+});
+
+describe('TASK-21 model display and details', () => {
+  it('removes a vendor prefix only when it is synonymous with the agent display name', () => {
+    expect(modelDisplayName(model({ agent: 'kimi', id: 'kimi-code/k3-256k' }))).toBe('k3-256k');
+    expect(modelDisplayName(model({ agent: 'pi', id: 'deepseek/deepseek-v4' }))).toBe('deepseek/deepseek-v4');
+  });
+
+  it('always emits the same first four detail lines, including an unchanged model ID', () => {
+    expect(
+      modelDetailLines(
+        model({
+          agent: 'codex',
+          id: 'gpt-5.6-sol',
+          resolved_id: 'gpt-5.6-sol',
+          verification: 'native',
+          source: '读:C:\\Users\\keros68\\.codex\\models_cache.json (2026-09-15T19:21:46+08:00)',
+        }),
+      ).slice(0, 4),
+    ).toEqual([
+      'gpt-5.6-sol',
+      '模型 ID：gpt-5.6-sol',
+      '状态：原生',
+      '来源：读取 ~\\.codex\\models_cache.json · 2026-09-15',
+    ]);
+  });
+});
+
+describe('TASK-21 legacy source normalization', () => {
+  it.each([
+    [
+      '读:C:\\Users\\keros68\\.codex\\models_cache.json (2026-09-15T19:21:46+08:00)',
+      '来源：读取 ~\\.codex\\models_cache.json · 2026-09-15',
+    ],
+    ['claude --help 别名 (2026-09-15)', '来源：claude --help 别名 · 2026-09-15'],
+    ['申报(2026-09-15)', '来源：用户申报 · 2026-09-15'],
+  ])('normalizes %s', (source, expected) => {
+    expect(normalizeModelSource(source)).toBe(expected);
   });
 });
 
@@ -264,5 +322,25 @@ describe('appendMention', () => {
   it('已有文本补空格分隔', () => {
     expect(appendMention('你好', '@pi/glm-4.7')).toBe('你好 @pi/glm-4.7 ');
     expect(appendMention('你好 ', '@pi/glm-4.7')).toBe('你好 @pi/glm-4.7 ');
+  });
+});
+
+
+describe('TASK-21 复审补漏（09-16 编排者）', () => {
+  it('来源归一是幂等的：拿不到日期的串再过一次不会被重复拼前缀', () => {
+    const once = normalizeModelSource('');
+    expect(once).toBe('来源：未记录 · 日期未知');
+    expect(normalizeModelSource(once)).toBe(once);
+  });
+
+  it('详情末尾保留 meta 与备注，两者都不丢', () => {
+    const lines = modelDetailLines(model({
+      id: 'glm-4.7',
+      meta: '真实模型 ID：glm-4.7；上下文：131072；未在事实源中',
+      note: '手动加的',
+    }));
+    expect(lines).toContain('真实模型 ID：glm-4.7；上下文：131072；未在事实源中');
+    expect(lines).toContain('备注：手动加的');
+    expect(lines.indexOf('备注：手动加的')).toBe(lines.length - 1);
   });
 });

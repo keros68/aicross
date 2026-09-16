@@ -1,6 +1,8 @@
 // 资源接入契约类型（TASK-07）：与 src/resources.rs 的 serde 输出一一对应，
 // 字段保持 snake_case，不改名。
 
+import { agentDisplayName } from './agent-display';
+
 export type Login = 'unknown' | 'logged_in' | 'logged_out';
 
 export interface ResourceModel {
@@ -88,6 +90,12 @@ export interface AddManualAgentRequest {
 
 export const STATUS_CONNECTED = '已接入';
 export const STATUS_FAILED = '冒烟失败';
+
+/** `--version` 原样输出中供行内显示的版本号；无法识别时保留原文。 */
+export function cliVersionNumber(raw: string): string {
+  const value = raw.trim();
+  return value.match(/\b\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? value;
+}
 
 export function resourceModelKey(model: Pick<ResourceModel, 'agent' | 'provider' | 'id'>): string {
   return `${model.agent}/${model.provider}/${model.id}`;
@@ -207,6 +215,53 @@ export function resolvedIdOf(model: Pick<ResourceModel, 'id' | 'resolved_id'>): 
 export function modelSecondaryId(model: Pick<ResourceModel, 'id' | 'resolved_id'>): string {
   const resolved = resolvedIdOf(model);
   return resolved === model.id ? '' : resolved;
+}
+
+/**
+ * 行内模型名仍是派发时使用的 `id`，只去掉与 agent 显示名同义的厂商前缀。
+ * 比较时忽略空格、连字符等分隔符，因此 `kimi-code` 与 `Kimi Code` 同义。
+ */
+export function modelDisplayName(
+  model: Pick<ResourceModel, 'agent' | 'id'>,
+  displayName = agentDisplayName(model.agent, model.agent),
+): string {
+  const slash = model.id.indexOf('/');
+  if (slash <= 0 || slash === model.id.length - 1) return model.id;
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return normalize(model.id.slice(0, slash)) === normalize(displayName)
+    ? model.id.slice(slash + 1)
+    : model.id;
+}
+
+function shortenHomePath(value: string): string {
+  return value
+    .replace(/[A-Za-z]:[\\/]Users[\\/][^\\/]+(?=[\\/]|$)/i, '~')
+    .replace(/\/(?:Users|home)\/[^/]+(?=\/|$)/, '~');
+}
+
+/** 把新旧来源字段统一成「来源：说明 · 日期」，旧库无需重新探测。 */
+export function normalizeModelSource(source: string): string {
+  const value = source.trim();
+  if (!value) return '来源：未记录 · 日期未知';
+  // 幂等：已经带「来源：」前缀但日期不是标准形状的串（比如上面那条「日期未知」）
+  // 再过一次会掉进末尾兜底，被拼成「来源：来源：未记录 · 日期未知 · 日期未知」
+  // （09-16 复审 Gemini 2）。
+  if (value.startsWith('来源：') && !/·\s*\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+
+  const current = /^来源：(.+?)\s*·\s*(\d{4}-\d{2}-\d{2})$/.exec(value);
+  if (current) return `来源：${shortenHomePath(current[1].trim())} · ${current[2]}`;
+
+  const read = /^读:(.+?)\s*\((\d{4}-\d{2}-\d{2})(?:T[^)]*)?\)$/.exec(value);
+  if (read) return `来源：读取 ${shortenHomePath(read[1].trim())} · ${read[2]}`;
+
+  const declared = /^申报\((\d{4}-\d{2}-\d{2})(?:T[^)]*)?\)$/.exec(value);
+  if (declared) return `来源：用户申报 · ${declared[1]}`;
+
+  const dated = /^(.+?)\s*\((\d{4}-\d{2}-\d{2})(?:T[^)]*)?\)$/.exec(value);
+  if (dated) return `来源：${shortenHomePath(dated[1].trim())} · ${dated[2]}`;
+
+  const legacyRead = value.startsWith('读:') ? `读取 ${value.slice(2).trim()}` : value;
+  return `来源：${shortenHomePath(legacyRead)} · 日期未知`;
 }
 
 /** 接入页统计：只数未验证的第三方条目，原生不计。 */
@@ -371,11 +426,13 @@ export function agentMark(id: string): string {
  * 修正轮 R1：同一段文本也挂进行的 `aria-describedby`，键盘用户读得到
  * （title 在 WebView2 里只响应 hover）。
  */
-export function modelHint(model: ResourceModel): string {
-  const lines = [model.id];
-  const resolved = modelSecondaryId(model);
-  if (resolved !== '') lines.push(`模型 ID：${resolved}`);
-  lines.push(`状态：${verificationLabel(verificationOf(model))}`);
+export function modelDetailLines(model: ResourceModel): string[] {
+  const lines = [
+    modelDisplayName(model),
+    `模型 ID：${resolvedIdOf(model)}`,
+    `状态：${verificationLabel(verificationOf(model))}`,
+    normalizeModelSource(model.source),
+  ];
   const quota = quotaExhaustedLabel(model);
   if (quota) lines.push(quota);
   if (model.provider.trim() !== '') lines.push(`provider：${model.provider}`);
@@ -383,12 +440,21 @@ export function modelHint(model: ResourceModel): string {
     lines.push(`登录状态：${loginLabel(loginOf(model))}`);
   }
   if (model.login_checked_at) lines.push(`最近登录检查：${model.login_checked_at}`);
-  lines.push(model.source || '来源未记录');
   if (model.smoked_at) {
     lines.push(`最近验证：${model.smoked_at}${model.smoke_model ? `（${model.smoke_model}）` : ''}`);
   }
   if (model.smoke_failure) lines.push(`失败原因：${model.smoke_failure}`);
-  return lines.join('\n');
+  // meta 与 note 必须留在末尾（09-16 复审 Gemini 1）：meta 是「真实模型 ID：…；
+  // 上下文：…；effort：…」这样的键值串，合并层还会往里追加「未在事实源中」标记；
+  // note 承载用户手写备注和「按已知路由别名重判（日期）」的翻案留痕。前一版为了
+  // 统一形状把这两行整个删了，等于把这些信息从界面上抹掉。
+  if (model.meta.trim() !== '') lines.push(model.meta.trim());
+  if (model.note.trim() !== '') lines.push(`备注：${model.note.trim()}`);
+  return lines;
+}
+
+export function modelHint(model: ResourceModel): string {
+  return modelDetailLines(model).join('\n');
 }
 
 /** 启动参数文本 → argv（支持单双引号；引号未闭合抛错）。 */

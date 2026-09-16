@@ -15,7 +15,9 @@ import {
   loginCheckHint,
   loggedOutProvidersToggleLabel,
   loginLabel,
+  cliVersionNumber,
   modelHint,
+  modelDisplayName,
   modelPickTarget,
   modelsByAgent,
   providerLoginOf,
@@ -201,7 +203,7 @@ export function ResourceAgentList({
               <AgentBadge agentId={agent.id} />
               <span className="resource-agent-name">{agentDisplayName(agent.id, agent.name || agent.id)}</span>
               <span className="resource-agent-version" title={agent.version || '版本未知'}>
-                {agent.version || '版本未知'}
+                {agent.version ? cliVersionNumber(agent.version) : '版本未知'}
               </span>
             </button>
             {isExpanded && (
@@ -435,7 +437,7 @@ function ResourceModelRow({
           onPick(target.agent, target.model, target.provider);
         }}
       >
-        <span className="resource-model-name">{model.id}</span>
+        <span className="resource-model-name">{modelDisplayName(model)}</span>
         <span className="resource-model-status">
           <VerificationMark verification={verificationOf(model)} />
         </span>

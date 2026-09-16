@@ -296,6 +296,7 @@ pub fn load(path: &Path) -> Result<ResourceStore, String> {
     }
     let mut store = store;
     ensure_verification(&mut store);
+    rejudge_stored_smoke_failures(&mut store);
     ensure_resolved_id(&mut store);
     Ok(store)
 }
@@ -505,6 +506,67 @@ fn resolved_id_from_identity(identity: &str, provider: &str) -> String {
         }
     }
     identity.to_string()
+}
+
+/// 旧库里可能保留着静态路由表加入前的「真身不符」。读取时只按当前静态表
+/// 重判已有结果，不启动 CLI：命中已知别名就翻成已验证；其余有失败原因的
+/// 第三方记录统一归为 failed，不再与从未验证共用 unverified。
+fn rejudge_stored_smoke_failures(store: &mut ResourceStore) {
+    static IDENTITY_MISMATCH: OnceLock<Regex> = OnceLock::new();
+    let mismatch = IDENTITY_MISMATCH.get_or_init(|| {
+        Regex::new(
+            r"^真身不符：请求\s+([^/\s，]+)/([^，\s]+)，响应\s+([^/\s，]+)/([^，\s]+)\s*$",
+        )
+        .expect("identity mismatch regex")
+    });
+    let date = Local::now().format("%Y-%m-%d").to_string();
+
+    for agent in &mut store.agents {
+        let owner = agent.id.clone();
+        for model in &mut agent.models {
+            if model.smoke_failure.trim().is_empty() {
+                continue;
+            }
+            let agent_id = if model.agent.trim().is_empty() { &owner } else { &model.agent };
+            if is_native_model(agent_id) {
+                continue;
+            }
+
+            let known_alias = mismatch.captures(model.smoke_failure.trim()).and_then(|captures| {
+                let requested_provider = captures.get(1)?.as_str();
+                let requested_model = captures.get(2)?.as_str();
+                let actual_provider = captures.get(3)?.as_str();
+                let actual_model = captures.get(4)?.as_str();
+                crate::channels::KNOWN_MODEL_ROUTES
+                    .iter()
+                    .any(|(provider, requested, actual)| {
+                        *provider == requested_provider
+                            && *requested == requested_model
+                            && *provider == actual_provider
+                            && *actual == actual_model
+                            && model.provider == requested_provider
+                            && model.id == requested_model
+                    })
+                    .then(|| (actual_provider.to_string(), actual_model.to_string()))
+            });
+
+            if let Some((actual_provider, actual_model)) = known_alias {
+                model.status = STATUS_CONNECTED.to_string();
+                model.verification = VERIFICATION_VERIFIED.to_string();
+                model.resolved_id = actual_model.clone();
+                model.resolved_source = RESOLVED_SOURCE_IDENTITY.to_string();
+                model.smoke_model = format!("{actual_provider}/{actual_model}");
+                model.smoke_failure.clear();
+                model.note = append_note_marker(
+                    &model.note,
+                    &format!("按已知路由别名重判（{date}）"),
+                );
+            } else {
+                model.status = STATUS_FAILED.to_string();
+                model.verification = VERIFICATION_FAILED.to_string();
+            }
+        }
+    }
 }
 
 /// 补齐 / 校正 `resolved_id`（修正轮 R1）：
@@ -1319,7 +1381,7 @@ fn claude_aliases(binary: Option<&PathBuf>) -> (Vec<String>, String) {
                 if from_help {
                     return (
                         aliases,
-                        format!("claude --help 别名 ({})", Local::now().format("%Y-%m-%d")),
+                        source_value("claude --help 别名", &Local::now().format("%Y-%m-%d").to_string()),
                     );
                 }
             }
@@ -1327,7 +1389,7 @@ fn claude_aliases(binary: Option<&PathBuf>) -> (Vec<String>, String) {
     }
     (
         CLAUDE_FALLBACK_ALIASES.iter().map(|a| a.to_string()).collect(),
-        format!("静态表({CLAUDE_STATIC_TABLE_DATE})"),
+        source_value("静态别名表", CLAUDE_STATIC_TABLE_DATE),
     )
 }
 
@@ -1457,10 +1519,27 @@ fn parse_cc_switch_hints(contents: &str) -> Result<Vec<CcSwitchHint>, String> {
 }
 
 fn source_read(source: &str) -> String {
-    format!(
-        "读:{source} ({})",
-        Local::now().to_rfc3339_opts(SecondsFormat::Secs, false)
+    source_value(
+        &format!("读取 {}", shorten_home_path(source)),
+        &Local::now().format("%Y-%m-%d").to_string(),
     )
+}
+
+fn source_value(description: &str, date: &str) -> String {
+    format!("来源：{description} · {date}")
+}
+
+fn shorten_home_path(source: &str) -> String {
+    static WINDOWS_HOME: OnceLock<Regex> = OnceLock::new();
+    static UNIX_HOME: OnceLock<Regex> = OnceLock::new();
+    let shortened = WINDOWS_HOME
+        .get_or_init(|| Regex::new(r"(?i)[A-Z]:[\\/]Users[\\/][^\\/]+([\\/]|$)").expect("Windows home regex"))
+        .replace(source, "~$1")
+        .into_owned();
+    UNIX_HOME
+        .get_or_init(|| Regex::new(r"/(?:Users|home)/[^/]+(/|$)").expect("Unix home regex"))
+        .replace(&shortened, "~$1")
+        .into_owned()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1528,6 +1607,7 @@ fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: 
         {
             model.tier.clone_from(&existing.tier);
             model.status.clone_from(&existing.status);
+            model.verification.clone_from(&existing.verification);
             model.smoked_at.clone_from(&existing.smoked_at);
             model.smoke_model.clone_from(&existing.smoke_model);
             model.smoke_failure.clone_from(&existing.smoke_failure);
@@ -1556,7 +1636,10 @@ fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: 
             existing.provider.clone(),
             existing.id.clone(),
         );
-        if !discovered_keys.contains(&key) && !existing.source.starts_with("申报(") {
+        if !discovered_keys.contains(&key)
+            && !existing.source.starts_with("申报(")
+            && !existing.source.starts_with("来源：用户申报 · ")
+        {
             existing.meta = append_note_marker(&existing.meta, MISSING_MARKER);
         }
     }
@@ -1626,7 +1709,7 @@ pub fn add_model(
         login_checked_at: String::new(),
         resolved_id,
         resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
-        source: format!("申报({})", Local::now().format("%Y-%m-%d")),
+        source: source_value("用户申报", &Local::now().format("%Y-%m-%d").to_string()),
         smoked_at: String::new(),
         smoke_model: String::new(),
         smoke_failure: String::new(),
@@ -3665,6 +3748,128 @@ exit 2
         assert_eq!(
             sonnet.resolved_id, "claude-sonnet-5-20260901",
             "实测真身不许被静态表压回去"
+        );
+    }
+
+    /// TASK-21：旧库中的真身不符记录要按当前路由别名表重判。命中的翻案，
+    /// 未命中的仍是失败；整个过程只读旧数据与静态表，不运行冒烟。
+    #[test]
+    fn task21_known_route_alias_rejudges_old_smoke_failure() {
+        let mut matched = ResourceModel {
+            id: "deepseek-v4-flash".into(),
+            agent: "pi".into(),
+            provider: "deepseek".into(),
+            status: STATUS_FAILED.into(),
+            verification: VERIFICATION_UNVERIFIED.into(),
+            smoke_failure: "真身不符：请求 deepseek/deepseek-v4-flash，响应 deepseek/deepseek-flash".into(),
+            ..ResourceModel::default()
+        };
+        matched.smoked_at = "2026-09-14T08:45:02+08:00".into();
+        let unmatched = ResourceModel {
+            id: "other-model".into(),
+            agent: "pi".into(),
+            provider: "deepseek".into(),
+            status: STATUS_FAILED.into(),
+            verification: VERIFICATION_UNVERIFIED.into(),
+            smoke_failure: "真身不符：请求 deepseek/other-model，响应 deepseek/unexpected".into(),
+            ..ResourceModel::default()
+        };
+        let original = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("pi", vec![matched, unmatched])],
+        };
+        let root = std::env::temp_dir().join(format!("aicross-task21-rejudge-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        save_store(&path, &original).unwrap();
+
+        let mut store = load(&path).expect("load must rejudge stored failures");
+
+        let fixed = find_model(&store, "pi", "deepseek", "deepseek-v4-flash").unwrap();
+        assert_eq!(fixed.verification, VERIFICATION_VERIFIED);
+        assert_eq!(fixed.status, STATUS_CONNECTED);
+        assert_eq!(fixed.resolved_id, "deepseek-flash");
+        assert_eq!(fixed.resolved_source, RESOLVED_SOURCE_IDENTITY);
+        assert_eq!(fixed.smoke_model, "deepseek/deepseek-flash");
+        assert!(fixed.smoke_failure.is_empty());
+        assert!(fixed.note.contains("按已知路由别名重判（"));
+
+        merge_detected_models(
+            &mut store,
+            "pi",
+            vec![detected_model(
+                "deepseek-v4-flash",
+                "pi",
+                "deepseek",
+                "DeepSeek",
+                "deepseek",
+                "未知",
+                "来源：读取 fixture · 2026-09-16",
+                "",
+            )],
+        );
+        let redetected = find_model(&store, "pi", "deepseek", "deepseek-v4-flash").unwrap();
+        assert_eq!(redetected.verification, VERIFICATION_VERIFIED);
+        assert_eq!(redetected.resolved_id, "deepseek-flash");
+        assert!(redetected.smoke_failure.is_empty());
+        assert!(redetected.note.contains("按已知路由别名重判（"));
+
+        let kept = find_model(&store, "pi", "deepseek", "other-model").unwrap();
+        assert_eq!(kept.verification, VERIFICATION_FAILED);
+        assert_eq!(kept.status, STATUS_FAILED);
+        assert!(!kept.smoke_failure.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-21：一次普通冒烟失败必须直接进入 failed，不能和从未验证共用档位。
+    #[test]
+    fn task21_smoke_failure_is_recorded_as_failed() {
+        let model = ResourceModel {
+            id: "m".into(),
+            agent: "pi".into(),
+            provider: "p".into(),
+            verification: VERIFICATION_UNVERIFIED.into(),
+            ..ResourceModel::default()
+        };
+        let mut store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("pi", vec![model])],
+        };
+        let key = ResourceModelKey { agent_id: "pi".into(), provider: "p".into(), id: "m".into() };
+
+        apply_smoke_outcome(&mut store, &key, Err("端点拒绝".into())).unwrap();
+
+        let saved = find_model(&store, "pi", "p", "m").unwrap();
+        assert_eq!(saved.verification, VERIFICATION_FAILED);
+        assert_eq!(saved.status, STATUS_FAILED);
+        assert_eq!(saved.smoke_failure, "端点拒绝");
+    }
+
+    /// 复审补漏（09-16 Gemini 3）：路径正好以用户主目录结尾时也要缩成 `~`，
+    /// 原来的正则强制捕获后面那个分隔符，没有分隔符就整串不替换。
+    #[test]
+    fn task21_home_shortening_also_handles_paths_ending_at_home() {
+        assert_eq!(shorten_home_path(r"C:\Users\alice"), "~");
+        assert_eq!(shorten_home_path(r"C:\Users\alice\.codex\models_cache.json"), r"~\.codex\models_cache.json");
+        assert_eq!(shorten_home_path("/home/alice"), "~");
+        assert_eq!(shorten_home_path("/Users/alice/.codex/x.json"), "~/.codex/x.json");
+    }
+
+    /// TASK-21：新探测写入统一来源形状，并在落库前缩短用户主目录。
+    #[test]
+    fn task21_source_writer_uses_uniform_shape_and_short_home() {
+        let date = Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(
+            source_read(r"C:\Users\alice\.codex\models_cache.json"),
+            format!(r"来源：读取 ~\.codex\models_cache.json · {date}")
+        );
+        assert_eq!(
+            source_value("用户申报", "2026-09-15"),
+            "来源：用户申报 · 2026-09-15"
+        );
+        assert_eq!(
+            source_value("claude --help 别名", "2026-09-15"),
+            "来源：claude --help 别名 · 2026-09-15"
         );
     }
 
