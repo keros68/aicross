@@ -93,3 +93,9 @@ Duration  1.18s
 - 未改 `commander.json` 字段、`source: "console"` 值或 `aicross:console-*` 事件名。
 - 未启动窗口，未发真机请求，未调真实模型；因此界面仅做静态实现、类型检查和自动测试，没有窗口视觉手测结论。
 - 未运行 `cargo fmt`，未 commit，未 push。
+
+## 补充（09-16 复审后）
+
+**本期控制台的单线聊天按只读派发**（codex `-s read-only`、claude 只读工具白名单、pi 只读工具集）。
+这是第一期的有意取舍：控制台没有审批 UI，放开写权限要连审批路径一起做，留第二期。
+界面空态与 `docs/MANUAL.md` 都已写明，需要改文件时用模式派发。首版报告漏写了这条，补在这里（复审 Gemini 3）。

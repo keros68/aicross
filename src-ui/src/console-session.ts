@@ -130,19 +130,22 @@ export function parseConsoleMention(
 }
 
 export function completeConsoleMention(value: string, target: ConsoleTargetAgent): string {
+  // 整段替换开头那个 `@词`，不看它和选中的这家是否同名（09-16 复审 Gemini 1）。
+  // 原来按选中目标的词去逐词匹配：打了 `@c` 再点「pi agent」，`pi` 不以 `c` 开头，
+  // 循环第一轮就断在光标 0，于是 `c` 被当成正文留下，结果是「@pi agent c 」；
+  // 打了 `@kimi 帮我看` 再点「Claude Code」会变成「@Claude Code kimi 帮我看」。
   const display = agentDisplayName(target.agent);
-  const source = value.startsWith('@') ? value.slice(1) : value;
-  const wanted = display.split(/\s+/);
-  let cursor = 0;
-  for (const word of wanted) {
-    while (/\s/.test(source[cursor] ?? '')) cursor += 1;
-    const match = source.slice(cursor).match(/^\S+/)?.[0] ?? '';
-    if (match === '' || !word.toLocaleLowerCase().startsWith(match.toLocaleLowerCase())) break;
-    cursor += match.length;
+  const head = value.match(/^@\S*/)?.[0] ?? '';
+  const rest = value.slice(head.length).replace(/^\s+/, '');
+  // 已经打到多词显示名的中间（如 `@pi ag`）时，把那截也一起吃掉。
+  const wanted = display.toLocaleLowerCase().split(/\s+/);
+  let tail = rest;
+  for (let index = 1; index < wanted.length; index += 1) {
+    const next = tail.match(/^\S+/)?.[0] ?? '';
+    if (next === '' || !wanted[index].startsWith(next.toLocaleLowerCase())) break;
+    tail = tail.slice(next.length).replace(/^\s+/, '');
   }
-  while (/\s/.test(source[cursor] ?? '')) cursor += 1;
-  const rest = source.slice(cursor);
-  return `@${display} ${rest}`;
+  return `@${display} ${tail}`;
 }
 
 export function canApplyOrchestration(

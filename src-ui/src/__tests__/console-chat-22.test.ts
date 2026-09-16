@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+// @ts-expect-error node builtin，只有归档防篡改扫描读本地文件
+import { readdirSync, readFileSync } from 'node:fs';
 import { getInitialState, reducer, type TerminalSession } from '../store/app-state';
 import { fillRoot } from '../graph/mutate';
 import { newGraph, type Preset } from '../graph/types';
@@ -233,5 +235,37 @@ describe('TASK-22 控制台消息流', () => {
     const leftovers = files.filter((file) => currentCopy(file).includes(oldName));
     if (currentSection.includes(oldName)) leftovers.push('docs/PRODUCT.md#控制台就是对话窗');
     expect(leftovers).toEqual([]);
+  });
+});
+
+
+describe('复审补漏（09-16 编排者）', () => {
+  it('点补全时已打的前缀不残留，哪怕和选中的这家不同名', () => {
+    // 原来按选中目标逐词匹配：打了 @kimi 再点 Claude Code 会变成
+    // 「@Claude Code kimi 帮我看」，把废弃前缀当正文留下（复审 Gemini 1）。
+    expect(completeConsoleMention('@c ', { agent: 'pi', model: 'glm-5.3-flash', provider: 'zai' } as never))
+      .toBe('@pi agent ');
+    expect(completeConsoleMention('@kimi 帮我看', { agent: 'claude', model: 'claude-sonnet-5', provider: '' } as never))
+      .toBe('@Claude Code 帮我看');
+    // 已经打到多词显示名中间的那截也要吃掉
+    expect(completeConsoleMention('@pi ag 帮我看', { agent: 'pi', model: 'g', provider: '' } as never))
+      .toBe('@pi agent 帮我看');
+  });
+
+  it('历史归档没有被本期改名动过（防篡改）', () => {
+    // 改名只该动用户可见文案与当前文档；tasks/ 下的审查与报告是某个日期的记录，
+    // 改了等于篡改证据（复审 Gemini 2；首版确实误改了 34 个文件）。
+    const dir = new URL('../../../tasks/', import.meta.url);
+    const names = (readdirSync(dir) as string[]).filter((name: string) =>
+      (name.startsWith('review-') || name.startsWith('REPORT-')) && name.endsWith('.md'));
+    expect(names.length).toBeGreaterThan(20);
+    const hits: string[] = [];
+    for (const name of names) {
+      // 本期之后新写的报告可以用新词；只查本期之前就存在的归档。
+      if (name === 'REPORT-22.md' || name === 'REPORT-22-R1.md') continue;
+      const text = readFileSync(new URL(name, dir), 'utf8');
+      if (text.includes('控制台前台') || text.includes('控制台标题')) hits.push(name);
+    }
+    expect(hits).toEqual([]);
   });
 });
