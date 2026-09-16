@@ -1,8 +1,6 @@
-// 总指挥启动器（TASK-10 实现 1）。
+// 控制台启动器（TASK-22 第一期）。
 //
-// 空白 tab 的主视图：选 agent、选模型、选目录，一键起一个**原生 CLI 会话**。
-// 跑的就是 CLI 本身，斜杠命令、续聊、权限提示全部原生——这里只负责把
-// `--model …` 这类参数算对（`commander/args.ts`），不代理、不包装。
+// 空白 tab 的主视图：选 agent、模型和目录后进入 aicross 自己的消息流。
 //
 // 挑什么、显示成什么字都在 `commander/launcher.ts` 的纯函数里，这个文件只画。
 
@@ -33,6 +31,7 @@ import {
 } from '../../commander/launcher';
 import type { CommanderSettings } from '../../commander/types';
 import { AGENT_DISPLAY_NAMES } from '../../resources/agent-display';
+import { CONTROL_CONSOLE_LABEL } from '../../console-session';
 
 export interface CommanderLaunchArgs {
   agent: CommanderAgent;
@@ -46,7 +45,7 @@ interface Props {
   installed: Record<string, boolean>;
   /** 首次工具探测是否已经返回。 */
   toolsScanned: boolean;
-  /** 已安装且不属于四家总指挥的 CLI。 */
+  /** 已安装且不属于四家内置 agent 的 CLI。 */
   otherClis: CommanderCliEntry[];
   /** 已存的默认；`agent` 为空 = 还没存过。 */
   defaults: CommanderSettings | null;
@@ -76,7 +75,7 @@ export function CommanderModelSelect({
       value={commanderModelSelectValue(picked)}
       onChange={(event) => onChange(parseCommanderModelValue(event.target.value))}
     >
-      <option value="">不指定（用 CLI 默认）</option>
+      <option value="">请选择模型</option>
       {models.map((model) => (
         <option
           key={`${model.agent}/${model.provider}/${model.id}`}
@@ -212,7 +211,7 @@ export function CommanderLauncher({
     agents,
     picked?.provider ?? '',
     picked?.model ?? '',
-  );
+  ) ?? (picked === null ? '先选一个模型' : null);
   const launch = (args: CommanderLaunchArgs) => onLaunch(args);
 
   const defaultAvailable = commanderDefaultAvailable(defaults, installed, toolsScanned);
@@ -221,9 +220,9 @@ export function CommanderLauncher({
   return (
     <div className="commander-launcher">
       <div className="commander-inner">
-        <div className="commander-title">总指挥</div>
+        <div className="commander-title">{CONTROL_CONSOLE_LABEL}</div>
         <div className="commander-desc">
-          在项目目录起一个原生 CLI 会话，日常就在这个会话里聊。斜杠命令、续聊、权限提示都是 CLI 自己的。
+          选定 agent、模型和目录后可单线聊天；输入 @ 可临时改派给另一家。
         </div>
 
         {defaultLine !== null && defaults !== null && (
@@ -248,7 +247,7 @@ export function CommanderLauncher({
           <div className="commander-empty">探测中…</div>
         ) : agents.length === 0 ? (
           <div className="commander-empty">
-            本机没探测到 {Object.values(AGENT_DISPLAY_NAMES).join(' / ')}。装好任意一个再回来。
+            本机没探测到 {Object.values(AGENT_DISPLAY_NAMES).join(' / ')}。可在接入页完成探测。
           </div>
         ) : (
           <>
@@ -316,7 +315,7 @@ export function CommanderLauncher({
                 })
               }
             >
-              启动总指挥
+              进入控制台
             </button>
             {blocked !== null && <div className="commander-note">{blocked}</div>}
           </>

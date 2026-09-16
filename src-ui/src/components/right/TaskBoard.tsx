@@ -622,8 +622,8 @@ export function TaskBoard() {
             </div>
           )}
           {runningConsoleRuns.length > 0 && (
-            <section className="console-run-list" aria-label="来自总指挥的在飞任务">
-              <div className="console-run-heading">来自总指挥 · {runningConsoleRuns.length} 项任务</div>
+            <section className="console-run-list" aria-label="来自控制台的在飞任务">
+              <div className="console-run-heading">来自控制台 · {runningConsoleRuns.length} 项任务</div>
               {runningConsoleRuns.map((run) => (
                 <div key={run.run_id} className="console-run-card">
                   <div>{run.nodes.filter((node) => node.status === 'running').length} 路在飞</div>

@@ -23,4 +23,4 @@
 
 验证：`cd src-ui && npx vitest run --configLoader native --pool threads`、`cd src-ui && npm run build`、`cargo check` 零 warning、`cargo test`。保持每个文件原有换行（`src-ui/src/tauri.ts` 混合换行只做字节级最小改动；`src/server.rs` 是 CRLF）；不 `cargo fmt`；不起窗口；不 commit、不 push。
 
-注意：`phase/10`（总指挥启动器）正在另一个工作树修正，会改 `CenterPanel.tsx`、`Explorer.tsx`、`TierTerminal.tsx`、`src-ui/src/commander/*`；这几个文件的文案本期照改，合并冲突由编排者处理。
+注意：`phase/10`（控制台启动器）正在另一个工作树修正，会改 `CenterPanel.tsx`、`Explorer.tsx`、`TierTerminal.tsx`、`src-ui/src/commander/*`；这几个文件的文案本期照改，合并冲突由编排者处理。

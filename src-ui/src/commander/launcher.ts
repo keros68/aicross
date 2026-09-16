@@ -1,4 +1,4 @@
-// 总指挥启动器的纯逻辑（TASK-10 实现 1/3）。
+// 控制台启动器的纯逻辑（TASK-10 实现 1/3）。
 //
 // 组件只负责画，挑什么、显示成什么字都在这里，单测直接测这些函数。
 
@@ -14,6 +14,7 @@ import {
 } from './args';
 import type { CommanderSettings } from './types';
 import { agentDisplayName } from '../resources/agent-display';
+import { CONTROL_CONSOLE_LABEL } from '../console-session';
 
 /** 启动器卡片网格的唯一尺寸定义，组件以 CSS 变量传给样式表。 */
 export const COMMANDER_AGENT_GRID_TEMPLATE = 'repeat(auto-fit, minmax(150px, 150px))';
@@ -93,13 +94,13 @@ export function cwdName(cwd: string | null | undefined): string {
 export const COMMANDER_NO_CWD = '未选目录';
 
 /**
- * 有默认配置才显示的一键行文案：`启动总指挥 · Claude Code · fable · aicross`。
+ * 有默认配置才显示的一键行文案：`启动控制台 · Claude Code · fable · aicross`。
  * agent 为空 = 还没存过默认，返回 null，首屏就不显示这一行。
  * 模型留空时省掉模型那一段，不写一个空的点。
  */
 export function commanderDefaultLine(settings: CommanderSettings | null): string | null {
   if (!settings || !isCommanderAgent(settings.agent)) return null;
-  const parts = ['启动总指挥', commanderAgentLabel(settings.agent)];
+  const parts = ['进入控制台', commanderAgentLabel(settings.agent)];
   const model = settings.model.trim();
   if (model !== '') {
     const provider = settings.provider.trim();
@@ -167,7 +168,7 @@ export interface CommanderCliEntry {
   label: string;
 }
 
-/** 已安装且不属于四家总指挥的 AI CLI。 */
+/** 已安装且不属于四家控制台的 AI CLI。 */
 export function otherInstalledCommanderClis(
   catalog: { key: string | null; label: string }[],
   installed: Record<string, boolean>,
@@ -179,9 +180,9 @@ export function otherInstalledCommanderClis(
   ));
 }
 
-/** 空白 graph tab 在显式进入对话图前属于总指挥启动器。 */
+/** 空白 graph tab 在显式进入对话图前属于控制台启动器。 */
 export function emptyGraphTabTitle(graphViewSelected: boolean): string {
-  return graphViewSelected ? '对话图' : '总指挥';
+  return graphViewSelected ? '对话图' : CONTROL_CONSOLE_LABEL;
 }
 
 // 对话图 tab 的标题（R1 复审）：已开图的按图标题，空标题仍是「对话图」；
@@ -200,7 +201,7 @@ export function shouldShowNoCommanderModels(
   return modelsLoaded && modelsError === null && agent !== '' && modelCount === 0;
 }
 
-// 空白总指挥 tab 什么时候不画启动器（R1 复审 1）：只有「可能直启」时才不画——
+// 空白控制台 tab 什么时候不画启动器（R1 复审 1）：只有「可能直启」时才不画——
 // 默认还没读到、或默认有效且（探测未完成 / 探测完可用且该 tab 还没登记过）。
 // 默认读到了但没有可用默认时立刻画启动器，探测期间由启动器自己显示「探测中…」。
 /**
@@ -240,7 +241,7 @@ export function commanderDefaultAvailable(
     && commanderIdentifierError(settings.provider, settings.model) === null;
 }
 
-/** 新总指挥 tab 的首屏判定：默认完整、探测完成且 CLI 已安装就直接启动。 */
+/** 新控制台 tab 的首屏判定：默认完整、探测完成且 CLI 已安装就直接启动。 */
 export function commanderNewTabLaunch(
   settings: CommanderSettings | null,
   installed: Record<string, boolean>,
@@ -264,7 +265,7 @@ export type CommanderTabAction =
   | { type: 'changed'; tabId: string };
 
 /**
- * 空白总指挥 tab 的一次性状态机。只有尚未显示启动器的 tab
+ * 空白控制台 tab 的一次性状态机。只有尚未显示启动器的 tab
  * 能被可用默认启动；已显示启动器或点过「更改」的 tab 不再被接管。
  */
 export function commanderTabTransition(

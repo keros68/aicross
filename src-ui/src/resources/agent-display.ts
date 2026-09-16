@@ -1,4 +1,4 @@
-// 内置 agent 的用户可见名称。资源页、总指挥、启动卡和工具设置都从这里取；
+// 内置 agent 的用户可见名称。资源页、控制台、启动卡和工具设置都从这里取；
 // Rust `src/resources.rs` 的 NATIVE_AGENTS / PI_AGENT 与这张表保持一致。
 // 机器 id（claude / codex / kimi / kimicode / pi）不是显示名，不能直接画到界面。
 

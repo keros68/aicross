@@ -40,7 +40,7 @@ pub struct Graph {
     /// TASK-16：图所属工作区。旧图缺失时保持为空，不改变既有契约。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project: String,
-    /// TASK-16：`console` 表示图由总指挥通道创建或继续。
+    /// TASK-16：`console` 表示图由控制台通道创建或继续。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
 }
@@ -67,7 +67,7 @@ pub struct GraphNode {
     pub leftover: Option<Leftover>,
     #[serde(default)]
     pub created_at: String,
-    /// TASK-16：`console` 表示节点来自总指挥通道。
+    /// TASK-16：`console` 表示节点来自控制台通道。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
 }
@@ -286,9 +286,9 @@ impl Default for RoleSettings {
     }
 }
 
-// ── 总指挥默认（TASK-10；`~/.aicross/commander.json`） ──────────────────────
+// ── 控制台默认（TASK-10；`~/.aicross/commander.json`） ──────────────────────
 
-/// 上一次启动总指挥用的 agent / 模型 / 目录。字段名是 snake_case 跨期契约，
+/// 上一次启动控制台用的 agent / 模型 / 目录。字段名是 snake_case 跨期契约，
 /// 前端 `commander/types.ts` 与之逐字段对应。模型留空 = 启动时不加模型参数。
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct CommanderSettings {
@@ -566,13 +566,13 @@ fn commander_from(root: &Path) -> CommanderSettings {
 fn save_commander_in(root: &Path, settings: &CommanderSettings) -> Result<(), String> {
     if settings.version != 1 {
         return Err(format!(
-            "总指挥默认 version 只支持 1，收到 {}",
+            "控制台默认 version 只支持 1，收到 {}",
             settings.version
         ));
     }
     for (field, value) in [("provider", settings.provider.as_str()), ("model", settings.model.as_str())] {
         if !valid_commander_identifier(value) {
-            return Err(format!("总指挥 {field} id 含非法字符"));
+            return Err(format!("控制台 {field} id 含非法字符"));
         }
     }
     let path = commander_path(root);

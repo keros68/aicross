@@ -1,11 +1,11 @@
-# fix-15-r1 总指挥启动器（TASK-15）复审修正轮 + 图标换 coffee 那套
+# fix-15-r1 控制台启动器（TASK-15）复审修正轮 + 图标换 coffee 那套
 
 依据 GLM-5.3-Flash 与 DeepSeek 对 ui/phase15 的盲审（`tasks/review-15-glm.md`、`tasks/review-15-ds.md`）与用户 09-15 晚的追加要求（`docs/PRODUCT.md`「用户 09-15 晚四点反馈的定案」第 2 条）。契约只追加。
 
 ## 必修（两家共同：4/5/6；DeepSeek 独有：1/2/3/7/8/9；GLM 独有：10）
 
 1. **自动直启用默认里记的目录并切走工作区（DeepSeek 1，高）**：自动直启的 cwd 顺序改成「当前工作区优先，默认目录只在没有工作区时用」（`activeSession.folderPath || commanderDefaults.cwd`），与启动器同序；不再因默认目录反向 `SET_FOLDER`。测试：工作区 A、默认 B → 会话起在 A 且左栏仍是 A。
-2. **默认值晚到把用户正在用的启动器顶掉（DeepSeek 2）**：启动器一渲染就登记该 tab「用户已看到启动器」，之后默认/探测变化不再自动接管该 tab；「+ → 总指挥」的判定移到建 tab 处（有默认直接建带工具的 tab，不先画一帧启动器、不白跑一次模型清单）。测试：状态机纯函数——探测 false→true 只产生一次启动；另一 tab 写了默认不接管已显示启动器的 tab；点更改后不再启动。
+2. **默认值晚到把用户正在用的启动器顶掉（DeepSeek 2）**：启动器一渲染就登记该 tab「用户已看到启动器」，之后默认/探测变化不再自动接管该 tab；「+ → 控制台」的判定移到建 tab 处（有默认直接建带工具的 tab，不先画一帧启动器、不白跑一次模型清单）。测试：状态机纯函数——探测 false→true 只产生一次启动；另一 tab 写了默认不接管已显示启动器的 tab；点更改后不再启动。
 3. **细行目录段不随换目录更新（DeepSeek 3）**：细行的 agent/模型固定，目录段读 `t.folderPath`；`RESTART_TERMINAL` 换目录后 tab 标题同步。
 4. **G1 路由卡 / 结果卡 / 节点面板仍画机器 id（DeepSeek 4，编排者裁决：只改渲染层）**：`agent/model` 标识串不动（进裁决上下文与测试），渲染处经 `agentDisplayName()` 显示「Claude Code · fable」这类；同类处 NodePanel、OrchestrationPanel、PresetBuilder 一并。
 5. **核心接线无测试（DeepSeek 5）**：自动直启判定抽成可测的状态机（tab id → 已启动 / 已看过启动器 / 已更改），reducer 级测试钉住三条路径；删掉无生产调用的 `commanderLauncherToolPatch` 或让 CenterPanel 真用它；REPORT 的红绿描述改成对应真实回退点。

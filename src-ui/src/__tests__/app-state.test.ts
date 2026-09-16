@@ -67,7 +67,7 @@ describe('getInitialState personalization migration', () => {
 
   it('关闭图 tab 时清除指向该图的 graphFocus', () => {
     const state = getInitialState();
-    const focused = { ...state, terminals: [{ ...state.terminals[0], toolData: 'graph-1' }], graphFocus: { graphId: 'graph-1', nodeId: 'n1' } };
+    const focused = { ...state, terminals: [{ ...state.terminals[0], tool: 'graph' as const, toolData: 'graph-1' }], graphFocus: { graphId: 'graph-1', nodeId: 'n1' } };
     const next = reducer(focused, { type: 'CLOSE_TERMINAL', id: focused.terminals[0].id });
     expect(next.graphFocus).toBeNull();
   });

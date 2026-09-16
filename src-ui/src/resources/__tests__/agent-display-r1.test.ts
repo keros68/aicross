@@ -53,7 +53,7 @@ describe('TASK-15-R1 显示层名称与图标', () => {
     expect(productSource).toContain('Claude Code / Codex / Kimi Code / pi agent');
     expect(productSource).toContain('Coffee CLI fork 中已有的工具图标');
     expect(productSource).not.toContain('用 π 字形');
-    expect(manualSource).toContain('应用冷启动的首个 tab');
+    expect(manualSource).toContain('应用冷启动和新建 tab 都先显示控制台启动器');
     expect(readmeSource).toContain('Kimi Code / pi agent');
     expect(agentsSource).toContain('Kimi Code / pi agent');
     expect(protoSource.slice(0, 200)).toContain('历史快照');

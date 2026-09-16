@@ -1,4 +1,4 @@
-// TASK-10 总指挥与快速启动：编号与任务书「实现 5」的三组一致。
+// TASK-10 控制台与快速启动：编号与任务书「实现 5」的三组一致。
 // 1) commanderArgs 四家映射 + 空模型
 // 2) 启动器纯函数：可用 agent 过滤、模型清单按 agent 过滤与显示文本、默认行文案
 // 3) 启动器组件：没装任何一家时的兜底、次级入口两条
@@ -134,7 +134,7 @@ describe('TASK-10 (2) 启动器纯函数', () => {
     expect(commanderAgentLabel('pi')).toBe('pi agent');
   });
 
-  it('TASK-15-R1：新总指挥 tab 有默认时直接生成启动参数，当前工作区优先于存量默认目录', () => {
+  it('TASK-15-R1：新控制台 tab 有默认时直接生成启动参数，当前工作区优先于存量默认目录', () => {
     const defaults = { ...emptyCommanderSettings(), agent: 'claude', model: 'fable', cwd: 'D:\\default-b' };
     expect(commanderNewTabLaunch(defaults, { claude: true }, true, 'D:\\workspace-a')).toEqual({
       agent: 'claude', provider: '', model: 'fable', cwd: 'D:\\workspace-a',
@@ -257,7 +257,7 @@ describe('TASK-10 (2) 启动器纯函数', () => {
     expect(cwdName('/')).toBe('/');
   });
 
-  it('默认行文案：启动总指挥 · agent · 模型 · 目录名', () => {
+  it('默认行文案：进入控制台 · agent · 模型 · 目录名', () => {
     expect(
       commanderDefaultLine({
         ...emptyCommanderSettings(),
@@ -265,18 +265,18 @@ describe('TASK-10 (2) 启动器纯函数', () => {
         model: 'fable',
         cwd: 'D:\\work\\aicross',
       }),
-    ).toBe('启动总指挥 · Claude Code · fable · aicross');
+    ).toBe('进入控制台 · Claude Code · fable · aicross');
     // 模型留空时省掉那一段，不留一个空的点
     expect(
       commanderDefaultLine({ ...emptyCommanderSettings(), agent: 'codex', cwd: '/srv/app' }),
-    ).toBe('启动总指挥 · Codex · app');
+    ).toBe('进入控制台 · Codex · app');
     // 目录留空时给占位而不是空串
     expect(commanderDefaultLine({ ...emptyCommanderSettings(), agent: 'pi' })).toBe(
-      '启动总指挥 · pi agent · 未选目录',
+      '进入控制台 · pi agent · 未选目录',
     );
     expect(commanderDefaultLine({
       ...emptyCommanderSettings(), agent: 'pi', provider: 'bigmodel', model: 'glm', cwd: '/work',
-    })).toBe('启动总指挥 · pi agent · bigmodel / glm · work');
+    })).toBe('进入控制台 · pi agent · bigmodel / glm · work');
     // 没存过默认（agent 空）→ null，首屏不画这一行
     expect(commanderDefaultLine(emptyCommanderSettings())).toBeNull();
     expect(commanderDefaultLine(null)).toBeNull();
@@ -297,17 +297,17 @@ describe('TASK-10 (2) 启动器纯函数', () => {
   });
 
   it('空白 tab 只有显式进入对话图后才显示“对话图”标题', () => {
-    expect(emptyGraphTabTitle(false)).toBe('总指挥');
+    expect(emptyGraphTabTitle(false)).toBe('控制台');
     expect(emptyGraphTabTitle(true)).toBe('对话图');
     // 已开图的 tab 不受启动器影响：空标题仍是「对话图」，有标题用图标题
     expect(graphTabTitle('g1', '', false)).toBe('对话图');
     expect(graphTabTitle('g1', undefined, false)).toBe('对话图');
     expect(graphTabTitle('g1', '两件小活', false)).toBe('两件小活');
-    expect(graphTabTitle('', undefined, false)).toBe('总指挥');
+    expect(graphTabTitle('', undefined, false)).toBe('控制台');
     expect(graphTabTitle(null, undefined, true)).toBe('对话图');
   });
 
-  it('其它 CLI 只列已安装的非总指挥工具，点击沿原工具路径转发', () => {
+  it('其它 CLI 只列已安装的非控制台工具，点击沿原工具路径转发', () => {
     const catalog = [
       { key: 'claude', label: 'Claude Code' },
       { key: 'opencode', label: 'OpenCode' },
@@ -396,17 +396,17 @@ describe('TASK-10 (3) 启动器组件', () => {
     const loading = render({}, emptyCommanderSettings(), false);
     expect(loading).toContain('探测中…');
     expect(loading).not.toContain('本机没探测到');
-    expect(loading).not.toContain('启动总指挥 ·');
+    expect(loading).not.toContain('进入控制台 ·');
 
     const html = render({}, emptyCommanderSettings(), true);
     expect(html).toContain('本机没探测到');
-    expect(html).not.toContain('启动总指挥');
+    expect(html).not.toContain('进入控制台');
   });
 
-  it('装了就画 agent 卡与启动按钮', () => {
+  it('装了就画 agent 卡与进入按钮', () => {
     const html = render({ claude: true, pi: true });
     expect(html).toContain('Claude Code');
-    expect(html).toContain('启动总指挥');
+    expect(html).toContain('进入控制台');
     // 没装的那两家不出现
     expect(html).not.toContain('Codex');
   });
@@ -429,7 +429,7 @@ describe('TASK-10 (3) 启动器组件', () => {
   });
 
   it('没存过默认时不画一键行', () => {
-    expect(render({ claude: true })).not.toContain('启动总指挥 ·');
+    expect(render({ claude: true })).not.toContain('进入控制台 ·');
   });
 
   it('默认 agent 已卸载时不画一键行', () => {
@@ -439,7 +439,7 @@ describe('TASK-10 (3) 启动器组件', () => {
       model: 'fable',
       cwd: 'D:\\work\\aicross',
     };
-    expect(render({ codex: true }, defaults)).not.toContain('启动总指挥 ·');
+    expect(render({ codex: true }, defaults)).not.toContain('进入控制台 ·');
   });
 
   it('TASK-15：卡片网格固定列宽和行高，窄窗口可换行', async () => {
@@ -474,14 +474,14 @@ describe('TASK-10 (3) 启动器组件', () => {
     expect(names).toEqual(AGENT_DISPLAY_NAMES);
   });
 
-  it('TASK-15-R1：CenterPanel 真实接入 tab 状态机与建 tab 直启', async () => {
+  it('TASK-22：CenterPanel 选择后进入控制台消息流，不再按默认直启', async () => {
     // @ts-expect-error Node built-in is only loaded by Vitest.
     const { readFileSync } = await import('node:fs');
     const source = readFileSync(new URL('../../components/center/CenterPanel.tsx', import.meta.url), 'utf8');
-    expect(source).toContain('commanderNewTabLaunch(');
-    expect(source).toContain("type: 'launcher-shown'");
-    expect(source).toContain("type: 'availability'");
-    expect(source).toContain("type: 'changed'");
+    expect(source).toContain('const startConsole =');
+    expect(source).toContain("type: 'START_CONSOLE'");
+    expect(source).toContain('<ConsoleChat session={t} />');
+    expect(source).not.toContain('commanderNewTabLaunch(');
     expect(source).not.toContain('commanderLauncherToolPatch');
   });
 });

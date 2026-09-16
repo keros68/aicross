@@ -1,4 +1,4 @@
-// 总指挥的启动参数映射（TASK-10 契约）。
+// 控制台的启动参数映射（TASK-10 契约）。
 //
 // 纯函数，不碰 IPC、不读全局状态：给一个 agent + provider + model，算出这次
 // 启动要额外追加的 argv。后端把它接在工具设置的 `extra_args` 之后（见
@@ -40,7 +40,7 @@ export function commanderToolId(agent: string): string | null {
   return isCommanderAgent(agent) ? TOOL_BY_AGENT[agent] : null;
 }
 
-/** 工具 id → agent id；不是总指挥支持的四家则返回 null。 */
+/** 工具 id → agent id；不是控制台支持的四家则返回 null。 */
 export function commanderAgentOfTool(tool: string | null | undefined): CommanderAgent | null {
   return AGENT_BY_TOOL[(tool ?? '').trim()] ?? null;
 }

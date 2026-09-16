@@ -563,7 +563,7 @@ export function Explorer() {
   const activeSession = state.terminals.find(t => t.id === state.activeTerminalId);
   const folderPath = activeSession?.folderPath || null;
 
-  // 有没有存过总指挥默认（TASK-10）。目录行的「在此启动总指挥」只在有默认时
+  // 有没有存过控制台默认（TASK-10）。目录行的「在此启动控制台」只在有默认时
   // 才画——没有默认就不知道该起哪个 agent、哪个模型。启动器起完一次会发
   // COMMANDER_DEFAULTS_EVENT，这里跟着重读，不用等下次开应用。
   const [commanderDefault, setCommanderDefault] = useState<CommanderSettings | null>(null);
@@ -827,7 +827,7 @@ export function Explorer() {
             className="workspace-commander-btn"
             onClick={() => requestCommanderLaunch(activeSession.folderPath as string)}
           >
-            在此启动总指挥
+            在此启动控制台
           </button>
         )}
         </div>

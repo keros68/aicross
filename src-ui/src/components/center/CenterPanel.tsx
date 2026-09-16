@@ -5,17 +5,14 @@ import { shouldEnforceTerminalFocus } from '../../lib/focus-enforcer';
 import { onWindowForeground } from '../../lib/window-focus-filter';
 import { TierTerminal } from './TierTerminal';
 import { GraphTab } from './graph/GraphTab';
+import { ConsoleChat } from './ConsoleChat';
 import { ProposalBar } from './ProposalBar';
 // 技能面板按需载入（TASK-05 C 拆包）：它是启动页里的一个次级 tab。
 const SkillsPanel = lazy(() => import('./SkillsPanel').then((m) => ({ default: m.SkillsPanel })));
 import { FourSplitGrid } from './FourSplitGrid';
 import { CommanderLauncher, type CommanderLaunchArgs } from './CommanderLauncher';
-import { commanderArgs, commanderIdentifierError, commanderToolId } from '../../commander/args';
 import {
   commanderStartedCallback,
-  commanderNewTabLaunch,
-  commanderTabTransition,
-  type CommanderTabState,
   commanderTabTitle,
   graphTabTitle,
   otherInstalledCommanderClis, commanderLauncherHidden,
@@ -34,12 +31,13 @@ import { ContributionHeatmap } from './ContributionHeatmap';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { DiffPanel } from '../right/DiffPanel';
 import {
-  createDefaultGraphSession,
+  createDefaultConsoleSession,
   isEmptyGraphSession,
   useAppState,
   type ToolType,
 } from '../../store/app-state';
 import { consoleInflightCount, consoleTabPlan, installConsoleChannel } from '../../console-channel';
+import { CONTROL_CONSOLE_LABEL, NEW_TAB_MENU_ITEMS } from '../../console-session';
 
 // Dropdown shown when a tool card's folder icon is clicked: the globally
 // recent project folders (any tool that used one) + "Open folder…" last.
@@ -780,7 +778,7 @@ export function CenterPanel() {
     try { const r = localStorage.getItem('coffee:recent-folders'); return r ? JSON.parse(r) : []; } catch { return []; }
   });
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; tool: ToolType } | null>(null);
-  // 总指挥默认（TASK-10）：应用启动读一次，启动成功后写回。读不到 / 没存过时
+  // 控制台默认（TASK-10 配置沿用）：应用启动读一次，进入消息流后写回。读不到 / 没存过时
   // `agent` 为空串，启动器据此不显示一键行。
   const [commanderDefaults, setCommanderDefaults] = useState<CommanderSettings | null>(null);
   const [newTabMenuOpen, setNewTabMenuOpen] = useState(false);
@@ -859,7 +857,9 @@ export function CenterPanel() {
   // Derived state — must be before hooks that depend on it
   const activeSession = terminals.find(t => t.id === activeTerminalId);
   const isLaunchpadMode = activeSession && activeSession.tool === null;
-  const isToolPickerMode = Boolean(isLaunchpadMode || isEmptyGraphSession(activeSession));
+  const isToolPickerMode = Boolean(
+    isLaunchpadMode || (activeSession?.tool === 'console' && !activeSession.targetAgent),
+  );
 
   // Mirrored into a ref so the window-foreground rescan (which has [] deps and
   // can't see the latest value otherwise) can skip work while in a terminal tab.
@@ -983,10 +983,10 @@ export function CenterPanel() {
     const { terminals: terms, activeTerminalId: activeId } = launchCtxRef.current;
     const current = terms.find(t => t.id === activeId);
     let id: string;
-    if (current && (current.tool === null || isEmptyGraphSession(current))) {
+    if (current && (current.tool === null || isEmptyGraphSession(current) || (current.tool === 'console' && !current.targetAgent))) {
       id = current.id;
     } else {
-      const idle = terms.find(t => t.tool === null || isEmptyGraphSession(t));
+      const idle = terms.find(t => t.tool === null || isEmptyGraphSession(t) || (t.tool === 'console' && !t.targetAgent));
       if (idle) {
         id = idle.id;
         dispatch({ type: 'SET_ACTIVE_TERMINAL', id });
@@ -1222,13 +1222,11 @@ export function CenterPanel() {
     }
   };
 
-  // ── 总指挥（TASK-10）──────────────────────────────────────────────────
-  // 启动走的就是上面的 selectTool / TierTerminal 那条 PTY 路径，这里只多做
-  // 两件事：把 `commanderArgs` 算出来的 argv 交给这一次启动，并把待保存的
-  // 默认挂到 tab 上。TierTerminal 确认 PTY 创建成功后才调用 save_commander。
-  const launchCommander = (args: CommanderLaunchArgs, openNewTab = false) => {
-    const tool = commanderToolId(args.agent);
-    if (tool === null || commanderIdentifierError(args.provider, args.model) !== null) return;
+  // ── 控制台（TASK-22 第一期）─────────────────────────────────────────────
+  // 选择完成后进入自己的消息流，不启动 PTY；commander.json 只作为上次选择的
+  // 兼容配置继续沿用，字段名不变。
+  const startConsole = (args: CommanderLaunchArgs, openNewTab = false) => {
+    if (args.model.trim() === '') return;
     const cwd = args.cwd.trim();
     const settings: CommanderSettings = {
       ...emptyCommanderSettings(),
@@ -1238,73 +1236,42 @@ export function CenterPanel() {
       cwd,
       updated_at: new Date().toISOString(),
     };
-    const launch = {
-      extraArgs: commanderArgs(args.agent, args.provider, args.model),
-      title: commanderTabTitle(args.agent, args.provider, args.model, cwd === '' ? null : cwd),
-      profile: { agent: args.agent, provider: args.provider, model: args.model },
-      settings,
-    };
+    const targetAgent = { agent: args.agent, provider: args.provider, model: args.model };
     if (openNewTab) {
       dispatch({
         type: 'ADD_TERMINAL',
         session: {
           id: crypto.randomUUID(),
-          tool: tool as ToolType,
+          tool: 'console',
           folderPath: cwd === '' ? null : cwd,
-          extraArgs: launch.extraArgs,
-          commanderTitle: launch.title,
-          commanderProfile: launch.profile,
-          commanderSettings: settings,
+          targetAgent,
+          resumeId: {},
+          messages: [],
         },
       });
-      if (cwd !== '') pushRecentFolder(cwd);
-      return;
+    } else if (activeTerminalId) {
+      dispatch({
+        type: 'START_CONSOLE',
+        id: activeTerminalId,
+        folderPath: cwd === '' ? null : cwd,
+        targetAgent,
+      });
     }
-    selectTool(tool as ToolType, undefined, cwd === '' ? undefined : cwd, {
-      ...launch,
-    });
+    if (cwd !== '') pushRecentFolder(cwd);
+    const saved = () => {
+      setCommanderDefaults(settings);
+      announceCommanderDefaults();
+    };
+    if (isTauri) commands.saveCommander(settings).then(saved).catch(() => {});
+    else saved();
   };
 
-  const handleAddTab = (kind: 'commander' | 'terminal' | 'graph') => {
+  const handleAddTab = () => {
     const folderPath = terminals.find(t => t.id === activeTerminalId)?.folderPath ?? null;
-    if (kind === 'commander') {
-      const launch = commanderNewTabLaunch(commanderDefaults, toolsInstalled, toolsScanned, folderPath);
-      if (launch !== null) {
-        launchCommander(launch, true);
-        setNewTabMenuOpen(false);
-        return;
-      }
-    }
     const id = crypto.randomUUID();
-    const session = kind === 'terminal'
-      ? { id, tool: 'terminal' as ToolType, folderPath }
-      : createDefaultGraphSession(folderPath, id);
-    dispatch({ type: 'ADD_TERMINAL', session });
-    if (kind === 'graph') setGraphViewTabs(prev => ({ ...prev, [id]: true }));
+    dispatch({ type: 'ADD_TERMINAL', session: createDefaultConsoleSession(folderPath, id) });
     setNewTabMenuOpen(false);
   };
-
-  // 冷启动首 tab 在默认与探测结果到齐后可直启。启动器一旦真正显示，
-  // 该 tab 即进入 launcher 状态，后到的默认或探测变化不再接管。
-  const commanderTabState = useRef<CommanderTabState>({});
-  useEffect(() => {
-    if (!activeSession || !isEmptyGraphSession(activeSession) || graphViewTabs[activeSession.id]) return;
-    const launch = commanderNewTabLaunch(commanderDefaults, toolsInstalled, toolsScanned, activeSession.folderPath);
-    const next = commanderTabTransition(commanderTabState.current, {
-      type: 'availability',
-      tabId: activeSession.id,
-      available: launch !== null,
-    });
-    commanderTabState.current = next.state;
-    if (next.shouldLaunch && launch !== null) launchCommander(launch);
-  }, [
-    activeSession,
-    commanderDefaults,
-    graphViewTabs,
-    launchCommander,
-    toolsInstalled,
-    toolsScanned,
-  ]);
 
   const rememberCommander = (sessionId: string, settings: CommanderSettings) => {
     const saved = () => {
@@ -1333,7 +1300,7 @@ export function CenterPanel() {
     return () => { dead = true; };
   }, []);
 
-  // 左栏工作区目录行的「在此启动总指挥」：用已存的默认 agent/模型，目录换成
+  // 左栏工作区目录行的「在此进入控制台」：用已存的默认 agent/模型，目录换成
   // 事件里给的那个。没有默认就什么都不做——那一行本来就只在有默认时才画。
   const commanderDefaultsRef = useRef(commanderDefaults);
   useEffect(() => { commanderDefaultsRef.current = commanderDefaults; });
@@ -1341,9 +1308,8 @@ export function CenterPanel() {
     const onLaunch = (event: Event) => {
       const detail = (event as CustomEvent<CommanderLaunchDetail>).detail;
       const saved = commanderDefaultsRef.current;
-      const tool = saved ? commanderToolId(saved.agent) : null;
-      if (!saved || tool === null) return;
-      launchCommanderRef.current(
+      if (!saved || saved.agent === '' || saved.model === '') return;
+      startConsoleRef.current(
         {
           agent: saved.agent as CommanderLaunchArgs['agent'],
           provider: saved.provider,
@@ -1356,9 +1322,9 @@ export function CenterPanel() {
     window.addEventListener(COMMANDER_LAUNCH_EVENT, onLaunch);
     return () => window.removeEventListener(COMMANDER_LAUNCH_EVENT, onLaunch);
   }, []);
-  // launchCommander 每次渲染都是新函数，事件监听只挂一次，走 ref 拿最新的。
-  const launchCommanderRef = useRef(launchCommander);
-  useEffect(() => { launchCommanderRef.current = launchCommander; });
+  // startConsole 每次渲染都是新函数，事件监听只挂一次，走 ref 拿最新的。
+  const startConsoleRef = useRef(startConsole);
+  useEffect(() => { startConsoleRef.current = startConsole; });
 
   const handlePickFolder = async (toolKey: ToolType) => {
     if (!toolKey) return;
@@ -1475,6 +1441,18 @@ export function CenterPanel() {
         return { icon: <TerminalIcon />, title, tooltip: undefined };
       }
       case 'terminal': return { icon: <TerminalIcon />, title: cwd ?? t('tool.terminal'), tooltip: pathTip };
+      case 'console': return {
+        icon: <SvgGraph />,
+        title: session.targetAgent
+          ? commanderTabTitle(
+              session.targetAgent.agent,
+              session.targetAgent.provider,
+              session.targetAgent.model,
+              session.folderPath,
+            )
+          : CONTROL_CONSOLE_LABEL,
+        tooltip: pathTip,
+      };
       case 'two-split': return { icon: <SvgTwoSplit />, title: cwd ?? t('tool.two_split' as any), tooltip: pathTip };
       case 'three-split': return { icon: <SvgThreeSplit />, title: cwd ?? t('tool.three_split' as any), tooltip: pathTip };
       case 'four-split': return { icon: <SvgFourSplit />, title: cwd ?? t('tool.four_split' as any), tooltip: pathTip };
@@ -1485,7 +1463,7 @@ export function CenterPanel() {
         return {
           icon: <SvgGraph />,
           // R1 复审：只有 toolData 为空（还没进图）的 tab 才按启动器/对话图判；已开图的空标题仍是「对话图」。
-          title: graph?.source === 'console' ? `${title} · 来自总指挥` : title,
+          title: graph?.source === 'console' ? `${title} · 来自控制台` : title,
           tooltip: undefined,
         };
       }
@@ -1544,7 +1522,7 @@ export function CenterPanel() {
           const { icon, title: baseTitle } = renderTabContent(session, isActive);
           // Tool's live OSC 0/2 title (Claude Code conversation summary, etc.)
           // overrides the cwd basename when the tool has set a non-empty one.
-          // 总指挥标题（`agent · 模型 · 目录名`）排在中间：CLI 自己报了标题就
+          // 旧原生会话标题（`agent · 模型 · 目录名`）排在中间：CLI 自己报了标题就
           // 让它赢，没报时比光显示目录名多说两件事。
           const liveCommanderTitle = session.commanderProfile
             ? commanderTabTitle(
@@ -1689,9 +1667,9 @@ export function CenterPanel() {
           </button>
           {newTabMenuOpen && (
             <div className="chrome-tab-new-menu">
-              <button type="button" onClick={() => handleAddTab('terminal')}>系统终端</button>
-              <button type="button" onClick={() => handleAddTab('graph')}>对话图</button>
-              <button type="button" onClick={() => handleAddTab('commander')}>总指挥</button>
+              {NEW_TAB_MENU_ITEMS.map((item) => (
+                <button type="button" key={item.kind} onClick={handleAddTab}>{item.label}</button>
+              ))}
             </div>
           )}
         </div>
@@ -1747,33 +1725,23 @@ export function CenterPanel() {
                 bgType={bgType}
                 paneCount={4}
               />
-            ) : t.tool === 'graph' ? (
-              // 对话图 tab：不是 PTY，不走 TierTerminal；整个包 ErrorBoundary，
-              // 图数据异常时只坏这一个 tab。
-              //
-              // TASK-10：空白 tab 的主视图改成总指挥启动器（原来是对话图开始视图
-              // + 底部「打开终端」折叠菜单）。对话图退到次级入口——点了才画，
-              // 那时 graphId 仍是空串，GraphTab 照样给开始视图。
+            ) : t.tool === 'console' ? (
               <div className="graph-shell">
-                {isEmptyGraphSession(t) && !graphViewTabs[t.id] ? (
-                  commanderLauncherHidden(commanderDefaults, toolsInstalled, toolsScanned, commanderTabState.current[t.id] !== undefined) ? null :
-                  <ErrorBoundary key={`commander-${t.id}`} fallbackLabel="总指挥启动器出错">
+                {!t.targetAgent ? (
+                  commanderLauncherHidden(commanderDefaults, toolsInstalled, toolsScanned, false) ? null :
+                  <ErrorBoundary key={`console-launcher-${t.id}`} fallbackLabel="控制台启动器出错">
                     <CommanderLauncher
                       installed={toolsInstalled}
                       toolsScanned={toolsScanned}
                       otherClis={otherInstalledCommanderClis(BUILTIN_AI_CLI_FALLBACK, toolsInstalled)}
                       defaults={commanderDefaults}
                       folderPath={t.folderPath}
-                      onShown={() => {
-                        const next = commanderTabTransition(commanderTabState.current, {
-                          type: 'launcher-shown',
-                          tabId: t.id,
-                        });
-                        commanderTabState.current = next.state;
-                      }}
-                      onLaunch={launchCommander}
+                      onLaunch={startConsole}
                       onOpenTerminal={() => selectTool('terminal', undefined, lastCwdByTool['terminal'] ?? t.folderPath ?? undefined)}
-                      onOpenGraph={() => setGraphViewTabs(prev => ({ ...prev, [t.id]: true }))}
+                      onOpenGraph={() => {
+                        setGraphViewTabs(prev => ({ ...prev, [t.id]: true }));
+                        selectTool('graph', '');
+                      }}
                       onOpenTool={(tool) => selectTool(
                         tool as ToolType,
                         undefined,
@@ -1782,10 +1750,17 @@ export function CenterPanel() {
                     />
                   </ErrorBoundary>
                 ) : (
-                  <ErrorBoundary key={`graph-${t.id}`} fallbackLabel="对话图渲染出错">
-                    <GraphTab session={t} />
+                  <ErrorBoundary key={`console-${t.id}`} fallbackLabel="控制台消息流出错">
+                    <ConsoleChat session={t} />
                   </ErrorBoundary>
                 )}
+              </div>
+            ) : t.tool === 'graph' ? (
+              // 对话图保留为次级 tab；不是 PTY，不走 TierTerminal。
+              <div className="graph-shell">
+                <ErrorBoundary key={`graph-${t.id}`} fallbackLabel="对话图渲染出错">
+                  <GraphTab session={t} />
+                </ErrorBoundary>
               </div>
             ) : (
               <ErrorBoundary key={`err-${t.id}-${t.restartKey || 0}`} fallbackLabel="Tier Terminal Error">
@@ -1799,17 +1774,11 @@ export function CenterPanel() {
                         type="button"
                         className="commander-change"
                         onClick={() => {
-                          const next = commanderTabTransition(commanderTabState.current, {
-                            type: 'changed',
-                            tabId: t.id,
-                          });
-                          commanderTabState.current = next.state;
                           setGraphViewTabs((previous) => ({ ...previous, [t.id]: false }));
                           dispatch({
                             type: 'SET_TERMINAL_TOOL',
                             id: t.id,
-                            tool: 'graph',
-                            toolData: '',
+                            tool: 'console',
                           });
                         }}
                       >
@@ -1871,20 +1840,20 @@ export function CenterPanel() {
                 {/* ─── Page 1: Desktop (pinned items) ─── */}
                 <div className="launchpad-page">
                   <div className="launchpad-inner">
-                    {/* 总指挥入口（TASK-10）：固定卡，不占 pin 位、不可 pin，
+                    {/* 控制台入口：固定卡，不占 pin 位、不可 pin，
                         样式跟随 agent 卡。点击 = 当前 tab 变成空白 tab，也就是
-                        总指挥启动器；对话图是它下面的次级入口。
+                        控制台启动器；对话图是它下面的次级入口。
                         （TASK-10 之前这张卡直接写「对话图」——空白 tab 的主视图
                         换了，卡名也跟着换，否则点进去与卡名对不上。） */}
                     <div className="launchpad-grid launchpad-grid--graph">
                       <div className="launchpad-card-group">
                         <div
                           className="launchpad-card"
-                          onClick={() => selectTool('graph', '')}
+                          onClick={() => selectTool('console')}
                         >
                           <div className="launchpad-icon"><SvgGraph /></div>
                           <div className="launchpad-card-info">
-                            <span>总指挥</span>
+                            <span>{CONTROL_CONSOLE_LABEL}</span>
                           </div>
                         </div>
                       </div>
