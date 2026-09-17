@@ -502,6 +502,7 @@ thread_local! {
     static SWARM_TEST_LAST_PATCH_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
     static PROJECT_COPY_TEST_TRUNCATE_NEXT_GIT_LIST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PROJECT_COPY_TEST_FAIL_READ: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static WORKTREE_TEST_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 fn process_succeeded(result: &crate::process::ProcessResult) -> bool {
@@ -2837,6 +2838,10 @@ fn normalize_git_diff(raw: &str) -> String {
 }
 
 fn create_worktree(project: &Path, path: &Path, timeout: Duration) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(error) = WORKTREE_TEST_ERROR.with(|cell| cell.borrow_mut().take()) {
+        return Err(error);
+    }
     if !project_is_git_work_tree(project, timeout)? {
         return Err("项目不是 git 仓库".into());
     }
@@ -3803,6 +3808,7 @@ fn run_one_attempt(
             }
             Err(error) => {
                 uses_single_writer = true;
+                let error = error.split_whitespace().collect::<Vec<_>>().join(" ");
                 worktree_warning = format!("worktree 不可用，已退回单写者：{error}");
                 project.to_path_buf()
             }
@@ -8811,6 +8817,69 @@ mod tests {
         }];
         prepare_outbound_test(&request, true, &root, true).unwrap();
         assert_eq!(fs::read_to_string(root.join("ANSWER.md")).unwrap(), "最终答案");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task34_multiline_worktree_error_stays_out_of_answer_material() {
+        if channels::resolve_binary("python", None).is_err() {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-task34-warning-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = project.join(".dispatch");
+        fs::create_dir_all(&log_dir).unwrap();
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(
+            &stub,
+            "import sys\nprint('最终答案')\nprint('[usage] input=1 cache_read=0 output=1', file=sys.stderr)\n",
+        )
+        .unwrap();
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            write_project_dispatch: false,
+            ..DispatchSettings::default()
+        };
+        let mut execute = node(Vec::new());
+        execute.node_id = "warning-execute".into();
+        execute.agent = "cc-switch".into();
+        execute.provider = "stub".into();
+        execute.model = "stub".into();
+        execute.role = "执行".into();
+        execute.visibility = "共享".into();
+        execute.write = "worktree".into();
+        execute.original_request = "只回答最终答案，不要改文件".into();
+        WORKTREE_TEST_ERROR.with(|cell| {
+            *cell.borrow_mut() = Some("fatal: 第一行\r\n  hint: 第二行\t末尾".into());
+        });
+
+        let result = run_one(
+            "task34-warning",
+            &project,
+            &root.join("runs"),
+            &log_dir,
+            &settings,
+            execute,
+        );
+        assert_eq!(result.status, "ok", "{}", result.error);
+        let artifacts = result.artifacts.expect("worktree 回退后应返回产物");
+        assert_eq!(
+            artifacts.stdout_summary,
+            format!("{WORKTREE_WARNING_PREFIX}fatal: 第一行 hint: 第二行 末尾\n最终答案")
+        );
+        assert_eq!(artifacts.stdout_summary.lines().count(), 2);
+        assert!(artifacts.stdout_summary.lines().next().unwrap().starts_with(WORKTREE_WARNING_PREFIX));
+
+        let mut review = node(Vec::new());
+        review.upstream_artifacts = vec![artifacts];
+        let blind_dir = root.join("blind");
+        prepare_outbound_test(&review, true, &blind_dir, true).unwrap();
+        let answer = fs::read_to_string(blind_dir.join(REVIEW_ANSWER_FILE)).unwrap();
+        assert_eq!(answer, "最终答案");
+        assert!(!answer.contains("worktree"), "{answer}");
+        assert!(!answer.contains("fatal:"), "{answer}");
+        assert!(!answer.contains("hint:"), "{answer}");
         let _ = fs::remove_dir_all(root);
     }
 
