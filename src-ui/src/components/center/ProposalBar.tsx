@@ -104,10 +104,12 @@ interface ShortcutTarget {
 export function proposalTargetFlags(target: EventTarget | ShortcutTarget | null): { targetInput: boolean; ptyFocused: boolean } {
   const element = target as ShortcutTarget | null;
   const ptyFocused = Boolean(element?.classList?.contains('xterm-helper-textarea') || element?.closest?.('.xterm-helper-textarea'));
+  const contentEditable = typeof element?.isContentEditable === 'boolean'
+    ? element.isContentEditable
+    : Boolean(element?.closest?.('[contenteditable="true"],[contenteditable=""],[contenteditable="plaintext-only"]'));
   const targetInput = element?.tagName === 'INPUT'
     || element?.tagName === 'TEXTAREA'
-    || element?.isContentEditable === true
-    || Boolean(element?.closest?.('input,textarea,[contenteditable]'));
+    || contentEditable;
   return { targetInput, ptyFocused };
 }
 

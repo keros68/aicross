@@ -251,13 +251,14 @@ export async function classifyProposal(event: ProposalInputEvent, settings: Retu
   const model = classificationTarget(settings.classificationModel, resources.models);
   if (!model) throw new Error('没有可用的归类模型');
   const prompt = `只判断下面任务是否值得交给多个模型或多个阶段并行处理。只输出 DISPATCH 或 SINGLE。\n\n任务：${event.text}`;
+  const classifyId = `proposal-classify-${event.proposal_id}`;
   const result = await io.dispatchGraphStage({
-    runId: 'proposal-classify',
+    runId: classifyId,
     stage: 1,
     projectDir: event.project,
     settings: { timeoutSecs: Math.min(settings.timeoutSecs, 20), concurrency: 1, maxRequests: 1, redact: settings.redact, writeProjectDispatch: false, ccSwitchPath: settings.ccSwitchPath, validationCommand: '', acpEnabled: false, fixRoundLimit: 0 },
     nodes: [{
-      nodeId: 'proposal-classify', stage: 1, agent: model.agent, provider: model.provider, model: model.id,
+      nodeId: classifyId, stage: 1, agent: model.agent, provider: model.provider, model: model.id,
       vendor: model.vendor, billingSource: model.billing_source, role: '顾问', tier: model.tier, thinking: model.thinking,
       visibility: '共享', prompt, currentMessage: event.text, materials: event.attachments ?? [], sessionId: '', previousRunner: '', write: '只读',
       originalRequest: event.text, upstreamArtifacts: [],

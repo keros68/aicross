@@ -1889,6 +1889,7 @@ fn dispatch_stage_core(
     };
     let project = project_path(&request.project_dir)?;
     let run_root = dispatch_data_root()?.join("runs").join(&request.run_id);
+    let _classification_cleanup = ClassificationRunCleanup::new(&request.run_id, &run_root);
     fs::create_dir_all(&run_root).map_err(|error| format!("创建运行目录失败：{error}"))?;
     let log_dir = if request.settings.write_project_dispatch {
         project.join(".dispatch")
@@ -2122,6 +2123,29 @@ impl Drop for ActiveRunGuard {
     fn drop(&mut self) {
         if let Ok(mut active) = active_runs().lock() {
             active.remove(&self.0);
+        }
+    }
+}
+
+struct ClassificationRunCleanup(Option<PathBuf>);
+
+impl ClassificationRunCleanup {
+    fn new(run_id: &str, run_root: &Path) -> Self {
+        let exact_classification_run = run_id.starts_with("proposal-classify-")
+            && !run_id.contains('/')
+            && !run_id.contains('\\')
+            && !run_id.contains(':');
+        Self(exact_classification_run.then(|| run_root.to_path_buf()))
+    }
+}
+
+impl Drop for ClassificationRunCleanup {
+    fn drop(&mut self) {
+        let Some(path) = self.0.as_ref() else { return };
+        match fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!("清理归类运行目录失败 {}：{error}", path.display()),
         }
     }
 }
@@ -3348,7 +3372,9 @@ fn run_one_with_activity(
         .as_ref()
         .map(|f| !f.agent.trim().is_empty() && !f.model.trim().is_empty())
         .unwrap_or(false);
-    let configured = resource_fallback_models(&node.agent, &node.provider, &node.model);
+    // 一次派发只读一次资源库：主尝试开始后的登录与额度变化在下一次派发生效。
+    let resource_models = resource_models_snapshot();
+    let configured = resource_fallback_models(&resource_models, &node.agent, &node.provider, &node.model);
     let has_fallback = explicit || !configured.is_empty();
     let writable = node.visibility != "盲" && node.write != "只读";
     let primary = run_one_attempt(
@@ -3363,10 +3389,18 @@ fn run_one_with_activity(
         if writable && has_fallback { "可写节点" } else { "" },
         &activity,
     );
+    let main_record = (
+        primary.dispatch_file.clone(),
+        primary.frontmatter.clone(),
+        primary.runner_note.clone(),
+    );
     let mut candidates = Vec::new();
     if let Some(fallback) = node.fallback.clone().filter(|item| !item.agent.trim().is_empty() && !item.model.trim().is_empty()) {
-        let exhausted_until = resource_quota_until(&fallback.agent, &fallback.provider, &fallback.model);
-        let login = resource_model_login(&fallback.agent, &fallback.provider, &fallback.model);
+        let matched = resource_models.iter().find(|item| {
+            item.agent == fallback.agent && item.provider == fallback.provider && item.id == fallback.model
+        });
+        let exhausted_until = matched.and_then(|item| item.quota_exhausted_until.clone());
+        let login = matched.map(|item| item.login.clone()).unwrap_or_default();
         candidates.push((fallback, true, exhausted_until, login));
     }
     for model in configured {
@@ -3461,7 +3495,15 @@ fn run_one_with_activity(
         append_runner_note(&mut result.runner_note, &quota_notes.join(" → "));
     }
     if !login_skip_notes.is_empty() {
-        append_runner_note(&mut result.runner_note, &login_skip_notes.join(" → "));
+        let note = login_skip_notes.join(" → ");
+        append_result_runner_note(&mut result, &note);
+        if result.dispatch_file != main_record.0 {
+            let mut main_note = main_record.2;
+            append_runner_note(&mut main_note, &note);
+            if let Err(error) = sync_record_runner_note(&main_record.0, &main_record.1, &main_note) {
+                append_runner_note(&mut result.runner_note, &format!("更新主尝试派发记录失败：{error}"));
+            }
+        }
         if result.fallback_to.is_empty() {
             result.fallback_skipped = "未登录".into();
         }
@@ -3610,49 +3652,34 @@ thread_local! {
     /// TASK-14：资源路由测试替身。None 表示测试不读用户真实 resources.json。
     static RESOURCE_MODELS_STUB: std::cell::RefCell<Option<Vec<crate::resources::ResourceModel>>> =
         const { std::cell::RefCell::new(None) };
+    static RESOURCE_LOOKUP_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static QUOTA_MARKS: std::cell::RefCell<Vec<(String, String, String, Option<String>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     static QUOTA_ROLLBACK_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-fn resource_fallback_models(agent: &str, provider: &str, model: &str) -> Vec<crate::resources::ResourceModel> {
+fn resource_models_snapshot() -> Vec<crate::resources::ResourceModel> {
     #[cfg(test)]
     {
-        return RESOURCE_MODELS_STUB.with(|cell| {
-            let borrowed = cell.borrow();
-            let Some(models) = borrowed.as_ref() else { return Vec::new() };
-            let Some(current) = models.iter().find(|item| item.agent == agent && item.provider == provider && item.id == model) else { return Vec::new() };
-            current.fallback_order.iter().filter_map(|key| {
-                models.iter().find(|item| crate::resources::resource_model_key(&item.agent, &item.provider, &item.id) == *key).cloned()
-            }).collect()
-        });
+        RESOURCE_LOOKUP_CALLS.with(|cell| cell.set(cell.get() + 1));
+        return RESOURCE_MODELS_STUB.with(|cell| cell.borrow().clone().unwrap_or_default());
     }
     #[cfg(not(test))]
-    crate::resources::fallback_models(agent, provider, model).unwrap_or_default()
+    crate::resources::dispatch_models().unwrap_or_default()
 }
 
-fn resource_model_login(agent: &str, provider: &str, model: &str) -> crate::resources::ResourceLogin {
-    #[cfg(test)]
-    {
-        return RESOURCE_MODELS_STUB.with(|cell| cell.borrow().as_ref().and_then(|models| {
-            models.iter().find(|item| item.agent == agent && item.provider == provider && item.id == model)
-                .map(|item| item.login.clone())
-        }).unwrap_or_default());
-    }
-    #[cfg(not(test))]
-    crate::resources::login_status(agent, provider, model).unwrap_or_default()
-}
-
-fn resource_quota_until(agent: &str, provider: &str, model: &str) -> Option<String> {
-    #[cfg(test)]
-    {
-        return RESOURCE_MODELS_STUB.with(|cell| cell.borrow().as_ref().and_then(|models| {
-            models.iter().find(|item| item.agent == agent && item.provider == provider && item.id == model)
-                .and_then(|item| item.quota_exhausted_until.clone())
-        }));
-    }
-    #[cfg(not(test))]
-    crate::resources::quota_exhausted_until(agent, provider, model)
+fn resource_fallback_models(
+    models: &[crate::resources::ResourceModel],
+    agent: &str,
+    provider: &str,
+    model: &str,
+) -> Vec<crate::resources::ResourceModel> {
+    let Some(current) = models.iter().find(|item| item.agent == agent && item.provider == provider && item.id == model) else {
+        return Vec::new();
+    };
+    current.fallback_order.iter().filter_map(|key| {
+        models.iter().find(|item| crate::resources::resource_model_key(&item.agent, &item.provider, &item.id) == *key).cloned()
+    }).collect()
 }
 
 fn record_quota_hit(agent: &str, provider: &str, model: &str, resets_at: Option<&str>) -> bool {
@@ -4621,22 +4648,25 @@ fn append_result_runner_note(result: &mut DispatchNodeResult, note: &str) {
 }
 
 fn sync_result_record_runner_note(result: &mut DispatchNodeResult) -> Result<(), String> {
-    let old_frontmatter = result.frontmatter.clone();
+    result.frontmatter = sync_record_runner_note(&result.dispatch_file, &result.frontmatter, &result.runner_note)?;
+    Ok(())
+}
+
+fn sync_record_runner_note(dispatch_file: &str, old_frontmatter: &str, runner_note: &str) -> Result<String, String> {
     let yaml = old_frontmatter.strip_prefix("---\n")
         .and_then(|value| value.strip_suffix("---"))
         .ok_or_else(|| "派发记录 frontmatter 格式无效".to_string())?;
     let mut record: DispatchRecord = serde_yaml::from_str(yaml)
         .map_err(|error| format!("解析派发记录 frontmatter 失败：{error}"))?;
-    record.runner_note = result.runner_note.clone();
+    record.runner_note = runner_note.to_string();
     let frontmatter = serialize_frontmatter(&record)?;
-    let path = Path::new(&result.dispatch_file);
+    let path = Path::new(dispatch_file);
     let body = fs::read_to_string(path)
         .map_err(|error| format!("读取派发记录失败 {}：{error}", path.display()))?;
-    let suffix = body.strip_prefix(&old_frontmatter)
+    let suffix = body.strip_prefix(old_frontmatter)
         .ok_or_else(|| "派发记录 frontmatter 已变化".to_string())?;
     write_atomic(path, format!("{frontmatter}{suffix}").as_bytes())?;
-    result.frontmatter = frontmatter;
-    Ok(())
+    Ok(frontmatter)
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -7252,6 +7282,75 @@ mod tests {
     }
 
     #[test]
+    fn task26_r1_classification_run_directory_is_removed_after_success_and_error() {
+        let root = std::env::temp_dir().join(format!("aicross-classify-cleanup-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let runtime = dispatch_data_root().unwrap();
+
+        let success_id = format!("proposal-classify-{}", Uuid::new_v4());
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, "print('DISPATCH')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
+        let mut success_node = node(Vec::new());
+        success_node.agent = "cc-switch".into();
+        success_node.provider = "stub".into();
+        success_node.model = "stub".into();
+        success_node.role = "顾问".into();
+        success_node.visibility = "共享".into();
+        let mut success = stage_request(project.to_string_lossy().into_owned(), vec![success_node]);
+        success.run_id.clone_from(&success_id);
+        success.settings.write_project_dispatch = false;
+        success.settings.cc_switch_path = stub.to_string_lossy().into_owned();
+        let result = dispatch_stage_core(success, None).unwrap();
+        assert_eq!(result.run_id, success_id);
+        assert_eq!(result.results[0].status, "ok", "{}", result.results[0].error);
+        assert!(!runtime.join("runs").join(&result.run_id).exists());
+
+        let failed_id = format!("proposal-classify-{}", Uuid::new_v4());
+        let failed_root = runtime.join("runs").join(&failed_id);
+        fs::create_dir_all(&failed_root).unwrap();
+        fs::write(failed_root.join("dispatch"), "not a directory").unwrap();
+        let mut failed = stage_request(project.to_string_lossy().into_owned(), vec![node(Vec::new())]);
+        failed.run_id.clone_from(&failed_id);
+        failed.settings.write_project_dispatch = false;
+        assert!(dispatch_stage_core(failed, None).is_err());
+        assert!(!failed_root.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task26_r1_concurrent_classification_runs_remove_only_their_own_directories() {
+        let root = std::env::temp_dir().join(format!("aicross-classify-concurrent-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let runtime = dispatch_data_root().unwrap();
+        let unrelated = runtime.join("runs").join(format!("proposal-classify-keep-{}", Uuid::new_v4()));
+        fs::create_dir_all(&unrelated).unwrap();
+        fs::write(unrelated.join("keep.txt"), "keep").unwrap();
+        let ids = [
+            format!("proposal-classify-{}", Uuid::new_v4()),
+            format!("proposal-classify-{}", Uuid::new_v4()),
+        ];
+        let workers = ids.iter().map(|id| {
+            let mut request_node = node(Vec::new());
+            request_node.agent = "missing-agent".into();
+            let mut request = stage_request(project.to_string_lossy().into_owned(), vec![request_node]);
+            request.run_id.clone_from(id);
+            request.settings.write_project_dispatch = false;
+            std::thread::spawn(move || dispatch_stage_core(request, None))
+        }).collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        for id in ids {
+            assert!(!runtime.join("runs").join(id).exists());
+        }
+        assert_eq!(fs::read_to_string(unrelated.join("keep.txt")).unwrap(), "keep");
+        let _ = fs::remove_dir_all(unrelated);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn task06_safe_relative_path_rejects_root_and_current_components() {
         assert!(safe_relative_path("/x").is_none());
         assert!(safe_relative_path("./x").is_none());
@@ -7742,7 +7841,7 @@ mod tests {
     }
 
     #[test]
-    fn task17_r1_logged_out_fallback_is_skipped_and_recorded() {
+    fn task26_logged_out_fallback_uses_one_resource_snapshot_and_updates_main_record() {
         if channels::resolve_binary("python", None).is_err() { return; }
         let root = std::env::temp_dir().join(format!("aicross-login-fallback-{}", Uuid::new_v4()));
         let project = root.join("project");
@@ -7764,9 +7863,13 @@ mod tests {
             login: crate::resources::ResourceLogin::LoggedOut, ..Default::default()
         };
         RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![primary, logged_out]));
+        RESOURCE_LOOKUP_CALLS.with(|cell| cell.set(0));
         let mut request = node(Vec::new());
         request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
         request.visibility = "共享".into(); request.write = "只读".into();
+        request.fallback = Some(FallbackSpec {
+            agent: "cc-switch".into(), provider: "p1".into(), model: "logged-out".into(), vendor: String::new(),
+        });
         let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
         let result = run_one("login-fallback", &project, &root.join("runs"), &log_dir, &settings, request);
         RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = None);
@@ -7774,6 +7877,55 @@ mod tests {
         assert_eq!(result.status, "quota_exhausted");
         assert_eq!(result.fallback_skipped, "未登录");
         assert!(result.runner_note.contains("跳过 cc-switch/logged-out（未登录）"), "{}", result.runner_note);
+        assert_eq!(RESOURCE_LOOKUP_CALLS.with(|cell| cell.get()), 1, "一次派发只读一次资源库");
+        let record = fs::read_to_string(&result.dispatch_file).unwrap();
+        assert!(record.contains("跳过 cc-switch/logged-out（未登录）"), "{record}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task26_r1_logged_out_after_failed_fallback_updates_main_record() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = std::env::temp_dir().join(format!("aicross-login-fallback-record-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let marker = root.join("calls.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nf=pathlib.Path(r'{}')\nf.write_text((f.read_text() if f.exists() else '')+p+'\\n')\nprint('usage limit reached', file=sys.stderr)\nsys.exit(1)\n",
+            marker.display()
+        )).unwrap();
+        let mut primary = crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: "p0".into(), id: "main".into(), ..Default::default()
+        };
+        primary.fallback_order = vec![
+            "cc-switch/p1/failed".into(),
+            "cc-switch/p2/logged-out".into(),
+        ];
+        let failed = crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: "p1".into(), id: "failed".into(), ..Default::default()
+        };
+        let logged_out = crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: "p2".into(), id: "logged-out".into(),
+            login: crate::resources::ResourceLogin::LoggedOut, ..Default::default()
+        };
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![primary, failed, logged_out]));
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into(); request.provider = "p0".into(); request.model = "main".into();
+        request.visibility = "共享".into(); request.write = "只读".into();
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("login-fallback-record", &project, &root.join("runs"), &log_dir, &settings, request);
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = None);
+
+        assert_eq!(fs::read_to_string(&marker).unwrap().lines().collect::<Vec<_>>(), ["p0", "p1"]);
+        assert_eq!(result.status, "quota_exhausted");
+        assert!(result.runner_note.contains("跳过 cc-switch/logged-out（未登录）"), "{}", result.runner_note);
+        let records = fs::read_dir(&log_dir).unwrap().filter_map(Result::ok)
+            .map(|entry| fs::read_to_string(entry.path()).unwrap()).collect::<Vec<_>>();
+        let main_record = records.iter().find(|body| body.contains("attempt: 主\n")).unwrap();
+        assert!(main_record.contains("跳过 cc-switch/logged-out（未登录）"), "{main_record}");
         let _ = fs::remove_dir_all(root);
     }
 

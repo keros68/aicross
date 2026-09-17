@@ -323,6 +323,7 @@ pub(crate) fn resource_model_key(agent: &str, provider: &str, model: &str) -> St
     format!("{agent}/{provider}/{model}")
 }
 
+#[cfg(test)]
 fn parse_resource_model_key(value: &str) -> Option<(&str, &str, &str)> {
     let mut parts = value.splitn(3, '/');
     let agent = parts.next()?.trim();
@@ -331,6 +332,7 @@ fn parse_resource_model_key(value: &str) -> Option<(&str, &str, &str)> {
     (!agent.is_empty() && !model.is_empty()).then_some((agent, provider, model))
 }
 
+#[cfg(test)]
 fn fallback_models_at(path: &Path, agent: &str, provider: &str, model: &str) -> Result<Vec<ResourceModel>, String> {
     let _guard = store_lock();
     let mut store = load_or_default(path)?;
@@ -357,35 +359,16 @@ fn fallback_models_at(path: &Path, agent: &str, provider: &str, model: &str) -> 
 }
 
 #[cfg_attr(test, allow(dead_code))]
-pub(crate) fn fallback_models(agent: &str, provider: &str, model: &str) -> Result<Vec<ResourceModel>, String> {
-    fallback_models_at(&store_path()?, agent, provider, model)
-}
-
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) fn quota_exhausted_until(agent: &str, provider: &str, model: &str) -> Option<String> {
-    let path = store_path().ok()?;
+pub(crate) fn dispatch_models() -> Result<Vec<ResourceModel>, String> {
+    let path = store_path()?;
     let _guard = store_lock();
-    let mut store = load_or_default(&path).ok()?;
+    let mut store = load_or_default(&path)?;
     clear_expired_quota(&mut store);
-    store
+    Ok(store
         .agents
-        .iter()
-        .flat_map(|owner| &owner.models)
-        .find(|item| item.agent == agent && item.provider == provider && item.id == model)
-        .and_then(|item| item.quota_exhausted_until.clone())
-}
-
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) fn login_status(agent: &str, provider: &str, model: &str) -> Option<ResourceLogin> {
-    let path = store_path().ok()?;
-    let _guard = store_lock();
-    let store = load_or_default(&path).ok()?;
-    store
-        .agents
-        .iter()
-        .flat_map(|owner| &owner.models)
-        .find(|item| item.agent == agent && item.provider == provider && item.id == model)
-        .map(|item| item.login.clone())
+        .into_iter()
+        .flat_map(|owner| owner.models)
+        .collect())
 }
 
 fn mark_quota_exhausted_at(
@@ -839,11 +822,19 @@ fn detect_version(binary: Option<&PathBuf>) -> (bool, String) {
 
 // ── 探测 ──────────────────────────────────────────────────────────────────
 
+fn detect_into_supports_agent(agent_id: &str) -> bool {
+    agent_id != "pi"
+}
+
 fn detect_into(
     store: &mut ResourceStore,
     agent_id: &str,
     errors: &mut Vec<String>,
 ) {
+    if !detect_into_supports_agent(agent_id) {
+        errors.push("探测 pi 失败：pi 必须在资源库锁外完成探测".to_string());
+        return;
+    }
     if store.agents.iter().all(|agent| agent.id != agent_id) {
         errors.push(format!("探测资源失败：未知 agent：{agent_id}"));
         return;
@@ -877,20 +868,6 @@ fn detect_into(
             merge_detected_models(store, agent_id, Vec::new());
             return;
         }
-    }
-
-    if agent_id == "pi" {
-        let Some(binary) = resolved else {
-            return;
-        };
-        match detect_pi(&binary) {
-            Ok((models, provider_errors)) => {
-                merge_detected_models(store, agent_id, models);
-                errors.extend(provider_errors);
-            }
-            Err(error) => errors.push(format!("探测 {agent_id} 失败：{error}")),
-        }
-        return;
     }
 
     let models = match agent_id {
@@ -1218,7 +1195,9 @@ fn check_pi_provider_login_with(binary: &Path, provider: &str, timeout: Duration
 
 /// `Result` 的错误（命令不存在等）和超时都是未知，不把错误输出保存或上送；
 /// 有明确 `status: not_ready`（或兼容形状 `ready: false`）才判未登录。
-/// 退出码是就绪判据的一部分。
+/// 退出码是就绪判据的一部分：即使正文是 `status: ready`，非 0 退出码仍判
+/// 未登录，因为 provider 已返回可解析的认证结论，但检查命令没有成功完成；
+/// 「未检查」只留给命令不可用、超时或没有可解析结论的情况。
 fn pi_login_from_check(result: Result<ProcessResult, String>) -> ResourceLogin {
     let Ok(result) = result else { return ResourceLogin::Unknown };
     if result.timed_out {
@@ -3146,6 +3125,27 @@ exit 0
     }
 
     #[test]
+    fn task26_detect_into_excludes_pi_prepared_outside_the_store_lock() {
+        assert!(!detect_into_supports_agent("pi"));
+        for agent in ["claude", "codex", "kimi", "manual-local"] {
+            assert!(detect_into_supports_agent(agent), "{agent}");
+        }
+    }
+
+    #[test]
+    fn task26_ready_status_with_nonzero_exit_is_logged_out_by_policy() {
+        let result = ProcessResult {
+            code: Some(7),
+            stdout: r#"{"status":"ready","provider":"p"}"#.into(),
+            stderr: String::new(),
+            timed_out: false,
+            truncated: false,
+            timeout: Duration::from_secs(1),
+        };
+        assert_eq!(pi_login_from_check(Ok(result)), ResourceLogin::LoggedOut);
+    }
+
+    #[test]
     fn task17_pi_detect_list_auth_merge_persists_without_auth_payload() {
         let root = std::env::temp_dir().join(format!("aicross-pi-detect-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
@@ -4471,9 +4471,10 @@ exit 2
         };
         ensure_agents(&mut store);
         let mut errors = Vec::new();
-        for id in ["claude", "codex", "kimi", "pi"] {
+        for id in ["claude", "codex", "kimi"] {
             detect_into(&mut store, id, &mut errors);
         }
+        apply_prepared_pi_detection(&mut store, prepare_pi_detection(resolve_cli("pi")), &mut errors);
         for agent in &store.agents {
             println!(
                 "agent={} detected={} version={} models={}",
