@@ -20,7 +20,7 @@ export interface DialogRoot {
 }
 
 export function hasOpenModal(root: DialogRoot): boolean {
-  return Boolean(root.querySelector('[aria-modal="true"]'));
+  return Boolean(root.querySelector('[aria-modal="true"]') || root.querySelector('.preset-select[open]'));
 }
 
 export function shouldEnforceTerminalFocus(

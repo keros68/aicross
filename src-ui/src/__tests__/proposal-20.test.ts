@@ -55,6 +55,46 @@ describe('TASK-20 建议条纯函数', () => {
     expect(proposalShortcutFromTarget({ key: 'Escape' }, { commander: false }, { tagName: 'DIV' }, root)).toBeNull();
   });
 
+  it('右栏预设下拉打开时建议条放行 Esc', () => {
+    const root = { querySelector: (selector: string) => selector.includes('.preset-select[open]') ? {} : null };
+    expect(proposalShortcutFromTarget({ key: 'Escape' }, { commander: false }, { tagName: 'DIV' }, root)).toBeNull();
+  });
+
+  it('优先按原生可编辑状态识别 false 遮蔽与 plaintext-only', () => {
+    const root = { querySelector: () => null };
+    const nestedFalse = {
+      tagName: 'DIV',
+      isContentEditable: false,
+      closest: (selector: string) => {
+        if (selector === '.xterm-helper-textarea') return null;
+        if (selector.includes('[contenteditable="true"]')) return {};
+        return null;
+      },
+    };
+    const plaintextOnly = {
+      tagName: 'DIV',
+      isContentEditable: true,
+      closest: () => null,
+    };
+    expect(proposalShortcutFromTarget({ key: 'Enter' }, { commander: false }, nestedFalse, root)).toBe('accept');
+    expect(proposalShortcutFromTarget({ key: 'Enter' }, { commander: false }, plaintextOnly, root)).toBeNull();
+  });
+
+  it('原生属性不可用时以精确选择器兼容可编辑目标', () => {
+    const root = { querySelector: () => null };
+    const target = (editable: 'false' | 'true' | '' | 'plaintext-only') => ({
+      tagName: 'DIV',
+      closest: (selector: string) => {
+        if (selector === '.xterm-helper-textarea') return null;
+        return selector.includes(`[contenteditable="${editable}"]`) ? {} : null;
+      },
+    });
+    expect(proposalShortcutFromTarget({ key: 'Enter' }, { commander: false }, target('false'), root)).toBe('accept');
+    expect(proposalShortcutFromTarget({ key: 'Enter' }, { commander: false }, target('true'), root)).toBeNull();
+    expect(proposalShortcutFromTarget({ key: 'Enter' }, { commander: false }, target(''), root)).toBeNull();
+    expect(proposalShortcutFromTarget({ key: 'Enter' }, { commander: false }, target('plaintext-only'), root)).toBeNull();
+  });
+
   it('reason 作为末尾浅色说明进入建议条文本', () => {
     expect(proposalBarText('盲审模式', 2, '需要独立核对', false)).toBe('建议派发 · 盲审模式 · 2 路 · 回车采纳 · Esc 忽略 · Tab 换模式 · 需要独立核对');
     expect(proposalBarText('经济模式', 3, '', true)).toBe('建议派发 · 经济模式 · 3 路 · Ctrl+Enter 采纳 · 或点右侧按钮');
@@ -195,7 +235,7 @@ describe('TASK-20 建议判定与本地入口', () => {
       .toThrow('所选归类模型当前不可用');
   });
 
-  it('归类调用使用 20 秒上限并复用固定 run 目录', async () => {
+  it('归类调用使用 20 秒上限，并按建议 id 隔离留痕目录', async () => {
     const requests: any[] = [];
     const model = { id: 'm', agent: 'codex', provider: 'openai', vendor: 'openai', billing_source: '', tier: '低', thinking: '低' };
     const io = {
@@ -205,8 +245,12 @@ describe('TASK-20 建议判定与本地入口', () => {
         return { results: [{ status: 'ok', text: 'DISPATCH' }] };
       },
     } as any;
-    await expect(classifyProposal({ proposal_id: 'p', project: 'D:/p', text: '实现功能并补测试' }, { timeoutSecs: 600, classificationModel: '' } as any, io)).resolves.toBe(true);
-    expect(requests[0]).toMatchObject({ runId: 'proposal-classify', settings: { timeoutSecs: 20 }, nodes: [{ nodeId: 'proposal-classify' }] });
+    await Promise.all([
+      classifyProposal({ proposal_id: 'p1', project: 'D:/p', text: '实现功能并补测试' }, { timeoutSecs: 600, classificationModel: '' } as any, io),
+      classifyProposal({ proposal_id: 'p2', project: 'D:/p', text: '实现功能并补测试' }, { timeoutSecs: 600, classificationModel: '' } as any, io),
+    ]);
+    expect(requests[0]).toMatchObject({ runId: 'proposal-classify-p1', settings: { timeoutSecs: 20 }, nodes: [{ nodeId: 'proposal-classify-p1' }] });
+    expect(requests[1]).toMatchObject({ runId: 'proposal-classify-p2', settings: { timeoutSecs: 20 }, nodes: [{ nodeId: 'proposal-classify-p2' }] });
   });
 });
 

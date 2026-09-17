@@ -91,9 +91,9 @@
 
 ## TASK-17 R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
-56. `detect_into` 的 pi 分支已成生产死代码且保留「不刷登录」旧语义，日后恢复会无声回归；清理或注明。（GLM）
-57. 引擎跳过未登录备选的说明只加在返回结果上，不进主尝试留痕；引擎每候选各读一次库取 login。（GLM）
-58. `status:"ready"` 但退出码非 0 判未登录而非未检查（有意取舍，仅记口径）。（GLM）
+56. ~~`detect_into` 的 pi 分支已成生产死代码且保留「不刷登录」旧语义，日后恢复会无声回归；清理或注明。（GLM）~~ 已修（09-17，TASK-26）
+57. ~~引擎跳过未登录备选的说明只加在返回结果上，不进主尝试留痕；引擎每候选各读一次库取 login。（GLM）~~ 已修（09-17，TASK-26）
+58. ~~`status:"ready"` 但退出码非 0 判未登录而非未检查（有意取舍，仅记口径）。（GLM）~~ 已修（09-17，TASK-26）
 
 ## 安装包（09-15 夜）
 
@@ -115,9 +115,9 @@
 
 ## TASK-20 R1 复审剩余（09-16，两家都判可交付；低危）
 
-66. 右栏预设下拉（`PresetGroups.tsx` 的 `PresetSelect`）的 Esc 关闭挂在冒泡阶段，会被建议条的捕获监听短路：有建议条时打开下拉按 Esc，下拉不收、建议反被忽略。这是第三处 document 级 Esc（前两处 modal 已放行）。代价是再按一次 Esc，可接受；要收口就把下拉打开时的根节点并入放行判定。（GLM 2）
-67. `proposalTargetFlags` 用 `closest('input,textarea,[contenteditable]')`，属性选择器会把 `contenteditable="false"`（显式不可编辑）也算成输入控件，多排除一次按键。方向安全（多放行少抢键），元素罕见。改法：`[contenteditable="true"]`。（GLM 5）
-68. 归类调用固定了 `runId/nodeId = 'proposal-classify'`，两条建议并发走归类时 `runs/proposal-classify/dispatch/` 下的 STATE.md 与 raw 文件同名互写，最后写者胜。判定只取回复文本不读 STATE，结果不受影响，仅并发时日志失真。（GLM 6）
+66. ~~右栏预设下拉（`PresetGroups.tsx` 的 `PresetSelect`）的 Esc 关闭挂在冒泡阶段，会被建议条的捕获监听短路：有建议条时打开下拉按 Esc，下拉不收、建议反被忽略。这是第三处 document 级 Esc（前两处 modal 已放行）。代价是再按一次 Esc，可接受；要收口就把下拉打开时的根节点并入放行判定。（GLM 2）~~ 已修（09-17，TASK-26）
+67. ~~`proposalTargetFlags` 用 `closest('input,textarea,[contenteditable]')`，属性选择器会把 `contenteditable="false"`（显式不可编辑）也算成输入控件，多排除一次按键。方向安全（多放行少抢键），元素罕见。改法：`[contenteditable="true"]`。（GLM 5）~~ 已修（09-17，TASK-26）
+68. ~~归类调用固定了 `runId/nodeId = 'proposal-classify'`，两条建议并发走归类时 `runs/proposal-classify/dispatch/` 下的 STATE.md 与 raw 文件同名互写，最后写者胜。判定只取回复文本不读 STATE，结果不受影响，仅并发时日志失真。（GLM 6）~~ 已修（09-17，TASK-26）
 
 ## TASK-21 复审剩余（09-16，两家都判可交付；低危）
 
