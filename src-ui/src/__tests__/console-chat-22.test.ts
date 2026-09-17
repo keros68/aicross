@@ -141,6 +141,7 @@ describe('TASK-22 控制台消息流', () => {
     const graph = newGraph('D:/work');
     const dispatchPreset = vi.fn(async (...args: any[]) => {
       args[3](graph);
+      args[6].append({ id: 'feedback', kind: 'system', text: '进度已回流', createdAt: '' });
       return { graph, results: [], error: '' };
     });
     let busy = false;
@@ -177,6 +178,7 @@ describe('TASK-22 控制台消息流', () => {
     expect(dispatchPreset.mock.calls[0].slice(0, 5)).toEqual([
       'D:/work', '按原文派发', preset, expect.any(Function), graph,
     ]);
+    expect(appended.some((message) => message.text === '进度已回流')).toBe(true);
     expect(remembered).toBe(graph.id);
   });
 

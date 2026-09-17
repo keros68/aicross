@@ -4,7 +4,11 @@ import { commands, isTauri } from '../../tauri';
 import type { DispatchableModel } from '../../graph/types';
 import { agentDisplayName } from '../../resources/agent-display';
 import { RESOURCES_CHANGED_EVENT } from '../../resources/mention';
-import { createConsoleApplyHandler, dispatchConsoleTurn } from '../../console-chat';
+import {
+  consoleResultMessage,
+  createConsoleApplyHandler,
+  dispatchConsoleTurnWithFallback,
+} from '../../console-chat';
 import { selectConsoleGraph } from '../../console-channel';
 import {
   CONSOLE_APPLY_EVENT,
@@ -15,36 +19,11 @@ import {
   mentionTargets,
   parseConsoleMention,
   type ConsoleMessage,
-  type ConsoleTargetAgent,
 } from '../../console-session';
 import './ConsoleChat.css';
 
 interface Props {
   session: TerminalSession;
-}
-
-function responseMessage(
-  target: ConsoleTargetAgent,
-  result: Awaited<ReturnType<typeof dispatchConsoleTurn>>['result'],
-  role = '',
-): ConsoleMessage {
-  const fallback = result.fallbackTo.split('/');
-  const actualAgent = result.fallbackTo ? (fallback.shift() || target.agent) : target.agent;
-  const actualModel = result.modelReported || (result.fallbackTo ? fallback.join('/') : '') || target.model;
-  const route = [
-    result.fallbackTo ? `备选：${result.fallbackTo}` : '',
-    result.modelReported ? `实际模型：${result.modelReported}` : '',
-  ].filter(Boolean).join(' · ');
-  return consoleMessage(result.status === 'ok' ? 'assistant' : 'system', result.text || result.error || '派发失败', {
-    agent: actualAgent,
-    provider: result.fallbackTo ? '' : target.provider,
-    model: actualModel,
-    dispatchModel: result.fallbackTo ? fallback.join('/') : target.model,
-    role,
-    durationMs: result.durationMs,
-    status: result.status,
-    route,
-  });
 }
 
 export function ConsoleChat({ session }: Props) {
@@ -80,6 +59,16 @@ export function ConsoleChat({ session }: Props) {
 
   useEffect(() => { appliedRef.current = session.lastAppliedMessageId; }, [session.lastAppliedMessageId]);
 
+  useEffect(() => {
+    const graphId = session.consoleGraphId;
+    if (!isTauri || !graphId || state.graphs[graphId]) return;
+    let dead = false;
+    commands.loadGraph(graphId).then((graph) => {
+      if (!dead && graph) dispatch({ type: 'SET_GRAPH', graph });
+    }).catch(() => {});
+    return () => { dead = true; };
+  }, [dispatch, session.consoleGraphId, state.graphs]);
+
   const recentTargets = useMemo(() => [
     ...[...messages].reverse().flatMap((message) => message.agent && (message.dispatchModel || message.model) ? [{
       agent: message.agent,
@@ -109,11 +98,20 @@ export function ConsoleChat({ session }: Props) {
     busyRef.current = true;
     setBusy(true);
     try {
-      const turn = await dispatchConsoleTurn(
+      const turn = await dispatchConsoleTurnWithFallback(
         session.folderPath ?? '',
         outbound,
         selected,
         consoleResumeId(session.resumeId, selected),
+        () => {
+          dispatch({
+            type: 'SET_CONSOLE_RESUME_ID',
+            id: session.id,
+            key: consoleResumeKey(selected),
+            resumeId: '',
+          });
+          append(consoleMessage('system', '上次的会话已失效，已开新会话'));
+        },
       );
       if (turn.result.sessionId) {
         dispatch({
@@ -123,7 +121,7 @@ export function ConsoleChat({ session }: Props) {
           resumeId: turn.result.sessionId,
         });
       }
-      append(responseMessage(selected, turn.result));
+      append(consoleResultMessage(selected, turn.result));
     } catch (error) {
       append(consoleMessage('system', String(error).replace(/^Error:\s*/, '')));
     } finally {
@@ -157,15 +155,7 @@ export function ConsoleChat({ session }: Props) {
       },
       commitGraph: (graph) => dispatch({ type: 'SET_GRAPH', graph }),
       rememberGraph: (graphId) => dispatch({ type: 'SET_CONSOLE_GRAPH_ID', id: session.id, graphId }),
-      onOutcome: (outcome) => {
-        for (const item of outcome.results) {
-          const role = outcome.graph.nodes[item.result.nodeId]?.target?.role ?? '';
-          append(responseMessage(item.target, item.result, role));
-        }
-        if (outcome.results.length === 0 || outcome.error) {
-          append(consoleMessage('system', outcome.error || '模式派发没有返回结果。'));
-        }
-      },
+      onOutcome: () => {},
     });
     window.addEventListener(CONSOLE_APPLY_EVENT, apply);
     return () => window.removeEventListener(CONSOLE_APPLY_EVENT, apply);

@@ -57,7 +57,9 @@ Kimi Code 和 pi agent。
 
 同一 tab 按 agent、provider 和 model 分别保存续聊 id。Codex、Claude Code、
 pi agent 与 Kimi Code 分别复用现有通道的续聊入口；切换 tab 不会混用上下文。
-消息与续聊 id 目前只保存在当前 tab；关闭 tab 或重启应用后会重新开始。
+消息、续聊 id、当前目标和编排状态按 tab 保存在本机，重启应用后恢复；关闭 tab
+会删除该 tab 的记录，每个 tab 保留最近 200 条消息。续聊 id 失效时，下一条消息
+会开启新会话并显示提示。
 
 本期控制台聊天只读；需要改文件时使用模式派发。
 
