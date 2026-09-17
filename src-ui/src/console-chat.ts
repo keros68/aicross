@@ -46,6 +46,11 @@ export interface ConsolePresetResult {
   error: string;
 }
 
+export interface ConsolePresetFeedback {
+  append: (message: ConsoleMessage) => void;
+  now?: () => number;
+}
+
 export interface ConsoleApplySnapshot {
   busy: boolean;
   draft: string;
@@ -106,6 +111,44 @@ function exactModel(models: DispatchableModel[], target: ConsoleTargetAgent): Di
     && (model.provider ?? '') === target.provider);
 }
 
+function resultStatusLabel(result: DispatchNodeResult): string {
+  if (result.timedOut || result.status === 'timeout') return '超时';
+  if (result.status === 'quota_exhausted') return '额度用尽';
+  if (result.status === 'identity_mismatch') return '真身不符';
+  if (result.status === 'validation_failed') return '验证命令未通过';
+  return result.status === 'ok' ? '完成' : '失败';
+}
+
+export function consoleResultMessage(
+  target: ConsoleTargetAgent,
+  result: DispatchNodeResult,
+  role = '',
+): ConsoleMessage {
+  const fallback = result.fallbackTo.split('/');
+  const actualAgent = result.fallbackTo ? (fallback.shift() || target.agent) : target.agent;
+  const actualModel = result.modelReported || (result.fallbackTo ? fallback.join('/') : '') || target.model;
+  const route = [
+    result.fallbackTo ? `备选：${result.fallbackTo}` : '',
+    result.modelReported ? `实际模型：${result.modelReported}` : '',
+  ].filter(Boolean).join(' · ');
+  const failed = result.status !== 'ok';
+  const reason = result.error || result.runnerNote || result.text || '未返回原因';
+  const text = failed
+    ? [`状态：${resultStatusLabel(result)}`, `原因：${reason}`,
+      result.text && result.text !== reason ? `\n${result.text}` : ''].filter(Boolean).join('\n')
+    : result.text || '已完成。';
+  return consoleMessage('assistant', text, {
+    agent: actualAgent,
+    provider: result.fallbackTo ? '' : target.provider,
+    model: actualModel,
+    dispatchModel: actualModel,
+    role,
+    durationMs: result.durationMs,
+    status: result.status,
+    route,
+  });
+}
+
 export async function dispatchConsoleTurn(
   project: string,
   text: string,
@@ -113,13 +156,24 @@ export async function dispatchConsoleTurn(
   resumeId: string,
   io: ConsoleCommands = commands,
 ): Promise<ConsoleTurnResult> {
+  const request = await prepareConsoleTurn(project, text, target, resumeId, io);
+  return dispatchPreparedConsoleTurn(request, target, io);
+}
+
+async function prepareConsoleTurn(
+  project: string,
+  text: string,
+  target: ConsoleTargetAgent,
+  resumeId: string,
+  io: ConsoleCommands,
+): Promise<DispatchStageRequest> {
   const resources = await io.listDispatchableModels();
   if (resources.error) throw new Error(`读取资源失败：${resources.error}`);
   const model = exactModel(resources.models, target);
   if (!model) throw new Error('当前目标不在可派发模型清单中');
   const settings = loadDispatchSettings();
   const nodeId = crypto.randomUUID();
-  const request: DispatchStageRequest = {
+  return {
     runId: `console-chat-${crypto.randomUUID()}`,
     stage: 1,
     projectDir: project,
@@ -137,10 +191,58 @@ export async function dispatchConsoleTurn(
       stage: 1,
     })],
   };
+}
+
+async function dispatchPreparedConsoleTurn(
+  request: DispatchStageRequest,
+  target: ConsoleTargetAgent,
+  io: ConsoleCommands,
+): Promise<ConsoleTurnResult> {
   const response = await io.dispatchGraphStage(request);
   const result = response.results[0];
   if (!result) throw new Error('派发没有返回结果');
   return { result, target };
+}
+
+// 外部 CLI 没有统一错误码，只能靠英文文案判断「续聊的会话已经没了」。
+// 这是保守启发式：新的或本地化的供应商文案可能漏判（漏判只是多报一次失败），
+// 但**绝不能误判**——误判会清掉有效会话、提示「已失效」、再重派一次多花额度。
+//
+// 所以要求「会话对象词」与「失效词」**贴在一起**，而不是各自出现在整句任意位置
+// （09-17 编排者核对：旧写法把「Invalid API key for this session」与
+// 「unknown error in thread pool」都判成了会话失效）。
+const EXPIRED_RESUME_PATTERNS: RegExp[] = [
+  // session not found / thread 01a0 not found / conversation does not exist / session expired
+  /\b(?:session|thread|conversation)\b[^.\n]{0,40}?\b(?:not found|does not exist|no longer exists|has expired|expired)\b/i,
+  // no session / unknown session / invalid thread / no such conversation
+  /\b(?:no|unknown|invalid|expired|no such)\s+(?:session|thread|conversation)\b/i,
+  // cannot resume / could not resume / failed to resume
+  /\b(?:cannot|can't|could not|couldn't|failed to|unable to)\s+resume\b/i,
+];
+
+export function isExpiredResumeError(message: string): boolean {
+  return EXPIRED_RESUME_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+export async function dispatchConsoleTurnWithFallback(
+  project: string,
+  text: string,
+  target: ConsoleTargetAgent,
+  resumeId: string,
+  onExpired: () => void,
+  io: ConsoleCommands = commands,
+): Promise<ConsoleTurnResult> {
+  if (resumeId === '') return dispatchConsoleTurn(project, text, target, '', io);
+  // 资源读取与目标检查在回退判断之外；发派前失败不能据此清除有效续聊 id。
+  const request = await prepareConsoleTurn(project, text, target, resumeId, io);
+  try {
+    const resumed = await dispatchPreparedConsoleTurn(request, target, io);
+    if (resumed.result.status !== 'error' || !isExpiredResumeError(resumed.result.error)) return resumed;
+  } catch (error) {
+    if (!isExpiredResumeError(String(error))) throw error;
+  }
+  onExpired();
+  return dispatchConsoleTurn(project, text, target, '', io);
 }
 
 export async function dispatchConsolePreset(
@@ -150,6 +252,7 @@ export async function dispatchConsolePreset(
   commitGraph: (graph: Graph) => void,
   existingGraph?: Graph,
   io: ConsoleCommands = commands,
+  feedback?: ConsolePresetFeedback,
 ): Promise<ConsolePresetResult> {
   const settings = loadDispatchSettings();
   const [resources, roles] = await Promise.all([
@@ -224,6 +327,30 @@ export async function dispatchConsolePreset(
       });
     }),
   });
+  const now = feedback?.now ?? Date.now;
+  const startedAt = now();
+  const announcedStages = new Set<number>();
+  const announcedResults = new Map<string, string>();
+  const announceResults = (collected: DispatchNodeResult[]) => {
+    if (!feedback) return;
+    const latest = [...new Map(collected.map((result) => [result.nodeId, result])).values()];
+    for (const result of latest) {
+      const previousStatus = announcedResults.get(result.nodeId);
+      if (previousStatus === result.status) continue;
+      const target = graph.nodes[result.nodeId]?.target;
+      if (!target) continue;
+      const message = consoleResultMessage({
+        agent: target.agent,
+        provider: target.provider ?? '',
+        model: target.model,
+      }, result, target.role);
+      feedback.append(previousStatus === undefined ? message : {
+        ...message,
+        text: `${target.role || '未指定角色'} · 修正后${result.status === 'ok' ? '通过' : resultStatusLabel(result)}\n${message.text}`,
+      });
+      announcedResults.set(result.nodeId, result.status);
+    }
+  };
   const pipeline = await startPipelineHeadless<DispatchNodeResult, DispatchStageRequest, unknown>({
     graph,
     settings,
@@ -235,8 +362,18 @@ export async function dispatchConsolePreset(
       dispatch: (request) => io.dispatchGraphStage(request),
       commit,
       onPreview: () => {},
-      onStage: () => {},
-      onResults: () => {},
+      onStage: (request, ids) => {
+        if (!feedback || announcedStages.has(request.stage)) return;
+        announcedStages.add(request.stage);
+        const routes = request.nodes
+          .filter((node) => ids.includes(node.nodeId))
+          .map((node) => `${node.role || '未指定角色'}（${node.agent} / ${node.model}）`);
+        feedback.append(consoleMessage(
+          'system',
+          `第 ${request.stage} 阶段 · 派出 ${ids.length} 路：${routes.join('、')}`,
+        ));
+      },
+      onResults: announceResults,
     },
     onError: (active, collected, message, working) => failedNodesWithoutResults(active, collected, message).map((node) => ({
       ...node,
@@ -262,7 +399,17 @@ export async function dispatchConsolePreset(
     })),
   });
   graph = pipeline.graph;
-  await io.saveGraph(graph);
+  void io.saveGraph(graph).catch((error) => console.warn('[console] 保存对话图失败', error));
+  const uniqueResults = [...new Map(pipeline.results.map((result) => [result.nodeId, result])).values()];
+  if (feedback) {
+    announceResults(uniqueResults);
+    const succeeded = uniqueResults.filter((result) => result.status === 'ok').length;
+    const stopped = pipeline.error ? `停止原因：${pipeline.error}` : '';
+    feedback.append(consoleMessage(
+      'system',
+      `模式派发结束：成功 ${succeeded} 路，失败 ${uniqueResults.length - succeeded} 路，总耗时 ${((now() - startedAt) / 1000).toFixed(1)} 秒。${stopped}`,
+    ));
+  }
   const results = pipeline.results.flatMap((result) => {
     const target = graph.nodes[result.nodeId]?.target;
     return target ? [{
@@ -313,6 +460,7 @@ export function createConsoleApplyHandler(options: ConsoleApplyHandlerOptions): 
       },
       snapshot.existingGraph,
       options.io ?? commands,
+      { append: options.append },
     ).then((outcome) => {
       options.onOutcome(outcome);
     }).catch((error) => {

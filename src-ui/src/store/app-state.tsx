@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import type { Graph } from '../graph/types';
 import type { CommanderSettings } from '../commander/types';
 import type { ConsoleMessage, ConsoleTargetAgent } from '../console-session';
+import { CONSOLE_MESSAGE_LIMIT, loadConsoleSessions, persistConsoleSessions } from '../console-persistence';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -406,7 +407,7 @@ type Action =
 
 // ─── Reducer ─────────────────────────────────────────────────────────────────
 
-export function reducer(state: AppState, action: Action): AppState {
+function reduceAppState(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_FOLDER':
       // Persist as the "last folder" so a fresh launch lands here instead
@@ -539,18 +540,20 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         terminals: state.terminals.map(t => t.id === action.id ? {
           ...t,
-          messages: [...(t.messages ?? []), action.message],
+          messages: [...(t.messages ?? []), action.message].slice(-CONSOLE_MESSAGE_LIMIT),
         } : t),
       };
-    case 'SET_CONSOLE_RESUME_ID':
-      if (action.resumeId === '') return state;
+    case 'SET_CONSOLE_RESUME_ID': {
       return {
         ...state,
         terminals: state.terminals.map(t => t.id === action.id ? {
           ...t,
-          resumeId: { ...(t.resumeId ?? {}), [action.key]: action.resumeId },
+          resumeId: action.resumeId === ''
+            ? Object.fromEntries(Object.entries(t.resumeId ?? {}).filter(([key]) => key !== action.key))
+            : { ...(t.resumeId ?? {}), [action.key]: action.resumeId },
         } : t),
       };
+    }
     case 'SET_CONSOLE_APPLIED_MESSAGE':
       return {
         ...state,
@@ -742,6 +745,19 @@ export function reducer(state: AppState, action: Action): AppState {
   }
 }
 
+const CONSOLE_PERSIST_ACTIONS = new Set<Action['type']>([
+  'SET_FOLDER', 'CLEAR_FOLDER', 'ADD_TERMINAL', 'ADD_TERMINAL_BACKGROUND',
+  'REMOVE_TERMINAL', 'CLOSE_TERMINAL', 'REORDER_TERMINAL', 'SET_TERMINAL_TOOL',
+  'START_CONSOLE', 'APPEND_CONSOLE_MESSAGE', 'SET_CONSOLE_RESUME_ID',
+  'SET_CONSOLE_APPLIED_MESSAGE', 'SET_CONSOLE_GRAPH_ID', 'RESTART_TERMINAL',
+]);
+
+export function reducer(state: AppState, action: Action): AppState {
+  const next = reduceAppState(state, action);
+  if (CONSOLE_PERSIST_ACTIONS.has(action.type)) persistConsoleSessions(next.terminals);
+  return next;
+}
+
 // ─── Initial State ────────────────────────────────────────────────────────────
 
 const VALID_THEMES: ThemeColor[] = ['dark', 'light'];
@@ -833,7 +849,11 @@ export function getInitialState(): AppState {
     }
   } catch {}
 
+  const restoredConsoleSessions = loadConsoleSessions();
   const defaultTerminalId = crypto.randomUUID();
+  const initialTerminals = restoredConsoleSessions.length > 0
+    ? restoredConsoleSessions
+    : [createDefaultConsoleSession(folderPath, defaultTerminalId)];
 
   let leftPanelHidden = false;
   let rightPanelHidden = false;
@@ -869,8 +889,8 @@ export function getInitialState(): AppState {
     termColorScheme,
     termFont,
     defaultShell,
-    terminals: [createDefaultConsoleSession(folderPath, defaultTerminalId)],
-    activeTerminalId: defaultTerminalId,
+    terminals: initialTerminals,
+    activeTerminalId: initialTerminals[0].id,
     gambitOpen: false,
     settingsOpen: false,
     gambitEnterToSend,
