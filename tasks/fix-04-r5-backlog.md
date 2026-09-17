@@ -169,5 +169,10 @@
 
 ## TASK-29 合并后窗口实测（09-17，编排者，main `57f7bf9`）
 
-92. **【高】续写同一对话图时，盲审拿到的 `REQUEST.md` 是这张图的第一条需求，不是本次需求**：先问 beta.py、再问 alpha.py，第二次运行的验收原文：「REQUEST.md 写 beta.py 而 ANSWER.md 答 alpha.py，两者对象不一致」。来源应是 `originalRequestOf(sourceGraph)` 取整图第一条用户消息（`console-chat.ts` buildRequest 与 `console-channel.ts` 同样调用）。旧画布一张图一个需求所以没暴露；控制台续写同一张图后，**每次运行之后的盲审都在拿错需求判卷**。应取本次运行的用户消息（本次 stamp 的根 / 最近一次用户消息）。
+92. ~~**【高】续写同一对话图时，盲审拿到的 `REQUEST.md` 是这张图的第一条需求，不是本次需求**：先问 beta.py、再问 alpha.py，第二次运行的验收原文：「REQUEST.md 写 beta.py 而 ANSWER.md 答 alpha.py，两者对象不一致」。来源应是 `originalRequestOf(sourceGraph)` 取整图第一条用户消息（`console-chat.ts` buildRequest 与 `console-channel.ts` 同样调用）。旧画布一张图一个需求所以没暴露；控制台续写同一张图后，**每次运行之后的盲审都在拿错需求判卷**。应取本次运行的用户消息（本次 stamp 的根 / 最近一次用户消息）。~~ 已修（09-17，TASK-30：控制台与外部通道改取本次材料节点的需求，旧画布不变）
     同次实测确认 TASK-29 生效：第二次运行阶段号从 1 起，验收 NEEDS_FIX 后确实派出修正执行，收尾「修正 1 轮后验收再次要求修正，已到上限。共 7 路」；详情页页头为「经济模式 · 2026-09-17 10:36」，各阶段列宽一致；返回对话滚动位置恢复。表格最小宽 1120px 仍宽于中间栏，最后两列要在表内横向滚动。
+
+## Rust 测试偶发失败（09-17，编排者合并 TASK-30 后发现）
+
+93. **全量 `cargo test` 偶发一条失败，每次是不同的测试**：第一次 `dispatch::tests::run_one_dead_acp_falls_back_once_without_resume_and_rewrites_full_task`，第二次 `resources::tests::task17_pi_login_check_uses_safe_args_once_and_ignores_credentials`；两条单独跑各 3/1 次全过，第三次全量 473 全过。TASK-30 未改 Rust，不是本次回归。当时机器上开着 dev 窗口 + Vite + 其它工作树的构建，负载偏高（全量耗时 31–39 秒，平常 25 秒）。
+    怀疑方向（未核实）：测试之间共享进程级状态（环境变量 / PATH / 当前目录 / 临时文件名）或依赖墙钟的超时。前者在 `cargo test` 默认多线程下会互相踩。要做：分别以 `--test-threads=1` 和默认并发各连跑 10 次统计失败率，找到共享状态或放宽超时；修好前合并验证遇到这两条失败要单独重跑确认，不要直接放行。
