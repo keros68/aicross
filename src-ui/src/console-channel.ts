@@ -441,6 +441,7 @@ export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: C
     graph,
     settings,
     skip: new Set(Object.keys(graph.nodes).filter((id) => graph.nodes[id].target && !created.includes(id))),
+    fixRoundNodeIds: new Set(created),
     deps: {
       runId: event.run_id,
       buildRequest,

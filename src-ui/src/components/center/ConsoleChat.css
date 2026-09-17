@@ -305,8 +305,8 @@
 }
 
 .console-run-table {
-  width: max(100%, 1120px);
-  min-width: 1120px;
+  width: max(100%, 880px);
+  min-width: 880px;
   table-layout: fixed;
   border-collapse: collapse;
   font-size: 13px;
@@ -314,7 +314,7 @@
 
 .console-run-table th,
 .console-run-table td {
-  padding: 10px 12px;
+  padding: 9px 6px;
   border-bottom: 1px solid var(--border);
   text-align: left;
   vertical-align: top;

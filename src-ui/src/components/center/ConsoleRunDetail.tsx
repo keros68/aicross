@@ -6,6 +6,7 @@ import {
   liveConsoleRunDurationMs,
   reportedModelLabel,
   runDetailKeyAction,
+  runDetailTabPlan,
   runRowStatusLabel,
   tokenUnreported,
   type ConsoleRunRecord,
@@ -18,16 +19,24 @@ interface Props {
   onClose: () => void;
 }
 
-const RUN_TABLE_COLUMN_WIDTHS = [90, 90, 180, 150, 130, 80, 100, 100, 100, 100];
+export const RUN_TABLE_COLUMN_WIDTHS = [66, 62, 126, 118, 106, 58, 84, 84, 86, 90];
+
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)} 秒`;
 }
 
+export function compactRunNumber(value: number): string {
+  if (value < 10_000) return String(value);
+  if (value < 1_000_000) return `${Number((value / 1000).toFixed(1))}k`;
+  return `${Number((value / 1_000_000).toFixed(1))}m`;
+}
+
 function tokenValue(row: ConsoleRunRow, value: number): string {
   if (tokenUnreported(row)) return '未报告';
-  if (row.status === 'pending' || row.status === 'running') return value > 0 ? String(value) : '—';
-  return String(value);
+  if (row.status === 'pending' || row.status === 'running') return value > 0 ? compactRunNumber(value) : '—';
+  return compactRunNumber(value);
 }
 
 function RunRow({ row, now }: { row: ConsoleRunRow; now: number }) {
@@ -51,29 +60,39 @@ function RunRow({ row, now }: { row: ConsoleRunRow; now: number }) {
         {tool && <div className="console-run-tool">{tool}</div>}
       </td>
       <td>{acceptanceLabel(row.acceptance)}</td>
-      <td className="console-run-number">{tokenValue(row, row.tokensIn)}</td>
-      <td className="console-run-number">{tokenValue(row, row.tokensOut)}</td>
-      <td className="console-run-number">{tokenValue(row, row.cacheRead)}</td>
-      <td className="console-run-number">{seconds(liveConsoleRunDurationMs(row, now))}</td>
+      <td className="console-run-number" title={String(row.tokensIn)}>{tokenValue(row, row.tokensIn)}</td>
+      <td className="console-run-number" title={String(row.tokensOut)}>{tokenValue(row, row.tokensOut)}</td>
+      <td className="console-run-number" title={String(row.cacheRead)}>{tokenValue(row, row.cacheRead)}</td>
+      <td className="console-run-number">{row.status === 'pending' ? '—' : seconds(liveConsoleRunDurationMs(row, now))}</td>
     </tr>
   );
 }
 
 export function ConsoleRunDetail({ record, onClose }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const [now, setNow] = useState(() => Date.now());
   const running = record.status === 'running';
 
   useLayoutEffect(() => {
-    rootRef.current?.focus();
+    (closeRef.current ?? rootRef.current)?.focus();
   }, [record.id]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (runDetailKeyAction(event) !== 'close') return;
+      if (runDetailKeyAction(event) === 'close') {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab' || event.isComposing) return;
+      const focusable = [...(rootRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? [])];
+      const plan = runDetailTabPlan(focusable.indexOf(document.activeElement as HTMLElement), focusable.length, event.shiftKey);
       event.preventDefault();
       event.stopPropagation();
-      onClose();
+      if (plan.kind === 'root') rootRef.current?.focus();
+      else focusable[plan.index].focus();
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
@@ -104,16 +123,16 @@ export function ConsoleRunDetail({ record, onClose }: Props) {
             <span>{consoleRunHeaderLabel(record)}</span>
           </div>
         </div>
-        <button type="button" onClick={onClose}>返回对话</button>
+        <button ref={closeRef} type="button" onClick={onClose}>返回对话</button>
       </header>
 
       <div className="console-run-body">
         <section className="console-run-summary" aria-label="运行合计">
           <div><span>结论</span><strong>{record.conclusion || '进行中'}</strong></div>
           <div><span>路数</span><strong>{totals.routes}</strong></div>
-          <div><span>输入 token</span><strong>{totals.tokensIn}</strong></div>
-          <div><span>输出 token</span><strong>{totals.tokensOut}</strong></div>
-          <div><span>缓存命中</span><strong>{totals.cacheRead}</strong></div>
+          <div><span>输入 token</span><strong title={String(totals.tokensIn)}>{compactRunNumber(totals.tokensIn)}</strong></div>
+          <div><span>输出 token</span><strong title={String(totals.tokensOut)}>{compactRunNumber(totals.tokensOut)}</strong></div>
+          <div><span>缓存命中</span><strong title={String(totals.cacheRead)}>{compactRunNumber(totals.cacheRead)}</strong></div>
           <div><span>墙钟耗时</span><strong>{seconds(totals.wallDurationMs)}</strong></div>
           <div><span>各路耗时合计</span><strong>{seconds(totals.routeDurationMs)}</strong></div>
           {totals.unreported > 0 && (
@@ -148,9 +167,9 @@ export function ConsoleRunDetail({ record, onClose }: Props) {
                   <tfoot><tr>
                     <td colSpan={2}>阶段小计</td>
                     <td colSpan={4}>{subtotal.routes} 路{subtotal.unreported > 0 ? `；${subtotal.unreported} 路未报告，未计入` : ''}</td>
-                    <td className="console-run-number">{subtotal.tokensIn}</td>
-                    <td className="console-run-number">{subtotal.tokensOut}</td>
-                    <td className="console-run-number">{subtotal.cacheRead}</td>
+                    <td className="console-run-number" title={String(subtotal.tokensIn)}>{compactRunNumber(subtotal.tokensIn)}</td>
+                    <td className="console-run-number" title={String(subtotal.tokensOut)}>{compactRunNumber(subtotal.tokensOut)}</td>
+                    <td className="console-run-number" title={String(subtotal.cacheRead)}>{compactRunNumber(subtotal.cacheRead)}</td>
                     <td className="console-run-number">{seconds(subtotal.routeDurationMs)}</td>
                   </tr></tfoot>
                 </table>
