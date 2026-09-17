@@ -158,6 +158,8 @@ pub struct ChangedFile {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct DispatchArtifacts {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_node_id: String,
     #[serde(default)]
     pub diff: String,
     #[serde(default)]
@@ -4107,6 +4109,7 @@ fn run_one_attempt(
             Ok(mut value) => {
                 value.worktree = worktree_path.clone();
                 value.before_dir = before_dir.clone();
+                value.source_node_id.clone_from(&node.node_id);
                 let summary = safe_trace(&channel_output.text)
                     .chars()
                     .take(2000)
@@ -4463,6 +4466,71 @@ fn reset_acp_fallback(full_prompt: &str) -> (String, String) {
     (String::new(), full_prompt.to_string())
 }
 
+const REVIEW_ANSWER_FILE: &str = "ANSWER.md";
+const REVIEW_ANSWER_PROMPT_NOTE: &str = "执行者未改文件，其最终回复见 ANSWER.md";
+const REVIEW_ANSWER_TRUNCATED_NOTE: &str = "（回复较长，已截断至前 2000 字）";
+const WORKTREE_WARNING_PREFIX: &str = "worktree 不可用，已退回单写者：";
+
+fn answer_summary(stdout_summary: &str) -> (&str, bool) {
+    let answer = if stdout_summary.starts_with(WORKTREE_WARNING_PREFIX) {
+        stdout_summary
+            .split_once('\n')
+            .map(|(_, answer)| answer.strip_prefix('\r').unwrap_or(answer))
+            .unwrap_or_default()
+    } else {
+        stdout_summary
+    };
+    // run_one_attempt 先把回复截到 2000 字、再在前面拼 worktree 警告，
+    // 所以剥掉警告后的正文就是截断后的回复：正文满 2000 字才是被截过。
+    // 不能按含警告的整段长度判（09-17 编排者核对：那样 1970 字的完整回复会被误标截断）。
+    let truncated = answer.chars().count() >= 2000;
+    (answer, truncated)
+}
+
+fn readonly_answer_material(artifacts: &[DispatchArtifacts], redact: bool) -> Option<(String, usize)> {
+    if artifacts.is_empty()
+        || artifacts
+            .iter()
+            .any(|artifact| !artifact.diff.trim().is_empty() || !artifact.changed_files.is_empty())
+    {
+        return None;
+    }
+    let multiple = artifacts.len() > 1;
+    let summaries = artifacts
+        .iter()
+        .map(|artifact| answer_summary(&artifact.stdout_summary))
+        .collect::<Vec<_>>();
+    if summaries.iter().all(|(answer, _)| answer.trim().is_empty()) {
+        return None;
+    }
+    let mut truncated = false;
+    let mut sections = Vec::with_capacity(artifacts.len());
+    for (index, (artifact, (answer, answer_truncated))) in
+        artifacts.iter().zip(summaries).enumerate()
+    {
+        truncated |= answer_truncated;
+        sections.push(if multiple {
+            let source = artifact.source_node_id.trim();
+            let source = if source.is_empty() {
+                (index + 1).to_string()
+            } else {
+                source.to_string()
+            };
+            format!("## 上游节点 {source}\n\n{answer}")
+        } else {
+            answer.to_string()
+        });
+    }
+    let mut answer = sections.join("\n\n");
+    if truncated {
+        if !answer.is_empty() {
+            answer.push_str("\n\n");
+        }
+        answer.push_str(REVIEW_ANSWER_TRUNCATED_NOTE);
+    }
+    Some(redact_text(&answer, redact))
+}
+
 fn prepare_outbound(
     node: &DispatchNodeRequest,
     redact: bool,
@@ -4470,7 +4538,7 @@ fn prepare_outbound(
     blind: bool,
 ) -> Result<(String, Vec<String>, usize), String> {
     let (mut prompt, mut count) = redact_text(&node.prompt, redact);
-    let mut names = Vec::new();
+    let mut names: Vec<String> = Vec::new();
     if blind {
         if workdir.exists() {
             let mut entries =
@@ -4529,6 +4597,25 @@ fn prepare_outbound(
                 prompt.push_str("\n\n[diff.patch 全文]\n");
                 prompt.push_str(&diffs);
             }
+            if let Some((answer, hits)) = readonly_answer_material(&node.upstream_artifacts, redact) {
+                count += hits;
+                fs::write(workdir.join(REVIEW_ANSWER_FILE), &answer)
+                    .map_err(|error| format!("写入 ANSWER.md 失败：{error}"))?;
+                names.push(REVIEW_ANSWER_FILE.into());
+                prompt.push_str("\n\n");
+                prompt.push_str(REVIEW_ANSWER_PROMPT_NOTE);
+                if answer.len() < 30 * 1024 {
+                    prompt.push_str("\n\n[ANSWER.md 全文]\n");
+                    prompt.push_str(&answer);
+                }
+            }
+        }
+        let mut reserved = names
+            .iter()
+            .map(|name| name.trim_end_matches('/').to_string())
+            .collect::<HashSet<_>>();
+        if node.review_material_validation {
+            reserved.insert(REVIEW_VALIDATION_FILE.to_string());
         }
         let mut used = HashSet::new();
         let mut inline = Vec::new();
@@ -4543,6 +4630,9 @@ fn prepare_outbound(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| format!("附件文件名无效：{}", source.display()))?;
+            if reserved.contains(name) {
+                return Err(format!("附件文件名与盲审材料重名：{name}"));
+            }
             if !used.insert(name.to_string()) {
                 return Err(format!("附件文件名重复：{name}"));
             }
@@ -5934,6 +6024,7 @@ mod tests {
     #[test]
     fn r3_1_artifacts_serialize_with_snake_case_keys() {
         let value = serde_json::to_value(DispatchArtifacts {
+            source_node_id: String::new(),
             diff: "d".into(),
             changed_files: vec![ChangedFile { path: "a.txt".into(), content: "c".into() }],
             worktree: Some("wt".into()),
@@ -5947,6 +6038,12 @@ mod tests {
         let mut changed_keys = changed.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
         changed_keys.sort();
         assert_eq!(changed_keys, ["content", "path"]);
+        let identified = serde_json::to_value(DispatchArtifacts {
+            source_node_id: "execute-1".into(),
+            ..DispatchArtifacts::default()
+        })
+        .unwrap();
+        assert_eq!(identified["source_node_id"], "execute-1");
     }
 
     #[test]
@@ -7708,6 +7805,7 @@ mod tests {
         let mut request = node(Vec::new());
         request.original_request = "逐字原始需求".into();
         request.upstream_artifacts = vec![DispatchArtifacts {
+            source_node_id: String::new(),
             diff: "--- a/a.py\n+++ b/a.py\n".into(),
             changed_files: vec![ChangedFile {
                 path: "a.py".into(),
@@ -7737,6 +7835,261 @@ mod tests {
             "逐字原始需求"
         );
         assert!(root.join("changed/a.py").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task28_readonly_answer_reaches_blind_review_through_dispatch_stage_core() {
+        if channels::resolve_binary("python", None).is_err() {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-task28-stage-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(
+            &stub,
+            "import sys\nprint('beta.py 提供 shout 和 whisper 两个字符串工具函数。')\nprint('[usage] input=1 cache_read=0 output=1', file=sys.stderr)\n",
+        )
+        .unwrap();
+        let run_id = format!("task28-answer-{}", Uuid::new_v4());
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            write_project_dispatch: false,
+            ..DispatchSettings::default()
+        };
+
+        let mut execute = node(Vec::new());
+        execute.node_id = "answer-execute".into();
+        execute.agent = "cc-switch".into();
+        execute.provider = "stub".into();
+        execute.model = "stub".into();
+        execute.role = "执行".into();
+        execute.visibility = "共享".into();
+        execute.write = "单写者".into();
+        execute.original_request = "用一句话说明 beta.py 的用途，不要改任何文件".into();
+        let execute_result = dispatch_stage_core(
+            DispatchStageRequest {
+                run_id: run_id.clone(),
+                stage: 1,
+                project_dir: project.to_string_lossy().into_owned(),
+                nodes: vec![execute],
+                settings: settings.clone(),
+            },
+            None,
+        )
+        .unwrap();
+        let artifacts = execute_result.results[0]
+            .artifacts
+            .clone()
+            .expect("只读问题的执行节点应返回空改动产物");
+        assert_eq!(artifacts.source_node_id, "answer-execute");
+        assert!(artifacts.diff.trim().is_empty());
+        assert!(artifacts.changed_files.is_empty());
+
+        let mut review = node(Vec::new());
+        review.node_id = "answer-review".into();
+        review.agent = "cc-switch".into();
+        review.provider = "stub".into();
+        review.model = "stub".into();
+        review.role = "验收".into();
+        review.visibility = "盲".into();
+        review.write = "只读".into();
+        review.original_request = "用一句话说明 beta.py 的用途，不要改任何文件".into();
+        review.upstream_artifacts = vec![artifacts];
+        let review_result = dispatch_stage_core(
+            DispatchStageRequest {
+                run_id: run_id.clone(),
+                stage: 2,
+                project_dir: project.to_string_lossy().into_owned(),
+                nodes: vec![review],
+                settings,
+            },
+            None,
+        )
+        .unwrap();
+        let item = &review_result.results[0];
+        assert_eq!(item.status, "ok", "{}", item.error);
+        let workdir = Path::new(&item.workdir);
+        assert_eq!(
+            fs::read_to_string(workdir.join("ANSWER.md")).unwrap(),
+            "beta.py 提供 shout 和 whisper 两个字符串工具函数。"
+        );
+        let task_file = workdir.parent().unwrap().join("tasks/answer-review.txt");
+        let prompt = fs::read_to_string(task_file).unwrap();
+        assert!(prompt.contains("执行者未改文件，其最终回复见 ANSWER.md"), "{prompt}");
+        assert!(prompt.contains("[ANSWER.md 全文]\nbeta.py 提供 shout 和 whisper 两个字符串工具函数。"), "{prompt}");
+
+        let runtime_run = dispatch_data_root().unwrap().join("runs").join(&run_id);
+        let _ = fs::remove_dir_all(runtime_run);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task28_multiple_readonly_answers_have_upstream_sections() {
+        let root = std::env::temp_dir().join(format!("aicross-task28-multi-{}", Uuid::new_v4()));
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![
+            DispatchArtifacts {
+                source_node_id: "execute-a".into(),
+                stdout_summary: "第一份答案".into(),
+                ..DispatchArtifacts::default()
+            },
+            DispatchArtifacts {
+                source_node_id: "execute-b".into(),
+                stdout_summary: "第二份答案".into(),
+                ..DispatchArtifacts::default()
+            },
+        ];
+        let (_, names, _) = prepare_outbound(&request, true, &root, true).unwrap();
+        assert_eq!(names, ["REQUEST.md", "diff.patch", "changed/", "ANSWER.md"]);
+        assert_eq!(
+            fs::read_to_string(root.join("ANSWER.md")).unwrap(),
+            "## 上游节点 execute-a\n\n第一份答案\n\n## 上游节点 execute-b\n\n第二份答案"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task28_nonempty_diff_does_not_write_answer() {
+        let root = std::env::temp_dir().join(format!("aicross-task28-diff-{}", Uuid::new_v4()));
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            diff: "--- a/a.py\n+++ b/a.py\n".into(),
+            stdout_summary: "执行完成".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, names, _) = prepare_outbound(&request, true, &root, true).unwrap();
+        let mut entries = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(entries, ["REQUEST.md", "changed", "diff.patch"]);
+        assert_eq!(names, ["REQUEST.md", "diff.patch", "changed/"]);
+        assert!(!root.join("ANSWER.md").exists());
+        assert!(!prompt.contains("ANSWER.md"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task28_answer_strips_worktree_warning_prefix() {
+        let root = std::env::temp_dir().join(format!("aicross-task28-warning-{}", Uuid::new_v4()));
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "worktree 不可用，已退回单写者：not a git repository\n最终答案".into(),
+            ..DispatchArtifacts::default()
+        }];
+        prepare_outbound(&request, true, &root, true).unwrap();
+        assert_eq!(fs::read_to_string(root.join("ANSWER.md")).unwrap(), "最终答案");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task28_answer_uses_outbound_redaction() {
+        let root = std::env::temp_dir().join(format!("aicross-task28-redact-{}", Uuid::new_v4()));
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "api_key=sk-task28-secret".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (_, _, count) = prepare_outbound(&request, true, &root, true).unwrap();
+        let answer = fs::read_to_string(root.join("ANSWER.md")).unwrap();
+        assert!(answer.contains("[REDACTED]"), "{answer}");
+        assert!(!answer.contains("sk-task28-secret"), "{answer}");
+        assert!(count >= 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task28_answer_marks_existing_2000_character_truncation() {
+        let root = std::env::temp_dir().join(format!("aicross-task28-truncate-{}", Uuid::new_v4()));
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "长".repeat(2000),
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, _, _) = prepare_outbound(&request, true, &root, true).unwrap();
+        let answer = fs::read_to_string(root.join("ANSWER.md")).unwrap();
+        assert!(answer.ends_with("\n\n（回复较长，已截断至前 2000 字）"), "{answer}");
+        assert!(prompt.contains("[ANSWER.md 全文]"));
+        assert!(prompt.contains("（回复较长，已截断至前 2000 字）"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task28_r1_warning_prefix_does_not_change_truncation_fact() {
+        let root = std::env::temp_dir().join(format!("aicross-task28-r1-truncate-{}", Uuid::new_v4()));
+
+        // 警告 + 1970 字完整回复：整段超过 2000 字，但回复本身没被截，不能标截断。
+        let complete_summary = format!(
+            "{WORKTREE_WARNING_PREFIX}not a git repository\n{}",
+            "长".repeat(1970)
+        );
+        assert!(complete_summary.chars().count() >= 2000);
+        let mut complete = node(Vec::new());
+        complete.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: complete_summary,
+            ..DispatchArtifacts::default()
+        }];
+        prepare_outbound(&complete, true, &root.join("complete"), true).unwrap();
+        let complete_answer = fs::read_to_string(root.join("complete/ANSWER.md")).unwrap();
+        assert!(!complete_answer.contains(REVIEW_ANSWER_TRUNCATED_NOTE), "{complete_answer}");
+
+        let mut exact = node(Vec::new());
+        exact.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: format!("{WORKTREE_WARNING_PREFIX}fallback\n{}", "长".repeat(2000)),
+            ..DispatchArtifacts::default()
+        }];
+        prepare_outbound(&exact, true, &root.join("exact"), true).unwrap();
+        let exact_answer = fs::read_to_string(root.join("exact/ANSWER.md")).unwrap();
+        assert!(exact_answer.ends_with(REVIEW_ANSWER_TRUNCATED_NOTE), "{exact_answer}");
+
+        let mut short = node(Vec::new());
+        short.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: format!("{WORKTREE_WARNING_PREFIX}fallback\n{}", "短".repeat(1500)),
+            ..DispatchArtifacts::default()
+        }];
+        prepare_outbound(&short, true, &root.join("short"), true).unwrap();
+        let short_answer = fs::read_to_string(root.join("short/ANSWER.md")).unwrap();
+        assert!(!short_answer.contains(REVIEW_ANSWER_TRUNCATED_NOTE), "{short_answer}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task28_r1_all_empty_answers_do_not_create_answer_material() {
+        let root = std::env::temp_dir().join(format!("aicross-task28-r1-empty-{}", Uuid::new_v4()));
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![
+            DispatchArtifacts { stdout_summary: " \r\n\t".into(), ..DispatchArtifacts::default() },
+            DispatchArtifacts {
+                stdout_summary: format!("{WORKTREE_WARNING_PREFIX}not a git repository"),
+                ..DispatchArtifacts::default()
+            },
+        ];
+        let (prompt, names, _) = prepare_outbound(&request, true, &root, true).unwrap();
+        assert!(!root.join(REVIEW_ANSWER_FILE).exists());
+        assert!(!names.iter().any(|name| name == REVIEW_ANSWER_FILE), "{names:?}");
+        assert!(!prompt.contains(REVIEW_ANSWER_FILE), "{prompt}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task28_r1_answer_attachment_name_conflict_is_rejected() {
+        let root = std::env::temp_dir().join(format!("aicross-task28-r1-conflict-{}", Uuid::new_v4()));
+        let attachments = root.join("attachments");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&attachments).unwrap();
+        let attachment = attachments.join(REVIEW_ANSWER_FILE);
+        fs::write(&attachment, "附件内容").unwrap();
+        let mut request = node(vec![attachment.to_string_lossy().into_owned()]);
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "执行者答案".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let error = prepare_outbound(&request, true, &workdir, true).unwrap_err();
+        assert_eq!(error, "附件文件名与盲审材料重名：ANSWER.md");
         let _ = fs::remove_dir_all(root);
     }
 
