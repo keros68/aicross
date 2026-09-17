@@ -361,6 +361,10 @@ describe('graph dispatch helpers', () => {
     expect(added).toHaveLength(1);
     expect(added[0].leftover?.source_node_id).toBe('a4');
     expect(added[0].target).toBeUndefined();
+    // 旧画布不传范围，仍按整张图封顶；控制台传本次节点后可独立跑修正轮。
+    const scoped = reducePipelineStep(g, [result], {}, 3, new Set(['e4', 'a4']));
+    expect(scoped.continueRunning).toBe(true);
+    expect(Object.values(scoped.graph.nodes).filter((item) => !g.nodes[item.id] && item.target)).toHaveLength(2);
   });
 
   it('多个验证失败节点分别追加重试', () => {

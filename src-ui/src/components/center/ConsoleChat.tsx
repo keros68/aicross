@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAppState, type TerminalSession } from '../../store/app-state';
 import { commands, isTauri } from '../../tauri';
 import type { DispatchableModel } from '../../graph/types';
@@ -11,6 +11,11 @@ import {
   dispatchConsoleTurnWithFallback,
 } from '../../console-chat';
 import { selectConsoleGraph } from '../../console-channel';
+import {
+  consoleScrollRestoreTop,
+  consoleScrollSnapshot,
+  type ConsoleScrollSnapshot,
+} from '../../console-run-detail';
 import {
   CONSOLE_APPLY_EVENT,
   completeConsoleMention,
@@ -36,6 +41,8 @@ export function ConsoleChat({ session }: Props) {
   const busyRef = useRef(false);
   const appliedRef = useRef(session.lastAppliedMessageId);
   const endRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const scrollSnapshotRef = useRef<ConsoleScrollSnapshot | null>(null);
   const target = session.targetAgent;
   const messages = session.messages ?? [];
   const runRecords = session.runRecords ?? [];
@@ -63,6 +70,17 @@ export function ConsoleChat({ session }: Props) {
     endRef.current?.scrollIntoView({ block: 'end' });
   }, [messages.length, busy]);
 
+  useLayoutEffect(() => {
+    if (openRunId || !scrollSnapshotRef.current || !messageListRef.current) return;
+    const list = messageListRef.current;
+    list.scrollTop = consoleScrollRestoreTop(scrollSnapshotRef.current, {
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+      messageCount: messages.length,
+    });
+    scrollSnapshotRef.current = null;
+  }, [messages.length, openRunId]);
+
   useEffect(() => { appliedRef.current = session.lastAppliedMessageId; }, [session.lastAppliedMessageId]);
 
   useEffect(() => {
@@ -87,6 +105,18 @@ export function ConsoleChat({ session }: Props) {
   const showMentions = draft.startsWith('@') && !draft.includes('\n') && mentions.length > 0;
   const append = (message: ConsoleMessage) => {
     dispatch({ type: 'APPEND_CONSOLE_MESSAGE', id: session.id, message });
+  };
+  const openRunDetail = (runId: string) => {
+    const list = messageListRef.current;
+    if (list) {
+      scrollSnapshotRef.current = consoleScrollSnapshot({
+        scrollTop: list.scrollTop,
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight,
+        messageCount: messages.length,
+      });
+    }
+    setOpenRunId(runId);
   };
 
   const send = async () => {
@@ -178,7 +208,7 @@ export function ConsoleChat({ session }: Props) {
         <span>{target.provider ? `${target.provider}/${target.model}` : target.model}</span>
         <span>{session.folderPath || '未选目录'}</span>
       </div>
-      <div className="console-message-list" aria-live="polite">
+      <div ref={messageListRef} className="console-message-list" aria-live="polite">
         {messages.length === 0 && (
           <div className="console-message-empty">直接输入可单线聊；输入 @ 可临时改派。控制台聊天当前只读，要改文件请用模式派发。</div>
         )}
@@ -203,7 +233,7 @@ export function ConsoleChat({ session }: Props) {
               <button
                 type="button"
                 className="console-message-action"
-                onClick={() => setOpenRunId(message.runId ?? '')}
+                onClick={() => openRunDetail(message.runId ?? '')}
               >
                 {runsById.get(message.runId)?.status === 'running' ? '查看进度' : '查看详情'}
               </button>
@@ -214,7 +244,7 @@ export function ConsoleChat({ session }: Props) {
           <div className="console-message-running">
             <span>处理中…</span>
             {activeRun && (
-              <button type="button" className="console-running-action" onClick={() => setOpenRunId(activeRun.id)}>
+              <button type="button" className="console-running-action" onClick={() => openRunDetail(activeRun.id)}>
                 查看进度
               </button>
             )}
