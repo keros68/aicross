@@ -166,3 +166,8 @@
 89. 外部通道路径（`console-channel.ts` 约 439 行，建议条归类后的派发）调用 `startPipelineHeadless` 时没传 `fixRoundNodeIds`，若连续两次事件续写同一张图，会复现 86 的「一轮修正没跑就到顶」。是否真有跨事件续写同一图的场景未核实。（GLM 4）
 90. 关闭详情页与新消息落在同一渲染帧时，`scrollIntoView` 的 passive effect 会覆盖 layout effect 里的滚动恢复，一次性跳到底部。条件苛刻，用户可自行滚回。（GLM 2）
 91. 收尾 `announceResults` 传的是未换算阶段号的结果；逐路消息目前不显示阶段号所以无表现，将来加阶段号时要改用换算后的结果。（Gemini 1）
+
+## TASK-29 合并后窗口实测（09-17，编排者，main `57f7bf9`）
+
+92. **【高】续写同一对话图时，盲审拿到的 `REQUEST.md` 是这张图的第一条需求，不是本次需求**：先问 beta.py、再问 alpha.py，第二次运行的验收原文：「REQUEST.md 写 beta.py 而 ANSWER.md 答 alpha.py，两者对象不一致」。来源应是 `originalRequestOf(sourceGraph)` 取整图第一条用户消息（`console-chat.ts` buildRequest 与 `console-channel.ts` 同样调用）。旧画布一张图一个需求所以没暴露；控制台续写同一张图后，**每次运行之后的盲审都在拿错需求判卷**。应取本次运行的用户消息（本次 stamp 的根 / 最近一次用户消息）。
+    同次实测确认 TASK-29 生效：第二次运行阶段号从 1 起，验收 NEEDS_FIX 后确实派出修正执行，收尾「修正 1 轮后验收再次要求修正，已到上限。共 7 路」；详情页页头为「经济模式 · 2026-09-17 10:36」，各阶段列宽一致；返回对话滚动位置恢复。表格最小宽 1120px 仍宽于中间栏，最后两列要在表内横向滚动。
