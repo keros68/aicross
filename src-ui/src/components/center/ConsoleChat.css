@@ -182,7 +182,10 @@
   display: flex;
   height: 100%;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: column;
+  overflow: hidden;
   color: var(--text-1);
   background: var(--bg-app);
   outline: none;
@@ -228,7 +231,11 @@
 
 .console-run-body {
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-sizing: border-box;
   padding: 20px;
 }
 
@@ -272,6 +279,8 @@
 }
 
 .console-run-stage {
+  min-width: 0;
+  max-width: 100%;
   margin-top: 20px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -291,12 +300,14 @@
 }
 
 .console-run-table-wrap {
+  max-width: 100%;
   overflow-x: auto;
 }
 
 .console-run-table {
-  width: 100%;
+  width: max(100%, 1120px);
   min-width: 1120px;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -307,6 +318,7 @@
   border-bottom: 1px solid var(--border);
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .console-run-table th {

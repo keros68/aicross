@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   acceptanceLabel,
+  consoleRunHeaderLabel,
   consoleRunTotals,
   liveConsoleRunDurationMs,
   reportedModelLabel,
@@ -16,6 +17,8 @@ interface Props {
   record: ConsoleRunRecord;
   onClose: () => void;
 }
+
+const RUN_TABLE_COLUMN_WIDTHS = [90, 90, 180, 150, 130, 80, 100, 100, 100, 100];
 
 function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)} 秒`;
@@ -98,8 +101,7 @@ export function ConsoleRunDetail({ record, onClose }: Props) {
         <div>
           <h2>运行详情</h2>
           <div className="console-run-sub">
-            <span>{record.presetName}</span>
-            <span className="console-run-mono">{record.id}</span>
+            <span>{consoleRunHeaderLabel(record)}</span>
           </div>
         </div>
         <button type="button" onClick={onClose}>返回对话</button>
@@ -131,6 +133,11 @@ export function ConsoleRunDetail({ record, onClose }: Props) {
               </div>
               <div className="console-run-table-wrap">
                 <table className="console-run-table">
+                  <colgroup>
+                    {RUN_TABLE_COLUMN_WIDTHS.map((width, index) => (
+                      <col key={index} style={{ width }} />
+                    ))}
+                  </colgroup>
                   <thead><tr>
                     <th>角色</th><th>agent</th><th>请求模型</th><th>实际模型</th><th>状态</th>
                     <th>结论</th><th>输入 token</th><th>输出 token</th><th>缓存命中</th><th>耗时</th>

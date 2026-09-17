@@ -732,7 +732,11 @@ function closeWaitingAcceptance(graph: Graph, executionId: string, reason: strin
   };
 }
 
-export function acceptanceRound(graph: Graph, nodeId: string): number {
+export function acceptanceRound(
+  graph: Graph,
+  nodeId: string,
+  scopeNodeIds?: ReadonlySet<string>,
+): number {
   let count = 0;
   const pending = [nodeId];
   const seen = new Set<string>();
@@ -742,7 +746,7 @@ export function acceptanceRound(graph: Graph, nodeId: string): number {
     seen.add(id);
     const node = graph.nodes[id];
     if (!node) continue;
-    if (node.target?.role === '验收') count += 1;
+    if (node.target?.role === '验收' && (!scopeNodeIds || scopeNodeIds.has(id))) count += 1;
     pending.push(...node.parents);
   }
   return count;
@@ -815,6 +819,7 @@ export function reducePipelineStep(
   results: BackendNodeResult[],
   validationRetries: Record<string, number>,
   fixRoundLimit: number = DEFAULT_FIX_ROUND_LIMIT,
+  fixRoundNodeIds?: ReadonlySet<string>,
 ): PipelineStep {
   const limit = Math.max(0, Math.floor(fixRoundLimit));
   const acceptanceResults = results.filter(
@@ -826,7 +831,7 @@ export function reducePipelineStep(
   for (const result of acceptanceResults) {
     if (result.status !== 'ok' || parseAcceptance(result.text) !== 'NEEDS_FIX') continue;
     // 验收提出修正时优先生成下一轮；同批盲验证的 error / timeout 只保留在该路结果上。
-    if (acceptanceRound(acceptanceGraph, result.nodeId) > limit) {
+    if (acceptanceRound(acceptanceGraph, result.nodeId, fixRoundNodeIds) > limit) {
       const appended = appendLeftover(acceptanceGraph, result.nodeId);
       acceptanceGraph = appended.graph;
       if (appended.leftoverId) leftoverIds.push(appended.leftoverId);
@@ -1432,6 +1437,7 @@ export async function runStageLoop<R extends BackendNodeResult, Req extends Stag
   settings: { maxRequests: number; fixRoundLimit?: number },
   skip: ReadonlySet<string>,
   deps: StageLoopDeps<R, Req, P>,
+  fixRoundNodeIds?: Set<string>,
 ): Promise<StageLoopOutcome> {
   let validationRetries: Record<string, number> = {};
   let processedBatches: Set<string> = new Set();
@@ -1465,8 +1471,20 @@ export async function runStageLoop<R extends BackendNodeResult, Req extends Stag
     state.collected.push(...output.results);
     deps.onResults([...state.collected]);
     state.graph = deps.commit(applyDispatchResults(state.graph, output.results));
-    const step = reducePipelineStep(state.graph, output.results, validationRetries, settings.fixRoundLimit ?? DEFAULT_FIX_ROUND_LIMIT);
+    const beforeStepNodeIds = fixRoundNodeIds ? new Set(Object.keys(state.graph.nodes)) : undefined;
+    const step = reducePipelineStep(
+      state.graph,
+      output.results,
+      validationRetries,
+      settings.fixRoundLimit ?? DEFAULT_FIX_ROUND_LIMIT,
+      fixRoundNodeIds,
+    );
     validationRetries = step.validationRetries;
+    if (fixRoundNodeIds && beforeStepNodeIds) {
+      for (const id of Object.keys(step.graph.nodes)) {
+        if (!beforeStepNodeIds.has(id)) fixRoundNodeIds.add(id);
+      }
+    }
     if (step.leftoverIds.length > 0) {
       state.leftoverIds = [...new Set([...(state.leftoverIds ?? []), ...step.leftoverIds])];
     }
@@ -1479,6 +1497,7 @@ export interface HeadlessPipelineOptions<R extends BackendNodeResult, Req extend
   graph: Graph;
   settings: { maxRequests: number; fixRoundLimit?: number };
   skip?: ReadonlySet<string>;
+  fixRoundNodeIds?: ReadonlySet<string>;
   deps: StageLoopDeps<R, Req, P>;
   begin?: (runId: string) => void;
   end?: () => void;
@@ -1500,9 +1519,16 @@ export async function startPipelineHeadless<R extends BackendNodeResult, Req ext
   options: HeadlessPipelineOptions<R, Req, P>,
 ): Promise<HeadlessPipelineResult<R>> {
   const state: StageLoopState<R> = { graph: options.graph, collected: [], activeNodes: [] };
+  const fixRoundNodeIds = options.fixRoundNodeIds ? new Set(options.fixRoundNodeIds) : undefined;
   options.begin?.(options.deps.runId);
   try {
-    const outcome = await runStageLoop(state, options.settings, options.skip ?? new Set<string>(), options.deps);
+    const outcome = await runStageLoop(
+      state,
+      options.settings,
+      options.skip ?? new Set<string>(),
+      options.deps,
+      fixRoundNodeIds,
+    );
     return { graph: state.graph, results: state.collected, activeNodes: state.activeNodes, leftoverIds: state.leftoverIds ?? [], outcome, error: outcome.kind === 'stopped' || outcome.kind === 'missing-target' ? outcome.error : '' };
   } catch (error) {
     const message = String(error);

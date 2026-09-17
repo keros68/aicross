@@ -296,6 +296,12 @@ export async function dispatchConsolePreset(
     ])),
   };
   const created = dispatchableNodeIds(graph).filter((id) => newNodeIds.includes(id));
+  const firstRunStage = Math.min(
+    ...newNodeIds
+      .filter((id) => graph.nodes[id]?.target)
+      .map((id) => graphStage(graph, id)),
+  );
+  const displayStage = (stage: number) => Math.max(1, stage - (Number.isFinite(firstRunStage) ? firstRunStage : 1) + 1);
   const missing = created.find((id) => {
     const target = graph.nodes[id]?.target;
     return !target?.agent.trim() || !target.model.trim();
@@ -379,8 +385,13 @@ export async function dispatchConsolePreset(
     });
     const announcedStages = new Set<number>();
     const announcedResults = new Map<string, string>();
+    const displayStageByNodeId = new Map<string, number>();
+    const displayResults = (results: DispatchNodeResult[]) => results.map((result) => ({
+      ...result,
+      stage: displayStageByNodeId.get(result.nodeId) ?? displayStage(result.stage),
+    }));
     const announceResults = (collected: DispatchNodeResult[]) => {
-      if (feedback?.onRunUpdate) updateRun(withConsoleRunResults(runRecord, graph, collected, now()));
+      if (feedback?.onRunUpdate) updateRun(withConsoleRunResults(runRecord, graph, displayResults(collected), now()));
       if (!feedback) return;
       const latest = [...new Map(collected.map((result) => [result.nodeId, result])).values()];
       for (const result of latest) {
@@ -404,6 +415,7 @@ export async function dispatchConsolePreset(
       graph,
       settings,
       skip: new Set(Object.keys(graph.nodes).filter((id) => graph.nodes[id].target && !newNodeIds.includes(id))),
+      fixRoundNodeIds: new Set(newNodeIds),
       deps: {
         runId,
         buildRequest,
@@ -412,15 +424,17 @@ export async function dispatchConsolePreset(
         commit,
         onPreview: () => {},
         onStage: (request, ids) => {
-          if (feedback?.onRunUpdate) updateRun(withConsoleRunStage(runRecord, request, now()));
-          if (!feedback || announcedStages.has(request.stage)) return;
-          announcedStages.add(request.stage);
+          const stage = displayStage(request.stage);
+          for (const id of ids) displayStageByNodeId.set(id, stage);
+          if (feedback?.onRunUpdate) updateRun(withConsoleRunStage(runRecord, { ...request, stage }, now()));
+          if (!feedback || announcedStages.has(stage)) return;
+          announcedStages.add(stage);
           const routes = request.nodes
             .filter((node) => ids.includes(node.nodeId))
             .map((node) => `${node.role || '未指定角色'}（${node.agent} / ${node.model}）`);
           appendFeedback(consoleMessage(
             'system',
-            `第 ${request.stage} 阶段 · 派出 ${ids.length} 路：${routes.join('、')}`,
+            `第 ${stage} 阶段 · 派出 ${ids.length} 路：${routes.join('、')}`,
             { runId },
           ));
         },
@@ -453,7 +467,7 @@ export async function dispatchConsolePreset(
     if ('error' in feedbackFailure) throw feedbackFailure.error;
     void io.saveGraph(graph).catch((error) => console.warn('[console] 保存对话图失败', error));
     const uniqueResults = [...new Map(pipeline.results.map((result) => [result.nodeId, result])).values()];
-    runRecord = finishConsoleRun(runRecord, graph, uniqueResults, pipeline.error, now());
+    runRecord = finishConsoleRun(runRecord, graph, displayResults(uniqueResults), pipeline.error, now());
     feedback?.onRunUpdate?.(runRecord);
     if (feedback) {
       announceResults(uniqueResults);

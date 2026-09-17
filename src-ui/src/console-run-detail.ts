@@ -52,6 +52,17 @@ export interface ConsoleRunTotals {
   unreported: number;
 }
 
+export interface ConsoleScrollMetrics {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  messageCount: number;
+}
+
+export interface ConsoleScrollSnapshot extends ConsoleScrollMetrics {
+  atBottom: boolean;
+}
+
 function finite(value: unknown, fallback = 0): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : fallback;
 }
@@ -116,6 +127,35 @@ export function runDetailKeyAction(
   event: { key: string; isComposing?: boolean },
 ): 'close' | null {
   return event.key === 'Escape' && !event.isComposing ? 'close' : null;
+}
+
+export function consoleRunHeaderLabel(
+  record: Pick<ConsoleRunRecord, 'presetName' | 'startedAt'>,
+): string {
+  const date = new Date(record.startedAt);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const minute = [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join('-');
+  return `${record.presetName} · ${minute} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+export function consoleScrollSnapshot(metrics: ConsoleScrollMetrics): ConsoleScrollSnapshot {
+  return {
+    ...metrics,
+    atBottom: metrics.scrollHeight - metrics.clientHeight - metrics.scrollTop <= 2,
+  };
+}
+
+export function consoleScrollRestoreTop(
+  snapshot: ConsoleScrollSnapshot,
+  current: Pick<ConsoleScrollMetrics, 'scrollHeight' | 'clientHeight' | 'messageCount'>,
+): number {
+  const maximum = Math.max(0, current.scrollHeight - current.clientHeight);
+  if (snapshot.atBottom && current.messageCount > snapshot.messageCount) return maximum;
+  return Math.min(Math.max(0, snapshot.scrollTop), maximum);
 }
 
 export function withConsoleRunStage(
@@ -293,6 +333,7 @@ export function consoleRunTotals(record: ConsoleRunRecord, now: number): Console
 
 export function reportedModelLabel(row: ConsoleRunRow): string {
   if (row.modelReported) return row.modelReported;
+  if (row.status === 'pending' || row.status === 'running') return '—';
   const actualAgent = row.fallbackTo.split('/')[0] || row.agent;
   return actualAgent === 'kimi' ? 'kimi 不报真身' : '未报告';
 }
