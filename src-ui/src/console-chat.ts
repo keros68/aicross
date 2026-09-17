@@ -16,7 +16,7 @@ import {
   startPipelineHeadless,
 } from './graph/dispatch';
 import {
-  originalRequestOf,
+  runRequestOf,
   serializeContext,
   serializeCurrentMessage,
   upstreamArtifactsOf,
@@ -286,6 +286,7 @@ export async function dispatchConsolePreset(
   const base = existingGraph ?? newGraph(project);
   const graphSource = existingGraph ? existingGraph.source : ('console' as const);
   const material = appendConsoleMaterial({ ...base, project, source: graphSource }, text, []);
+  const runRequest = runRequestOf(material.graph, material.nodeId);
   let graph = stamp(material.graph, material.nodeId, effective, settings.swarmLimit);
   const newNodeIds = Object.keys(graph.nodes).filter((id) => !material.graph.nodes[id]);
   graph = {
@@ -374,7 +375,7 @@ export async function dispatchConsolePreset(
           prompt: selected.prompt,
           materials: selected.materials,
           currentMessage: serializeCurrentMessage(node.user),
-          originalRequest: originalRequestOf(sourceGraph),
+          originalRequest: runRequest,
           upstreamArtifacts: upstreamArtifactsOf(sourceGraph, id),
           sessionId: continuationSession(sourceGraph, id) ?? '',
           previousRunner: continuationRunner(sourceGraph, id) ?? '',
