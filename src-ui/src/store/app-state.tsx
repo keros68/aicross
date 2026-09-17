@@ -5,6 +5,8 @@ import type { ReactNode } from 'react';
 import type { Graph } from '../graph/types';
 import type { CommanderSettings } from '../commander/types';
 import type { ConsoleMessage, ConsoleTargetAgent } from '../console-session';
+import type { ConsoleRunRecord } from '../console-run-detail';
+import { CONSOLE_RUN_LIMIT } from '../console-run-detail';
 import { CONSOLE_MESSAGE_LIMIT, loadConsoleSessions, persistConsoleSessions } from '../console-persistence';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -172,6 +174,8 @@ export interface TerminalSession {
   lastAppliedMessageId?: string;
   /** 当前控制台最近续写的对话图。 */
   consoleGraphId?: string;
+  /** 当前控制台最近 20 份模式运行记录。 */
+  runRecords?: ConsoleRunRecord[];
   isHidden?: boolean;
   agentStatus?: AgentStatus;
   gambitDraft?: string;    // Unsent textarea content, preserved across tab switches
@@ -191,7 +195,7 @@ export function createDefaultConsoleSession(
   folderPath: string | null = null,
   id = crypto.randomUUID(),
 ): TerminalSession {
-  return { id, tool: 'console', folderPath, resumeId: {}, messages: [] };
+  return { id, tool: 'console', folderPath, resumeId: {}, messages: [], runRecords: [] };
 }
 
 export function isEmptyGraphSession(session: TerminalSession | null | undefined): boolean {
@@ -371,6 +375,8 @@ type Action =
   | { type: 'SET_CONSOLE_RESUME_ID'; id: string; key: string; resumeId: string }
   | { type: 'SET_CONSOLE_APPLIED_MESSAGE'; id: string; messageId: string }
   | { type: 'SET_CONSOLE_GRAPH_ID'; id: string; graphId: string }
+  | { type: 'UPSERT_CONSOLE_RUN'; id: string; run: ConsoleRunRecord }
+  | { type: 'UPDATE_CONSOLE_RUN_PROGRESS'; id: string; run: ConsoleRunRecord }
   | { type: 'CONSUME_COMMANDER_SETTINGS'; id: string }
   | { type: 'SET_TERMINAL_HIDDEN'; id: string; isHidden: boolean }
   | { type: 'RESTART_TERMINAL'; id: string; newId: string }
@@ -528,6 +534,7 @@ function reduceAppState(state: AppState, action: Action): AppState {
           messages: [],
           lastAppliedMessageId: undefined,
           consoleGraphId: undefined,
+          runRecords: [],
           toolData: undefined,
           toolTitle: undefined,
           commanderTitle: undefined,
@@ -569,6 +576,20 @@ function reduceAppState(state: AppState, action: Action): AppState {
           ...t,
           consoleGraphId: action.graphId,
         } : t),
+      };
+    case 'UPSERT_CONSOLE_RUN':
+    case 'UPDATE_CONSOLE_RUN_PROGRESS':
+      return {
+        ...state,
+        terminals: state.terminals.map(t => {
+          if (t.id !== action.id) return t;
+          const current = t.runRecords ?? [];
+          const index = current.findIndex((run) => run.id === action.run.id);
+          const runRecords = index < 0
+            ? [...current, action.run]
+            : current.map((run, runIndex) => runIndex === index ? action.run : run);
+          return { ...t, runRecords: runRecords.slice(-CONSOLE_RUN_LIMIT) };
+        }),
       };
     case 'CONSUME_COMMANDER_SETTINGS':
       return {
@@ -750,6 +771,7 @@ const CONSOLE_PERSIST_ACTIONS = new Set<Action['type']>([
   'REMOVE_TERMINAL', 'CLOSE_TERMINAL', 'REORDER_TERMINAL', 'SET_TERMINAL_TOOL',
   'START_CONSOLE', 'APPEND_CONSOLE_MESSAGE', 'SET_CONSOLE_RESUME_ID',
   'SET_CONSOLE_APPLIED_MESSAGE', 'SET_CONSOLE_GRAPH_ID', 'RESTART_TERMINAL',
+  'UPSERT_CONSOLE_RUN',
 ]);
 
 export function reducer(state: AppState, action: Action): AppState {
