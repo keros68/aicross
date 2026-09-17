@@ -174,5 +174,5 @@
 
 ## Rust 测试偶发失败（09-17，编排者合并 TASK-30 后发现）
 
-93. **全量 `cargo test` 偶发一条失败，每次是不同的测试**：第一次 `dispatch::tests::run_one_dead_acp_falls_back_once_without_resume_and_rewrites_full_task`，第二次 `resources::tests::task17_pi_login_check_uses_safe_args_once_and_ignores_credentials`；两条单独跑各 3/1 次全过，第三次全量 473 全过。TASK-30 未改 Rust，不是本次回归。当时机器上开着 dev 窗口 + Vite + 其它工作树的构建，负载偏高（全量耗时 31–39 秒，平常 25 秒）。
+93. ~~**全量 `cargo test` 偶发一条失败，每次是不同的测试**：第一次 `dispatch::tests::run_one_dead_acp_falls_back_once_without_resume_and_rewrites_full_task`，第二次 `resources::tests::task17_pi_login_check_uses_safe_args_once_and_ignores_credentials`；两条单独跑各 3/1 次全过，第三次全量 473 全过。TASK-30 未改 Rust，不是本次回归。当时机器上开着 dev 窗口 + Vite + 其它工作树的构建，负载偏高（全量耗时 31–39 秒，平常 25 秒）。~~ 已修（09-17，TASK-31：pi 测试是四个 cmd 并发追加同一日志文件丢行，改按 provider 分文件，单独连跑 60 次 0 失败；ACP 测试改为等待进程真实退出，本机未复现过其失败）
     怀疑方向（未核实）：测试之间共享进程级状态（环境变量 / PATH / 当前目录 / 临时文件名）或依赖墙钟的超时。前者在 `cargo test` 默认多线程下会互相踩。要做：分别以 `--test-threads=1` 和默认并发各连跑 10 次统计失败率，找到共享状态或放宽超时；修好前合并验证遇到这两条失败要单独重跑确认，不要直接放行。
