@@ -500,6 +500,8 @@ thread_local! {
     static SWARM_TEST_DIRTY_BEFORE_ITEM: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static SWARM_TEST_UNMERGED_QUERY: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
     static SWARM_TEST_LAST_PATCH_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static PROJECT_COPY_TEST_TRUNCATE_NEXT_GIT_LIST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PROJECT_COPY_TEST_FAIL_READ: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 fn process_succeeded(result: &crate::process::ProcessResult) -> bool {
@@ -3844,7 +3846,15 @@ fn run_one_attempt(
     // 首次验证没过就不铺材料：REQUEST.md / diff.patch / changed 白铺一份，
     // 节点还是 error。
     let prepared = if verified {
-        prepare_outbound(&node, settings.redact, &workdir, blind)
+        prepare_outbound(
+            &node,
+            settings.redact,
+            &workdir,
+            blind,
+            project,
+            &cancel_key,
+            timeout,
+        )
             .map(|(prompt, names, count)| OutboundPreparation::Materialized(prompt, names, count))
     } else {
         Ok(OutboundPreparation::Unsent)
@@ -4469,6 +4479,11 @@ fn reset_acp_fallback(full_prompt: &str) -> (String, String) {
 const REVIEW_ANSWER_FILE: &str = "ANSWER.md";
 const REVIEW_ANSWER_PROMPT_NOTE: &str = "执行者未改文件，其最终回复见 ANSWER.md";
 const REVIEW_ANSWER_TRUNCATED_NOTE: &str = "（回复较长，已截断至前 2000 字）";
+const REVIEW_PROJECT_DIR: &str = "project";
+const REVIEW_PROJECT_PROMPT_NOTE: &str = "项目只读副本见 project/，用于核对回答，不要修改";
+const REVIEW_PROJECT_FILE_LIMIT: u64 = 1024 * 1024;
+const REVIEW_PROJECT_TOTAL_LIMIT: u64 = 50 * 1024 * 1024;
+const REVIEW_PROJECT_COUNT_LIMIT: usize = 5000;
 const WORKTREE_WARNING_PREFIX: &str = "worktree 不可用，已退回单写者：";
 
 fn answer_summary(stdout_summary: &str) -> (&str, bool) {
@@ -4531,11 +4546,315 @@ fn readonly_answer_material(artifacts: &[DispatchArtifacts], redact: bool) -> Op
     Some(redact_text(&answer, redact))
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ProjectCopySummary {
+    redacted: usize,
+    incomplete: Vec<String>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ProjectPathList {
+    paths: Vec<String>,
+    incomplete: Vec<String>,
+}
+
+fn excluded_project_copy_path(path: &str) -> bool {
+    path.replace('\\', "/")
+        .split('/')
+        .any(|part| matches!(part, ".dispatch" | ".git" | ".aicross-runtime"))
+}
+
+fn secret_project_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    name == ".env"
+        || name.starts_with(".env.")
+        || name.ends_with(".pem")
+        || name.ends_with(".key")
+        || name.ends_with(".p12")
+        || name.ends_with(".pfx")
+        || name.ends_with(".jks")
+        || name.starts_with("id_rsa")
+        || name.starts_with("id_dsa")
+        || name.starts_with("id_ecdsa")
+        || name.starts_with("id_ed25519")
+}
+
+fn readonly_project_source(
+    project: &Path,
+    artifacts: &[DispatchArtifacts],
+    cancel_key: &str,
+) -> Result<PathBuf, String> {
+    let requested = artifacts
+        .iter()
+        .filter_map(|artifact| artifact.worktree.as_deref())
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    if requested.is_empty() {
+        return Ok(project.to_path_buf());
+    }
+    if requested.len() != artifacts.len() {
+        return Err("只读回答来自项目目录与 worktree，无法确定项目副本来源".into());
+    }
+    let mut requested = requested
+        .into_iter()
+        .map(|source| {
+            fs::canonicalize(&source)
+                .map_err(|error| format!("执行节点 worktree 不可用 {}：{error}", source.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    requested.sort();
+    requested.dedup();
+    if requested.len() != 1 {
+        return Err("只读回答来自多个 worktree，无法确定项目副本来源".into());
+    }
+    let source = requested.pop().unwrap();
+    let registered = registered_worktrees(project, cancel_key)
+        .map_err(|error| format!("核对执行节点 worktree 失败：{error}"))?;
+    if !registered.contains(&source) {
+        return Err(format!("执行节点 worktree 未登记：{}", source.display()));
+    }
+    Ok(source)
+}
+
+fn readonly_project_paths(
+    source: &Path,
+    cancel_key: &str,
+    timeout: Duration,
+) -> Result<ProjectPathList, String> {
+    let probe = git_result_with_timeout(
+        &["rev-parse", "--is-inside-work-tree"],
+        source,
+        Some(cancel_key),
+        timeout,
+    )
+    .map_err(|error| format!("检查项目版本库失败：{error}"))?;
+    if is_cancelled(cancel_key) {
+        return Err("复制项目只读副本已取消".into());
+    }
+    if probe.timed_out {
+        return Err("检查项目版本库失败：命令超时".into());
+    }
+    if probe.truncated {
+        return Err("检查项目版本库失败：输出被截断".into());
+    }
+    if !process_succeeded(&probe) && source.join(".git").exists() {
+        return Err(process_note(&probe, "检查项目版本库失败"));
+    }
+    let is_git = process_succeeded(&probe) && probe.stdout.trim() == "true";
+    if !is_git {
+        return existing_project_files(source).map(|paths| ProjectPathList { paths, incomplete: Vec::new() });
+    }
+    let listed = git_result_with_timeout(&["ls-files", "-z"], source, Some(cancel_key), timeout)
+        .map_err(|error| format!("读取版本库文件清单失败：{error}"))?;
+    if !process_succeeded(&listed) {
+        return Err(process_note(&listed, "读取版本库文件清单失败"));
+    }
+    #[cfg(test)]
+    let mut listed = listed;
+    #[cfg(test)]
+    if PROJECT_COPY_TEST_TRUNCATE_NEXT_GIT_LIST.with(|flag| flag.replace(false)) {
+        listed.truncated = true;
+        listed.stdout.push_str("partial-path-without-nul");
+    }
+    let complete = if listed.truncated {
+        listed
+            .stdout
+            .rfind('\0')
+            .map(|index| &listed.stdout[..=index])
+            .unwrap_or_default()
+    } else {
+        &listed.stdout
+    };
+    let mut paths = complete
+        .split_terminator('\0')
+        .filter(|path| !path.is_empty())
+        .map(|path| path.replace('\\', "/"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    let incomplete = listed
+        .truncated
+        .then(|| format!("版本库文件清单过长，只取了前 {} 个", paths.len()))
+        .into_iter()
+        .collect();
+    Ok(ProjectPathList { paths, incomplete })
+}
+
+fn copy_readonly_project_with_limits(
+    source: &Path,
+    destination: &Path,
+    redact: bool,
+    cancel_key: &str,
+    timeout: Duration,
+    file_limit: u64,
+    total_limit: u64,
+    count_limit: usize,
+) -> Result<ProjectCopySummary, String> {
+    fs::create_dir_all(destination)
+        .map_err(|error| format!("创建项目只读副本失败：{error}"))?;
+    let mut summary = ProjectCopySummary::default();
+    let source_root = fs::canonicalize(source)
+        .map_err(|error| format!("读取项目副本来源失败 {}：{error}", source.display()))?;
+    let mut total = 0_u64;
+    let mut copied = 0_usize;
+    let mut oversized = 0_usize;
+    let mut unsupported = 0_usize;
+    let listed = readonly_project_paths(source, cancel_key, timeout)?;
+    summary.incomplete.extend(listed.incomplete);
+    for path in listed.paths {
+        if is_cancelled(cancel_key) {
+            return Err("复制项目只读副本已取消".into());
+        }
+        if excluded_project_copy_path(&path) {
+            continue;
+        }
+        let relative = safe_relative_path(&path)
+            .ok_or_else(|| format!("项目副本路径不是安全相对路径：{path}"))?;
+        if secret_project_file(relative) {
+            continue;
+        }
+        if copied >= count_limit {
+            summary.incomplete.push(format!("文件数超过 {count_limit} 个，已停止复制"));
+            break;
+        }
+        let source_file = source.join(relative);
+        let canonical_source = match fs::canonicalize(&source_file) {
+            Ok(path) => path,
+            Err(_) => {
+                unsupported += 1;
+                continue;
+            }
+        };
+        let canonical_relative = match canonical_source.strip_prefix(&source_root) {
+            Ok(relative) => relative,
+            Err(_) => {
+                unsupported += 1;
+                continue;
+            }
+        };
+        let canonical_relative_text = canonical_relative.to_string_lossy().replace('\\', "/");
+        if excluded_project_copy_path(&canonical_relative_text) || secret_project_file(canonical_relative) {
+            continue;
+        }
+        let metadata = match fs::symlink_metadata(&source_file) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                unsupported += 1;
+                continue;
+            }
+        };
+        if is_link_or_junction(&metadata) || !metadata.is_file() {
+            unsupported += 1;
+            continue;
+        }
+        if metadata.len() > file_limit {
+            oversized += 1;
+            continue;
+        }
+        if total.saturating_add(metadata.len()) > total_limit {
+            summary.incomplete.push(format!("总量超过 {} MB，已停止复制", total_limit / (1024 * 1024)));
+            break;
+        }
+        #[cfg(test)]
+        let fail_read = PROJECT_COPY_TEST_FAIL_READ.with(|value| {
+            let mut value = value.borrow_mut();
+            if value.as_deref().is_some_and(|failed| failed == path) {
+                value.take();
+                true
+            } else {
+                false
+            }
+        });
+        #[cfg(not(test))]
+        let fail_read = false;
+        let bytes = if fail_read {
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "测试注入的读取失败"))
+        } else {
+            fs::read(&source_file)
+        };
+        let bytes = match bytes {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                unsupported += 1;
+                continue;
+            }
+        };
+        if bytes.len() as u64 > file_limit {
+            oversized += 1;
+            continue;
+        }
+        if total.saturating_add(bytes.len() as u64) > total_limit {
+            summary.incomplete.push(format!("总量超过 {} MB，已停止复制", total_limit / (1024 * 1024)));
+            break;
+        }
+        let copied_len = bytes.len() as u64;
+        let target = destination.join(relative);
+        if let Some(parent) = target.parent() {
+            if fs::create_dir_all(parent).is_err() {
+                unsupported += 1;
+                continue;
+            }
+        }
+        let (output, hits) = match String::from_utf8(bytes) {
+            Ok(text) => {
+                let (safe, hits) = redact_text(&text, redact);
+                (safe.into_bytes(), hits)
+            }
+            Err(error) => (error.into_bytes(), 0),
+        };
+        if fs::write(&target, output).is_err() {
+            unsupported += 1;
+            continue;
+        }
+        summary.redacted += hits;
+        copied += 1;
+        total += copied_len;
+    }
+    if oversized > 0 {
+        summary.incomplete.push(format!(
+            "已跳过 {oversized} 个超过 {} MB 的文件",
+            file_limit / (1024 * 1024)
+        ));
+    }
+    if unsupported > 0 {
+        summary.incomplete.push(format!("已跳过 {unsupported} 个不可读取或非普通文件"));
+    }
+    Ok(summary)
+}
+
+fn copy_readonly_project(
+    project: &Path,
+    artifacts: &[DispatchArtifacts],
+    destination: &Path,
+    redact: bool,
+    cancel_key: &str,
+    timeout: Duration,
+) -> Result<ProjectCopySummary, String> {
+    let source = readonly_project_source(project, artifacts, cancel_key)?;
+    copy_readonly_project_with_limits(
+        &source,
+        destination,
+        redact,
+        cancel_key,
+        timeout,
+        REVIEW_PROJECT_FILE_LIMIT,
+        REVIEW_PROJECT_TOTAL_LIMIT,
+        REVIEW_PROJECT_COUNT_LIMIT,
+    )
+}
+
 fn prepare_outbound(
     node: &DispatchNodeRequest,
     redact: bool,
     workdir: &Path,
     blind: bool,
+    project: &Path,
+    cancel_key: &str,
+    timeout: Duration,
 ) -> Result<(String, Vec<String>, usize), String> {
     let (mut prompt, mut count) = redact_text(&node.prompt, redact);
     let mut names: Vec<String> = Vec::new();
@@ -4602,8 +4921,24 @@ fn prepare_outbound(
                 fs::write(workdir.join(REVIEW_ANSWER_FILE), &answer)
                     .map_err(|error| format!("写入 ANSWER.md 失败：{error}"))?;
                 names.push(REVIEW_ANSWER_FILE.into());
+                let copied = copy_readonly_project(
+                    project,
+                    &node.upstream_artifacts,
+                    &workdir.join(REVIEW_PROJECT_DIR),
+                    redact,
+                    cancel_key,
+                    timeout,
+                )?;
+                count += copied.redacted;
+                names.push(format!("{REVIEW_PROJECT_DIR}/"));
                 prompt.push_str("\n\n");
                 prompt.push_str(REVIEW_ANSWER_PROMPT_NOTE);
+                prompt.push_str("\n");
+                prompt.push_str(REVIEW_PROJECT_PROMPT_NOTE);
+                if !copied.incomplete.is_empty() {
+                    prompt.push_str("\n副本不完整：");
+                    prompt.push_str(&copied.incomplete.join("；"));
+                }
                 if answer.len() < 30 * 1024 {
                     prompt.push_str("\n\n[ANSWER.md 全文]\n");
                     prompt.push_str(&answer);
@@ -6011,6 +6346,27 @@ mod tests {
         }
     }
 
+    fn prepare_outbound_test(
+        request: &DispatchNodeRequest,
+        redact: bool,
+        workdir: &Path,
+        blind: bool,
+    ) -> Result<(String, Vec<String>, usize), String> {
+        let project = std::env::temp_dir().join(format!("aicross-prepare-source-{}", Uuid::new_v4()));
+        fs::create_dir_all(&project).unwrap();
+        let result = prepare_outbound(
+            request,
+            redact,
+            workdir,
+            blind,
+            &project,
+            "prepare-test",
+            Duration::from_secs(5),
+        );
+        let _ = fs::remove_dir_all(project);
+        result
+    }
+
     fn stage_request(project_dir: String, nodes: Vec<DispatchNodeRequest>) -> DispatchStageRequest {
         DispatchStageRequest {
             run_id: "r3-test-run".into(),
@@ -6124,7 +6480,7 @@ mod tests {
             changed_files: vec![ChangedFile { path: "a.txt".into(), content: format!("api_key={secret}") }],
             ..DispatchArtifacts::default()
         }];
-        let (_, _, count) = prepare_outbound(&blind, true, &root, true).unwrap();
+        let (_, _, count) = prepare_outbound_test(&blind, true, &root, true).unwrap();
         assert!(count >= 1);
         assert!(!fs::read_to_string(root.join("diff.patch")).unwrap().contains(secret));
         assert!(!fs::read_to_string(root.join("changed/a.txt")).unwrap().contains(secret));
@@ -7017,7 +7373,7 @@ mod tests {
             .join("selected.csv")
             .to_string_lossy()
             .into_owned()]);
-        let (_, names, _) = prepare_outbound(&request, true, &run, true).unwrap();
+        let (_, names, _) = prepare_outbound_test(&request, true, &run, true).unwrap();
         assert_eq!(names, vec!["selected.csv"]);
         let copied: Vec<String> = fs::read_dir(&run)
             .unwrap()
@@ -7823,7 +8179,7 @@ mod tests {
             worktree: None,
             before_dir: String::new(),
         }];
-        let (prompt, _, _) = prepare_outbound(&request, true, &root, true).unwrap();
+        let (prompt, _, _) = prepare_outbound_test(&request, true, &root, true).unwrap();
         let mut entries = fs::read_dir(&root)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -7935,6 +8291,118 @@ mod tests {
     }
 
     #[test]
+    fn task32_readonly_project_copy_reaches_blind_review_through_dispatch_stage_core() {
+        if channels::resolve_binary("python", None).is_err() {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        }
+        if !require_git("task32_readonly_project_copy_reaches_blind_review_through_dispatch_stage_core") {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-task28-stage-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::create_dir_all(project.join(".dispatch")).unwrap();
+        fs::create_dir_all(project.join(".aicross-runtime")).unwrap();
+        fs::write(project.join("src/beta.py"), "def shout(value):\n    return value.upper()\n").unwrap();
+        fs::write(project.join("untracked.txt"), "不应复制\n").unwrap();
+        fs::write(project.join(".env"), "API_KEY=tracked-secret\n").unwrap();
+        fs::write(project.join(".dispatch/private.txt"), "不应复制\n").unwrap();
+        fs::write(project.join(".aicross-runtime/private.txt"), "不应复制\n").unwrap();
+        test_git(&project, &["init"]);
+        test_git(&project, &["config", "user.name", "aicross test"]);
+        test_git(&project, &["config", "user.email", "aicross@example.invalid"]);
+        test_git(&project, &["add", "src/beta.py", ".env", ".dispatch/private.txt", ".aicross-runtime/private.txt"]);
+        test_git(&project, &["commit", "-m", "fixture"]);
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(
+            &stub,
+            "import sys\nprint('beta.py 提供 shout 和 whisper 两个字符串工具函数。')\nprint('[usage] input=1 cache_read=0 output=1', file=sys.stderr)\n",
+        )
+        .unwrap();
+        let run_id = format!("task28-answer-{}", Uuid::new_v4());
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            write_project_dispatch: false,
+            ..DispatchSettings::default()
+        };
+
+        let mut execute = node(Vec::new());
+        execute.node_id = "answer-execute".into();
+        execute.agent = "cc-switch".into();
+        execute.provider = "stub".into();
+        execute.model = "stub".into();
+        execute.role = "执行".into();
+        execute.visibility = "共享".into();
+        execute.write = "单写者".into();
+        execute.original_request = "用一句话说明 beta.py 的用途，不要改任何文件".into();
+        let execute_result = dispatch_stage_core(
+            DispatchStageRequest {
+                run_id: run_id.clone(),
+                stage: 1,
+                project_dir: project.to_string_lossy().into_owned(),
+                nodes: vec![execute],
+                settings: settings.clone(),
+            },
+            None,
+        )
+        .unwrap();
+        let artifacts = execute_result.results[0]
+            .artifacts
+            .clone()
+            .expect("只读问题的执行节点应返回空改动产物");
+        assert_eq!(artifacts.source_node_id, "answer-execute");
+        assert!(artifacts.diff.trim().is_empty());
+        assert!(artifacts.changed_files.is_empty());
+
+        let mut review = node(Vec::new());
+        review.node_id = "answer-review".into();
+        review.agent = "cc-switch".into();
+        review.provider = "stub".into();
+        review.model = "stub".into();
+        review.role = "验收".into();
+        review.visibility = "盲".into();
+        review.write = "只读".into();
+        review.original_request = "用一句话说明 beta.py 的用途，不要改任何文件".into();
+        review.upstream_artifacts = vec![artifacts];
+        let review_result = dispatch_stage_core(
+            DispatchStageRequest {
+                run_id: run_id.clone(),
+                stage: 2,
+                project_dir: project.to_string_lossy().into_owned(),
+                nodes: vec![review],
+                settings,
+            },
+            None,
+        )
+        .unwrap();
+        let item = &review_result.results[0];
+        assert_eq!(item.status, "ok", "{}", item.error);
+        let workdir = Path::new(&item.workdir);
+        assert_eq!(
+            fs::read_to_string(workdir.join("ANSWER.md")).unwrap(),
+            "beta.py 提供 shout 和 whisper 两个字符串工具函数。"
+        );
+        assert_eq!(
+            fs::read_to_string(workdir.join("project/src/beta.py")).unwrap(),
+            "def shout(value):\n    return value.upper()\n"
+        );
+        assert!(!workdir.join("project/untracked.txt").exists());
+        assert!(!workdir.join("project/.env").exists());
+        assert!(!workdir.join("project/.dispatch").exists());
+        assert!(!workdir.join("project/.aicross-runtime").exists());
+        let task_file = workdir.parent().unwrap().join("tasks/answer-review.txt");
+        let prompt = fs::read_to_string(task_file).unwrap();
+        assert!(prompt.contains("执行者未改文件，其最终回复见 ANSWER.md"), "{prompt}");
+        assert!(prompt.contains(REVIEW_PROJECT_PROMPT_NOTE), "{prompt}");
+        assert!(prompt.contains("[ANSWER.md 全文]\nbeta.py 提供 shout 和 whisper 两个字符串工具函数。"), "{prompt}");
+
+        let runtime_run = dispatch_data_root().unwrap().join("runs").join(&run_id);
+        let _ = fs::remove_dir_all(runtime_run);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn task28_multiple_readonly_answers_have_upstream_sections() {
         let root = std::env::temp_dir().join(format!("aicross-task28-multi-{}", Uuid::new_v4()));
         let mut request = node(Vec::new());
@@ -7950,8 +8418,8 @@ mod tests {
                 ..DispatchArtifacts::default()
             },
         ];
-        let (_, names, _) = prepare_outbound(&request, true, &root, true).unwrap();
-        assert_eq!(names, ["REQUEST.md", "diff.patch", "changed/", "ANSWER.md"]);
+        let (_, names, _) = prepare_outbound_test(&request, true, &root, true).unwrap();
+        assert_eq!(names, ["REQUEST.md", "diff.patch", "changed/", "ANSWER.md", "project/"]);
         assert_eq!(
             fs::read_to_string(root.join("ANSWER.md")).unwrap(),
             "## 上游节点 execute-a\n\n第一份答案\n\n## 上游节点 execute-b\n\n第二份答案"
@@ -7968,7 +8436,7 @@ mod tests {
             stdout_summary: "执行完成".into(),
             ..DispatchArtifacts::default()
         }];
-        let (prompt, names, _) = prepare_outbound(&request, true, &root, true).unwrap();
+        let (prompt, names, _) = prepare_outbound_test(&request, true, &root, true).unwrap();
         let mut entries = fs::read_dir(&root)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -7977,7 +8445,359 @@ mod tests {
         assert_eq!(entries, ["REQUEST.md", "changed", "diff.patch"]);
         assert_eq!(names, ["REQUEST.md", "diff.patch", "changed/"]);
         assert!(!root.join("ANSWER.md").exists());
+        assert!(!root.join(REVIEW_PROJECT_DIR).exists());
         assert!(!prompt.contains("ANSWER.md"));
+        assert!(!prompt.contains(REVIEW_PROJECT_PROMPT_NOTE));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task32_non_git_project_copy_reuses_snapshot_directory_exclusions() {
+        let root = std::env::temp_dir().join(format!("aicross-task32-nongit-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let workdir = root.join("blind");
+        for directory in ["src", "node_modules/pkg", "target/debug", ".venv/lib", ".dispatch/run"] {
+            fs::create_dir_all(project.join(directory)).unwrap();
+        }
+        fs::write(project.join("src/beta.py"), "print('ok')\n").unwrap();
+        fs::write(project.join("node_modules/pkg/a.js"), "skip").unwrap();
+        fs::write(project.join("target/debug/a.bin"), "skip").unwrap();
+        fs::write(project.join(".venv/lib/a.py"), "skip").unwrap();
+        fs::write(project.join(".dispatch/run/a.txt"), "skip").unwrap();
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "只读回答".into(),
+            ..DispatchArtifacts::default()
+        }];
+        prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "task32-nongit",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(workdir.join("project/src/beta.py").is_file());
+        for excluded in ["node_modules", "target", ".venv", ".dispatch"] {
+            assert!(!workdir.join("project").join(excluded).exists(), "{excluded}");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task32_r1_truncated_git_file_list_keeps_complete_paths_and_marks_incomplete() {
+        if !require_git("task32_r1_truncated_git_file_list_keeps_complete_paths_and_marks_incomplete") {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-task32-truncated-list-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        test_git(&project, &["init"]);
+        fs::write(project.join("a.txt"), "a\n").unwrap();
+        fs::write(project.join("b.txt"), "b\n").unwrap();
+        test_git(&project, &["add", "a.txt", "b.txt"]);
+        PROJECT_COPY_TEST_TRUNCATE_NEXT_GIT_LIST.with(|flag| flag.set(true));
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "只读回答".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, _, _) = prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "task32-truncated-list",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(workdir.join("project/a.txt").is_file());
+        assert!(workdir.join("project/b.txt").is_file());
+        assert!(!workdir.join("project/partial-path-without-nul").exists());
+        assert!(prompt.contains("副本不完整：版本库文件清单过长，只取了前 2 个"), "{prompt}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task32_r1_single_file_read_failure_is_skipped_without_losing_other_files() {
+        let root = std::env::temp_dir().join(format!("aicross-task32-read-failure-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("bad.txt"), "bad\n").unwrap();
+        fs::write(project.join("good.txt"), "good\n").unwrap();
+        PROJECT_COPY_TEST_FAIL_READ.with(|value| *value.borrow_mut() = Some("bad.txt".into()));
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "只读回答".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, _, _) = prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "task32-read-failure",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(!workdir.join("project/bad.txt").exists());
+        assert_eq!(fs::read_to_string(workdir.join("project/good.txt")).unwrap(), "good\n");
+        assert!(prompt.contains("副本不完整：已跳过 1 个不可读取或非普通文件"), "{prompt}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn task32_r1_parent_symlink_cannot_escape_project_copy_source() {
+        use std::os::windows::fs::symlink_dir;
+
+        if !require_git("task32_r1_parent_symlink_cannot_escape_project_copy_source") {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-task32-parent-link-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let outside = root.join("outside");
+        let workdir = root.join("blind");
+        fs::create_dir_all(project.join("linked")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(project.join("safe.txt"), "safe\n").unwrap();
+        fs::write(project.join("linked/secret.txt"), "tracked before link\n").unwrap();
+        fs::write(outside.join("secret.txt"), "outside secret\n").unwrap();
+        test_git(&project, &["init"]);
+        test_git(&project, &["add", "safe.txt", "linked/secret.txt"]);
+        fs::remove_dir_all(project.join("linked")).unwrap();
+        let linked = project.join("linked");
+        let linked_arg = linked.to_string_lossy().into_owned();
+        let outside_arg = outside.to_string_lossy().into_owned();
+        let link_error = symlink_dir(&outside, &linked).err();
+        if link_error.is_some() {
+            let junction = std::process::Command::new("cmd.exe")
+                .args(["/C", "mklink", "/J", &linked_arg, &outside_arg])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if !junction.is_ok_and(|status| status.success()) {
+                eprintln!("跳过：当前 Windows 无法创建目录 symlink 或 junction：{}", link_error.unwrap());
+                let _ = fs::remove_dir_all(root);
+                return;
+            }
+        }
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "只读回答".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, _, _) = prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "task32-parent-link",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(workdir.join("project/safe.txt")).unwrap(), "safe\n");
+        assert!(!workdir.join("project/linked/secret.txt").exists());
+        assert!(prompt.contains("副本不完整：已跳过 1 个不可读取或非普通文件"), "{prompt}");
+        let _ = fs::remove_dir(&linked);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task32_project_copy_limit_is_reported_in_prompt() {
+        let root = std::env::temp_dir().join(format!("aicross-task32-limit-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        let large = fs::File::create(project.join("large.bin")).unwrap();
+        large.set_len(REVIEW_PROJECT_FILE_LIMIT + 1).unwrap();
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "只读回答".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, _, _) = prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "task32-limit",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(prompt.contains("副本不完整：已跳过 1 个超过 1 MB 的文件"), "{prompt}");
+        assert!(!workdir.join("project/large.bin").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task32_r1_project_copy_limit_message_uses_configured_file_limit() {
+        let root = std::env::temp_dir().join(format!("aicross-task32-limit-message-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let destination = root.join("copy");
+        fs::create_dir_all(&project).unwrap();
+        let file = fs::File::create(project.join("large.bin")).unwrap();
+        let file_limit = 2 * 1024 * 1024;
+        file.set_len(file_limit + 1).unwrap();
+        let summary = copy_readonly_project_with_limits(
+            &project,
+            &destination,
+            true,
+            "task32-limit-message",
+            Duration::from_secs(5),
+            file_limit,
+            10 * 1024 * 1024,
+            10,
+        )
+        .unwrap();
+        assert_eq!(summary.incomplete, ["已跳过 1 个超过 2 MB 的文件"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task32_project_copy_stops_at_total_and_file_count_limits() {
+        let root = std::env::temp_dir().join(format!("aicross-task32-limits-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        fs::create_dir_all(&project).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(project.join(name), "12").unwrap();
+        }
+        let count_destination = root.join("count-copy");
+        let count = copy_readonly_project_with_limits(
+            &project,
+            &count_destination,
+            true,
+            "task32-count-limit",
+            Duration::from_secs(5),
+            16,
+            100,
+            1,
+        )
+        .unwrap();
+        assert_eq!(fs::read_dir(&count_destination).unwrap().count(), 1);
+        assert!(count.incomplete.iter().any(|note| note.contains("文件数超过 1 个")), "{count:?}");
+
+        let total_destination = root.join("total-copy");
+        let total = copy_readonly_project_with_limits(
+            &project,
+            &total_destination,
+            true,
+            "task32-total-limit",
+            Duration::from_secs(5),
+            16,
+            3,
+            10,
+        )
+        .unwrap();
+        assert_eq!(fs::read_dir(&total_destination).unwrap().count(), 1);
+        assert!(total.incomplete.iter().any(|note| note.contains("总量超过")), "{total:?}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task32_project_copy_redacts_text_and_preserves_binary_bytes() {
+        let root = std::env::temp_dir().join(format!("aicross-task32-redact-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let workdir = root.join("blind");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::write(project.join("src/config.txt"), "api_key=sk-task32-secret\n").unwrap();
+        fs::write(project.join("src/data.bin"), [0xff, 0x00, 0x81]).unwrap();
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "只读回答".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (_, _, count) = prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "task32-redact",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let text = fs::read_to_string(workdir.join("project/src/config.txt")).unwrap();
+        assert!(text.contains("[REDACTED]") && !text.contains("sk-task32-secret"), "{text}");
+        assert_eq!(fs::read(workdir.join("project/src/data.bin")).unwrap(), [0xff, 0x00, 0x81]);
+        assert!(count >= 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task32_project_attachment_name_conflict_is_rejected() {
+        let root = std::env::temp_dir().join(format!("aicross-task32-conflict-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let workdir = root.join("blind");
+        let attachments = root.join("attachments");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&attachments).unwrap();
+        let attachment = attachments.join(REVIEW_PROJECT_DIR);
+        fs::write(&attachment, "附件内容").unwrap();
+        let mut request = node(vec![attachment.to_string_lossy().into_owned()]);
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "只读回答".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let error = prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "task32-conflict",
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert_eq!(error, "附件文件名与盲审材料重名：project");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task32_project_copy_uses_recorded_registered_worktree() {
+        if !require_git("task32_project_copy_uses_recorded_registered_worktree") {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-task32-worktree-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let worktree = root.join("worktree");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        test_git(&project, &["init"]);
+        test_git(&project, &["config", "user.name", "aicross test"]);
+        test_git(&project, &["config", "user.email", "aicross@example.invalid"]);
+        fs::write(project.join("answer.txt"), "project\n").unwrap();
+        test_git(&project, &["add", "answer.txt"]);
+        test_git(&project, &["commit", "-m", "fixture"]);
+        let worktree_arg = worktree.to_string_lossy().into_owned();
+        test_git(&project, &["worktree", "add", "--detach", &worktree_arg, "HEAD"]);
+        fs::write(worktree.join("answer.txt"), "effective worktree\n").unwrap();
+        let mut request = node(Vec::new());
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "只读回答".into(),
+            worktree: Some(worktree.to_string_lossy().into_owned()),
+            ..DispatchArtifacts::default()
+        }];
+        prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "task32-worktree",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(workdir.join("project/answer.txt")).unwrap(), "effective worktree\n");
+        test_git(&project, &["worktree", "remove", "--force", &worktree_arg]);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -7989,7 +8809,7 @@ mod tests {
             stdout_summary: "worktree 不可用，已退回单写者：not a git repository\n最终答案".into(),
             ..DispatchArtifacts::default()
         }];
-        prepare_outbound(&request, true, &root, true).unwrap();
+        prepare_outbound_test(&request, true, &root, true).unwrap();
         assert_eq!(fs::read_to_string(root.join("ANSWER.md")).unwrap(), "最终答案");
         let _ = fs::remove_dir_all(root);
     }
@@ -8002,7 +8822,7 @@ mod tests {
             stdout_summary: "api_key=sk-task28-secret".into(),
             ..DispatchArtifacts::default()
         }];
-        let (_, _, count) = prepare_outbound(&request, true, &root, true).unwrap();
+        let (_, _, count) = prepare_outbound_test(&request, true, &root, true).unwrap();
         let answer = fs::read_to_string(root.join("ANSWER.md")).unwrap();
         assert!(answer.contains("[REDACTED]"), "{answer}");
         assert!(!answer.contains("sk-task28-secret"), "{answer}");
@@ -8018,7 +8838,7 @@ mod tests {
             stdout_summary: "长".repeat(2000),
             ..DispatchArtifacts::default()
         }];
-        let (prompt, _, _) = prepare_outbound(&request, true, &root, true).unwrap();
+        let (prompt, _, _) = prepare_outbound_test(&request, true, &root, true).unwrap();
         let answer = fs::read_to_string(root.join("ANSWER.md")).unwrap();
         assert!(answer.ends_with("\n\n（回复较长，已截断至前 2000 字）"), "{answer}");
         assert!(prompt.contains("[ANSWER.md 全文]"));
@@ -8041,7 +8861,7 @@ mod tests {
             stdout_summary: complete_summary,
             ..DispatchArtifacts::default()
         }];
-        prepare_outbound(&complete, true, &root.join("complete"), true).unwrap();
+        prepare_outbound_test(&complete, true, &root.join("complete"), true).unwrap();
         let complete_answer = fs::read_to_string(root.join("complete/ANSWER.md")).unwrap();
         assert!(!complete_answer.contains(REVIEW_ANSWER_TRUNCATED_NOTE), "{complete_answer}");
 
@@ -8050,7 +8870,7 @@ mod tests {
             stdout_summary: format!("{WORKTREE_WARNING_PREFIX}fallback\n{}", "长".repeat(2000)),
             ..DispatchArtifacts::default()
         }];
-        prepare_outbound(&exact, true, &root.join("exact"), true).unwrap();
+        prepare_outbound_test(&exact, true, &root.join("exact"), true).unwrap();
         let exact_answer = fs::read_to_string(root.join("exact/ANSWER.md")).unwrap();
         assert!(exact_answer.ends_with(REVIEW_ANSWER_TRUNCATED_NOTE), "{exact_answer}");
 
@@ -8059,7 +8879,7 @@ mod tests {
             stdout_summary: format!("{WORKTREE_WARNING_PREFIX}fallback\n{}", "短".repeat(1500)),
             ..DispatchArtifacts::default()
         }];
-        prepare_outbound(&short, true, &root.join("short"), true).unwrap();
+        prepare_outbound_test(&short, true, &root.join("short"), true).unwrap();
         let short_answer = fs::read_to_string(root.join("short/ANSWER.md")).unwrap();
         assert!(!short_answer.contains(REVIEW_ANSWER_TRUNCATED_NOTE), "{short_answer}");
         let _ = fs::remove_dir_all(root);
@@ -8076,7 +8896,7 @@ mod tests {
                 ..DispatchArtifacts::default()
             },
         ];
-        let (prompt, names, _) = prepare_outbound(&request, true, &root, true).unwrap();
+        let (prompt, names, _) = prepare_outbound_test(&request, true, &root, true).unwrap();
         assert!(!root.join(REVIEW_ANSWER_FILE).exists());
         assert!(!names.iter().any(|name| name == REVIEW_ANSWER_FILE), "{names:?}");
         assert!(!prompt.contains(REVIEW_ANSWER_FILE), "{prompt}");
@@ -8096,7 +8916,7 @@ mod tests {
             stdout_summary: "执行者答案".into(),
             ..DispatchArtifacts::default()
         }];
-        let error = prepare_outbound(&request, true, &workdir, true).unwrap_err();
+        let error = prepare_outbound_test(&request, true, &workdir, true).unwrap_err();
         assert_eq!(error, "附件文件名与盲审材料重名：ANSWER.md");
         let _ = fs::remove_dir_all(root);
     }
@@ -8110,7 +8930,7 @@ mod tests {
             changed_files: vec![ChangedFile { path: "C:escape.txt".into(), content: "no".into() }],
             ..DispatchArtifacts::default()
         }];
-        let error = prepare_outbound(&request, true, &root, true).unwrap_err();
+        let error = prepare_outbound_test(&request, true, &root, true).unwrap_err();
         assert!(error.contains("产物路径不是安全相对路径"));
         let _ = fs::remove_dir_all(root);
     }
@@ -8578,8 +9398,12 @@ mod tests {
         let mut request = node(vec![material.to_string_lossy().into_owned()]);
         request.agent = "missing-agent".into();
         request.model = "m-main".into();
-        // node() 默认 visibility=盲：第一次尝试会把材料铺进隔离目录，
-        // 备选重跑前必须清掉，否则第二次 prepare_outbound 拒非空目录。
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "只读回答".into(),
+            ..DispatchArtifacts::default()
+        }];
+        // node() 默认 visibility=盲：第一次尝试会把附件与只读项目副本铺进隔离目录，
+        // 备选重跑前必须整目录清掉，否则第二次 prepare_outbound 拒非空目录。
         request.fallback = Some(FallbackSpec {
             agent: "missing-agent-b".into(),
             provider: String::new(),
@@ -8596,6 +9420,7 @@ mod tests {
         );
         assert_eq!(result.status, "error");
         assert!(!result.error.contains("盲审目录不是空目录"), "备选不应死在隔离目录上：{}", result.error);
+        assert!(Path::new(&result.workdir).join("project/m.txt").is_file());
         let records = fs::read_dir(&log_dir)
             .unwrap()
             .filter_map(Result::ok)
@@ -9513,7 +10338,7 @@ mod tests {
         workdir: &Path,
         blind: bool,
     ) -> Result<OutboundPreparation, String> {
-        prepare_outbound(request, true, workdir, blind)
+        prepare_outbound_test(request, true, workdir, blind)
             .map(|(prompt, names, count)| OutboundPreparation::Materialized(prompt, names, count))
     }
 
