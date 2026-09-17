@@ -3014,13 +3014,12 @@ mod tests {
     fn task17_pi_login_check_uses_safe_args_once_and_ignores_credentials() {
         let root = std::env::temp_dir().join(format!("aicross-pi-login-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        let log = root.join("argv.log");
         #[cfg(windows)]
         let body = r#"@echo off
 if /I "%~1"=="auth" goto auth
 exit /b 2
 :auth
->> "%~dp0argv.log" echo %*
+>> "%~dp0argv-%~4.log" echo %*
 if /I "%~4"=="ready" (
   echo {"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"},"reason":"do-not-read"}
   exit /b 0
@@ -3038,7 +3037,7 @@ exit /b 0
 "#;
         #[cfg(not(windows))]
         let body = r#"#!/bin/sh
-printf '%s\n' "$*" >> "$(dirname "$0")/argv.log"
+printf '%s\n' "$*" >> "$(dirname "$0")/argv-$4.log"
 if [ "$4" = ready ]; then
   printf '%s\n' '{"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"},"reason":"do-not-read"}'
   exit 0
@@ -3064,7 +3063,7 @@ exit 0
                 "legacy-bool".into(),
                 "ready".into(),
             ],
-            Duration::from_millis(800),
+            PI_LOGIN_CHECK_TIMEOUT,
         );
         assert_eq!(
             checked,
@@ -3075,7 +3074,23 @@ exit 0
                 ("ready".into(), ResourceLogin::LoggedIn),
             ]
         );
-        let argv = fs::read_to_string(&log).expect("fake pi argv");
+        // 每个 provider 写各自的 argv 文件：四个 cmd 并发 `>>` 同一个文件时，
+        // Windows 上会有一次写因文件被占用而丢失（09-17 编排者核对：登录结果断言已过、
+        // 只有行数 3≠4，说明进程都跑完了，丢的是日志行，不是超时）。
+        let mut argv = String::new();
+        let mut entries = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("argv-") && name.ends_with(".log"))
+            })
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            argv.push_str(&fs::read_to_string(path).expect("fake pi argv"));
+        }
         let lines = argv.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), 4, "each provider is checked once: {argv}");
         for provider in ["ready", "logged-out", "bad-exit", "legacy-bool"] {

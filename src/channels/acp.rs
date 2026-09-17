@@ -116,14 +116,7 @@ pub fn run(
         ));
     }
     let deadline = Instant::now() + timeout;
-    let key = format!(
-        "{}/{}/{}/{}/{}",
-        super::normalize_agent(agent),
-        provider,
-        model,
-        cwd.display(),
-        blind
-    );
+    let key = pool_key(agent, provider, model, cwd, blind);
     let shared = pool()
         .lock()
         .map_err(|_| AcpError::new(AcpErrorKind::Process, "ACP 进程池不可用"))?
@@ -649,6 +642,56 @@ pub fn shutdown_all() {
 pub(crate) fn test_pool_guard() -> MutexGuard<'static, ()> {
     static ACTIVITY: OnceLock<Mutex<()>> = OnceLock::new();
     ACTIVITY.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn pool_key(agent: &str, provider: &str, model: &str, cwd: &Path, blind: bool) -> String {
+    format!(
+        "{}/{}/{}/{}/{}",
+        super::normalize_agent(agent),
+        provider,
+        model,
+        cwd.display(),
+        blind
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn test_wait_for_process_exit(
+    agent: &str,
+    provider: &str,
+    model: &str,
+    cwd: &Path,
+    blind: bool,
+    timeout: Duration,
+) -> bool {
+    // 与生产共用同一个键函数：键格式若改了，这里不会静默找不到进程而直接放行。
+    let key = pool_key(agent, provider, model, cwd, blind);
+    let deadline = Instant::now() + timeout;
+    loop {
+        let shared = pool()
+            .lock()
+            .ok()
+            .and_then(|clients| clients.get(&key).cloned());
+        let Some(shared) = shared else {
+            return true;
+        };
+        match shared.client.try_lock() {
+            Ok(mut slot) => {
+                let Some(client) = slot.as_mut() else {
+                    return true;
+                };
+                if !client.process.is_running() {
+                    return true;
+                }
+            }
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Poisoned(_)) => return false,
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 #[tauri::command]
 pub fn release_acp_pool() {

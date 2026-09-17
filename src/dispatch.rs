@@ -6189,7 +6189,6 @@ mod tests {
     fn r4_1_worktree_fallback_runs_validation_in_effective_directory() {
         let root = std::env::temp_dir().join(format!("aicross-r4-validation-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        std::env::set_var("AICROSS_TEST_RUN_ROOT", root.join("runtime"));
         let mut worktree = node(Vec::new());
         worktree.role = "执行".into();
         worktree.visibility = "共享".into();
@@ -6203,7 +6202,6 @@ mod tests {
         let output = run_validation(&command, &root, Duration::from_secs(5), None).into_result().unwrap();
         assert!(!output.contains("未跑验证命令"));
         assert!(marker.exists());
-        std::env::remove_var("AICROSS_TEST_RUN_ROOT");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -6825,7 +6823,17 @@ mod tests {
         request.current_message = request.prompt.clone();
         let first = run_one("acp-first", &project, &root.join("runs-1"), &log_dir, &settings, request.clone());
         assert_eq!(first.runner, "acp");
-        thread::sleep(Duration::from_millis(100));
+        assert!(
+            channels::acp::test_wait_for_process_exit(
+                "kimi",
+                &request.provider,
+                &request.model,
+                &project,
+                false,
+                Duration::from_secs(10),
+            ),
+            "fake ACP process did not exit"
+        );
         request.session_id = first.session_id;
         request.previous_runner = "acp".into();
         request.current_message = "当前追问".into();
