@@ -275,7 +275,7 @@ describe('TASK-27 运行详情口径', () => {
     expect(progressUpdates).toHaveLength(1);
     expect(progressUpdates[0].rows[0]).toMatchObject({ toolCalls: 2, lastTool: 'Read' });
     expect(durableUpdates).toEqual(expect.arrayContaining([
-      expect.objectContaining({ status: 'running', rows: [expect.objectContaining({ status: 'running' })] }),
+      expect.objectContaining({ status: 'running', rows: [expect.objectContaining({ status: 'pending' })] }),
       expect.objectContaining({ status: 'running', rows: [expect.objectContaining({ status: 'ok' })] }),
       expect.objectContaining({ status: 'completed' }),
     ]));
@@ -363,11 +363,11 @@ describe('TASK-27 运行详情口径', () => {
   it('最终结论区分通过、无法识别、中途停止和无验收模式', () => {
     const graph = { nodes: {} } as never;
     expect(finishConsoleRun(record({ rows: [row({ role: '验收', acceptance: 'PASS' })] }), graph, [], '', 5000).conclusion)
-      .toBe('通过（第 1 轮验收通过）');
+      .toBe('通过（验收一次通过）');
     expect(finishConsoleRun(record({ rows: [
       row({ nodeId: 'a', role: '验收', acceptance: 'PASS' }),
       row({ nodeId: 'b', role: '验证', acceptance: 'UNKNOWN' }),
-    ] }), graph, [], '', 5000).conclusion).toBe('验收结论无法识别（第 1 轮验收）');
+    ] }), graph, [], '', 5000).conclusion).toBe('验收结论无法识别（验收一次）');
     expect(finishConsoleRun(record({ rows: [
       row({ nodeId: 'a', role: '验收', acceptance: 'PASS' }),
       row({ nodeId: 'b', role: '验证', acceptance: 'NEEDS_FIX' }),

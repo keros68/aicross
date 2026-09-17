@@ -14,6 +14,9 @@ import { selectConsoleGraph } from '../../console-channel';
 import {
   consoleScrollRestoreTop,
   consoleScrollSnapshot,
+  consoleAutoScrollStep,
+  runDetailAvailabilityAction,
+  runDetailFocusTarget,
   type ConsoleScrollSnapshot,
 } from '../../console-run-detail';
 import {
@@ -42,7 +45,11 @@ export function ConsoleChat({ session }: Props) {
   const appliedRef = useRef(session.lastAppliedMessageId);
   const endRef = useRef<HTMLDivElement>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const scrollSnapshotRef = useRef<ConsoleScrollSnapshot | null>(null);
+  const skipAutoScrollRef = useRef(false);
+  const focusBeforeRunRef = useRef<HTMLElement | null>(null);
+  const restoreFocusPendingRef = useRef(false);
   const target = session.targetAgent;
   const messages = session.messages ?? [];
   const runRecords = session.runRecords ?? [];
@@ -67,18 +74,32 @@ export function ConsoleChat({ session }: Props) {
   }, []);
 
   useEffect(() => {
+    if (openRunId) return;
+    const step = consoleAutoScrollStep(skipAutoScrollRef.current);
+    skipAutoScrollRef.current = step.skipNext;
+    if (!step.shouldScroll) return;
     endRef.current?.scrollIntoView({ block: 'end' });
-  }, [messages.length, busy]);
+  }, [messages.length, busy, openRunId]);
 
   useLayoutEffect(() => {
-    if (openRunId || !scrollSnapshotRef.current || !messageListRef.current) return;
-    const list = messageListRef.current;
-    list.scrollTop = consoleScrollRestoreTop(scrollSnapshotRef.current, {
-      scrollHeight: list.scrollHeight,
-      clientHeight: list.clientHeight,
-      messageCount: messages.length,
-    });
-    scrollSnapshotRef.current = null;
+    if (openRunId) return;
+    if (scrollSnapshotRef.current && messageListRef.current) {
+      const list = messageListRef.current;
+      list.scrollTop = consoleScrollRestoreTop(scrollSnapshotRef.current, {
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight,
+        messageCount: messages.length,
+      });
+      scrollSnapshotRef.current = null;
+      skipAutoScrollRef.current = true;
+    }
+    if (restoreFocusPendingRef.current) {
+      restoreFocusPendingRef.current = false;
+      const previous = focusBeforeRunRef.current;
+      const focusTarget = runDetailFocusTarget(Boolean(previous?.isConnected));
+      (focusTarget === 'previous' ? previous : composerRef.current)?.focus();
+      focusBeforeRunRef.current = null;
+    }
   }, [messages.length, openRunId]);
 
   useEffect(() => { appliedRef.current = session.lastAppliedMessageId; }, [session.lastAppliedMessageId]);
@@ -107,6 +128,9 @@ export function ConsoleChat({ session }: Props) {
     dispatch({ type: 'APPEND_CONSOLE_MESSAGE', id: session.id, message });
   };
   const openRunDetail = (runId: string) => {
+    focusBeforeRunRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
     const list = messageListRef.current;
     if (list) {
       scrollSnapshotRef.current = consoleScrollSnapshot({
@@ -118,6 +142,14 @@ export function ConsoleChat({ session }: Props) {
     }
     setOpenRunId(runId);
   };
+  const closeRunDetail = () => {
+    restoreFocusPendingRef.current = true;
+    setOpenRunId('');
+  };
+
+  useLayoutEffect(() => {
+    if (runDetailAvailabilityAction(openRunId, Boolean(openRun)) === 'close') closeRunDetail();
+  }, [openRun, openRunId]);
 
   const send = async () => {
     const raw = draft.trim();
@@ -200,7 +232,7 @@ export function ConsoleChat({ session }: Props) {
   }, [dispatch, draft, messages, session.consoleGraphId, session.folderPath, session.id, state]);
 
   if (!target) return null;
-  if (openRun) return <ConsoleRunDetail record={openRun} onClose={() => setOpenRunId('')} />;
+  if (openRun) return <ConsoleRunDetail record={openRun} onClose={closeRunDetail} />;
   return (
     <div className="console-chat">
       <div className="console-chat-head">
@@ -267,6 +299,7 @@ export function ConsoleChat({ session }: Props) {
           </div>
         )}
         <textarea
+          ref={composerRef}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {

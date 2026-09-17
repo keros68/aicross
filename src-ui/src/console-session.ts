@@ -24,6 +24,8 @@ export interface ConsoleMessage {
   durationMs?: number;
   status?: string;
   route?: string;
+  /** 本次运行换算后的阶段号；模式结果消息使用。 */
+  stage?: number;
   /** 关联的模式运行记录；收尾消息用它打开详情。 */
   runId?: string;
 }

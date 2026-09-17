@@ -144,9 +144,10 @@ describe('TASK-29 控制台每次应用模式', () => {
     const secondMessages = messages.slice(secondMessageStart);
     const stageMessages = secondMessages.filter((message) => message.runId && message.text.startsWith('第 '));
     expect(stageMessages.map((message) => message.text.match(/\d+/)?.[0])).toEqual(['1', '2', '3', '4']);
+    expect(secondMessages.filter((message) => message.kind === 'assistant').map((message) => message.stage)).toEqual([1, 2, 3, 4]);
     const secondRunId = stageMessages[0].runId;
     expect(requests.filter((request) => request.runId === secondRunId)).toHaveLength(4);
-    expect(secondMessages.at(-1)?.text).toContain('结论：未通过（修正 1 轮后验收再次要求修正，已到上限）。');
+    expect(secondMessages.at(-1)?.text).toContain('结论：未通过（修正 1 轮后验收仍要求修正，已到上限）。');
     expect(secondMessages.at(-1)?.text).toContain('共 4 路');
     expect(completedRuns).toHaveLength(2);
     expect(completedRuns[1].rows.map((item) => item.stage)).toEqual([1, 2, 3, 4]);

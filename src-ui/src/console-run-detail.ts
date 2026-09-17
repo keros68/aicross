@@ -129,6 +129,29 @@ export function runDetailKeyAction(
   return event.key === 'Escape' && !event.isComposing ? 'close' : null;
 }
 
+export function runDetailTabTarget(
+  activeIndex: number,
+  focusableCount: number,
+  shiftKey: boolean,
+): number | null {
+  if (focusableCount <= 0) return null;
+  if (activeIndex < 0) return shiftKey ? focusableCount - 1 : 0;
+  return (activeIndex + (shiftKey ? -1 : 1) + focusableCount) % focusableCount;
+}
+
+export function runDetailTabPlan(
+  activeIndex: number,
+  focusableCount: number,
+  shiftKey: boolean,
+): { kind: 'item'; index: number } | { kind: 'root' } {
+  const target = runDetailTabTarget(activeIndex, focusableCount, shiftKey);
+  return target === null ? { kind: 'root' } : { kind: 'item', index: target };
+}
+
+export function runDetailFocusTarget(previousConnected: boolean): 'previous' | 'composer' {
+  return previousConnected ? 'previous' : 'composer';
+}
+
 export function consoleRunHeaderLabel(
   record: Pick<ConsoleRunRecord, 'presetName' | 'startedAt'>,
 ): string {
@@ -158,6 +181,17 @@ export function consoleScrollRestoreTop(
   return Math.min(Math.max(0, snapshot.scrollTop), maximum);
 }
 
+export function consoleAutoScrollStep(skipNext: boolean): { shouldScroll: boolean; skipNext: boolean } {
+  return { shouldScroll: !skipNext, skipNext: false };
+}
+
+export function runDetailAvailabilityAction(
+  openRunId: string,
+  recordAvailable: boolean,
+): 'close' | null {
+  return openRunId !== '' && !recordAvailable ? 'close' : null;
+}
+
 export function withConsoleRunStage(
   record: ConsoleRunRecord,
   request: DispatchStageRequest,
@@ -174,8 +208,8 @@ export function withConsoleRunStage(
       agent: node.agent,
       provider: node.provider,
       requestedModel: node.model,
-      status: 'running',
-      progressAt: now,
+      status: previous.status === 'running' ? 'running' : 'pending',
+      progressAt: previous.status === 'running' ? previous.progressAt : 0,
     }, now);
   }
   return next;
@@ -252,22 +286,63 @@ export function withConsoleRunResults(
   return next;
 }
 
-function acceptanceConclusion(rows: ConsoleRunRow[]): string {
+function hasAncestor(graph: Graph, nodeId: string, ancestorId: string): boolean {
+  const pending = [...(graph.nodes[nodeId]?.parents ?? [])];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const id = pending.pop() as string;
+    if (id === ancestorId) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    pending.push(...(graph.nodes[id]?.parents ?? []));
+  }
+  return false;
+}
+
+function correctionRoundCount(
+  graph: Graph,
+  lastAcceptanceRows: ConsoleRunRow[],
+  correctionNodeIds: ReadonlySet<string>,
+): number {
+  const memo = new Map<string, number>();
+  const depth = (nodeId: string, visiting = new Set<string>()): number => {
+    const cached = memo.get(nodeId);
+    if (cached !== undefined) return cached;
+    if (visiting.has(nodeId)) return 0;
+    const node = graph.nodes[nodeId];
+    if (!node) return 0;
+    const nextVisiting = new Set(visiting).add(nodeId);
+    const parentDepth = Math.max(0, ...node.parents.map((parentId) => depth(parentId, nextVisiting)));
+    const value = parentDepth + (node.target?.role === '执行' && correctionNodeIds.has(nodeId) ? 1 : 0);
+    memo.set(nodeId, value);
+    return value;
+  };
+  return Math.max(0, ...lastAcceptanceRows.map((row) => depth(row.nodeId)));
+}
+
+function acceptanceConclusion(
+  graph: Graph,
+  rows: ConsoleRunRow[],
+  correctionNodeIds: ReadonlySet<string>,
+): string {
   const acceptanceRows = rows.filter((row) => row.role === '验收' || row.role === '验证');
   if (acceptanceRows.length === 0) return '已完成（本模式不含验收）';
-  const stages = [...new Set(acceptanceRows.map((row) => row.stage))].sort((a, b) => a - b);
-  const lastStage = stages.at(-1)!;
-  const last = acceptanceRows.filter((row) => row.stage === lastStage);
-  const round = stages.length;
+  const last = acceptanceRows.filter((row) => !acceptanceRows.some((later) =>
+    later.nodeId !== row.nodeId && hasAncestor(graph, later.nodeId, row.nodeId)));
+  const round = correctionRoundCount(graph, last, correctionNodeIds);
   if (last.some((row) => row.acceptance === 'NEEDS_FIX')) {
-    return round > 1
-      ? `未通过（修正 ${round - 1} 轮后验收再次要求修正，已到上限）`
+    return round > 0
+      ? `未通过（修正 ${round} 轮后验收仍要求修正，已到上限）`
       : '未通过（验收要求修正，已到上限）';
   }
   if (last.some((row) => row.acceptance !== 'PASS')) {
-    return `验收结论无法识别（第 ${round} 轮验收）`;
+    return round > 0
+      ? `验收结论无法识别（修正 ${round} 轮后）`
+      : '验收结论无法识别（验收一次）';
   }
-  return `通过（第 ${round} 轮验收通过）`;
+  return round > 0
+    ? `通过（修正 ${round} 轮后通过）`
+    : '通过（验收一次通过）';
 }
 
 export function finishConsoleRun(
@@ -276,6 +351,7 @@ export function finishConsoleRun(
   results: DispatchNodeResult[],
   error: string,
   now: number,
+  correctionNodeIds: ReadonlySet<string> = new Set(),
 ): ConsoleRunRecord {
   const updated = withConsoleRunResults(record, graph, results, now);
   const stoppedReason = error.replace(/[。.!！？?]+$/u, '');
@@ -291,7 +367,7 @@ export function finishConsoleRun(
     finishedAt: now,
     wallDurationMs: Math.max(0, now - record.startedAt),
     status: error ? 'stopped' : 'completed',
-    conclusion: error ? `中途停止（原因：${stoppedReason}）` : acceptanceConclusion(settledRows),
+    conclusion: error ? `中途停止（原因：${stoppedReason}）` : acceptanceConclusion(graph, settledRows, correctionNodeIds),
     error,
   };
 }
@@ -339,7 +415,8 @@ export function reportedModelLabel(row: ConsoleRunRow): string {
 }
 
 export function runRowStatusLabel(status: string): string {
-  if (status === 'pending' || status === 'running') return '进行中';
+  if (status === 'pending') return '排队中';
+  if (status === 'running') return '进行中';
   if (status === 'interrupted') return '已中断';
   if (status === 'timeout') return '超时';
   return status === 'ok' ? '成功' : '失败';

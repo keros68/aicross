@@ -1511,6 +1511,8 @@ export interface HeadlessPipelineResult<R extends BackendNodeResult> {
   leftoverIds: string[];
   outcome: StageLoopOutcome;
   error: string;
+  fixRoundNodeIds: ReadonlySet<string>;
+  generatedFixRoundNodeIds: ReadonlySet<string>;
 }
 
 // 界面确认派发与控制台通道共用的唯一启动函数。调用方只注入 IO、保存和展示回调；
@@ -1519,7 +1521,11 @@ export async function startPipelineHeadless<R extends BackendNodeResult, Req ext
   options: HeadlessPipelineOptions<R, Req, P>,
 ): Promise<HeadlessPipelineResult<R>> {
   const state: StageLoopState<R> = { graph: options.graph, collected: [], activeNodes: [] };
+  const initialFixRoundNodeIds = new Set(options.fixRoundNodeIds ?? []);
   const fixRoundNodeIds = options.fixRoundNodeIds ? new Set(options.fixRoundNodeIds) : undefined;
+  const generatedFixRoundNodeIds = () => new Set(
+    [...(fixRoundNodeIds ?? [])].filter((id) => !initialFixRoundNodeIds.has(id)),
+  );
   options.begin?.(options.deps.runId);
   try {
     const outcome = await runStageLoop(
@@ -1529,7 +1535,7 @@ export async function startPipelineHeadless<R extends BackendNodeResult, Req ext
       options.deps,
       fixRoundNodeIds,
     );
-    return { graph: state.graph, results: state.collected, activeNodes: state.activeNodes, leftoverIds: state.leftoverIds ?? [], outcome, error: outcome.kind === 'stopped' || outcome.kind === 'missing-target' ? outcome.error : '' };
+    return { graph: state.graph, results: state.collected, activeNodes: state.activeNodes, leftoverIds: state.leftoverIds ?? [], outcome, error: outcome.kind === 'stopped' || outcome.kind === 'missing-target' ? outcome.error : '', fixRoundNodeIds: fixRoundNodeIds ?? new Set(), generatedFixRoundNodeIds: generatedFixRoundNodeIds() };
   } catch (error) {
     const message = String(error);
     const failed = options.onError?.(state.activeNodes as Req['nodes'], state.collected, message, state.graph) ?? [];
@@ -1538,7 +1544,7 @@ export async function startPipelineHeadless<R extends BackendNodeResult, Req ext
       state.collected.push(...failed);
       options.deps.onResults([...state.collected]);
     }
-    return { graph: state.graph, results: state.collected, activeNodes: state.activeNodes, leftoverIds: state.leftoverIds ?? [], outcome: { kind: 'stopped', error: message }, error: message };
+    return { graph: state.graph, results: state.collected, activeNodes: state.activeNodes, leftoverIds: state.leftoverIds ?? [], outcome: { kind: 'stopped', error: message }, error: message, fixRoundNodeIds: fixRoundNodeIds ?? new Set(), generatedFixRoundNodeIds: generatedFixRoundNodeIds() };
   } finally {
     options.end?.();
   }

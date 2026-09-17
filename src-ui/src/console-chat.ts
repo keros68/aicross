@@ -392,19 +392,23 @@ export async function dispatchConsolePreset(
       stage: displayStageByNodeId.get(result.nodeId) ?? displayStage(result.stage),
     }));
     const announceResults = (collected: DispatchNodeResult[]) => {
-      if (feedback?.onRunUpdate) updateRun(withConsoleRunResults(runRecord, graph, displayResults(collected), now()));
+      const displayed = displayResults(collected);
+      if (feedback?.onRunUpdate) updateRun(withConsoleRunResults(runRecord, graph, displayed, now()));
       if (!feedback) return;
-      const latest = [...new Map(collected.map((result) => [result.nodeId, result])).values()];
+      const latest = [...new Map(displayed.map((result) => [result.nodeId, result])).values()];
       for (const result of latest) {
         const previousStatus = announcedResults.get(result.nodeId);
         if (previousStatus === result.status) continue;
         const target = graph.nodes[result.nodeId]?.target;
         if (!target) continue;
-        const message = consoleResultMessage({
-          agent: target.agent,
-          provider: target.provider ?? '',
-          model: target.model,
-        }, result, target.role);
+        const message = {
+          ...consoleResultMessage({
+            agent: target.agent,
+            provider: target.provider ?? '',
+            model: target.model,
+          }, result, target.role),
+          stage: result.stage,
+        };
         appendFeedback(previousStatus === undefined ? message : {
           ...message,
           text: `${target.role || '未指定角色'} · 修正后${result.status === 'ok' ? '通过' : resultStatusLabel(result)}\n${message.text}`,
@@ -468,7 +472,14 @@ export async function dispatchConsolePreset(
     if ('error' in feedbackFailure) throw feedbackFailure.error;
     void io.saveGraph(graph).catch((error) => console.warn('[console] 保存对话图失败', error));
     const uniqueResults = [...new Map(pipeline.results.map((result) => [result.nodeId, result])).values()];
-    runRecord = finishConsoleRun(runRecord, graph, displayResults(uniqueResults), pipeline.error, now());
+    runRecord = finishConsoleRun(
+      runRecord,
+      graph,
+      displayResults(uniqueResults),
+      pipeline.error,
+      now(),
+      pipeline.generatedFixRoundNodeIds,
+    );
     feedback?.onRunUpdate?.(runRecord);
     if (feedback) {
       announceResults(uniqueResults);

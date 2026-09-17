@@ -49,6 +49,9 @@ function messageFrom(value: unknown): ConsoleMessage | null {
       : {}),
     ...(typeof message.status === 'string' ? { status: message.status } : {}),
     ...(typeof message.route === 'string' ? { route: message.route } : {}),
+    ...(typeof message.stage === 'number' && Number.isFinite(message.stage)
+      ? { stage: message.stage }
+      : {}),
     ...(typeof message.runId === 'string' && message.runId !== '' ? { runId: message.runId } : {}),
   };
 }
