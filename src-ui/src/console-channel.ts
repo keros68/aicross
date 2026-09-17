@@ -6,7 +6,7 @@ import { latestLeaf } from './graph/layout';
 import { fillRoot } from './graph/mutate';
 import { stamp } from './graph/stamp';
 import { loadDispatchSettings } from './graph/dispatch-settings';
-import { originalRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from './graph/context';
+import { runRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from './graph/context';
 import { buildNodeRequest, continuationRunner, continuationSession, dirtyWorktreeHintOf, dispatchableNodeIds, failedNodesWithoutResults, graphStage, isSmallEconomyTask, leftoverNodes, presetWithRoleDefaults, quotaBlockedNodeIds, setReplyAdopted, startPipelineHeadless } from './graph/dispatch';
 import { validateNode } from './graph/validate';
 
@@ -371,6 +371,7 @@ export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: C
   // R1 复审 N3：只有新建的图标「来自控制台」，续写用户自己的图保留原来源。
   const graphSource = existing ? existing.source : ('console' as const);
   const material = appendConsoleMaterial({ ...base, project: event.project, source: graphSource }, event.text, event.attachments ?? []);
+  const runRequest = runRequestOf(material.graph, material.nodeId);
   let graph = stamp(material.graph, material.nodeId, preset, settings.swarmLimit);
   const before = new Set(Object.keys(material.graph.nodes));
   const created = Object.keys(graph.nodes).filter((id) => !before.has(id));
@@ -432,7 +433,7 @@ export async function runConsoleDispatch(event: ConsoleDispatchEvent, context: C
     nodes: ids.map((id) => {
       const node = sourceGraph.nodes[id];
       const selected = serializeContext(sourceGraph, id);
-      return buildNodeRequest(id, node.target!, { models: resources.models, prompt: selected.prompt, materials: selected.materials, currentMessage: serializeCurrentMessage(node.user), originalRequest: originalRequestOf(sourceGraph), upstreamArtifacts: upstreamArtifactsOf(sourceGraph, id), sessionId: continuationSession(sourceGraph, id) ?? '', previousRunner: continuationRunner(sourceGraph, id) ?? '', rollback: false, stage: graphStage(sourceGraph, id) });
+      return buildNodeRequest(id, node.target!, { models: resources.models, prompt: selected.prompt, materials: selected.materials, currentMessage: serializeCurrentMessage(node.user), originalRequest: runRequest, upstreamArtifacts: upstreamArtifactsOf(sourceGraph, id), sessionId: continuationSession(sourceGraph, id) ?? '', previousRunner: continuationRunner(sourceGraph, id) ?? '', rollback: false, stage: graphStage(sourceGraph, id) });
     }),
   });
 

@@ -157,6 +157,12 @@ export function originalRequestOf(graph: Graph): string {
   return graph.nodes[graph.root]?.user.text ?? '';
 }
 
+// 控制台会在同一张图上连续运行：本次需求是 stamp 所挂的材料节点，不能再取整图根节点。
+// requestNodeId 来自 appendConsoleMaterial；损坏/恢复图找不到该节点时才退回旧画布语义。
+export function runRequestOf(graph: Graph, requestNodeId: string): string {
+  return graph.nodes[requestNodeId]?.user.text ?? originalRequestOf(graph);
+}
+
 export function upstreamArtifactsOf(graph: Graph, nodeId: string): ReplyArtifacts[] {
   const node = graph.nodes[nodeId];
   if (!node) return [];

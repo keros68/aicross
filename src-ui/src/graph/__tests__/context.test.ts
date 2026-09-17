@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { artifactSummary, BLIND_PROMPT_PREFIX, contextOf, contextPartsOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../context.ts';
+import { artifactSummary, BLIND_PROMPT_PREFIX, contextOf, contextPartsOf, originalRequestOf, serializeContext, serializeCurrentMessage, upstreamArtifactsOf } from '../context.ts';
 import { stamp } from '../stamp.ts';
 import type { Graph, GraphNode, NodeKind, Reply, ReplyArtifacts, Target, VisibilityKind } from '../types.ts';
 
@@ -52,6 +52,14 @@ function mkGraph(nodes: GraphNode[], root = 'root'): Graph {
 }
 
 describe('contextOf', () => {
+  it('旧画布的 originalRequestOf 仍取根节点需求', () => {
+    const g = mkGraph([
+      mkNode('root', 'material', [], '旧画布原始需求'),
+      mkNode('later', 'turn', ['root'], '后续消息', { target: mkTarget('共享') }),
+    ]);
+    expect(originalRequestOf(g)).toBe('旧画布原始需求');
+  });
+
   it('R3-1 空 artifacts 与缺省 changed_files 的摘要辅助函数不抛', () => {
     expect(() => artifactSummary({} as ReplyArtifacts)).not.toThrow();
     expect(() => artifactSummary({ changed_files: undefined } as unknown as ReplyArtifacts)).not.toThrow();
