@@ -151,7 +151,7 @@ describe('TASK-25 控制台进度回流', () => {
     expect(messages[3].text).toContain('状态：超时');
     expect(messages[3].text).toContain('原因：等待模型响应超时');
     expect(messages.filter((message) => message.text === '第一阶段正文')).toHaveLength(1);
-    expect(messages[4].text).toBe('模式派发结束：成功 1 路，失败 1 路，总耗时 3.6 秒。');
+    expect(messages[4].text).toBe('结论：已完成（本模式不含验收）。\n共 2 路，运行失败 1 路，用时 3.6 秒。');
   });
 
   it('修正轮达到总请求上限时，收尾消息写明停止原因', async () => {
@@ -196,7 +196,7 @@ describe('TASK-25 控制台进度回流', () => {
 
     expect(dispatched).toBe(2);
     expect(outcome.error).toBe('已达总请求上限 2，继续派发需重新确认。');
-    expect(messages.at(-1)?.text).toContain('停止原因：已达总请求上限 2，继续派发需重新确认。');
+    expect(messages.at(-1)?.text).toContain('结论：中途停止（原因：已达总请求上限 2，继续派发需重新确认）');
   });
 
   it('最终保存失败时仍返回流水线结果并写入收尾消息', async () => {
@@ -226,7 +226,8 @@ describe('TASK-25 控制台进度回流', () => {
     } as any, { append: (message) => messages.push(message) });
 
     expect(outcome.results).toHaveLength(1);
-    expect(messages.at(-1)?.text).toContain('模式派发结束：成功 1 路，失败 0 路');
+    expect(messages.at(-1)?.text).toContain('结论：已完成（本模式不含验收）');
+    expect(messages.at(-1)?.text).toContain('共 1 路，运行失败 0 路');
     warn.mockRestore();
   });
 
@@ -271,7 +272,7 @@ describe('TASK-25 控制台进度回流', () => {
 
     expect(outcome.results.map((item) => item.result.status)).toEqual(['ok', 'timeout']);
     expect(messages.some((message) => message.text.startsWith('执行 · 修正后超时'))).toBe(true);
-    expect(messages.at(-1)?.text).toContain('成功 0 路，失败 1 路');
+    expect(messages.at(-1)?.text).toContain('共 1 路，运行失败 1 路');
   });
 });
 

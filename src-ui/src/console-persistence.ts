@@ -1,4 +1,9 @@
 import type { ConsoleMessage, ConsoleTargetAgent } from './console-session';
+import {
+  CONSOLE_RUN_LIMIT,
+  interruptConsoleRun,
+  parseConsoleRunRecord,
+} from './console-run-detail';
 import type { TerminalSession } from './store/app-state';
 
 export const CONSOLE_MESSAGE_LIMIT = 200;
@@ -44,6 +49,7 @@ function messageFrom(value: unknown): ConsoleMessage | null {
       : {}),
     ...(typeof message.status === 'string' ? { status: message.status } : {}),
     ...(typeof message.route === 'string' ? { route: message.route } : {}),
+    ...(typeof message.runId === 'string' && message.runId !== '' ? { runId: message.runId } : {}),
   };
 }
 
@@ -60,6 +66,7 @@ function persistedSession(session: TerminalSession): TerminalSession {
     folderPath: session.folderPath,
     messages: (session.messages ?? []).slice(-CONSOLE_MESSAGE_LIMIT),
     resumeId: resumeIdsFrom(session.resumeId),
+    runRecords: (session.runRecords ?? []).slice(-CONSOLE_RUN_LIMIT),
     ...(session.targetAgent ? { targetAgent: { ...session.targetAgent } } : {}),
     ...(session.lastAppliedMessageId ? { lastAppliedMessageId: session.lastAppliedMessageId } : {}),
     ...(session.consoleGraphId ? { consoleGraphId: session.consoleGraphId } : {}),
@@ -91,12 +98,20 @@ export function loadConsoleSessions(storage?: Storage): TerminalSession[] {
         ? session.messages.map(messageFrom).filter((message): message is ConsoleMessage => message !== null)
         : [];
       const targetAgent = targetFrom(session.targetAgent);
+      const runRecords = Array.isArray(session.runRecords)
+        ? session.runRecords
+          .map(parseConsoleRunRecord)
+          .filter((record) => record !== null)
+          .slice(-CONSOLE_RUN_LIMIT)
+          .map(interruptConsoleRun)
+        : [];
       return [{
         id: session.id,
         tool: 'console',
         folderPath: typeof session.folderPath === 'string' ? session.folderPath : null,
         messages: messages.slice(-CONSOLE_MESSAGE_LIMIT),
         resumeId: resumeIdsFrom(session.resumeId),
+        runRecords,
         ...(targetAgent ? { targetAgent } : {}),
         ...(typeof session.lastAppliedMessageId === 'string' && session.lastAppliedMessageId !== ''
           ? { lastAppliedMessageId: session.lastAppliedMessageId }

@@ -4,6 +4,7 @@ import { commands, isTauri } from '../../tauri';
 import type { DispatchableModel } from '../../graph/types';
 import { agentDisplayName } from '../../resources/agent-display';
 import { RESOURCES_CHANGED_EVENT } from '../../resources/mention';
+import { ConsoleRunDetail } from './ConsoleRunDetail';
 import {
   consoleResultMessage,
   createConsoleApplyHandler,
@@ -31,11 +32,16 @@ export function ConsoleChat({ session }: Props) {
   const [draft, setDraft] = useState('');
   const [models, setModels] = useState<DispatchableModel[]>([]);
   const [busy, setBusy] = useState(false);
+  const [openRunId, setOpenRunId] = useState('');
   const busyRef = useRef(false);
   const appliedRef = useRef(session.lastAppliedMessageId);
   const endRef = useRef<HTMLDivElement>(null);
   const target = session.targetAgent;
   const messages = session.messages ?? [];
+  const runRecords = session.runRecords ?? [];
+  const runsById = useMemo(() => new Map(runRecords.map((run) => [run.id, run])), [runRecords]);
+  const openRun = runsById.get(openRunId);
+  const activeRun = [...runRecords].reverse().find((run) => run.status === 'running');
 
   useEffect(() => {
     if (!isTauri) return;
@@ -155,6 +161,8 @@ export function ConsoleChat({ session }: Props) {
       },
       commitGraph: (graph) => dispatch({ type: 'SET_GRAPH', graph }),
       rememberGraph: (graphId) => dispatch({ type: 'SET_CONSOLE_GRAPH_ID', id: session.id, graphId }),
+      onRunUpdate: (run) => dispatch({ type: 'UPSERT_CONSOLE_RUN', id: session.id, run }),
+      onRunProgress: (run) => dispatch({ type: 'UPDATE_CONSOLE_RUN_PROGRESS', id: session.id, run }),
       onOutcome: () => {},
     });
     window.addEventListener(CONSOLE_APPLY_EVENT, apply);
@@ -162,6 +170,7 @@ export function ConsoleChat({ session }: Props) {
   }, [dispatch, draft, messages, session.consoleGraphId, session.folderPath, session.id, state]);
 
   if (!target) return null;
+  if (openRun) return <ConsoleRunDetail record={openRun} onClose={() => setOpenRunId('')} />;
   return (
     <div className="console-chat">
       <div className="console-chat-head">
@@ -190,9 +199,27 @@ export function ConsoleChat({ session }: Props) {
                   .filter(Boolean).join(' · ')}
               </div>
             )}
+            {message.runId && runsById.has(message.runId) && (
+              <button
+                type="button"
+                className="console-message-action"
+                onClick={() => setOpenRunId(message.runId ?? '')}
+              >
+                {runsById.get(message.runId)?.status === 'running' ? '查看进度' : '查看详情'}
+              </button>
+            )}
           </div>
         ))}
-        {busy && <div className="console-message-running">处理中…</div>}
+        {busy && (
+          <div className="console-message-running">
+            <span>处理中…</span>
+            {activeRun && (
+              <button type="button" className="console-running-action" onClick={() => setOpenRunId(activeRun.id)}>
+                查看进度
+              </button>
+            )}
+          </div>
+        )}
         <div ref={endRef} />
       </div>
       <div className="console-composer">

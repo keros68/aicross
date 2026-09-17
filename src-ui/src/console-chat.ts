@@ -1,4 +1,4 @@
-import { commands, type DispatchNodeResult, type DispatchSettings, type DispatchStageRequest } from './tauri';
+import { commands, type DispatchNodeResult, type DispatchProgress, type DispatchSettings, type DispatchStageRequest } from './tauri';
 import type { DispatchableModel, Graph, Preset, Target, Thinking } from './graph/types';
 import { newGraph } from './graph/types';
 import { stamp } from './graph/stamp';
@@ -23,6 +23,16 @@ import {
 } from './graph/context';
 import { validateNode } from './graph/validate';
 import { appendConsoleMaterial } from './console-channel';
+import { subscribeProgress } from './graph/dispatch-progress';
+import {
+  consoleRunTotals,
+  createConsoleRunRecord,
+  finishConsoleRun,
+  withConsoleRunProgress,
+  withConsoleRunResults,
+  withConsoleRunStage,
+  type ConsoleRunRecord,
+} from './console-run-detail';
 import {
   consoleMessage,
   selectConsoleApplyMessage,
@@ -49,6 +59,12 @@ export interface ConsolePresetResult {
 export interface ConsolePresetFeedback {
   append: (message: ConsoleMessage) => void;
   now?: () => number;
+  onRunUpdate?: (run: ConsoleRunRecord) => void;
+  onRunProgress?: (run: ConsoleRunRecord) => void;
+  subscribeProgress?: (
+    runId: string,
+    onEvent: (payload: DispatchProgress) => void,
+  ) => { dispose: () => void };
 }
 
 export interface ConsoleApplySnapshot {
@@ -70,6 +86,10 @@ export interface ConsoleApplyHandlerOptions {
   commitGraph: (graph: Graph) => void;
   rememberGraph: (graphId: string) => void;
   onOutcome: (outcome: ConsolePresetResult) => void;
+  onRunUpdate?: (run: ConsoleRunRecord) => void;
+  onRunProgress?: (run: ConsoleRunRecord) => void;
+  now?: () => number;
+  subscribeProgress?: ConsolePresetFeedback['subscribeProgress'];
   dispatchPreset?: typeof dispatchConsolePreset;
   io?: ConsoleCommands;
 }
@@ -300,126 +320,166 @@ export async function dispatchConsolePreset(
   if (dirtyReason) throw new Error(dirtyReason);
 
   const runId = `console-mode-${crypto.randomUUID()}`;
-  const commit = (next: Graph) => {
-    graph = { ...next, project, source: graphSource, updated_at: new Date().toISOString() };
-    commitGraph(graph);
-    void io.saveGraph(graph).catch((error) => console.warn('[console] 保存对话图失败', error));
-    return graph;
-  };
-  commit(graph);
-  const buildRequest = (sourceGraph: Graph, ids: string[]): DispatchStageRequest => ({
-    runId,
-    stage: ids.length ? Math.min(...ids.map((id) => graphStage(sourceGraph, id))) : 1,
-    projectDir: project,
-    settings: requestSettings(settings),
-    nodes: ids.map((id) => {
-      const node = sourceGraph.nodes[id];
-      const selected = serializeContext(sourceGraph, id);
-      return buildNodeRequest(id, node.target!, {
-        models: resources.models,
-        prompt: selected.prompt,
-        materials: selected.materials,
-        currentMessage: serializeCurrentMessage(node.user),
-        originalRequest: originalRequestOf(sourceGraph),
-        upstreamArtifacts: upstreamArtifactsOf(sourceGraph, id),
-        sessionId: continuationSession(sourceGraph, id) ?? '',
-        previousRunner: continuationRunner(sourceGraph, id) ?? '',
-        rollback: false,
-        stage: graphStage(sourceGraph, id),
-      });
-    }),
-  });
   const now = feedback?.now ?? Date.now;
   const startedAt = now();
-  const announcedStages = new Set<number>();
-  const announcedResults = new Map<string, string>();
-  const announceResults = (collected: DispatchNodeResult[]) => {
+  let runRecord = createConsoleRunRecord(runId, preset.name, startedAt);
+  const updateRun = (next: ConsoleRunRecord) => {
+    runRecord = next;
+    feedback?.onRunUpdate?.(next);
+  };
+  updateRun(runRecord);
+  const feedbackFailure: { error?: unknown } = {};
+  const appendFeedback = (message: ConsoleMessage) => {
     if (!feedback) return;
-    const latest = [...new Map(collected.map((result) => [result.nodeId, result])).values()];
-    for (const result of latest) {
-      const previousStatus = announcedResults.get(result.nodeId);
-      if (previousStatus === result.status) continue;
-      const target = graph.nodes[result.nodeId]?.target;
-      if (!target) continue;
-      const message = consoleResultMessage({
-        agent: target.agent,
-        provider: target.provider ?? '',
-        model: target.model,
-      }, result, target.role);
-      feedback.append(previousStatus === undefined ? message : {
-        ...message,
-        text: `${target.role || '未指定角色'} · 修正后${result.status === 'ok' ? '通过' : resultStatusLabel(result)}\n${message.text}`,
-      });
-      announcedResults.set(result.nodeId, result.status);
+    try {
+      feedback.append(message);
+    } catch (error) {
+      feedbackFailure.error = error;
+      throw error;
     }
   };
-  const pipeline = await startPipelineHeadless<DispatchNodeResult, DispatchStageRequest, unknown>({
-    graph,
-    settings,
-    skip: new Set(Object.keys(graph.nodes).filter((id) => graph.nodes[id].target && !newNodeIds.includes(id))),
-    deps: {
+  let progressSubscription: { dispose: () => void } | null = null;
+  try {
+    progressSubscription = feedback?.onRunUpdate || feedback?.onRunProgress
+      ? (feedback.subscribeProgress ?? subscribeProgress)(runId, (payload) => {
+        const next = withConsoleRunProgress(runRecord, payload, now());
+        if (next === runRecord) return;
+        runRecord = next;
+        feedback?.onRunProgress?.(next);
+      })
+      : null;
+    const commit = (next: Graph) => {
+      graph = { ...next, project, source: graphSource, updated_at: new Date().toISOString() };
+      commitGraph(graph);
+      void io.saveGraph(graph).catch((error) => console.warn('[console] 保存对话图失败', error));
+      return graph;
+    };
+    commit(graph);
+    const buildRequest = (sourceGraph: Graph, ids: string[]): DispatchStageRequest => ({
       runId,
-      buildRequest,
-      preview: (request) => io.previewDispatch(request),
-      dispatch: (request) => io.dispatchGraphStage(request),
-      commit,
-      onPreview: () => {},
-      onStage: (request, ids) => {
-        if (!feedback || announcedStages.has(request.stage)) return;
-        announcedStages.add(request.stage);
-        const routes = request.nodes
-          .filter((node) => ids.includes(node.nodeId))
-          .map((node) => `${node.role || '未指定角色'}（${node.agent} / ${node.model}）`);
-        feedback.append(consoleMessage(
-          'system',
-          `第 ${request.stage} 阶段 · 派出 ${ids.length} 路：${routes.join('、')}`,
-        ));
+      stage: ids.length ? Math.min(...ids.map((id) => graphStage(sourceGraph, id))) : 1,
+      projectDir: project,
+      settings: requestSettings(settings),
+      nodes: ids.map((id) => {
+        const node = sourceGraph.nodes[id];
+        const selected = serializeContext(sourceGraph, id);
+        return buildNodeRequest(id, node.target!, {
+          models: resources.models,
+          prompt: selected.prompt,
+          materials: selected.materials,
+          currentMessage: serializeCurrentMessage(node.user),
+          originalRequest: originalRequestOf(sourceGraph),
+          upstreamArtifacts: upstreamArtifactsOf(sourceGraph, id),
+          sessionId: continuationSession(sourceGraph, id) ?? '',
+          previousRunner: continuationRunner(sourceGraph, id) ?? '',
+          rollback: false,
+          stage: graphStage(sourceGraph, id),
+        });
+      }),
+    });
+    const announcedStages = new Set<number>();
+    const announcedResults = new Map<string, string>();
+    const announceResults = (collected: DispatchNodeResult[]) => {
+      if (feedback?.onRunUpdate) updateRun(withConsoleRunResults(runRecord, graph, collected, now()));
+      if (!feedback) return;
+      const latest = [...new Map(collected.map((result) => [result.nodeId, result])).values()];
+      for (const result of latest) {
+        const previousStatus = announcedResults.get(result.nodeId);
+        if (previousStatus === result.status) continue;
+        const target = graph.nodes[result.nodeId]?.target;
+        if (!target) continue;
+        const message = consoleResultMessage({
+          agent: target.agent,
+          provider: target.provider ?? '',
+          model: target.model,
+        }, result, target.role);
+        appendFeedback(previousStatus === undefined ? message : {
+          ...message,
+          text: `${target.role || '未指定角色'} · 修正后${result.status === 'ok' ? '通过' : resultStatusLabel(result)}\n${message.text}`,
+        });
+        announcedResults.set(result.nodeId, result.status);
+      }
+    };
+    const pipeline = await startPipelineHeadless<DispatchNodeResult, DispatchStageRequest, unknown>({
+      graph,
+      settings,
+      skip: new Set(Object.keys(graph.nodes).filter((id) => graph.nodes[id].target && !newNodeIds.includes(id))),
+      deps: {
+        runId,
+        buildRequest,
+        preview: (request) => io.previewDispatch(request),
+        dispatch: (request) => io.dispatchGraphStage(request),
+        commit,
+        onPreview: () => {},
+        onStage: (request, ids) => {
+          if (feedback?.onRunUpdate) updateRun(withConsoleRunStage(runRecord, request, now()));
+          if (!feedback || announcedStages.has(request.stage)) return;
+          announcedStages.add(request.stage);
+          const routes = request.nodes
+            .filter((node) => ids.includes(node.nodeId))
+            .map((node) => `${node.role || '未指定角色'}（${node.agent} / ${node.model}）`);
+          appendFeedback(consoleMessage(
+            'system',
+            `第 ${request.stage} 阶段 · 派出 ${ids.length} 路：${routes.join('、')}`,
+            { runId },
+          ));
+        },
+        onResults: announceResults,
       },
-      onResults: announceResults,
-    },
-    onError: (active, collected, message, working) => failedNodesWithoutResults(active, collected, message).map((node) => ({
-      ...node,
-      stage: graphStage(working, node.nodeId),
-      rawStdout: '',
-      rawStderr: '',
-      cacheRead: 0,
-      exitCode: null,
-      timedOut: false,
-      truncated: false,
-      redacted: 0,
-      isolation: '部分',
-      runner: 'unknown',
-      workdir: '',
-      dispatchFile: '',
-      frontmatter: '',
-      outputPreview: '',
-      validationOutput: '',
-      artifacts: null,
-      fallbackFrom: '',
-      fallbackTo: '',
-      fallbackSkipped: '',
-    })),
-  });
-  graph = pipeline.graph;
-  void io.saveGraph(graph).catch((error) => console.warn('[console] 保存对话图失败', error));
-  const uniqueResults = [...new Map(pipeline.results.map((result) => [result.nodeId, result])).values()];
-  if (feedback) {
-    announceResults(uniqueResults);
-    const succeeded = uniqueResults.filter((result) => result.status === 'ok').length;
-    const stopped = pipeline.error ? `停止原因：${pipeline.error}` : '';
-    feedback.append(consoleMessage(
-      'system',
-      `模式派发结束：成功 ${succeeded} 路，失败 ${uniqueResults.length - succeeded} 路，总耗时 ${((now() - startedAt) / 1000).toFixed(1)} 秒。${stopped}`,
-    ));
+      onError: (active, collected, message, working) => failedNodesWithoutResults(active, collected, message).map((node) => ({
+        ...node,
+        stage: graphStage(working, node.nodeId),
+        rawStdout: '',
+        rawStderr: '',
+        cacheRead: 0,
+        exitCode: null,
+        timedOut: false,
+        truncated: false,
+        redacted: 0,
+        isolation: '部分',
+        runner: 'unknown',
+        workdir: '',
+        dispatchFile: '',
+        frontmatter: '',
+        outputPreview: '',
+        validationOutput: '',
+        artifacts: null,
+        fallbackFrom: '',
+        fallbackTo: '',
+        fallbackSkipped: '',
+      })),
+    });
+    graph = pipeline.graph;
+    if ('error' in feedbackFailure) throw feedbackFailure.error;
+    void io.saveGraph(graph).catch((error) => console.warn('[console] 保存对话图失败', error));
+    const uniqueResults = [...new Map(pipeline.results.map((result) => [result.nodeId, result])).values()];
+    runRecord = finishConsoleRun(runRecord, graph, uniqueResults, pipeline.error, now());
+    feedback?.onRunUpdate?.(runRecord);
+    if (feedback) {
+      announceResults(uniqueResults);
+      const totals = consoleRunTotals(runRecord, runRecord.finishedAt ?? now());
+      const failed = uniqueResults.filter((result) => result.status !== 'ok').length;
+      appendFeedback(consoleMessage(
+        'system',
+        `结论：${runRecord.conclusion}。\n共 ${totals.routes} 路，运行失败 ${failed} 路，用时 ${(totals.wallDurationMs / 1000).toFixed(1)} 秒。`,
+        { runId },
+      ));
+    }
+    const results = pipeline.results.flatMap((result) => {
+      const target = graph.nodes[result.nodeId]?.target;
+      return target ? [{
+        result,
+        target: { agent: target.agent, provider: target.provider ?? '', model: target.model },
+      }] : [];
+    });
+    return { graph, results, error: pipeline.error };
+  } catch (error) {
+    runRecord = finishConsoleRun(runRecord, graph, [], String(error), now());
+    feedback?.onRunUpdate?.(runRecord);
+    throw error;
+  } finally {
+    progressSubscription?.dispose();
   }
-  const results = pipeline.results.flatMap((result) => {
-    const target = graph.nodes[result.nodeId]?.target;
-    return target ? [{
-      result,
-      target: { agent: target.agent, provider: target.provider ?? '', model: target.model },
-    }] : [];
-  });
-  return { graph, results, error: pipeline.error };
 }
 
 export function createConsoleApplyHandler(options: ConsoleApplyHandlerOptions): (event: Event) => void {
@@ -462,7 +522,13 @@ export function createConsoleApplyHandler(options: ConsoleApplyHandlerOptions): 
       },
       snapshot.existingGraph,
       options.io ?? commands,
-      { append: options.append },
+      {
+        append: options.append,
+        onRunUpdate: options.onRunUpdate,
+        onRunProgress: options.onRunProgress,
+        now: options.now,
+        subscribeProgress: options.subscribeProgress,
+      },
     ).then((outcome) => {
       options.onOutcome(outcome);
     }).catch((error) => {
