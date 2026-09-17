@@ -40,6 +40,7 @@ export interface ChangedFile {
 }
 
 export interface ReplyArtifacts {
+  source_node_id?: string;
   diff: string;
   changed_files: ChangedFile[];
   worktree?: string;
