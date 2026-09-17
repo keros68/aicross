@@ -14,6 +14,8 @@ describe('续聊失效判定：普通报错不回退，真失效才回退', () =
     'Error: invalid model name gpt-9',
     'thread panicked at src/main.rs: index out of bounds',
     'network error: connection reset while streaming conversation',
+    'Worker thread error: task not found',
+    'thread pool: connection not found',
   ];
   for (const message of notExpired) {
     it(`不回退：${message}`, () => {
@@ -27,6 +29,8 @@ describe('续聊失效判定：普通报错不回退，真失效才回退', () =
     'thread 01a0 not found',
     'conversation does not exist',
     'cannot resume: session expired',
+    "session 'abc-123' has expired",
+    'session id 42 does not exist',
   ];
   for (const message of expired) {
     it(`应回退：${message}`, () => {

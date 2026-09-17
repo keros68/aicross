@@ -212,8 +212,10 @@ async function dispatchPreparedConsoleTurn(
 // （09-17 编排者核对：旧写法把「Invalid API key for this session」与
 // 「unknown error in thread pool」都判成了会话失效）。
 const EXPIRED_RESUME_PATTERNS: RegExp[] = [
-  // session not found / thread 01a0 not found / conversation does not exist / session expired
-  /\b(?:session|thread|conversation)\b[^.\n]{0,40}?\b(?:not found|does not exist|no longer exists|has expired|expired)\b/i,
+  // session not found / thread 01a0 not found / conversation does not exist / session 'abc' has expired
+  // 会话词与失效词之间只允许一个 id 样的词（09-17 Gemini 复审：放任意 40 字会把
+  // 「Worker thread error: task not found」判成失效）
+  /\b(?:session|thread|conversation)(?:\s+id)?(?:\s+['"]?[\w-]+['"]?)?\s+(?:is\s+)?(?:not found|does not exist|no longer exists|has expired|expired)\b/i,
   // no session / unknown session / invalid thread / no such conversation
   /\b(?:no|unknown|invalid|expired|no such)\s+(?:session|thread|conversation)\b/i,
   // cannot resume / could not resume / failed to resume
