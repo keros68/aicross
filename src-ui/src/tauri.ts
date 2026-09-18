@@ -428,6 +428,7 @@ export const commands = {
   answerAcpPermission: (requestId: string, optionId: string | null) =>
     invoke<void>('answer_acp_permission', { requestId, optionId }),
   closeAcpPermissions: (runId: string) => invoke<void>('close_acp_permissions', { runId }),
+  forgetAcpRun: (runId: string) => invoke<void>('forget_acp_run', { runId }),
   acpCommands: (agent: string, cwd: string) =>
     invoke<import('./console-acp').AcpCommand[]>('acp_commands', { agent, cwd }),
 };

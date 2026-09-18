@@ -62,6 +62,7 @@ export function ConsoleChat({ session }: Props) {
   // 每家 agent × 目录的 `/` 命令清单：undefined 未取、'loading' 取中、数组为结果（空数组 = 没有）。
   const [commandLists, setCommandLists] = useState<Record<string, AcpCommand[] | 'loading'>>({});
   const chatRunIdRef = useRef('');
+  const unmountedRef = useRef(false);
   // 取到空清单（适配器暂时没推）的时间：5 分钟后再输入 / 会重取，不把空结果一直留着。
   const emptyCommandsAtRef = useRef<Record<string, number>>({});
   // 与 permissions 同步维护、但在事件回调里立即更新：卸载时据它拒绝，不漏掉还没渲染的请求。
@@ -121,6 +122,7 @@ export function ConsoleChat({ session }: Props) {
       for (const request of permissionsRef.current) {
         commands.answerAcpPermission(request.requestId, null).catch(() => {});
       }
+      unmountedRef.current = true;
       if (chatRunIdRef.current) commands.closeAcpPermissions(chatRunIdRef.current).catch(() => {});
     };
   }, []);
@@ -196,7 +198,7 @@ export function ConsoleChat({ session }: Props) {
     commands.acpCommands(slashAgent, session.folderPath ?? '')
       .then(settle)
       .catch(() => settle([]));
-  }, [commandLists, session.folderPath, slashAgent, slashKey]);
+  }, [commandLists, draft, session.folderPath, slashAgent, slashKey]);
 
   const answerPermission = (request: AcpPermissionRequest, optionId: string | null) => {
     permissionsRef.current = permissionsRef.current.filter((item) => item.requestId !== request.requestId);
@@ -276,6 +278,7 @@ export function ConsoleChat({ session }: Props) {
     } catch (error) {
       append(consoleMessage('system', String(error).replace(/^Error:\s*/, '')));
     } finally {
+      if (unmountedRef.current) commands.forgetAcpRun(runId).catch(() => {});
       chatRunIdRef.current = '';
       permissionsRef.current = [];
       setPermissions([]);

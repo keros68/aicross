@@ -42,9 +42,10 @@
   font-size: 13px;
 }
 
+/* 模型回复、系统提示、权限卡片一律占满消息栏宽度，左右边对齐；只有用户消息是按内容收缩的右侧气泡。 */
 .console-message {
-  width: fit-content;
-  max-width: min(760px, 88%);
+  box-sizing: border-box;
+  width: 100%;
   margin: 0 0 18px;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -53,13 +54,14 @@
 }
 
 .console-message-user {
+  width: fit-content;
+  max-width: min(760px, 88%);
   margin-left: auto;
   background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 
 .console-message-system {
-  max-width: 100%;
   background: transparent;
   border-style: dashed;
 }
@@ -391,7 +393,8 @@
 
 /* 权限卡片：执行命令 / 调 MCP 前等用户点。 */
 .console-permission {
-  max-width: min(760px, 88%);
+  box-sizing: border-box;
+  width: 100%;
   margin: 0 0 18px;
   padding: 12px 14px;
   border: 1px solid var(--accent);

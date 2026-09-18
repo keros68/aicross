@@ -95,7 +95,7 @@ fn pending_permissions() -> &'static Mutex<HashMap<String, mpsc::Sender<Option<S
 
 /// 界面已关掉的轮次（runId 前缀）：之后到的权限请求不再上卡片，直接拒。
 /// 只在持有 pending_permissions 锁时读写（锁序 pending → closed），与登记挂起请求原子。
-/// 不淘汰：runId 各不相同，只在「轮次进行中关 tab」时各多一条。
+/// 这一轮（含续聊失效的重派）彻底结束后由界面调 forget_acp_run 删掉。
 fn closed_runs() -> &'static Mutex<Vec<String>> {
     static CLOSED: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
     CLOSED.get_or_init(|| Mutex::new(Vec::new()))
@@ -132,6 +132,16 @@ pub fn close_acp_permissions(run_id: String) {
         .unwrap_or_default();
     for sender in senders {
         let _ = sender.send(None);
+    }
+}
+
+/// 关 tab 那一轮的派发全部结束后删掉关闭记录（此后不会再有这一轮的权限请求）。
+#[tauri::command]
+pub fn forget_acp_run(run_id: String) {
+    if let Ok(_pending) = pending_permissions().lock() {
+        if let Ok(mut closed) = closed_runs().lock() {
+            closed.retain(|prefix| prefix != &run_id);
+        }
     }
 }
 
@@ -1082,12 +1092,15 @@ fn reported_model(response: &Value, requested: &str) -> String {
     }
     let family = model_family(&requested);
     if family.is_some_and(|family| requested == family) {
-        if let Some((_, model)) = entries
+        let mut same_family = entries
             .iter()
             .filter(|(_, model)| family.is_some_and(|family| model.to_ascii_lowercase().contains(family)))
-            .max_by_key(|(tokens, _)| *tokens)
-        {
-            return model.clone();
+            .map(|(_, model)| model.clone())
+            .collect::<Vec<_>>();
+        same_family.sort();
+        same_family.dedup();
+        if same_family.len() == 1 {
+            return same_family.remove(0);
         }
     }
     // 请求的具体模型不在用量里：可能降级，也可能只是命名不同；用量里混着子代理与起标题的小调用，
@@ -1767,6 +1780,12 @@ mod tests {
             {"model":"claude-opus-5[1m]","token_count":{"totalTokens":9000}}
         ]}}}});
         assert_eq!(reported_model(&subagent, "opus"), "claude-opus-5");
+        // 按别名请求、同家族有两代：不按用量猜，全列出。
+        let two_opus = json!({"result":{"_meta":{"quota":{"model_usage":[
+            {"model":"claude-opus-4-8","token_count":{"totalTokens":400000}},
+            {"model":"claude-opus-5[1m]","token_count":{"totalTokens":9000}}
+        ]}}}});
+        assert_eq!(reported_model(&two_opus, "opus"), "claude-opus-4-8 + claude-opus-5");
         // 请求的具体模型缺席：不猜主模型，按用量列出实际跑过的全部模型。
         assert_eq!(reported_model(&subagent, "claude-sonnet-5"), "claude-haiku-4-5-20251001 + claude-opus-5");
         // 同一家族不同代：请求的具体 ID 在列表里时按它报，不按用量。
@@ -1854,6 +1873,8 @@ mod tests {
             .unwrap();
         assert_eq!(second.channel.text, "turn-2:no");
         assert!(pending_permissions().lock().unwrap().keys().all(|key| !key.starts_with("closed-run:")));
+        forget_acp_run("closed-run".into());
+        assert!(!run_closed("closed-run:node"));
     }
     #[test]
     fn late_permission_from_another_session_is_auto_answered_not_carded() {
