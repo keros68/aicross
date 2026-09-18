@@ -54,7 +54,8 @@
     "windows": {
       "wix": {
         "fragmentPaths": ["./windows/fragments/path.wxs"],
-        "componentRefs": ["AicrossConsolePath"]
+        "componentRefs": ["AicrossConsolePath"],
+        "language": "zh-CN"
       },
       "nsis": {
         "template": "installer.nsi",
