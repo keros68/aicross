@@ -93,6 +93,57 @@ fn pending_permissions() -> &'static Mutex<HashMap<String, mpsc::Sender<Option<S
     PENDING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// 界面已关掉的轮次（runId 前缀）：之后到的权限请求不再上卡片，直接拒。
+fn closed_runs() -> &'static Mutex<Vec<String>> {
+    static CLOSED: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    CLOSED.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn run_closed(dispatch_key: &str) -> bool {
+    closed_runs().lock().is_ok_and(|closed| {
+        closed.iter().any(|prefix| {
+            dispatch_key.starts_with(&format!("{prefix}:")) || dispatch_key.starts_with(&format!("{prefix}-fresh:"))
+        })
+    })
+}
+
+/// 控制台 tab 关闭：本轮挂着的权限请求立即按拒绝回，之后再到的也直接拒，
+/// 不让引擎等到整轮超时、占着进程锁。
+#[tauri::command]
+pub fn close_acp_permissions(run_id: String) {
+    if run_id.is_empty() {
+        return;
+    }
+    if let Ok(mut closed) = closed_runs().lock() {
+        if closed.len() > 200 {
+            closed.drain(..100);
+        }
+        closed.push(run_id.clone());
+    }
+    let senders = pending_permissions()
+        .lock()
+        .map(|mut pending| {
+            let keys = pending
+                .keys()
+                .filter(|key| key.starts_with(&format!("{run_id}:")) || key.starts_with(&format!("{run_id}-fresh:")))
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter().filter_map(|key| pending.remove(&key)).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for sender in senders {
+        let _ = sender.send(None);
+    }
+}
+
+/// 取命令清单失败（适配器没起来、建会话失败）只记 5 分钟：短时间内不反复等，恢复后能再取。
+fn command_failures() -> &'static Mutex<HashMap<String, Instant>> {
+    static FAILURES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const COMMAND_FAILURE_TTL: Duration = Duration::from_secs(300);
+
 fn command_cache() -> &'static Mutex<HashMap<String, Vec<AcpCommand>>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Vec<AcpCommand>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -616,6 +667,16 @@ impl AcpClient {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let request_id = format!("{dispatch_key}#{}", COUNTER.fetch_add(1, Ordering::Relaxed));
         let options = permission_options(message);
+        if run_closed(dispatch_key) {
+            let reject = options.iter().find(|option| option.kind == "reject_once").map(|option| option.option_id.clone());
+            let result = reject
+                .map(|id| json!({"outcome":{"outcome":"selected","optionId":id}}))
+                .unwrap_or_else(|| json!({"outcome":{"outcome":"cancelled"}}));
+            return self
+                .process
+                .send_json_line(&json!({"jsonrpc":"2.0","id":message["id"],"result":result}))
+                .map_err(|e| AcpError::new(AcpErrorKind::Process, e));
+        }
         let (sender, receiver) = mpsc::channel();
         if let Ok(mut pending) = pending_permissions().lock() {
             pending.insert(request_id.clone(), sender);
@@ -1159,9 +1220,21 @@ pub async fn acp_commands(agent: String, cwd: String) -> Result<Vec<AcpCommand>,
     if let Some(cached) = command_cache().lock().ok().and_then(|cache| cache.get(&key).cloned()) {
         return Ok(cached);
     }
-    tauri::async_runtime::spawn_blocking(move || probe_commands(&normalized, Path::new(&cwd)))
+    let recently_failed = command_failures()
+        .lock()
+        .is_ok_and(|failures| failures.get(&key).is_some_and(|at| at.elapsed() < COMMAND_FAILURE_TTL));
+    if recently_failed {
+        return Ok(Vec::new());
+    }
+    let outcome = tauri::async_runtime::spawn_blocking(move || probe_commands(&normalized, Path::new(&cwd)))
         .await
-        .map_err(|e| format!("读取命令清单失败：{e}"))?
+        .map_err(|e| format!("读取命令清单失败：{e}"))?;
+    if outcome.as_ref().map_or(true, Vec::is_empty) {
+        if let Ok(mut failures) = command_failures().lock() {
+            failures.insert(key, Instant::now());
+        }
+    }
+    outcome
 }
 
 fn probe_commands(agent: &str, cwd: &Path) -> Result<Vec<AcpCommand>, String> {
@@ -1195,11 +1268,6 @@ fn probe_commands(agent: &str, cwd: &Path) -> Result<Vec<AcpCommand>, String> {
         }
     })();
     client.process.terminate();
-    if outcome.as_ref().map_or(true, |found| found.is_empty()) {
-        if let Ok(mut cache) = command_cache().lock() {
-            cache.entry(command_key(agent, &client.cwd)).or_default();
-        }
-    }
     outcome
 }
 
@@ -1750,6 +1818,31 @@ mod tests {
         answer.join().unwrap();
         assert_eq!(rejected.channel.text, "turn-2:no");
         assert!(pending_permissions().lock().unwrap().keys().all(|key| !key.starts_with("card-run:")));
+    }
+    #[test]
+    fn closing_the_tab_rejects_pending_and_later_permissions_of_that_run() {
+        let cwd = std::env::current_dir().unwrap();
+        let Some(mut client) = fake_client() else { return };
+        client.interactive = Some("closed-run:node".into());
+        let closer = thread::spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !pending_permissions().lock().unwrap().keys().any(|key| key.starts_with("closed-run:")) {
+                assert!(Instant::now() < deadline, "没等到挂起的权限请求");
+                thread::sleep(Duration::from_millis(10));
+            }
+            close_acp_permissions("closed-run".into());
+        });
+        let first = client
+            .prompt("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
+            .unwrap();
+        closer.join().unwrap();
+        assert_eq!(first.channel.text, "turn-1:no");
+        // 关掉之后同一轮再来的请求不挂起，立即拒。
+        let second = client
+            .prompt("fake-model", Some(&first.channel.session_id), "second", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
+            .unwrap();
+        assert_eq!(second.channel.text, "turn-2:no");
+        assert!(pending_permissions().lock().unwrap().keys().all(|key| !key.starts_with("closed-run:")));
     }
     #[test]
     fn late_permission_from_another_session_is_auto_answered_not_carded() {

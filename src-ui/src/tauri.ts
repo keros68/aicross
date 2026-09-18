@@ -427,6 +427,7 @@ export const commands = {
   // 控制台单线聊天走 ACP（09-18）：权限卡片的回答、`/` 补全的命令清单。
   answerAcpPermission: (requestId: string, optionId: string | null) =>
     invoke<void>('answer_acp_permission', { requestId, optionId }),
+  closeAcpPermissions: (runId: string) => invoke<void>('close_acp_permissions', { runId }),
   acpCommands: (agent: string, cwd: string) =>
     invoke<import('./console-acp').AcpCommand[]>('acp_commands', { agent, cwd }),
 };

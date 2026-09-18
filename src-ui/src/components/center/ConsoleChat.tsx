@@ -114,10 +114,12 @@ export function ConsoleChat({ session }: Props) {
       opened.dispose();
       closed.dispose();
       listed.dispose();
-      // 关掉 tab 时卡片再无人回答：一律按拒绝回，别让引擎等到超时还占着进程锁。
+      // 关掉 tab 时卡片再无人回答：本轮挂着的与之后再到的权限请求一律由引擎按拒绝回，
+      // 别让它等到整轮超时还占着进程锁（事件还没送到界面的那条也算）。
       for (const request of permissionsRef.current) {
         commands.answerAcpPermission(request.requestId, null).catch(() => {});
       }
+      if (chatRunIdRef.current) commands.closeAcpPermissions(chatRunIdRef.current).catch(() => {});
     };
   }, []);
 

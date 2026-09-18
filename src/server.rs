@@ -3983,6 +3983,7 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::channels::acp::detect_acp_adapters,
             crate::channels::acp::release_acp_pool,
             crate::channels::acp::answer_acp_permission,
+            crate::channels::acp::close_acp_permissions,
             crate::channels::acp::acp_commands,
             crate::orchestration::load_premises,
             crate::orchestration::save_premises,
