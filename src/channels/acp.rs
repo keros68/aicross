@@ -42,7 +42,17 @@ pub struct AcpCommand {
 #[serde(rename_all = "camelCase")]
 struct CommandsEvent {
     agent: String,
+    /// 归一化目录（正斜杠、小写、无尾斜杠），界面按同一规则比对。
+    cwd: String,
     commands: Vec<AcpCommand>,
+}
+
+fn normalize_cwd(cwd: &str) -> String {
+    cwd.replace('\\', "/").trim_end_matches('/').to_lowercase()
+}
+
+fn command_key(agent: &str, cwd: &str) -> String {
+    format!("{agent}|{cwd}")
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -147,6 +157,8 @@ struct AcpClient {
     can_close_session: bool,
     can_resume_session: bool,
     prelude_raw: String,
+    /// 进程工作目录（命令清单按 agent + 目录缓存：项目级技能各目录不同）。
+    cwd: String,
     /// 归一化后的 agent（kimi / claude / codex）；配置项取值按它分支。
     agent: String,
     /// 本轮是控制台单线聊天时为 `Some(dispatch_key)`：非读非写的权限请求交给界面裁决。
@@ -157,6 +169,8 @@ struct AcpClient {
 struct SessionState {
     model: String,
     config_options: Vec<Value>,
+    /// 经 session/resume 接回的会话（不是本进程 session/new 建的）。
+    resumed: bool,
 }
 
 struct ClientSlot {
@@ -321,6 +335,7 @@ fn start_client(
         can_close_session: false,
         can_resume_session: false,
         prelude_raw: String::new(),
+        cwd: normalize_cwd(&cwd.to_string_lossy()),
         agent: String::new(),
         interactive: None,
     };
@@ -370,8 +385,8 @@ impl AcpClient {
         if !self.process.is_running() {
             return Err(AcpError::new(AcpErrorKind::Process, "ACP 进程已退出"));
         }
-        let (session_id, new_config_options) = match session_id.filter(|v| !v.is_empty()) {
-            Some(id) if self.sessions.contains_key(id) => (id.to_string(), None),
+        let (session_id, new_config_options, resumed) = match session_id.filter(|v| !v.is_empty()) {
+            Some(id) if self.sessions.contains_key(id) => (id.to_string(), None, false),
             // claude / codex 的 ACP 会话 id 就是 CLI 自己的会话 id：进程重启或上一轮走的一次性
             // CLI，都能用 session/resume 接回原会话；接不回再按「所属进程已退出」回退。
             Some(id) if self.can_resume_session && matches!(self.agent.as_str(), "claude" | "codex") => {
@@ -398,7 +413,7 @@ impl AcpClient {
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                (id.to_string(), Some(options))
+                (id.to_string(), Some(options), true)
             }
             Some(_) => {
                 return Err(AcpError::new(
@@ -427,13 +442,14 @@ impl AcpClient {
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                (id, Some(options))
+                (id, Some(options), false)
             },
         };
         if let Some(config_options) = new_config_options {
             self.sessions.insert(session_id.clone(), SessionState {
                 model: String::new(),
                 config_options,
+                resumed,
             });
         }
         let mut notes = Vec::new();
@@ -460,7 +476,7 @@ impl AcpClient {
                 text,
                 session_id,
                 usage,
-                identity: reported_model(&response),
+                identity: reported_model(&response, model),
             },
             raw_stdout: raw,
             raw_stderr: self.process.take_stderr_text(),
@@ -484,7 +500,8 @@ impl AcpClient {
             .map(|state| state.config_options.clone())
             .unwrap_or_default();
         let current_model = self.sessions.get(session_id).map(|state| state.model.as_str());
-        let resumed_without_options = config_options.is_empty() && matches!(self.agent.as_str(), "claude" | "codex");
+        let resumed_without_options = config_options.is_empty()
+            && self.sessions.get(session_id).is_some_and(|state| state.resumed);
         if resumed_without_options && !model.is_empty() && current_model != Some(model) {
             // session/resume 没回配置清单时不盲设模型：接回的会话沿用它原来的模型。
             notes.push("ACP 接回的会话未报配置清单，沿用原模型".into());
@@ -576,9 +593,9 @@ impl AcpClient {
         }
         let commands = parse_commands(message);
         if let Ok(mut cache) = command_cache().lock() {
-            cache.insert(self.agent.clone(), commands.clone());
+            cache.insert(command_key(&self.agent, &self.cwd), commands.clone());
         }
-        emit(COMMANDS_EVENT, CommandsEvent { agent: self.agent.clone(), commands });
+        emit(COMMANDS_EVENT, CommandsEvent { agent: self.agent.clone(), cwd: self.cwd.clone(), commands });
     }
 
     /// 把权限请求交给界面卡片，阻塞到用户点选、派发取消或超时；后两者按拒绝回。
@@ -739,9 +756,10 @@ impl AcpClient {
                 continue;
             }
             if incoming == Some("session/request_permission") {
-                if output.as_ref().is_some_and(|(session, _, _)| {
+                let current_session = output.as_ref().is_some_and(|(session, _, _)| {
                     message.pointer("/params/sessionId").and_then(Value::as_str) == Some(*session)
-                }) {
+                });
+                if current_session {
                     if let Some(activity) = activity {
                         if let Some(title) = message.pointer("/params/toolCall/title").and_then(Value::as_str) {
                             activity.record_tool_call(title);
@@ -751,7 +769,9 @@ impl AcpClient {
                     }
                 }
                 match self.interactive.clone() {
-                    Some(dispatch_key) if !blind && !is_read_request(&message) && !is_edit_request(&message) => {
+                    Some(dispatch_key)
+                        if current_session && !blind && !is_read_request(&message) && !is_edit_request(&message) =>
+                    {
                         self.ask_user_permission(&message, &dispatch_key, deadline, cancel_key)?;
                     }
                     _ => self.answer_permission(&message, writable, blind)?,
@@ -856,7 +876,12 @@ fn permission_options(message: &Value) -> Vec<PermissionOption> {
                     })
                 })
                 .filter(|option| !option.option_id.is_empty())
-                .collect()
+                .fold(Vec::<PermissionOption>::new(), |mut kept, option| {
+                    if !kept.iter().any(|seen| seen.kind == option.kind) {
+                        kept.push(option);
+                    }
+                    kept
+                })
         })
         .unwrap_or_default()
 }
@@ -964,20 +989,32 @@ fn append_update_text(message: &Value, target: &mut String) {
 
 /// claude-agent-acp 在 prompt 结果的 `_meta.quota.model_usage` 里按模型列用量（含起标题用的
 /// haiku 小调用）；取 token 最多的那个当真身，去掉 `[1m]` 这类上下文后缀。其它适配器不报则为空。
-fn reported_model(response: &Value) -> String {
+fn reported_model(response: &Value, requested: &str) -> String {
     let Some(models) = response.pointer("/result/_meta/quota/model_usage").and_then(Value::as_array) else {
         return String::new();
     };
-    models
+    let entries = models
         .iter()
         .filter_map(|entry| {
             let model = entry.get("model").and_then(Value::as_str)?;
             let tokens = entry.pointer("/token_count/totalTokens").and_then(Value::as_u64).unwrap_or(0);
-            Some((tokens, model))
+            Some((tokens, model.split('[').next().unwrap_or(model).trim().to_string()))
         })
-        .max_by_key(|(tokens, _)| *tokens)
-        .map(|(_, model)| model.split('[').next().unwrap_or(model).trim().to_string())
+        .collect::<Vec<_>>();
+    let family = model_family(requested);
+    let same_family = entries
+        .iter()
+        .filter(|(_, model)| family.is_some_and(|family| model.to_ascii_lowercase().contains(family)))
+        .max_by_key(|(tokens, _)| *tokens);
+    same_family
+        .or_else(|| entries.iter().max_by_key(|(tokens, _)| *tokens))
+        .map(|(_, model)| model.clone())
         .unwrap_or_default()
+}
+
+fn model_family(model: &str) -> Option<&'static str> {
+    let lower = model.to_ascii_lowercase();
+    ["opus", "sonnet", "haiku", "fable"].into_iter().find(|family| lower.contains(family))
 }
 
 /// ACP 模型选项的取值与资源库里的模型 ID 不一定相同：claude-agent-acp 只给 `opus[1m]` /
@@ -991,8 +1028,7 @@ fn resolve_model_value(model: &str, values: &[&str]) -> Option<String> {
     if values.contains(&long_context.as_str()) {
         return Some(long_context);
     }
-    let lower = model.to_ascii_lowercase();
-    let family = ["opus", "sonnet", "haiku", "fable"].into_iter().find(|family| lower.contains(family))?;
+    let family = model_family(model)?;
     let mut matches = values.iter().filter(|value| value.to_ascii_lowercase().contains(family));
     let first = matches.next()?;
     matches.next().is_none().then(|| first.to_string())
@@ -1107,7 +1143,8 @@ pub async fn acp_commands(agent: String, cwd: String) -> Result<Vec<AcpCommand>,
     if !supports(&normalized, true) {
         return Ok(Vec::new());
     }
-    if let Some(cached) = command_cache().lock().ok().and_then(|cache| cache.get(&normalized).cloned()) {
+    let key = command_key(&normalized, &normalize_cwd(&cwd));
+    if let Some(cached) = command_cache().lock().ok().and_then(|cache| cache.get(&key).cloned()) {
         return Ok(cached);
     }
     tauri::async_runtime::spawn_blocking(move || probe_commands(&normalized, Path::new(&cwd)))
@@ -1122,12 +1159,16 @@ fn probe_commands(agent: &str, cwd: &Path) -> Result<Vec<AcpCommand>, String> {
         client
             .request("session/new", json!({"cwd":cwd,"mcpServers":[]}), deadline, None, false, true, "", None)
             .map_err(|e| e.message)?;
+        let key = command_key(agent, &client.cwd);
         loop {
-            if let Some(found) = command_cache().lock().ok().and_then(|cache| cache.get(agent).cloned()) {
+            if let Some(found) = command_cache().lock().ok().and_then(|cache| cache.get(&key).cloned()) {
                 return Ok(found);
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
+                if let Ok(mut cache) = command_cache().lock() {
+                    cache.insert(key, Vec::new());
+                }
                 return Ok(Vec::new());
             }
             match client.process.recv_line(remaining.min(Duration::from_millis(200))) {
@@ -1623,8 +1664,15 @@ mod tests {
             {"model":"claude-haiku-4-5-20251001","token_count":{"totalTokens":971}},
             {"model":"claude-opus-5[1m]","token_count":{"totalTokens":88160}}
         ]}}}});
-        assert_eq!(reported_model(&response), "claude-opus-5");
-        assert_eq!(reported_model(&json!({"result":{"stopReason":"end_turn"}})), "");
+        assert_eq!(reported_model(&response, "claude-opus-5"), "claude-opus-5");
+        assert_eq!(reported_model(&json!({"result":{"stopReason":"end_turn"}}), "opus"), "");
+        // 子代理（haiku）用量更大时仍报请求的那一家族；请求家族完全缺席时如实报用量最大的。
+        let subagent = json!({"result":{"_meta":{"quota":{"model_usage":[
+            {"model":"claude-haiku-4-5-20251001","token_count":{"totalTokens":500000}},
+            {"model":"claude-opus-5[1m]","token_count":{"totalTokens":9000}}
+        ]}}}});
+        assert_eq!(reported_model(&subagent, "opus"), "claude-opus-5");
+        assert_eq!(reported_model(&subagent, "claude-sonnet-5"), "claude-haiku-4-5-20251001");
     }
     #[test]
     fn edit_requests_are_recognised_by_kind_or_by_kimi_title() {
@@ -1651,6 +1699,8 @@ mod tests {
             "options":[{"optionId":"allow-once","kind":"allow_once"},{"optionId":"always","kind":"allow_always"},{"optionId":"reject","kind":"reject_once"}]}});
         let options = permission_options(&request);
         assert_eq!(options.iter().map(|o| o.option_id.as_str()).collect::<Vec<_>>(), ["allow-once", "reject"]);
+        let duplicated = json!({"params":{"options":[{"optionId":"a1","kind":"allow_once"},{"optionId":"a2","kind":"allow_once"},{"optionId":"r1","kind":"reject_once"},{"optionId":"r2","kind":"reject_once"}]}});
+        assert_eq!(permission_options(&duplicated).iter().map(|o| o.option_id.as_str()).collect::<Vec<_>>(), ["a1", "r1"]);
         let event = permission_event(&request, "r#1", "run:node", "claude", options);
         assert_eq!(event.title, "mcp__kimi-cu__list_apps");
         assert!(!event.detail.contains("abcdefghijklmnopqrstuvwxyz0123456789"), "卡片正文要脱敏：{}", event.detail);
@@ -1677,6 +1727,20 @@ mod tests {
         assert!(pending_permissions().lock().unwrap().keys().all(|key| !key.starts_with("card-run:")));
     }
     #[test]
+    fn late_permission_from_another_session_is_auto_answered_not_carded() {
+        let cwd = std::env::current_dir().unwrap();
+        let Some(mut client) = fake_client_with(&["--other-session-permission"]) else { return };
+        client.interactive = Some("card-other".into());
+        let answer = thread::spawn(|| test_answer_pending("card-other#", Some("once")));
+        let result = client
+            .prompt("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
+            .unwrap();
+        answer.join().unwrap();
+        // 另一会话的执行类请求按只读策略拒掉；只有本会话那条上了卡片、被「允许一次」。
+        assert_eq!(result.channel.text, "turn-1:once:other-no");
+        assert!(pending_permissions().lock().unwrap().keys().all(|key| !key.starts_with("card-other")));
+    }
+    #[test]
     fn interactive_turn_still_auto_answers_reads_and_blind_turns_never_ask() {
         let cwd = std::env::current_dir().unwrap();
         let Some(mut client) = fake_client() else { return };
@@ -1700,7 +1764,8 @@ mod tests {
         client
             .prompt("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
             .unwrap();
-        let cached = command_cache().lock().unwrap().get("fake-commands").cloned().unwrap_or_default();
+        let key = command_key("fake-commands", &normalize_cwd(&cwd.to_string_lossy()));
+        let cached = command_cache().lock().unwrap().get(&key).cloned().unwrap_or_default();
         assert_eq!(cached.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["compact", "skill:demo"]);
     }
     #[test]

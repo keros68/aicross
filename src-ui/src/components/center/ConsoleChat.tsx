@@ -15,9 +15,11 @@ import {
   ACP_COMMANDS_EVENT,
   ACP_PERMISSION_CLOSED_EVENT,
   ACP_PERMISSION_EVENT,
+  commandListKey,
   commandText,
   completeSlashCommand,
   filterCommands,
+  needsFallbackReject,
   permissionBelongsTo,
   slashQuery,
   subscribeAcpEvent,
@@ -57,9 +59,11 @@ export function ConsoleChat({ session }: Props) {
   const [busy, setBusy] = useState(false);
   const [openRunId, setOpenRunId] = useState('');
   const [permissions, setPermissions] = useState<AcpPermissionRequest[]>([]);
-  // 每家 agent 的 `/` 命令清单：undefined 未取、'loading' 取中、数组为结果（空数组 = 没有）。
+  // 每家 agent × 目录的 `/` 命令清单：undefined 未取、'loading' 取中、数组为结果（空数组 = 没有）。
   const [commandLists, setCommandLists] = useState<Record<string, AcpCommand[] | 'loading'>>({});
   const chatRunIdRef = useRef('');
+  const permissionsRef = useRef<AcpPermissionRequest[]>([]);
+  permissionsRef.current = permissions;
   const busyRef = useRef(false);
   const appliedRef = useRef(session.lastAppliedMessageId);
   const endRef = useRef<HTMLDivElement>(null);
@@ -101,13 +105,17 @@ export function ConsoleChat({ session }: Props) {
     const closed = subscribeAcpEvent<{ requestId: string }>(ACP_PERMISSION_CLOSED_EVENT, ({ requestId }) => {
       setPermissions((current) => current.filter((item) => item.requestId !== requestId));
     });
-    const listed = subscribeAcpEvent<{ agent: string; commands: AcpCommand[] }>(ACP_COMMANDS_EVENT, ({ agent, commands: list }) => {
-      setCommandLists((current) => ({ ...current, [agent]: list }));
+    const listed = subscribeAcpEvent<{ agent: string; cwd: string; commands: AcpCommand[] }>(ACP_COMMANDS_EVENT, ({ agent, cwd, commands: list }) => {
+      setCommandLists((current) => ({ ...current, [commandListKey(agent, cwd)]: list }));
     });
     return () => {
       opened.dispose();
       closed.dispose();
       listed.dispose();
+      // 关掉 tab 时卡片再无人回答：一律按拒绝回，别让引擎等到超时还占着进程锁。
+      for (const request of permissionsRef.current) {
+        commands.answerAcpPermission(request.requestId, null).catch(() => {});
+      }
     };
   }, []);
 
@@ -163,17 +171,18 @@ export function ConsoleChat({ session }: Props) {
   const mentions = useMemo(() => mentionTargets(models, recentTargets), [models, recentTargets]);
   const slash = target ? slashQuery(draft, target, mentions) : null;
   const slashAgent = slash && supportsSlashCommands(slash.target.agent) ? slash.target.agent.trim().toLowerCase() : '';
-  const slashList = slashAgent ? commandLists[slashAgent] : undefined;
+  const slashKey = slashAgent ? commandListKey(slashAgent, session.folderPath ?? '') : '';
+  const slashList = slashKey ? commandLists[slashKey] : undefined;
   const slashMatches = slash && Array.isArray(slashList) ? filterCommands(slashList, slash.prefix) : [];
   const showMentions = !slash && draft.startsWith('@') && !draft.includes('\n') && mentions.length > 0;
 
   useEffect(() => {
-    if (!isTauri || !slashAgent || commandLists[slashAgent] !== undefined) return;
-    setCommandLists((current) => ({ ...current, [slashAgent]: 'loading' }));
+    if (!isTauri || !slashKey || commandLists[slashKey] !== undefined) return;
+    setCommandLists((current) => ({ ...current, [slashKey]: 'loading' }));
     commands.acpCommands(slashAgent, session.folderPath ?? '')
-      .then((list) => setCommandLists((current) => ({ ...current, [slashAgent]: list })))
-      .catch(() => setCommandLists((current) => ({ ...current, [slashAgent]: [] })));
-  }, [commandLists, session.folderPath, slashAgent]);
+      .then((list) => setCommandLists((current) => ({ ...current, [slashKey]: list })))
+      .catch(() => setCommandLists((current) => ({ ...current, [slashKey]: [] })));
+  }, [commandLists, session.folderPath, slashAgent, slashKey]);
 
   const answerPermission = (request: AcpPermissionRequest, optionId: string | null) => {
     setPermissions((current) => current.filter((item) => item.requestId !== request.requestId));
@@ -349,7 +358,7 @@ export function ConsoleChat({ session }: Props) {
                   {option.name}
                 </button>
               ))}
-              {request.options.length === 0 && (
+              {needsFallbackReject(request.options) && (
                 <button type="button" onClick={() => answerPermission(request, null)}>拒绝</button>
               )}
             </div>
@@ -384,7 +393,7 @@ export function ConsoleChat({ session }: Props) {
                       composerRef.current?.focus();
                     }}
                   >
-                    {commandText(command)}
+                    <span className="console-command-name">{commandText(command)}</span>
                     {command.description && <span className="console-command-desc">{command.description}</span>}
                   </button>
                 ))}

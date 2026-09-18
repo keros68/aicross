@@ -19,6 +19,7 @@ untitled_tool_call = "--untitled-tool-call" in sys.argv
 fail_prompt_after_tools = "--fail-prompt-after-tools" in sys.argv
 emit_commands = "--commands" in sys.argv
 codex_config = "--codex-config" in sys.argv
+other_session_permission = "--other-session-permission" in sys.argv
 start_file = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--start-file=")), None)
 close_file = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--close-file=")), None)
 if start_file:
@@ -72,6 +73,11 @@ for line in sys.stdin:
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "other", "update": {"sessionUpdate": "tool_call", "title": "Wrong session"}}}), flush=True)
         if untitled_tool_call:
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "tool_call"}}}), flush=True)
+        other_choice = ""
+        if other_session_permission:
+            print(json.dumps({"jsonrpc": "2.0", "id": 700 + turn, "method": "session/request_permission", "params": {"sessionId": "other", "toolCall": {"kind": "execute", "title": "Late bash"}, "options": [{"optionId": "once", "kind": "allow_once"}, {"optionId": "no", "kind": "reject_once"}]}}), flush=True)
+            late = json.loads(sys.stdin.readline())
+            other_choice = ":other-" + late.get("result", {}).get("outcome", {}).get("optionId", "none")
         kind = "read" if prompt == "read" else "execute"
         title = "Read misleading title" if kind == "execute" else "Read file"
         if repeat_tool_calls:
@@ -92,7 +98,7 @@ for line in sys.stdin:
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "LATE"}}}}), flush=True)
             continue
         print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "other", "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "WRONG"}}}}), flush=True)
-        text = f"config:{config['model']}:{config['mode']}:{config.get('reasoning_effort', config['thinking'])}" if prompt == "config" else f"turn-{turn}:{choice}"
+        text = f"config:{config['model']}:{config['mode']}:{config.get('reasoning_effort', config['thinking'])}" if prompt == "config" else f"turn-{turn}:{choice}{other_choice}"
         if large_turns:
             print(json.dumps({"padding": "x" * (5 * 1024 * 1024)}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": text}}}}), flush=True)

@@ -80,6 +80,20 @@ export function completeSlashCommand(query: SlashQuery, command: AcpCommand): st
   return `${query.head}${commandText(command)} `;
 }
 
+/** 命令清单按 agent + 目录缓存（项目级技能各目录不同）；目录与引擎同一归一化规则。 */
+export function normalizeCwd(cwd: string): string {
+  return cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+export function commandListKey(agent: string, cwd: string): string {
+  return `${agent.trim().toLowerCase()}|${normalizeCwd(cwd)}`;
+}
+
+/** 适配器没给「拒绝」选项时，卡片仍要有拒绝入口（回空 optionId，引擎按取消回）。 */
+export function needsFallbackReject(options: AcpPermissionOption[]): boolean {
+  return !options.some((option) => option.kind === 'reject_once');
+}
+
 // 续聊失效后的重派用 `${runId}-fresh` 作 runId，同样归这一轮。
 export function permissionBelongsTo(request: AcpPermissionRequest, runId: string): boolean {
   if (runId === '') return false;

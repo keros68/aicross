@@ -369,6 +369,11 @@
   font-family: var(--font-mono);
 }
 
+.console-command-name {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .console-command-desc {
   overflow: hidden;
   color: var(--text-3);

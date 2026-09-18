@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  commandListKey,
   commandText,
   completeSlashCommand,
   filterCommands,
+  needsFallbackReject,
+  normalizeCwd,
   permissionBelongsTo,
   slashQuery,
   supportsSlashCommands,
@@ -58,6 +61,20 @@ describe('控制台 ACP：/ 补全与权限卡片', () => {
     expect(permissionBelongsTo(request('console-chat-a-fresh:node'), 'console-chat-a')).toBe(true);
     expect(permissionBelongsTo(request('console-chat-ab:node'), 'console-chat-a')).toBe(false);
     expect(permissionBelongsTo(request('console-chat-a:node'), '')).toBe(false);
+  });
+
+  it('命令清单按 agent + 目录分开缓存，目录写法差异不影响', () => {
+    expect(normalizeCwd('C:\\Users\\Me\\Proj\\')).toBe('c:/users/me/proj');
+    expect(commandListKey('Claude', 'C:\\Users\\Me\\Proj')).toBe(commandListKey('claude', 'c:/users/me/proj/'));
+    expect(commandListKey('claude', 'D:/a')).not.toBe(commandListKey('claude', 'D:/b'));
+  });
+
+  it('适配器没给拒绝选项时卡片补一个拒绝', () => {
+    expect(needsFallbackReject([{ optionId: 'a', name: '允许一次', kind: 'allow_once' }])).toBe(true);
+    expect(needsFallbackReject([
+      { optionId: 'a', name: '允许一次', kind: 'allow_once' },
+      { optionId: 'r', name: '拒绝', kind: 'reject_once' },
+    ])).toBe(false);
   });
 
   it('单线聊天请求带 interactive，runId 用调用方给的', async () => {
