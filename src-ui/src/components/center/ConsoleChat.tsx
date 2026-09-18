@@ -62,6 +62,8 @@ export function ConsoleChat({ session }: Props) {
   // 每家 agent × 目录的 `/` 命令清单：undefined 未取、'loading' 取中、数组为结果（空数组 = 没有）。
   const [commandLists, setCommandLists] = useState<Record<string, AcpCommand[] | 'loading'>>({});
   const chatRunIdRef = useRef('');
+  // 取到空清单（适配器暂时没推）的时间：5 分钟后再输入 / 会重取，不把空结果一直留着。
+  const emptyCommandsAtRef = useRef<Record<string, number>>({});
   // 与 permissions 同步维护、但在事件回调里立即更新：卸载时据它拒绝，不漏掉还没渲染的请求。
   const permissionsRef = useRef<AcpPermissionRequest[]>([]);
   const busyRef = useRef(false);
@@ -181,11 +183,19 @@ export function ConsoleChat({ session }: Props) {
   const showMentions = !slash && draft.startsWith('@') && !draft.includes('\n') && mentions.length > 0;
 
   useEffect(() => {
-    if (!isTauri || !slashKey || commandLists[slashKey] !== undefined) return;
+    if (!isTauri || !slashKey) return;
+    const known = commandLists[slashKey];
+    const emptyAt = emptyCommandsAtRef.current[slashKey] ?? 0;
+    const staleEmpty = Array.isArray(known) && known.length === 0 && Date.now() - emptyAt > 5 * 60 * 1000;
+    if (known !== undefined && !staleEmpty) return;
+    const settle = (list: AcpCommand[]) => {
+      if (list.length === 0) emptyCommandsAtRef.current[slashKey] = Date.now();
+      setCommandLists((current) => ({ ...current, [slashKey]: list }));
+    };
     setCommandLists((current) => ({ ...current, [slashKey]: 'loading' }));
     commands.acpCommands(slashAgent, session.folderPath ?? '')
-      .then((list) => setCommandLists((current) => ({ ...current, [slashKey]: list })))
-      .catch(() => setCommandLists((current) => ({ ...current, [slashKey]: [] })));
+      .then(settle)
+      .catch(() => settle([]));
   }, [commandLists, session.folderPath, slashAgent, slashKey]);
 
   const answerPermission = (request: AcpPermissionRequest, optionId: string | null) => {

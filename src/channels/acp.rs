@@ -94,6 +94,8 @@ fn pending_permissions() -> &'static Mutex<HashMap<String, mpsc::Sender<Option<S
 }
 
 /// 界面已关掉的轮次（runId 前缀）：之后到的权限请求不再上卡片，直接拒。
+/// 只在持有 pending_permissions 锁时读写（锁序 pending → closed），与登记挂起请求原子。
+/// 不淘汰：runId 各不相同，只在「轮次进行中关 tab」时各多一条。
 fn closed_runs() -> &'static Mutex<Vec<String>> {
     static CLOSED: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
     CLOSED.get_or_init(|| Mutex::new(Vec::new()))
@@ -114,15 +116,12 @@ pub fn close_acp_permissions(run_id: String) {
     if run_id.is_empty() {
         return;
     }
-    if let Ok(mut closed) = closed_runs().lock() {
-        if closed.len() > 200 {
-            closed.drain(..100);
-        }
-        closed.push(run_id.clone());
-    }
     let senders = pending_permissions()
         .lock()
         .map(|mut pending| {
+            if let Ok(mut closed) = closed_runs().lock() {
+                closed.push(run_id.clone());
+            }
             let keys = pending
                 .keys()
                 .filter(|key| key.starts_with(&format!("{run_id}:")) || key.starts_with(&format!("{run_id}-fresh:")))
@@ -667,7 +666,16 @@ impl AcpClient {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let request_id = format!("{dispatch_key}#{}", COUNTER.fetch_add(1, Ordering::Relaxed));
         let options = permission_options(message);
-        if run_closed(dispatch_key) {
+        let (sender, receiver) = mpsc::channel();
+        // 查「已关」与登记挂起在同一把锁里：关 tab 要么先发生（这里直接拒），要么后发生（它能扫到这条）。
+        let closed = match pending_permissions().lock() {
+            Ok(mut pending) if !run_closed(dispatch_key) => {
+                pending.insert(request_id.clone(), sender);
+                false
+            }
+            _ => true,
+        };
+        if closed {
             let reject = options.iter().find(|option| option.kind == "reject_once").map(|option| option.option_id.clone());
             let result = reject
                 .map(|id| json!({"outcome":{"outcome":"selected","optionId":id}}))
@@ -676,10 +684,6 @@ impl AcpClient {
                 .process
                 .send_json_line(&json!({"jsonrpc":"2.0","id":message["id"],"result":result}))
                 .map_err(|e| AcpError::new(AcpErrorKind::Process, e));
-        }
-        let (sender, receiver) = mpsc::channel();
-        if let Ok(mut pending) = pending_permissions().lock() {
-            pending.insert(request_id.clone(), sender);
         }
         emit(PERMISSION_EVENT, permission_event(message, &request_id, dispatch_key, &self.agent, options.clone()));
         let choice = loop {
@@ -1073,16 +1077,25 @@ fn reported_model(response: &Value, requested: &str) -> String {
         .iter()
         .filter(|(_, model)| model.to_ascii_lowercase() == requested)
         .max_by_key(|(tokens, _)| *tokens);
+    if let Some((_, model)) = exact {
+        return model.clone();
+    }
     let family = model_family(&requested);
-    let same_family = entries
-        .iter()
-        .filter(|(_, model)| family.is_some_and(|family| model.to_ascii_lowercase().contains(family)))
-        .max_by_key(|(tokens, _)| *tokens);
-    exact
-        .or(same_family)
-        .or_else(|| entries.iter().max_by_key(|(tokens, _)| *tokens))
-        .map(|(_, model)| model.clone())
-        .unwrap_or_default()
+    if family.is_some_and(|family| requested == family) {
+        if let Some((_, model)) = entries
+            .iter()
+            .filter(|(_, model)| family.is_some_and(|family| model.to_ascii_lowercase().contains(family)))
+            .max_by_key(|(tokens, _)| *tokens)
+        {
+            return model.clone();
+        }
+    }
+    // 请求的具体模型不在用量里：可能降级，也可能只是命名不同；用量里混着子代理与起标题的小调用，
+    // 分不出哪个是主模型，就按用量从大到小全列出来，让界面如实显示「这一轮跑了这些」。
+    let mut ranked = entries.clone();
+    ranked.sort_by(|left, right| right.0.cmp(&left.0));
+    ranked.dedup_by(|left, right| left.1 == right.1);
+    ranked.into_iter().map(|(_, model)| model).collect::<Vec<_>>().join(" + ")
 }
 
 fn model_family(model: &str) -> Option<&'static str> {
@@ -1251,9 +1264,6 @@ fn probe_commands(agent: &str, cwd: &Path) -> Result<Vec<AcpCommand>, String> {
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                if let Ok(mut cache) = command_cache().lock() {
-                    cache.insert(key, Vec::new());
-                }
                 return Ok(Vec::new());
             }
             match client.process.recv_line(remaining.min(Duration::from_millis(200))) {
@@ -1757,7 +1767,8 @@ mod tests {
             {"model":"claude-opus-5[1m]","token_count":{"totalTokens":9000}}
         ]}}}});
         assert_eq!(reported_model(&subagent, "opus"), "claude-opus-5");
-        assert_eq!(reported_model(&subagent, "claude-sonnet-5"), "claude-haiku-4-5-20251001");
+        // 请求的具体模型缺席：不猜主模型，按用量列出实际跑过的全部模型。
+        assert_eq!(reported_model(&subagent, "claude-sonnet-5"), "claude-haiku-4-5-20251001 + claude-opus-5");
         // 同一家族不同代：请求的具体 ID 在列表里时按它报，不按用量。
         let generations = json!({"result":{"_meta":{"quota":{"model_usage":[
             {"model":"claude-opus-4-8","token_count":{"totalTokens":400000}},
