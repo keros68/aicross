@@ -367,11 +367,20 @@ describe('TASK-27 运行详情口径', () => {
     expect(finishConsoleRun(record({ rows: [
       row({ nodeId: 'a', role: '验收', acceptance: 'PASS' }),
       row({ nodeId: 'b', role: '验证', acceptance: 'UNKNOWN' }),
-    ] }), graph, [], '', 5000).conclusion).toBe('验收结论无法识别（验收一次）');
+    ] }), graph, [], '', 5000).conclusion).toBe('通过（验收一次通过）');
+    // 09-18：结论按验收那一路定；同轮验证明确要求修正时不改判，但写明有异议。
     expect(finishConsoleRun(record({ rows: [
       row({ nodeId: 'a', role: '验收', acceptance: 'PASS' }),
       row({ nodeId: 'b', role: '验证', acceptance: 'NEEDS_FIX' }),
+    ] }), graph, [], '', 5000).conclusion).toBe('通过（验收一次通过；验证那一路提出修正意见，见详情）');
+    expect(finishConsoleRun(record({ rows: [
+      row({ nodeId: 'a', role: '验收', acceptance: 'NEEDS_FIX' }),
+      row({ nodeId: 'b', role: '验证', acceptance: 'PASS' }),
     ] }), graph, [], '', 5000).conclusion).toBe('未通过（验收要求修正，已到上限）');
+    // 没有验收、只有验证的模式（评审团）仍看验证。
+    expect(finishConsoleRun(record({ rows: [
+      row({ nodeId: 'b', role: '验证', acceptance: 'UNKNOWN' }),
+    ] }), graph, [], '', 5000).conclusion).toBe('验收结论无法识别（验收一次）');
     expect(finishConsoleRun(record(), graph, [], '用户叫停', 5000).conclusion)
       .toBe('中途停止（原因：用户叫停）');
     expect(finishConsoleRun(record({ rows: [row({ role: '执行', acceptance: '' })] }), graph, [], '', 5000).conclusion)

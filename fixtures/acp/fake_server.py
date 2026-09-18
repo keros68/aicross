@@ -17,6 +17,8 @@ repeat_tool_calls = "--repeat-tool-calls" in sys.argv
 other_session_tool_call = "--other-session-tool-call" in sys.argv
 untitled_tool_call = "--untitled-tool-call" in sys.argv
 fail_prompt_after_tools = "--fail-prompt-after-tools" in sys.argv
+emit_commands = "--commands" in sys.argv
+codex_config = "--codex-config" in sys.argv
 start_file = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--start-file=")), None)
 close_file = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--close-file=")), None)
 if start_file:
@@ -32,13 +34,21 @@ for line in sys.stdin:
     elif method == "session/new":
         sessions += 1
         result = {"sessionId": f"fake-session-{sessions}"}
-        if not legacy_models and not no_model_list:
+        if codex_config:
+            result["configOptions"] = [
+                {"id": "mode", "category": "mode", "currentValue": "agent", "options": [{"value": "read-only"}, {"value": "agent"}, {"value": "agent-full-access"}]},
+                {"id": "model", "category": "model", "currentValue": "gpt-5.6-sol", "options": [{"value": "gpt-6-astra"}, {"value": "gpt-5.6-sol"}]},
+                {"id": "reasoning_effort", "category": "thought_level", "currentValue": "high", "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]},
+            ]
+        elif not legacy_models and not no_model_list:
             result["configOptions"] = [
                 {"id": "model", "category": "model", "currentValue": "fake-model", "options": [{"value": "fake-model"}, {"value": "fake-model/model"}, {"value": "other-model"}]},
                 {"id": "thinking", "category": "thought_level", "currentValue": "high", "options": [{"value": "low"}, {"value": "high"}, {"value": "max"}]},
                 {"id": "mode", "category": "mode", "currentValue": "default", "options": [{"value": "default"}, {"value": "plan"}]},
             ]
         print(json.dumps({"jsonrpc": "2.0", "id": rid, "result": result}), flush=True)
+        if emit_commands:
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": result["sessionId"], "update": {"sessionUpdate": "available_commands_update", "availableCommands": [{"name": "compact", "description": "c"}, {"name": "skill:demo", "description": "d"}]}}}), flush=True)
     elif method == "session/set_config_option":
         if legacy_models:
             print(json.dumps({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "legacy server"}}), flush=True)
@@ -82,7 +92,7 @@ for line in sys.stdin:
             print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "LATE"}}}}), flush=True)
             continue
         print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "other", "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": "WRONG"}}}}), flush=True)
-        text = f"config:{config['model']}:{config['mode']}:{config['thinking']}" if prompt == "config" else f"turn-{turn}:{choice}"
+        text = f"config:{config['model']}:{config['mode']}:{config.get('reasoning_effort', config['thinking'])}" if prompt == "config" else f"turn-{turn}:{choice}"
         if large_turns:
             print(json.dumps({"padding": "x" * (5 * 1024 * 1024)}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": text}}}}), flush=True)

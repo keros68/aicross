@@ -325,7 +325,11 @@ function acceptanceConclusion(
   rows: ConsoleRunRow[],
   correctionNodeIds: ReadonlySet<string>,
 ): string {
-  const acceptanceRows = rows.filter((row) => row.role === '验收' || row.role === '验证');
+  // 结论按「验收」那一路定（09-18 实测：验证那一路答「可以采信」不写 PASS，被判无法识别，
+  // 拖成整轮「验收结论无法识别」）。修正轮本来也只看验收；验证作旁证只在表里显示。
+  // 模式里没有验收、只有验证（如评审团）时才退回看验证。
+  const accepts = rows.filter((row) => row.role === '验收');
+  const acceptanceRows = accepts.length > 0 ? accepts : rows.filter((row) => row.role === '验证');
   if (acceptanceRows.length === 0) return '已完成（本模式不含验收）';
   const last = acceptanceRows.filter((row) => !acceptanceRows.some((later) =>
     later.nodeId !== row.nodeId && hasAncestor(graph, later.nodeId, row.nodeId)));
@@ -340,9 +344,15 @@ function acceptanceConclusion(
       ? `验收结论无法识别（修正 ${round} 轮后）`
       : '验收结论无法识别（验收一次）';
   }
+  // 验收通过、同一轮的验证那一路明确要求修正：不改判，但不能藏起这条异议。
+  const siblingsOf = (row: ConsoleRunRow) => JSON.stringify(graph.nodes[row.nodeId]?.parents ?? []);
+  const lastSiblings = new Set(last.map(siblingsOf));
+  const objection = accepts.length > 0 && rows.some((row) => row.role === '验证'
+    && row.acceptance === 'NEEDS_FIX' && lastSiblings.has(siblingsOf(row)));
+  const note = objection ? '；验证那一路提出修正意见，见详情' : '';
   return round > 0
-    ? `通过（修正 ${round} 轮后通过）`
-    : '通过（验收一次通过）';
+    ? `通过（修正 ${round} 轮后通过${note}）`
+    : `通过（验收一次通过${note}）`;
 }
 
 export function finishConsoleRun(

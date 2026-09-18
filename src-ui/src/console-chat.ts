@@ -175,9 +175,14 @@ export async function dispatchConsoleTurn(
   target: ConsoleTargetAgent,
   resumeId: string,
   io: ConsoleCommands = commands,
+  runId = newConsoleChatRunId(),
 ): Promise<ConsoleTurnResult> {
-  const request = await prepareConsoleTurn(project, text, target, resumeId, io);
+  const request = await prepareConsoleTurn(project, text, target, resumeId, io, runId);
   return dispatchPreparedConsoleTurn(request, target, io);
+}
+
+export function newConsoleChatRunId(): string {
+  return `console-chat-${crypto.randomUUID()}`;
 }
 
 async function prepareConsoleTurn(
@@ -186,6 +191,7 @@ async function prepareConsoleTurn(
   target: ConsoleTargetAgent,
   resumeId: string,
   io: ConsoleCommands,
+  runId: string,
 ): Promise<DispatchStageRequest> {
   const resources = await io.listDispatchableModels();
   if (resources.error) throw new Error(`读取资源失败：${resources.error}`);
@@ -193,23 +199,25 @@ async function prepareConsoleTurn(
   if (!model) throw new Error('当前目标不在可派发模型清单中');
   const settings = loadDispatchSettings();
   const nodeId = crypto.randomUUID();
+  const node = buildNodeRequest(nodeId, modelTarget(model), {
+    models: resources.models,
+    prompt: text,
+    materials: [],
+    currentMessage: text,
+    originalRequest: text,
+    upstreamArtifacts: [],
+    sessionId: resumeId,
+    previousRunner: '',
+    rollback: false,
+    stage: 1,
+  });
   return {
-    runId: `console-chat-${crypto.randomUUID()}`,
+    runId,
     stage: 1,
     projectDir: project,
     settings: requestSettings(settings),
-    nodes: [buildNodeRequest(nodeId, modelTarget(model), {
-      models: resources.models,
-      prompt: text,
-      materials: [],
-      currentMessage: text,
-      originalRequest: text,
-      upstreamArtifacts: [],
-      sessionId: resumeId,
-      previousRunner: '',
-      rollback: false,
-      stage: 1,
-    })],
+    // 单线聊天标 interactive：claude / codex 也走 ACP（slash 命令、权限卡片），失败引擎自动回退一次性 CLI。
+    nodes: [{ ...node, interactive: true }],
   };
 }
 
@@ -253,10 +261,11 @@ export async function dispatchConsoleTurnWithFallback(
   resumeId: string,
   onExpired: () => void,
   io: ConsoleCommands = commands,
+  runId = newConsoleChatRunId(),
 ): Promise<ConsoleTurnResult> {
-  if (resumeId === '') return dispatchConsoleTurn(project, text, target, '', io);
+  if (resumeId === '') return dispatchConsoleTurn(project, text, target, '', io, runId);
   // 资源读取与目标检查在回退判断之外；发派前失败不能据此清除有效续聊 id。
-  const request = await prepareConsoleTurn(project, text, target, resumeId, io);
+  const request = await prepareConsoleTurn(project, text, target, resumeId, io, runId);
   try {
     const resumed = await dispatchPreparedConsoleTurn(request, target, io);
     if (resumed.result.status !== 'error' || !isExpiredResumeError(resumed.result.error)) return resumed;
@@ -264,7 +273,8 @@ export async function dispatchConsoleTurnWithFallback(
     if (!isExpiredResumeError(String(error))) throw error;
   }
   onExpired();
-  return dispatchConsoleTurn(project, text, target, '', io);
+  // 重派用同一 runId 前缀：权限卡片按前缀认领。
+  return dispatchConsoleTurn(project, text, target, '', io, `${runId}-fresh`);
 }
 
 export async function dispatchConsolePreset(

@@ -105,8 +105,8 @@ describe('TASK-22 控制台消息流', () => {
 
   it('单线派发透传原文、续聊 id，并生成独立 runId', async () => {
     vi.stubGlobal('crypto', { randomUUID: vi.fn()
-      .mockReturnValueOnce('node-1')
-      .mockReturnValueOnce('run-1') });
+      .mockReturnValueOnce('run-1')
+      .mockReturnValueOnce('node-1') });
     let request: any;
     const dispatchGraphStage = vi.fn(async (value: any) => {
       request = value;
