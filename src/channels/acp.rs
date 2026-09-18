@@ -26,6 +26,10 @@ fn emit<S: Serialize + Clone>(event: &str, payload: S) {
     }
 }
 
+pub(crate) fn emit_event<S: Serialize + Clone>(event: &str, payload: S) {
+    emit(event, payload);
+}
+
 pub const PERMISSION_EVENT: &str = "acp-permission";
 pub const PERMISSION_CLOSED_EVENT: &str = "acp-permission-closed";
 pub const COMMANDS_EVENT: &str = "acp-commands";
@@ -372,15 +376,20 @@ fn start_agent(agent: &str, _provider: &str, cwd: &Path, timeout: Duration) -> R
         client.agent = normalized;
         return Ok(client);
     }
-    let (binary, fallback, args, install): (&str, _, Vec<String>, &str) = match normalized.as_str() {
-        "claude" => ("claude-agent-acp", None, Vec::new(), "npm i -g @agentclientprotocol/claude-agent-acp"),
-        "codex" => ("codex-acp", None, Vec::new(), "npm i -g @agentclientprotocol/codex-acp"),
-        _ => ("kimi", super::kimi_fallback(), vec!["acp".into()], ""),
+    // claude / codex 的适配器由应用自备（acp_setup）：缺了就在后台装，本轮以 Process 错误回退一次性 CLI。
+    let (program, args) = match normalized.as_str() {
+        "claude" | "codex" => {
+            let program = super::acp_setup::resolve_adapter(&normalized).map_err(|_| {
+                super::acp_setup::ensure_installed();
+                AcpError::new(AcpErrorKind::Process, super::acp_setup::unavailable_reason(&normalized))
+            })?;
+            (program, Vec::new())
+        }
+        _ => (
+            super::resolve_binary("kimi", super::kimi_fallback()).map_err(|e| AcpError::new(AcpErrorKind::Process, e))?,
+            vec!["acp".to_string()],
+        ),
     };
-    let program = super::resolve_binary(binary, fallback).map_err(|e| {
-        let message = if install.is_empty() { e } else { format!("未安装 {binary}（{install}）：{e}") };
-        AcpError::new(AcpErrorKind::Process, message)
-    })?;
     let mut client = start_client(&program, &args, cwd, timeout)?;
     client.agent = normalized;
     Ok(client)
@@ -536,6 +545,14 @@ impl AcpClient {
         if text.trim().is_empty() {
             return Err(AcpError::new(AcpErrorKind::Turn, "ACP 未返回回复正文"));
         }
+        let text = strip_adapter_notices(&text);
+        // 控制台单线聊天只展示回答本身：原文完整留在 raw_stdout（留痕），流水线节点不做这一步
+        // （审查者的 PASS / NEEDS_FIX 可能是单独一条短消息，不能丢）。
+        let text = if self.interactive.is_some() {
+            console_reply(&raw, &session_id).unwrap_or(text)
+        } else {
+            text
+        };
         let usage = parse_usage(response.pointer("/result/usage"));
         Ok(AcpOutput {
             channel: ChannelOutput {
@@ -921,6 +938,64 @@ impl AcpClient {
     }
 }
 
+/// 适配器自己塞进回复正文的提示（codex-acp 的技能预算告警），不是模型的回答。
+fn is_adapter_notice(text: &str) -> bool {
+    text.trim_start().starts_with("Warning: Skill descriptions were shortened")
+}
+
+fn strip_adapter_notices(text: &str) -> String {
+    text.split("\n\n")
+        .filter(|paragraph| !is_adapter_notice(paragraph))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .to_string()
+}
+
+/// 结尾那句「已完成。」之类的固定客套话（codex 在 Stop 钩子后常补一句），前面有正文时才丢。
+fn is_acknowledgement(text: &str) -> bool {
+    let bare = text.trim().trim_end_matches(['。', '.', '!', '！']).to_ascii_lowercase();
+    matches!(bare.as_str(), "已完成" | "完成" | "完成了" | "done" | "好的" | "ok")
+}
+
+/// 按 messageId 与工具调用切段，只留最后一次工具调用之后的消息（之前的是「我先看一下…」这类开场白）。
+/// 最后一次工具调用之后没有正文时返回 None，由调用方用完整正文兜底。
+fn console_reply(raw: &str, session_id: &str) -> Option<String> {
+    let mut segments: Vec<(String, String, usize)> = Vec::new();
+    let mut epoch = 0usize;
+    for line in raw.lines() {
+        let Ok(message) = serde_json::from_str::<Value>(line) else { continue };
+        if message.get("method").and_then(Value::as_str) != Some("session/update")
+            || message.pointer("/params/sessionId").and_then(Value::as_str) != Some(session_id)
+        {
+            continue;
+        }
+        let update = &message["params"]["update"];
+        match update.get("sessionUpdate").and_then(Value::as_str) {
+            Some("tool_call") => epoch += 1,
+            Some("agent_message_chunk") | Some("agent_message") => {
+                let text = update.pointer("/content/text").and_then(Value::as_str).unwrap_or("");
+                let id = update.get("messageId").and_then(Value::as_str).unwrap_or("").to_string();
+                match segments.last_mut() {
+                    Some(last) if last.0 == id && last.2 == epoch => last.1.push_str(text),
+                    _ => segments.push((id, text.to_string(), epoch)),
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut kept = segments
+        .into_iter()
+        .filter(|(_, _, segment_epoch)| *segment_epoch == epoch)
+        .map(|(_, text, _)| strip_adapter_notices(&text))
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>();
+    while kept.len() > 1 && kept.last().is_some_and(|text| is_acknowledgement(text)) {
+        kept.pop();
+    }
+    (!kept.is_empty()).then(|| kept.join("\n\n"))
+}
+
 fn parse_commands(message: &Value) -> Vec<AcpCommand> {
     message
         .pointer("/params/update/availableCommands")
@@ -1247,6 +1322,10 @@ pub async fn acp_commands(agent: String, cwd: String) -> Result<Vec<AcpCommand>,
     if let Some(cached) = command_cache().lock().ok().and_then(|cache| cache.get(&key).cloned()) {
         return Ok(cached);
     }
+    if matches!(normalized.as_str(), "claude" | "codex") && super::acp_setup::resolve_adapter(&normalized).is_err() {
+        super::acp_setup::ensure_installed();
+        return Err(super::acp_setup::unavailable_reason(&normalized));
+    }
     let recently_failed = command_failures()
         .lock()
         .is_ok_and(|failures| failures.get(&key).is_some_and(|at| at.elapsed() < COMMAND_FAILURE_TTL));
@@ -1325,8 +1404,12 @@ fn probe(binary: &str, fallback: Option<std::path::PathBuf>, args: &[&str]) -> (
 pub async fn detect_acp_adapters() -> Result<Vec<AcpAdapterStatus>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let (k, kd) = probe("kimi", super::kimi_fallback(), &["acp", "--help"]);
-        let (c, cd) = probe("claude-agent-acp", None, &["--version"]);
-        let (x, xd) = probe("codex-acp", None, &["--version"]);
+        let adapter_probe = |agent: &str| match super::acp_setup::resolve_adapter(agent) {
+            Ok(program) => probe(&program.to_string_lossy(), None, &["--version"]),
+            Err(_) => (false, super::acp_setup::unavailable_reason(agent)),
+        };
+        let (c, cd) = adapter_probe("claude");
+        let (x, xd) = adapter_probe("codex");
         Ok(vec![
             AcpAdapterStatus {
                 id: "kimi".into(),
@@ -1346,7 +1429,7 @@ pub async fn detect_acp_adapters() -> Result<Vec<AcpAdapterStatus>, String> {
                 id: "codex".into(),
                 label: "Codex ACP".into(),
                 installed: x,
-                command: "codex-acp / acp-adapter".into(),
+                command: "codex-acp".into(),
                 detail: xd,
             },
         ])
@@ -1752,6 +1835,29 @@ mod tests {
         assert!(second.channel.text.contains(&nonce));
         assert_eq!(second.channel.session_id, first.channel.session_id);
         shutdown_all();
+    }
+    #[test]
+    fn console_reply_keeps_only_the_answer_after_the_last_tool_call() {
+        let line = |update: Value| json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":update}}).to_string();
+        let chunk = |id: &str, text: &str| line(json!({"sessionUpdate":"agent_message_chunk","messageId":id,"content":{"text":text}}));
+        let raw = [
+            chunk("m0", "Warning: Skill descriptions were shortened to fit the skills context budget."),
+            chunk("m1", "我查看一下测试文件。"),
+            line(json!({"sessionUpdate":"tool_call","title":"Read file"})),
+            chunk("m2", "`tests/test_beta.py` 测试了 "),
+            chunk("m2", "`shout()` 和 `whisper()`。"),
+            line(json!({"sessionUpdate":"agent_thought_chunk","content":{"text":"…"}})),
+            chunk("m3", "已完成。"),
+            json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"other","update":{"sessionUpdate":"agent_message_chunk","content":{"text":"别的会话"}}}}).to_string(),
+        ]
+        .join("\n");
+        assert_eq!(console_reply(&raw, "s").as_deref(), Some("`tests/test_beta.py` 测试了 `shout()` 和 `whisper()`。"));
+        // 只有一句「已完成」时不丢；最后一次工具调用之后没有正文时交给调用方兜底。
+        let only_ack = [line(json!({"sessionUpdate":"tool_call"})), chunk("a", "已完成。")].join("\n");
+        assert_eq!(console_reply(&only_ack, "s").as_deref(), Some("已完成。"));
+        let answer_then_tool = [chunk("a", "答案在这"), line(json!({"sessionUpdate":"tool_call"}))].join("\n");
+        assert_eq!(console_reply(&answer_then_tool, "s"), None);
+        assert_eq!(strip_adapter_notices("Warning: Skill descriptions were shortened x\n\n正文"), "正文");
     }
     #[test]
     fn claude_model_aliases_resolve_to_acp_option_values() {

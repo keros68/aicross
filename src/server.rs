@@ -3997,6 +3997,8 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
         ])
         .setup(|app| {
             crate::channels::acp::install_app_handle(app.handle().clone());
+            // 控制台的 / 命令与权限卡片要 ACP 适配器：缺了就在后台装进 ~/.aicross/acp，用户不用手动配。
+            std::thread::spawn(crate::channels::acp_setup::ensure_installed);
             // Seed bundled skills (screenshot, vibeid) into
             // ~/.aicross/skills-library/ so first-time users find
             // them in the Skills panel without having to open it

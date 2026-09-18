@@ -4,6 +4,7 @@ use regex::Regex;
 use serde_json::Value;
 
 pub(crate) mod acp;
+pub(crate) mod acp_setup;
 
 pub(crate) const KNOWN_MODEL_ROUTES: &[(&str, &str, &str)] = &[
     ("deepseek", "deepseek-v4-flash", "deepseek-flash"),

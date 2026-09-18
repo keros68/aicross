@@ -30,6 +30,8 @@ export interface AcpPermissionRequest {
 export const ACP_COMMANDS_EVENT = 'acp-commands';
 export const ACP_PERMISSION_EVENT = 'acp-permission';
 export const ACP_PERMISSION_CLOSED_EVENT = 'acp-permission-closed';
+/** 适配器自备状态变化（installing / ready / noNode / failed）；就绪后界面丢掉旧的空清单重取。 */
+export const ACP_SETUP_EVENT = 'acp-setup';
 
 /** 走 ACP 的 agent 才有命令清单；pi 等一次性通道没有。 */
 export function supportsSlashCommands(agent: string): boolean {
