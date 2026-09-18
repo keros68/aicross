@@ -135,6 +135,9 @@ pub struct DispatchNodeRequest {
     /// TASK-13：修正轮执行节点在验证通过后自动做红绿核对。
     #[serde(default)]
     pub fix_round: bool,
+    /// 控制台单线聊天：claude / codex 也走 ACP，非读非写的权限请求交给界面卡片裁决。
+    #[serde(default)]
+    pub interactive: bool,
 }
 
 /// 备选目标（图契约 Target.fallback 的三字段 + R2 追加的下发 vendor；camelCase 由外层结构继承）。
@@ -3924,7 +3927,8 @@ fn run_one_attempt(
     }
 
     let mut needs_oneshot = error.is_empty();
-    let uses_acp = settings.acp_enabled && channels::acp::supports(&node.agent);
+    // 控制台单线聊天（interactive）不看 ACP 开关：slash 命令与权限卡片只有 ACP 能给；失败照常回退一次性 CLI。
+    let uses_acp = (settings.acp_enabled || node.interactive) && channels::acp::supports(&node.agent, node.interactive);
     if needs_oneshot && !uses_acp && node.previous_runner == "acp" {
         (oneshot_session, oneshot_outbound) = reset_acp_fallback(&prompt);
         append_runner_note(&mut runner_note, "本轮不走 ACP，旧 ACP 会话已重置，改一次性完整上下文");
@@ -3942,6 +3946,7 @@ fn run_one_attempt(
             &node.thinking,
             node.write != "只读",
             blind,
+            node.interactive,
             &cancel_key,
             activity.clone(),
         );
@@ -5029,7 +5034,7 @@ fn redaction_patterns() -> &'static [Regex] {
     })
 }
 
-fn redact_text(text: &str, enabled: bool) -> (String, usize) {
+pub(crate) fn redact_text(text: &str, enabled: bool) -> (String, usize) {
     if !enabled {
         return (text.to_string(), 0);
     }
@@ -6349,6 +6354,7 @@ mod tests {
             rollback_before: false,
             review_material_validation: false,
             fix_round: false,
+            interactive: false,
         }
     }
 
@@ -7111,6 +7117,33 @@ mod tests {
         request.current_message = "当前追问".into();
         let settings = DispatchSettings { acp_enabled: true, timeout_secs: 1, ..DispatchSettings::default() };
         (request, settings, oneshot.with_extension("count"))
+    }
+
+    #[test]
+    fn run_one_interactive_claude_uses_acp_even_with_acp_switch_off_and_asks_the_user() {
+        let _pool_guard = channels::acp::test_pool_guard();
+        let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
+        let root = std::env::temp_dir().join(format!("aicross-run-one-interactive-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let (mut request, mut settings, count) = acp_run_one_fixture(&root, &[]);
+        request.agent = "claude".into();
+        request.model = "fake-model".into();
+        request.write = "只读".into();
+        request.interactive = true;
+        settings.acp_enabled = false;
+        settings.timeout_secs = 10;
+        let answer = thread::spawn(|| channels::acp::test_answer_pending("console-chat-card:node-1#", Some("once")));
+        let result = run_one("console-chat-card", &project, &root.join("runs"), &log_dir, &settings, request);
+        answer.join().unwrap();
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert_eq!(result.runner, "acp");
+        assert_eq!(result.text, "turn-1:once");
+        assert!(!count.exists());
+        channels::acp::shutdown_all();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -9849,6 +9882,7 @@ mod tests {
             rollback_before: false,
             review_material_validation: false,
             fix_round: false,
+            interactive: false,
         }
     }
 

@@ -424,6 +424,13 @@ export const commands = {
   detectAcpAdapters: () =>
     invoke<AcpAdapterStatus[]>('detect_acp_adapters'),
   releaseAcpPool: () => invoke<void>('release_acp_pool'),
+  // 控制台单线聊天走 ACP（09-18）：权限卡片的回答、`/` 补全的命令清单。
+  answerAcpPermission: (requestId: string, optionId: string | null) =>
+    invoke<void>('answer_acp_permission', { requestId, optionId }),
+  closeAcpPermissions: (runId: string) => invoke<void>('close_acp_permissions', { runId }),
+  forgetAcpRun: (runId: string) => invoke<void>('forget_acp_run', { runId }),
+  acpCommands: (agent: string, cwd: string) =>
+    invoke<import('./console-acp').AcpCommand[]>('acp_commands', { agent, cwd }),
 };
 
 // ── 对话图契约类型：Graph / GraphNode / Target / Preset / Stage /
@@ -500,6 +507,8 @@ export interface DispatchNodeRequest {
   reviewMaterialValidation?: boolean;
   // TASK-13 契约：修正轮执行节点在验证通过后自动做红绿核对。
   fixRound?: boolean;
+  // 控制台单线聊天：claude / codex 也走 ACP，执行类与 MCP 的权限请求交给界面卡片。
+  interactive?: boolean;
 }
 
 export interface DispatchStageRequest {

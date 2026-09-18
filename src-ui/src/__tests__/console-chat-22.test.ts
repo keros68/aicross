@@ -6,7 +6,6 @@ import { fillRoot } from '../graph/mutate';
 import { newGraph, type Preset } from '../graph/types';
 import { createConsoleApplyHandler, dispatchConsolePreset, dispatchConsoleTurn } from '../console-chat';
 import {
-  NEW_TAB_MENU_ITEMS,
   canApplyOrchestration,
   completeConsoleMention,
   consoleResumeId,
@@ -98,14 +97,16 @@ describe('TASK-22 控制台消息流', () => {
     expect(canApplyOrchestration({ ...session, tool: 'graph' }, false, preset)).toBe(false);
   });
 
-  it('新建菜单只有控制台一项', () => {
-    expect(NEW_TAB_MENU_ITEMS).toEqual([{ kind: 'console', label: '控制台' }]);
+  it('「+」直接新建控制台，不再弹只有一项的菜单', () => {
+    const source = readFileSync(new URL('../components/center/CenterPanel.tsx', import.meta.url), 'utf8');
+    expect(source).toMatch(/className="chrome-tab-new"\s+onClick=\{handleAddTab\}/);
+    expect(source).not.toContain('chrome-tab-new-menu');
   });
 
   it('单线派发透传原文、续聊 id，并生成独立 runId', async () => {
     vi.stubGlobal('crypto', { randomUUID: vi.fn()
-      .mockReturnValueOnce('node-1')
-      .mockReturnValueOnce('run-1') });
+      .mockReturnValueOnce('run-1')
+      .mockReturnValueOnce('node-1') });
     let request: any;
     const dispatchGraphStage = vi.fn(async (value: any) => {
       request = value;

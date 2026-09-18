@@ -42,9 +42,10 @@
   font-size: 13px;
 }
 
+/* 模型回复、系统提示、权限卡片一律占满消息栏宽度，左右边对齐；只有用户消息是按内容收缩的右侧气泡。 */
 .console-message {
-  width: fit-content;
-  max-width: min(760px, 88%);
+  box-sizing: border-box;
+  width: 100%;
   margin: 0 0 18px;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -53,13 +54,14 @@
 }
 
 .console-message-user {
+  width: fit-content;
+  max-width: min(760px, 88%);
   margin-left: auto;
   background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 
 .console-message-system {
-  max-width: 100%;
   background: transparent;
   border-style: dashed;
 }
@@ -339,7 +341,7 @@
 
 .console-run-mono,
 .console-run-number {
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -350,4 +352,96 @@
 .console-run-tool,
 .console-run-route {
   margin-top: 4px;
+}
+
+/* `/` 命令补全：竖排，名字 + 一行说明。 */
+.console-commands {
+  flex-direction: column;
+  align-items: stretch;
+  width: min(560px, calc(100% - 48px));
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.console-commands button {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  text-align: left;
+  font-family: var(--font-mono);
+}
+
+.console-command-name {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.console-command-desc {
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.console-commands-note {
+  padding: 4px 6px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* 权限卡片：执行命令 / 调 MCP 前等用户点。 */
+.console-permission {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+}
+
+.console-permission-title {
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.console-permission-detail {
+  max-height: 160px;
+  margin: 8px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 6px;
+  color: var(--text-2);
+  background: var(--bg-app);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.console-permission-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.console-permission-actions button {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-1);
+  background: transparent;
+}
+
+.console-permission-actions button:hover {
+  border-color: var(--accent);
+}
+
+.console-permission-actions .console-permission-allow {
+  border-color: var(--accent);
+  color: var(--bg-panel);
+  background: var(--accent);
 }

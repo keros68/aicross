@@ -327,6 +327,16 @@ fable-5 → [gpt-5.6 | kimi-2.7 | deepseek-v4-flash] → glm-5.3
 
 这是目前为止最大的一期，但比最初估的小一档：**原生 TUI 不扔**，所以 `/model`、权限审批、各家自己的快捷键都还在，只是挪进了 agent 窗口，不在你打字的那个地方。真正要新写的是控制台的消息流与单线续聊。分期做，先出能用的一步。
 
+### 09-18 补：控制台里的 `/` 命令、技能与权限（经 ACP）
+
+用户实测反馈：控制台里用不了 `/技能` 和各家原生命令，调 MCP 被拒。原因是单线聊天用一次性 CLI（`claude -p --tools Read,Grep,Glob`、`codex exec -s read-only`），没有交互界面。
+
+- **单线聊天改走 ACP**：claude（`claude-agent-acp`）、codex（`codex-acp`）、kimi（`kimi acp`）。流水线节点不变，claude / codex 仍用一次性 CLI（盲审要无工具）。ACP 起不来自动回退一次性 CLI。
+- **`/` 补全**：各家会话建立时推来的命令清单（技能、`/compact`、`/review` 等），按 agent × 目录缓存。
+- **权限卡片**：读类放行；写文件类照旧拒绝（控制台聊天不改文件）；执行命令与 MCP 调用在消息流里弹卡片，只有「允许一次 / 拒绝」，永不持久授权；盲节点永不弹。关掉 tab 时挂着的卡片按拒绝回。
+- **拿不到的**：`/permissions`、`/resume`、`/help` 这类只有交互窗口才有的命令，ACP 不报。前者由卡片替代，续聊由控制台自己管。
+- 这比 agent 窗口（第 6 条）更贴合「控制台就是对话窗」：大部分原生能力不用离开控制台。agent 窗口留作兜底。
+
 ## Cursor Projects 的外部印证与可借项（09-16，待用户裁决）
 
 事实与来源见 `D:\work\agentteam\COMPETITIVE-LANDSCAPE.md`「2026-09-16 · Cursor Projects」一节（另一会话调研，本文只写与我们的设计有关的部分）。

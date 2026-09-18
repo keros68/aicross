@@ -3982,6 +3982,10 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::dispatch::abandon_dispatch_state,
             crate::channels::acp::detect_acp_adapters,
             crate::channels::acp::release_acp_pool,
+            crate::channels::acp::answer_acp_permission,
+            crate::channels::acp::close_acp_permissions,
+            crate::channels::acp::forget_acp_run,
+            crate::channels::acp::acp_commands,
             crate::orchestration::load_premises,
             crate::orchestration::save_premises,
             crate::orchestration::load_commander,
@@ -3992,6 +3996,7 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::console_api::console_action_ack,
         ])
         .setup(|app| {
+            crate::channels::acp::install_app_handle(app.handle().clone());
             // Seed bundled skills (screenshot, vibeid) into
             // ~/.aicross/skills-library/ so first-time users find
             // them in the Skills panel without having to open it

@@ -9,7 +9,24 @@ import {
   consoleResultMessage,
   createConsoleApplyHandler,
   dispatchConsoleTurnWithFallback,
+  newConsoleChatRunId,
 } from '../../console-chat';
+import {
+  ACP_COMMANDS_EVENT,
+  ACP_PERMISSION_CLOSED_EVENT,
+  ACP_PERMISSION_EVENT,
+  commandListKey,
+  commandText,
+  completeSlashCommand,
+  filterCommands,
+  needsFallbackReject,
+  permissionBelongsTo,
+  slashQuery,
+  subscribeAcpEvent,
+  supportsSlashCommands,
+  type AcpCommand,
+  type AcpPermissionRequest,
+} from '../../console-acp';
 import { selectConsoleGraph } from '../../console-channel';
 import {
   consoleScrollRestoreTop,
@@ -41,6 +58,15 @@ export function ConsoleChat({ session }: Props) {
   const [models, setModels] = useState<DispatchableModel[]>([]);
   const [busy, setBusy] = useState(false);
   const [openRunId, setOpenRunId] = useState('');
+  const [permissions, setPermissions] = useState<AcpPermissionRequest[]>([]);
+  // 每家 agent × 目录的 `/` 命令清单：undefined 未取、'loading' 取中、数组为结果（空数组 = 没有）。
+  const [commandLists, setCommandLists] = useState<Record<string, AcpCommand[] | 'loading'>>({});
+  const chatRunIdRef = useRef('');
+  const unmountedRef = useRef(false);
+  // 取到空清单（适配器暂时没推）的时间：5 分钟后再输入 / 会重取，不把空结果一直留着。
+  const emptyCommandsAtRef = useRef<Record<string, number>>({});
+  // 与 permissions 同步维护、但在事件回调里立即更新：卸载时据它拒绝，不漏掉还没渲染的请求。
+  const permissionsRef = useRef<AcpPermissionRequest[]>([]);
   const busyRef = useRef(false);
   const appliedRef = useRef(session.lastAppliedMessageId);
   const endRef = useRef<HTMLDivElement>(null);
@@ -70,6 +96,34 @@ export function ConsoleChat({ session }: Props) {
     return () => {
       dead = true;
       window.removeEventListener(RESOURCES_CHANGED_EVENT, refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    const opened = subscribeAcpEvent<AcpPermissionRequest>(ACP_PERMISSION_EVENT, (request) => {
+      if (!permissionBelongsTo(request, chatRunIdRef.current)) return;
+      permissionsRef.current = [...permissionsRef.current.filter((item) => item.requestId !== request.requestId), request];
+      setPermissions(permissionsRef.current);
+    });
+    const closed = subscribeAcpEvent<{ requestId: string }>(ACP_PERMISSION_CLOSED_EVENT, ({ requestId }) => {
+      permissionsRef.current = permissionsRef.current.filter((item) => item.requestId !== requestId);
+      setPermissions(permissionsRef.current);
+    });
+    const listed = subscribeAcpEvent<{ agent: string; cwd: string; commands: AcpCommand[] }>(ACP_COMMANDS_EVENT, ({ agent, cwd, commands: list }) => {
+      setCommandLists((current) => ({ ...current, [commandListKey(agent, cwd)]: list }));
+    });
+    return () => {
+      opened.dispose();
+      closed.dispose();
+      listed.dispose();
+      // 关掉 tab 时卡片再无人回答：本轮挂着的与之后再到的权限请求一律由引擎按拒绝回，
+      // 别让它等到整轮超时还占着进程锁（事件还没送到界面的那条也算）。
+      for (const request of permissionsRef.current) {
+        commands.answerAcpPermission(request.requestId, null).catch(() => {});
+      }
+      unmountedRef.current = true;
+      if (chatRunIdRef.current) commands.closeAcpPermissions(chatRunIdRef.current).catch(() => {});
     };
   }, []);
 
@@ -123,7 +177,34 @@ export function ConsoleChat({ session }: Props) {
     ...(target ? [target] : []),
   ], [messages, target]);
   const mentions = useMemo(() => mentionTargets(models, recentTargets), [models, recentTargets]);
-  const showMentions = draft.startsWith('@') && !draft.includes('\n') && mentions.length > 0;
+  const slash = target ? slashQuery(draft, target, mentions) : null;
+  const slashAgent = slash && supportsSlashCommands(slash.target.agent) ? slash.target.agent.trim().toLowerCase() : '';
+  const slashKey = slashAgent ? commandListKey(slashAgent, session.folderPath ?? '') : '';
+  const slashList = slashKey ? commandLists[slashKey] : undefined;
+  const slashMatches = slash && Array.isArray(slashList) ? filterCommands(slashList, slash.prefix) : [];
+  const showMentions = !slash && draft.startsWith('@') && !draft.includes('\n') && mentions.length > 0;
+
+  useEffect(() => {
+    if (!isTauri || !slashKey) return;
+    const known = commandLists[slashKey];
+    const emptyAt = emptyCommandsAtRef.current[slashKey] ?? 0;
+    const staleEmpty = Array.isArray(known) && known.length === 0 && Date.now() - emptyAt > 5 * 60 * 1000;
+    if (known !== undefined && !staleEmpty) return;
+    const settle = (list: AcpCommand[]) => {
+      if (list.length === 0) emptyCommandsAtRef.current[slashKey] = Date.now();
+      setCommandLists((current) => ({ ...current, [slashKey]: list }));
+    };
+    setCommandLists((current) => ({ ...current, [slashKey]: 'loading' }));
+    commands.acpCommands(slashAgent, session.folderPath ?? '')
+      .then(settle)
+      .catch(() => settle([]));
+  }, [commandLists, draft, session.folderPath, slashAgent, slashKey]);
+
+  const answerPermission = (request: AcpPermissionRequest, optionId: string | null) => {
+    permissionsRef.current = permissionsRef.current.filter((item) => item.requestId !== request.requestId);
+    setPermissions(permissionsRef.current);
+    commands.answerAcpPermission(request.requestId, optionId).catch(() => {});
+  };
   const append = (message: ConsoleMessage) => {
     dispatch({ type: 'APPEND_CONSOLE_MESSAGE', id: session.id, message });
   };
@@ -165,6 +246,8 @@ export function ConsoleChat({ session }: Props) {
     setDraft('');
     busyRef.current = true;
     setBusy(true);
+    const runId = newConsoleChatRunId();
+    chatRunIdRef.current = runId;
     try {
       const turn = await dispatchConsoleTurnWithFallback(
         session.folderPath ?? '',
@@ -180,6 +263,8 @@ export function ConsoleChat({ session }: Props) {
           });
           append(consoleMessage('system', '上次的会话已失效，已开新会话'));
         },
+        commands,
+        runId,
       );
       if (turn.result.sessionId) {
         dispatch({
@@ -193,6 +278,10 @@ export function ConsoleChat({ session }: Props) {
     } catch (error) {
       append(consoleMessage('system', String(error).replace(/^Error:\s*/, '')));
     } finally {
+      if (unmountedRef.current) commands.forgetAcpRun(runId).catch(() => {});
+      chatRunIdRef.current = '';
+      permissionsRef.current = [];
+      setPermissions([]);
       busyRef.current = false;
       setBusy(false);
     }
@@ -242,7 +331,7 @@ export function ConsoleChat({ session }: Props) {
       </div>
       <div ref={messageListRef} className="console-message-list" aria-live="polite">
         {messages.length === 0 && (
-          <div className="console-message-empty">直接输入可单线聊；输入 @ 可临时改派。控制台聊天当前只读，要改文件请用模式派发。</div>
+          <div className="console-message-empty">直接输入可单线聊；输入 @ 可临时改派，输入 / 可用各家的命令与技能。聊天不改文件，执行命令或调用 MCP 工具前会先请你确认；要改文件请用模式派发。</div>
         )}
         {messages.map((message) => (
           <div key={message.id} className={`console-message console-message-${message.kind}`}>
@@ -272,6 +361,28 @@ export function ConsoleChat({ session }: Props) {
             )}
           </div>
         ))}
+        {permissions.map((request) => (
+          <div key={request.requestId} className="console-permission" role="alertdialog" aria-label="工具调用确认">
+            <div className="console-message-label">{agentDisplayName(request.agent)} 请求调用工具</div>
+            <div className="console-permission-title">{request.title}</div>
+            {request.detail && <pre className="console-permission-detail">{request.detail}</pre>}
+            <div className="console-permission-actions">
+              {request.options.map((option) => (
+                <button
+                  type="button"
+                  key={option.optionId}
+                  className={option.kind === 'allow_once' ? 'console-permission-allow' : undefined}
+                  onClick={() => answerPermission(request, option.optionId)}
+                >
+                  {option.name}
+                </button>
+              ))}
+              {needsFallbackReject(request.options) && (
+                <button type="button" onClick={() => answerPermission(request, null)}>拒绝</button>
+              )}
+            </div>
+          </div>
+        ))}
         {busy && (
           <div className="console-message-running">
             <span>处理中…</span>
@@ -285,6 +396,28 @@ export function ConsoleChat({ session }: Props) {
         <div ref={endRef} />
       </div>
       <div className="console-composer">
+        {slash && slashAgent && (
+          <div className="console-mentions console-commands" role="listbox" aria-label="可用命令">
+            {slashList === undefined || slashList === 'loading'
+              ? <span className="console-commands-note">正在读取命令…</span>
+              : slashMatches.length === 0
+                ? <span className="console-commands-note">没有匹配的命令</span>
+                : slashMatches.map((command) => (
+                  <button
+                    type="button"
+                    key={command.name}
+                    title={command.description}
+                    onClick={() => {
+                      setDraft(completeSlashCommand(slash, command));
+                      composerRef.current?.focus();
+                    }}
+                  >
+                    <span className="console-command-name">{commandText(command)}</span>
+                    {command.description && <span className="console-command-desc">{command.description}</span>}
+                  </button>
+                ))}
+          </div>
+        )}
         {showMentions && (
           <div className="console-mentions" role="listbox" aria-label="可改派的 agent">
             {mentions.map((item) => (
@@ -303,12 +436,17 @@ export function ConsoleChat({ session }: Props) {
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (event.key === 'Tab' && slash && slashMatches.length > 0) {
+              event.preventDefault();
+              setDraft(completeSlashCommand(slash, slashMatches[0]));
+              return;
+            }
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               void send();
             }
           }}
-          placeholder={`发给 ${agentDisplayName(target.agent)}，输入 @ 可临时改派`}
+          placeholder={`发给 ${agentDisplayName(target.agent)}，输入 @ 可临时改派，输入 / 用命令`}
           rows={3}
         />
         <button type="button" disabled={busy || draft.trim() === ''} onClick={() => void send()}>

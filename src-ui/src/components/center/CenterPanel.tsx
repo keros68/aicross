@@ -37,7 +37,7 @@ import {
   type ToolType,
 } from '../../store/app-state';
 import { consoleInflightCount, consoleTabPlan, installConsoleChannel } from '../../console-channel';
-import { CONTROL_CONSOLE_LABEL, NEW_TAB_MENU_ITEMS } from '../../console-session';
+import { CONTROL_CONSOLE_LABEL } from '../../console-session';
 
 // Dropdown shown when a tool card's folder icon is clicked: the globally
 // recent project folders (any tool that used one) + "Open folder…" last.
@@ -781,8 +781,6 @@ export function CenterPanel() {
   // 控制台默认（TASK-10 配置沿用）：应用启动读一次，进入消息流后写回。读不到 / 没存过时
   // `agent` 为空串，启动器据此不显示一键行。
   const [commanderDefaults, setCommanderDefaults] = useState<CommanderSettings | null>(null);
-  const [newTabMenuOpen, setNewTabMenuOpen] = useState(false);
-  const newTabMenuRef = useRef<HTMLDivElement>(null);
   // 空白 tab 上用户点了「对话图」的那些 tab —— 只影响这一个 tab 的这一屏，
   // 不进持久化状态：它是「用户刚才点了哪个次级入口」，不是会话的属性。
   const [graphViewTabs, setGraphViewTabs] = useState<Record<string, boolean>>({});
@@ -951,24 +949,6 @@ export function CenterPanel() {
     }
   }, [toast?.id]);
 
-
-  useEffect(() => {
-    if (!newTabMenuOpen) return;
-    const onDown = (event: MouseEvent) => {
-      if (newTabMenuRef.current && !newTabMenuRef.current.contains(event.target as Node)) {
-        setNewTabMenuOpen(false);
-      }
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setNewTabMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [newTabMenuOpen]);
 
   // External launch (`coffee-cli launch --tool <id> [--cwd <dir>]`) — reached
   // from the cold-start drain (takePendingLaunch) and the warm-start
@@ -1270,7 +1250,6 @@ export function CenterPanel() {
     const folderPath = terminals.find(t => t.id === activeTerminalId)?.folderPath ?? null;
     const id = crypto.randomUUID();
     dispatch({ type: 'ADD_TERMINAL', session: createDefaultConsoleSession(folderPath, id) });
-    setNewTabMenuOpen(false);
   };
 
   const rememberCommander = (sessionId: string, settings: CommanderSettings) => {
@@ -1656,23 +1635,14 @@ export function CenterPanel() {
           </div>
         )}
 
-        <div className="chrome-tab-new-wrap" ref={newTabMenuRef}>
-          <button
-            className="chrome-tab-new"
-            onClick={() => setNewTabMenuOpen(open => !open)}
-            aria-label="新建"
-            aria-expanded={newTabMenuOpen}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-          </button>
-          {newTabMenuOpen && (
-            <div className="chrome-tab-new-menu">
-              {NEW_TAB_MENU_ITEMS.map((item) => (
-                <button type="button" key={item.kind} onClick={handleAddTab}>{item.label}</button>
-              ))}
-            </div>
-          )}
-        </div>
+        <button
+          className="chrome-tab-new"
+          onClick={handleAddTab}
+          aria-label="新建控制台"
+          title="新建控制台"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </button>
       </div>,
       tabSlot)}
       <div className="main-content">
