@@ -1099,8 +1099,9 @@ fn reported_model(response: &Value, requested: &str) -> String {
             .collect::<Vec<_>>();
         same_family.sort();
         same_family.dedup();
-        if same_family.len() == 1 {
-            return same_family.remove(0);
+        if !same_family.is_empty() {
+            // 同家族多代（如子代理用了旧一代）只列这一家族的，不把起标题的小模型也算进来。
+            return same_family.join(" + ");
         }
     }
     // 请求的具体模型不在用量里：可能降级，也可能只是命名不同；用量里混着子代理与起标题的小调用，
@@ -1786,6 +1787,12 @@ mod tests {
             {"model":"claude-opus-5[1m]","token_count":{"totalTokens":9000}}
         ]}}}});
         assert_eq!(reported_model(&two_opus, "opus"), "claude-opus-4-8 + claude-opus-5");
+        let mixed = json!({"result":{"_meta":{"quota":{"model_usage":[
+            {"model":"claude-haiku-4-5-20251001","token_count":{"totalTokens":900000}},
+            {"model":"claude-opus-4-8","token_count":{"totalTokens":400000}},
+            {"model":"claude-opus-5[1m]","token_count":{"totalTokens":9000}}
+        ]}}}});
+        assert_eq!(reported_model(&mixed, "opus"), "claude-opus-4-8 + claude-opus-5");
         // 请求的具体模型缺席：不猜主模型，按用量列出实际跑过的全部模型。
         assert_eq!(reported_model(&subagent, "claude-sonnet-5"), "claude-haiku-4-5-20251001 + claude-opus-5");
         // 同一家族不同代：请求的具体 ID 在列表里时按它报，不按用量。
