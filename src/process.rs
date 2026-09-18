@@ -270,21 +270,11 @@ fn process_command(program: &Path, args: &[String]) -> Command {
     #[cfg(windows)]
     let command = {
         use std::os::windows::process::CommandExt;
-        let is_script = program
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_some_and(|value| {
-                value.eq_ignore_ascii_case("cmd") || value.eq_ignore_ascii_case("bat")
-            });
-        let mut command = if is_script {
-            let mut command = Command::new("cmd.exe");
-            command.args(["/d", "/s", "/c"]).arg(program).args(args);
-            command
-        } else {
-            let mut command = Command::new(program);
-            command.args(args);
-            command
-        };
+        // .cmd / .bat 交给标准库：它自己经 cmd.exe 启动并按批处理规则转义参数。
+        // 以前手工拼 `cmd /d /s /c <程序> <参数>`，程序路径带空格（`C:\Program Files\nodejs\npm.cmd`、
+        // 用户名带空格的 `%APPDATA%\npm\claude.cmd`）时 /s 剥掉引号，报「'C:\Program' 不是内部或外部命令」（09-18）。
+        let mut command = Command::new(program);
+        command.args(args);
         command.creation_flags(0x0800_0000);
         command
     };
@@ -540,6 +530,26 @@ pub fn terminate_process_id(process_id: u32) -> bool {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_script_under_a_path_with_spaces_runs_and_receives_arguments() {
+        let dir = std::env::temp_dir().join(format!("aicross cmd {}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("echo args.cmd");
+        std::fs::write(&script, "@echo off\r\necho [%~1] [%~2]\r\n").unwrap();
+        let result = run_process(
+            &script,
+            &["hello world".to_string(), "--flag=a,b".to_string()],
+            None,
+            Duration::from_secs(20),
+            None,
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(result.code, Some(0), "stderr: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "[hello world] [--flag=a,b]");
+    }
 
     fn shell() -> (std::path::PathBuf, Vec<String>) {
         #[cfg(windows)]

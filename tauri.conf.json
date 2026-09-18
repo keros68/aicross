@@ -58,7 +58,8 @@
       },
       "nsis": {
         "template": "installer.nsi",
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "icons/icon.ico",
+        "languages": ["SimpChinese"]
       }
     }
   }

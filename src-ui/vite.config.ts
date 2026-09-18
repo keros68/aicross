@@ -128,10 +128,9 @@ export default defineConfig({
               minSize: 0,
             },
             { name: 'xterm', test: /node_modules[\\/]@xterm[\\/]/ },
-            {
-              name: 'markdown',
-              test: /node_modules[\\/](react-markdown|remark-[\w-]+|mdast-[\w-]+|micromark[\w-]*|hast-[\w-]+|unist-[\w-]+|vfile[\w-]*|property-information|comma-separated-tokens|space-separated-tokens|html-url-attributes|trim-lines|zwitch|longest-streak|ccount|markdown-table|devlop|bail|is-plain-obj|trough|unified|decode-named-character-reference|character-entities[\w-]*)[\\/]/,
-            },
+            // 不再给 Markdown 管线单独分组（09-18）：includeDependenciesRecursively 关着时，
+            // 它的一部分依赖（style-to-js、estree-util-* 等）落进 vendor，两块互相引用、初始化顺序错乱，
+            // 控制台一渲染 Markdown 就「ai is not a function」整页白屏。交给 vendor 一起装。
             { name: 'react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
             // Everything else from node_modules that is not already grouped.
             { name: 'vendor', test: /node_modules/ },

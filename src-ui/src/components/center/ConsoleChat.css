@@ -445,3 +445,107 @@
   color: var(--bg-panel);
   background: var(--accent);
 }
+
+/* 模型回复的 Markdown：紧凑排版，段落间距取代 pre-wrap 的原文换行。 */
+.console-markdown {
+  white-space: normal;
+}
+
+.console-markdown > :first-child {
+  margin-top: 0;
+}
+
+.console-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.console-markdown p,
+.console-markdown ul,
+.console-markdown ol,
+.console-markdown blockquote,
+.console-markdown pre,
+.console-md-table {
+  margin: 0 0 10px;
+}
+
+.console-markdown h1,
+.console-markdown h2,
+.console-markdown h3,
+.console-markdown h4 {
+  margin: 14px 0 8px;
+  color: var(--text-1);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.console-markdown h1 {
+  font-size: 17px;
+}
+
+.console-markdown ul,
+.console-markdown ol {
+  padding-left: 22px;
+}
+
+.console-markdown li + li {
+  margin-top: 2px;
+}
+
+.console-markdown code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-app);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.console-markdown pre {
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--bg-app);
+}
+
+.console-markdown pre code {
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+}
+
+.console-markdown blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--text-2);
+}
+
+.console-md-table {
+  overflow-x: auto;
+}
+
+.console-md-table table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.console-md-table th,
+.console-md-table td {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.console-md-table th {
+  background: var(--bg-app);
+  font-weight: 600;
+}
+
+.console-md-link {
+  color: var(--accent);
+  text-decoration: underline dotted;
+}
+
+.console-md-image {
+  color: var(--text-3);
+}

@@ -5,6 +5,7 @@ import type { DispatchableModel } from '../../graph/types';
 import { agentDisplayName } from '../../resources/agent-display';
 import { RESOURCES_CHANGED_EVENT } from '../../resources/mention';
 import { ConsoleRunDetail } from './ConsoleRunDetail';
+import { ConsoleMarkdown } from './ConsoleMarkdown';
 import {
   consoleResultMessage,
   createConsoleApplyHandler,
@@ -15,6 +16,7 @@ import {
   ACP_COMMANDS_EVENT,
   ACP_PERMISSION_CLOSED_EVENT,
   ACP_PERMISSION_EVENT,
+  ACP_SETUP_EVENT,
   commandListKey,
   commandText,
   completeSlashCommand,
@@ -61,6 +63,8 @@ export function ConsoleChat({ session }: Props) {
   const [permissions, setPermissions] = useState<AcpPermissionRequest[]>([]);
   // 每家 agent × 目录的 `/` 命令清单：undefined 未取、'loading' 取中、数组为结果（空数组 = 没有）。
   const [commandLists, setCommandLists] = useState<Record<string, AcpCommand[] | 'loading'>>({});
+  // 取不到清单时引擎给的原因（正在后台准备 / 缺 Node.js / 安装失败），显示在补全框里。
+  const [commandNotes, setCommandNotes] = useState<Record<string, string>>({});
   const chatRunIdRef = useRef('');
   const unmountedRef = useRef(false);
   // 取到空清单（适配器暂时没推）的时间：5 分钟后再输入 / 会重取，不把空结果一直留着。
@@ -113,10 +117,19 @@ export function ConsoleChat({ session }: Props) {
     const listed = subscribeAcpEvent<{ agent: string; cwd: string; commands: AcpCommand[] }>(ACP_COMMANDS_EVENT, ({ agent, cwd, commands: list }) => {
       setCommandLists((current) => ({ ...current, [commandListKey(agent, cwd)]: list }));
     });
+    const setup = subscribeAcpEvent<{ agent: string; state: string }>(ACP_SETUP_EVENT, ({ agent, state }) => {
+      if (state !== 'ready') return;
+      const prefix = `${agent.trim().toLowerCase()}|`;
+      const drop = <T,>(current: Record<string, T>) =>
+        Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(prefix)));
+      setCommandLists(drop);
+      setCommandNotes(drop);
+    });
     return () => {
       opened.dispose();
       closed.dispose();
       listed.dispose();
+      setup.dispose();
       // 关掉 tab 时卡片再无人回答：本轮挂着的与之后再到的权限请求一律由引擎按拒绝回，
       // 别让它等到整轮超时还占着进程锁（事件还没送到界面的那条也算）。
       for (const request of permissionsRef.current) {
@@ -126,6 +139,19 @@ export function ConsoleChat({ session }: Props) {
       if (chatRunIdRef.current) commands.closeAcpPermissions(chatRunIdRef.current).catch(() => {});
     };
   }, []);
+
+  useEffect(() => {
+    const list = messageListRef.current;
+    if (!list || typeof ResizeObserver === 'undefined') return;
+    let visible = list.clientHeight > 0;
+    const observer = new ResizeObserver(() => {
+      const nowVisible = list.clientHeight > 0;
+      if (nowVisible && !visible) list.scrollTop = list.scrollHeight;
+      visible = nowVisible;
+    });
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [openRunId]);
 
   useEffect(() => {
     if (openRunId) return;
@@ -190,14 +216,15 @@ export function ConsoleChat({ session }: Props) {
     const emptyAt = emptyCommandsAtRef.current[slashKey] ?? 0;
     const staleEmpty = Array.isArray(known) && known.length === 0 && Date.now() - emptyAt > 5 * 60 * 1000;
     if (known !== undefined && !staleEmpty) return;
-    const settle = (list: AcpCommand[]) => {
+    const settle = (list: AcpCommand[], note = '') => {
       if (list.length === 0) emptyCommandsAtRef.current[slashKey] = Date.now();
       setCommandLists((current) => ({ ...current, [slashKey]: list }));
+      setCommandNotes((current) => ({ ...current, [slashKey]: note }));
     };
     setCommandLists((current) => ({ ...current, [slashKey]: 'loading' }));
     commands.acpCommands(slashAgent, session.folderPath ?? '')
-      .then(settle)
-      .catch(() => settle([]));
+      .then((list) => settle(list))
+      .catch((error) => settle([], String(error).replace(/^Error:\s*/, '')));
   }, [commandLists, draft, session.folderPath, slashAgent, slashKey]);
 
   const answerPermission = (request: AcpPermissionRequest, optionId: string | null) => {
@@ -342,7 +369,9 @@ export function ConsoleChat({ session }: Props) {
                   ? '系统提示'
                   : agentDisplayName(message.agent ?? '')}
             </div>
-            <div className="console-message-text">{message.text}</div>
+            {message.kind === 'assistant'
+              ? <ConsoleMarkdown text={message.text} />
+              : <div className="console-message-text">{message.text}</div>}
             {(message.agent || message.model || message.role || message.route || message.durationMs !== undefined) && (
               <div className="console-message-meta">
                 {[message.agent ? agentDisplayName(message.agent) : '', message.model, message.role,
@@ -401,7 +430,7 @@ export function ConsoleChat({ session }: Props) {
             {slashList === undefined || slashList === 'loading'
               ? <span className="console-commands-note">正在读取命令…</span>
               : slashMatches.length === 0
-                ? <span className="console-commands-note">没有匹配的命令</span>
+                ? <span className="console-commands-note">{commandNotes[slashKey] || '没有匹配的命令'}</span>
                 : slashMatches.map((command) => (
                   <button
                     type="button"
