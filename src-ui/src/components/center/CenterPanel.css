@@ -114,42 +114,6 @@
   color: var(--text-1);
 }
 
-.chrome-tab-new-wrap {
-  position: relative;
-  display: flex;
-  flex-shrink: 0;
-}
-
-.chrome-tab-new-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 30;
-  width: 128px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-panel);
-}
-
-.chrome-tab-new-menu button {
-  display: block;
-  width: 100%;
-  padding: 7px 9px;
-  border: 0;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--text-1);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.chrome-tab-new-menu button:hover {
-  background: var(--bg-hover);
-}
-
 /* ─── Tab Actions (Status Dots ↔ Close Button Overlay) ─── */
 .tab-actions {
   display: flex;

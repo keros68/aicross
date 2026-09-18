@@ -36,10 +36,6 @@ export interface ConsoleMentionResult {
   recognized: boolean;
 }
 
-export const NEW_TAB_MENU_ITEMS = [
-  { kind: 'console' as const, label: CONTROL_CONSOLE_LABEL },
-];
-
 export const CONSOLE_APPLY_EVENT = 'aicross:console-apply-preset';
 
 export interface ConsoleApplyDetail {
