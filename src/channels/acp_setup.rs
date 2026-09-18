@@ -72,6 +72,11 @@ fn states() -> &'static Mutex<HashMap<&'static str, SetupState>> {
 
 static INSTALLING: AtomicBool = AtomicBool::new(false);
 
+fn last_failure() -> &'static Mutex<Option<std::time::Instant>> {
+    static LAST: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(None))
+}
+
 fn set_state(agent: &'static str, state: SetupState) {
     if let Ok(mut states) = states().lock() {
         states.insert(agent, state.clone());
@@ -164,6 +169,13 @@ pub fn ensure_installed() {
             return;
         }
     };
+    // 刚失败过（网络、npm 报错）就先别每次输入 / 都重装一遍：10 分钟后或重启应用再试。
+    let recently_failed = last_failure()
+        .lock()
+        .is_ok_and(|at| at.is_some_and(|at| at.elapsed() < Duration::from_secs(600)));
+    if recently_failed {
+        return;
+    }
     if INSTALLING.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -206,6 +218,9 @@ pub fn ensure_installed() {
                         .collect(),
                     Err(error) => error.clone(),
                 };
+                if let Ok(mut at) = last_failure().lock() {
+                    *at = Some(std::time::Instant::now());
+                }
                 SetupState::Failed(detail)
             };
             set_state(adapter.agent, state);
@@ -260,3 +275,4 @@ mod tests {
         set_state("codex", SetupState::Idle);
     }
 }
+
