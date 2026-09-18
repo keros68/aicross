@@ -47,8 +47,14 @@ struct CommandsEvent {
     commands: Vec<AcpCommand>,
 }
 
+/// 正斜杠、去尾斜杠；只有 Windows 盘符路径（大小写不敏感）才转小写，
+/// Linux / 大小写敏感的 macOS 上 `/work/Foo` 与 `/work/foo` 是两个项目。
 fn normalize_cwd(cwd: &str) -> String {
-    cwd.replace('\\', "/").trim_end_matches('/').to_lowercase()
+    let path = cwd.replace('\\', "/");
+    let path = path.trim_end_matches('/');
+    let bytes = path.as_bytes();
+    let windows_drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if windows_drive { path.to_lowercase() } else { path.to_string() }
 }
 
 fn command_key(agent: &str, cwd: &str) -> String {
@@ -1001,12 +1007,18 @@ fn reported_model(response: &Value, requested: &str) -> String {
             Some((tokens, model.split('[').next().unwrap_or(model).trim().to_string()))
         })
         .collect::<Vec<_>>();
-    let family = model_family(requested);
+    let requested = requested.split('[').next().unwrap_or(requested).trim().to_ascii_lowercase();
+    let exact = entries
+        .iter()
+        .filter(|(_, model)| model.to_ascii_lowercase() == requested)
+        .max_by_key(|(tokens, _)| *tokens);
+    let family = model_family(&requested);
     let same_family = entries
         .iter()
         .filter(|(_, model)| family.is_some_and(|family| model.to_ascii_lowercase().contains(family)))
         .max_by_key(|(tokens, _)| *tokens);
-    same_family
+    exact
+        .or(same_family)
         .or_else(|| entries.iter().max_by_key(|(tokens, _)| *tokens))
         .map(|(_, model)| model.clone())
         .unwrap_or_default()
@@ -1183,6 +1195,11 @@ fn probe_commands(agent: &str, cwd: &Path) -> Result<Vec<AcpCommand>, String> {
         }
     })();
     client.process.terminate();
+    if outcome.as_ref().map_or(true, |found| found.is_empty()) {
+        if let Ok(mut cache) = command_cache().lock() {
+            cache.entry(command_key(agent, &client.cwd)).or_default();
+        }
+    }
     outcome
 }
 
@@ -1673,6 +1690,14 @@ mod tests {
         ]}}}});
         assert_eq!(reported_model(&subagent, "opus"), "claude-opus-5");
         assert_eq!(reported_model(&subagent, "claude-sonnet-5"), "claude-haiku-4-5-20251001");
+        // 同一家族不同代：请求的具体 ID 在列表里时按它报，不按用量。
+        let generations = json!({"result":{"_meta":{"quota":{"model_usage":[
+            {"model":"claude-opus-4-8","token_count":{"totalTokens":400000}},
+            {"model":"claude-opus-5[1m]","token_count":{"totalTokens":9000}}
+        ]}}}});
+        assert_eq!(reported_model(&generations, "claude-opus-5"), "claude-opus-5");
+        assert_eq!(normalize_cwd("C:\\Users\\Me\\Proj\\"), "c:/users/me/proj");
+        assert_eq!(normalize_cwd("/work/Foo/"), "/work/Foo");
     }
     #[test]
     fn edit_requests_are_recognised_by_kind_or_by_kimi_title() {

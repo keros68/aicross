@@ -377,6 +377,20 @@ describe('TASK-27 运行详情口径', () => {
       row({ nodeId: 'a', role: '验收', acceptance: 'NEEDS_FIX' }),
       row({ nodeId: 'b', role: '验证', acceptance: 'PASS' }),
     ] }), graph, [], '', 5000).conclusion).toBe('未通过（验收要求修正，已到上限）');
+    // 图里查得到、但不在同一父节点下的验证（如更早那一轮）不算同轮异议。
+    const rounds = { nodes: {
+      a: { parents: ['exec-2'] },
+      b: { parents: [] },
+      c: { parents: ['exec-2'] },
+    } } as never;
+    expect(finishConsoleRun(record({ rows: [
+      row({ nodeId: 'a', role: '验收', acceptance: 'PASS' }),
+      row({ nodeId: 'b', role: '验证', acceptance: 'NEEDS_FIX' }),
+    ] }), rounds, [], '', 5000).conclusion).toBe('通过（验收一次通过）');
+    expect(finishConsoleRun(record({ rows: [
+      row({ nodeId: 'a', role: '验收', acceptance: 'PASS' }),
+      row({ nodeId: 'c', role: '验证', acceptance: 'NEEDS_FIX' }),
+    ] }), rounds, [], '', 5000).conclusion).toBe('通过（验收一次通过；验证那一路提出修正意见，见详情）');
     // 没有验收、只有验证的模式（评审团）仍看验证。
     expect(finishConsoleRun(record({ rows: [
       row({ nodeId: 'b', role: '验证', acceptance: 'UNKNOWN' }),

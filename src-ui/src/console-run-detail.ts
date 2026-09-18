@@ -345,7 +345,11 @@ function acceptanceConclusion(
       : '验收结论无法识别（验收一次）';
   }
   // 验收通过、同一轮的验证那一路明确要求修正：不改判，但不能藏起这条异议。
-  const siblingsOf = (row: ConsoleRunRow) => JSON.stringify([...(graph.nodes[row.nodeId]?.parents ?? [])].sort());
+  const siblingsOf = (row: ConsoleRunRow) => {
+    const node = graph.nodes[row.nodeId];
+    if (!node) return '?';
+    return node.parents.length > 0 ? JSON.stringify([...node.parents].sort()) : `root:${row.nodeId}`;
+  };
   const lastSiblings = new Set(last.map(siblingsOf));
   const objection = accepts.length > 0 && rows.some((row) => row.role === '验证'
     && row.acceptance === 'NEEDS_FIX' && lastSiblings.has(siblingsOf(row)));

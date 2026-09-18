@@ -67,6 +67,8 @@ describe('控制台 ACP：/ 补全与权限卡片', () => {
     expect(normalizeCwd('C:\\Users\\Me\\Proj\\')).toBe('c:/users/me/proj');
     expect(commandListKey('Claude', 'C:\\Users\\Me\\Proj')).toBe(commandListKey('claude', 'c:/users/me/proj/'));
     expect(commandListKey('claude', 'D:/a')).not.toBe(commandListKey('claude', 'D:/b'));
+    expect(normalizeCwd('/work/Foo/')).toBe('/work/Foo');
+    expect(commandListKey('claude', '/work/Foo')).not.toBe(commandListKey('claude', '/work/foo'));
   });
 
   it('适配器没给拒绝选项时卡片补一个拒绝', () => {

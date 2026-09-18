@@ -82,7 +82,9 @@ export function completeSlashCommand(query: SlashQuery, command: AcpCommand): st
 
 /** 命令清单按 agent + 目录缓存（项目级技能各目录不同）；目录与引擎同一归一化规则。 */
 export function normalizeCwd(cwd: string): string {
-  return cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const path = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+  // 只有 Windows 盘符路径不分大小写；Linux / 大小写敏感的 macOS 保留原样。
+  return /^[a-zA-Z]:/.test(path) ? path.toLowerCase() : path;
 }
 
 export function commandListKey(agent: string, cwd: string): string {

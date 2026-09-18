@@ -62,8 +62,8 @@ export function ConsoleChat({ session }: Props) {
   // 每家 agent × 目录的 `/` 命令清单：undefined 未取、'loading' 取中、数组为结果（空数组 = 没有）。
   const [commandLists, setCommandLists] = useState<Record<string, AcpCommand[] | 'loading'>>({});
   const chatRunIdRef = useRef('');
+  // 与 permissions 同步维护、但在事件回调里立即更新：卸载时据它拒绝，不漏掉还没渲染的请求。
   const permissionsRef = useRef<AcpPermissionRequest[]>([]);
-  permissionsRef.current = permissions;
   const busyRef = useRef(false);
   const appliedRef = useRef(session.lastAppliedMessageId);
   const endRef = useRef<HTMLDivElement>(null);
@@ -100,10 +100,12 @@ export function ConsoleChat({ session }: Props) {
     if (!isTauri) return;
     const opened = subscribeAcpEvent<AcpPermissionRequest>(ACP_PERMISSION_EVENT, (request) => {
       if (!permissionBelongsTo(request, chatRunIdRef.current)) return;
-      setPermissions((current) => [...current.filter((item) => item.requestId !== request.requestId), request]);
+      permissionsRef.current = [...permissionsRef.current.filter((item) => item.requestId !== request.requestId), request];
+      setPermissions(permissionsRef.current);
     });
     const closed = subscribeAcpEvent<{ requestId: string }>(ACP_PERMISSION_CLOSED_EVENT, ({ requestId }) => {
-      setPermissions((current) => current.filter((item) => item.requestId !== requestId));
+      permissionsRef.current = permissionsRef.current.filter((item) => item.requestId !== requestId);
+      setPermissions(permissionsRef.current);
     });
     const listed = subscribeAcpEvent<{ agent: string; cwd: string; commands: AcpCommand[] }>(ACP_COMMANDS_EVENT, ({ agent, cwd, commands: list }) => {
       setCommandLists((current) => ({ ...current, [commandListKey(agent, cwd)]: list }));
@@ -185,7 +187,8 @@ export function ConsoleChat({ session }: Props) {
   }, [commandLists, session.folderPath, slashAgent, slashKey]);
 
   const answerPermission = (request: AcpPermissionRequest, optionId: string | null) => {
-    setPermissions((current) => current.filter((item) => item.requestId !== request.requestId));
+    permissionsRef.current = permissionsRef.current.filter((item) => item.requestId !== request.requestId);
+    setPermissions(permissionsRef.current);
     commands.answerAcpPermission(request.requestId, optionId).catch(() => {});
   };
   const append = (message: ConsoleMessage) => {
@@ -262,6 +265,7 @@ export function ConsoleChat({ session }: Props) {
       append(consoleMessage('system', String(error).replace(/^Error:\s*/, '')));
     } finally {
       chatRunIdRef.current = '';
+      permissionsRef.current = [];
       setPermissions([]);
       busyRef.current = false;
       setBusy(false);
