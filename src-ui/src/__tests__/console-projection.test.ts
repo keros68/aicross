@@ -103,6 +103,16 @@ describe('控制台 @ 别家时补上它没看到的对话', () => {
     expect(result.text).toContain('[用户]\n第二问\n\n[模型回复 codex/gpt-5]\n第二答');
   });
 
+  it('标记里的 model 取派发目标，不取引擎报回的占位文字；键坏了退回消息上的字段', () => {
+    const messages = [
+      said(kimi, '第一答', { model: 'kimi 不报真身' }),
+      said(kimi, '第二答', { model: 'kimi 不报真身', resumeKey: '不是 JSON' }),
+    ];
+    const result = projectConsoleCatchup(messages, codex, '问', { fresh: true, mentions });
+    expect(result.text).toContain('[模型回复 kimi/kimi-code/k3]\n第一答');
+    expect(result.text).toContain('[模型回复 kimi/kimi 不报真身]\n第二答');
+  });
+
   it('resumeKey 对不上时不当锚点，即使三项全等', () => {
     const messages = [
       message('user', '第一问'),

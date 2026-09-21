@@ -78,6 +78,25 @@ GLM-5.3-Flash（读文件，16 分钟）与 Gemini 3.8 Flash（材料内联，8 
 
 采纳三条后复跑：tsc 0、vitest 697 全过、build 通过。
 
+## 窗口真跑（09-21 22:30，编排者，dev 窗口，项目 `aicross-demo`）
+
+codex 当日无额度，清单里的 Codex 换成 Claude Code（opus）。判据取 `.dispatch/` 留痕与 `~/.aicross/runs/*/tasks/*.txt`（一次性 CLI 实际发出的全文）。
+
+| 项 | 结果 |
+| --- | --- |
+| 1 与 Claude 聊一轮（让它起代号，答「朝露既散」），再 `@kimi 上面那个代号是什么` | 过。界面「已附带此前 2 条对话给 Kimi Code」；kimi 收到 `[用户]…` / `[模型回复 …] 朝露既散` / `[当前消息]…`，`@kimi` 已剥；答「朝露既散，一共四个字」 |
+| 2 紧接着再 `@kimi` | 过。无提示；只发当前这句；同一 ACP 会话；答「散既露朝」 |
+| 3 回到 Claude（不带 @）问 kimi 刚才的结果 | 过。「已附带此前 4 条对话给 Claude Code」；只含 kimi 那两轮，不含 Claude 自己说过的；答「散既露朝」。Claude 回复上显示的 model 是 `claude-opus-5`、派发目标是 `opus`，三项全等对不上，锚点靠 `resumeKey` 命中 |
+| 4 `@kimi /sk` | 过。照常弹出 kimi 的 `/skill:*` 补全 |
+| 5 留痕与界面条数一致 | 过（见下一条的例外） |
+
+真跑发现并已修：标记写成了 `[模型回复 kimi/kimi 不报真身]`——消息上的 `model` 是引擎报回的占位文字。改为从 `resumeKey` 取派发目标的 agent / model（`routeOf`），没有键或键坏了退回消息上的字段；补一格测试（vitest 698）。重启窗口复核：`[模型回复 claude/opus]`、`[模型回复 kimi/kimi-code/k3]`。
+
+真跑顺带验到的两件事：
+
+- **kimi 多行 argv**：窗口重启后旧 ACP 进程已退，引擎提示「ACP 会话已重置，改一次性完整上下文」并回退一次性 CLI。实际发出的是全量投影（8 段 + 当前消息，多行），完整到达，kimi 答对。`prompt` 用全量投影的裁决在真机上成立；直接起 `kimi.exe` 传多行参数不截断。
+- **既有引擎问题（不在本期，backlog 94）**：上述回退那一轮，`.dispatch/` 留痕的「任务全文」记的是增量那份（2 段），实际发出的是全量那份（`tasks/<node>.txt`）。`write_record` 传的是 `outbound` 而不是 `oneshot_outbound`。
+
 ## 未做
 
-窗口核对清单 1–5、kimi 多行 argv 真机核对——由编排者在合并后做。
+会话失效重开（`freshText` 路径）没有在窗口里触发过，只有单测覆盖。

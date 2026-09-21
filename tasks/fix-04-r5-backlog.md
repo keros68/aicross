@@ -176,3 +176,9 @@
 
 93. ~~**全量 `cargo test` 偶发一条失败，每次是不同的测试**：第一次 `dispatch::tests::run_one_dead_acp_falls_back_once_without_resume_and_rewrites_full_task`，第二次 `resources::tests::task17_pi_login_check_uses_safe_args_once_and_ignores_credentials`；两条单独跑各 3/1 次全过，第三次全量 473 全过。TASK-30 未改 Rust，不是本次回归。当时机器上开着 dev 窗口 + Vite + 其它工作树的构建，负载偏高（全量耗时 31–39 秒，平常 25 秒）。~~ 已修（09-17，TASK-31：pi 测试是四个 cmd 并发追加同一日志文件丢行，改按 provider 分文件，单独连跑 60 次 0 失败；ACP 测试改为等待进程真实退出，本机未复现过其失败）
     怀疑方向（未核实）：测试之间共享进程级状态（环境变量 / PATH / 当前目录 / 临时文件名）或依赖墙钟的超时。前者在 `cargo test` 默认多线程下会互相踩。要做：分别以 `--test-threads=1` 和默认并发各连跑 10 次统计失败率，找到共享状态或放宽超时；修好前合并验证遇到这两条失败要单独重跑确认，不要直接放行。
+
+## TASK-35 合并后窗口实测（09-21，编排者，main `9cb38cd`）
+
+94. **【中】ACP 回退一次性 CLI 的那一轮，留痕「任务全文」不是实际发出的内容**：引擎 `reset_acp_fallback` 后发的是 `oneshot_outbound`（完整 `prompt`），而 `write_record` 传的是 `outbound`（续聊的 `current_message`）（`src/dispatch.rs` 约 4276 行）。实测：kimi 旧 ACP 进程已退，回退后 `~/.aicross/runs/<run>/tasks/<node>.txt` 是 8 段全量，`.dispatch/` 留痕只记了 2 段增量。留痕是外发内容的唯一人读记录，应与实际一致。改法：走一次性 CLI 时记 `oneshot_outbound`；补测试断言回退那一轮的留痕含完整上下文（参照 `run_one_dead_acp_falls_back_once_without_resume_and_rewrites_full_task`）。`!uses_acp && previous_runner == "acp"` 那条分支同理。
+95. 【低】控制台单线聊天不传 `previousRunner`（`console-chat.ts` `prepareConsoleTurn` 恒为空串）：设置里关掉 ACP、且该 agent 不是 interactive 走 ACP 的情况下，旧 ACP 会话 id 会原样交给一次性 CLI。现状 claude / codex / kimi 在单线聊天里都走 ACP，回退由引擎的 `Fallback` 分支兜住，暂无表现。
+96. 【低】成功但空正文的回复在消息流里显示为「已完成。」，补对话时会作为该家的回复发给别家（TASK-35 GLM 低 5）。

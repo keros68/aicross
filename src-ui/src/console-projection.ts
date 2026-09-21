@@ -75,8 +75,25 @@ function segmentOf(message: ConsoleMessage, mentions: ConsoleTargetAgent[]): str
   }
   // 没成功的回复正文是「状态：…」提示，不收。
   if (!isOkReply(message) || message.text.trim() === '') return '';
-  const route = [message.agent, message.model].filter(Boolean).join('/') || '模型';
-  return `[模型回复 ${route}]\n${clipBody(message.text)}`;
+  return `[模型回复 ${routeOf(message)}]\n${clipBody(message.text)}`;
+}
+
+// 标记里的 agent/model 取派发目标（同 graph/context.ts）：消息上的 model 是引擎报回的，
+// 可能是「kimi 不报真身」这类占位文字。resumeKey 里存着派发目标，有就用它。
+function routeOf(message: ConsoleMessage): string {
+  let agent = message.agent;
+  let model = message.model;
+  if (message.resumeKey) {
+    try {
+      const parsed: unknown = JSON.parse(message.resumeKey);
+      if (Array.isArray(parsed) && typeof parsed[0] === 'string' && typeof parsed[2] === 'string') {
+        [agent, , model] = parsed as [string, string, string];
+      }
+    } catch {
+      // 键坏了就用消息上的字段。
+    }
+  }
+  return [agent, model].filter(Boolean).join('/') || '模型';
 }
 
 // 单线聊天里各家各有续聊会话：把目标没看到的那一段拼在当前消息前面。
