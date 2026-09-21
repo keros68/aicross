@@ -176,8 +176,10 @@ export async function dispatchConsoleTurn(
   resumeId: string,
   io: ConsoleCommands = commands,
   runId = newConsoleChatRunId(),
+  freshText?: string,
+  originalRequest?: string,
 ): Promise<ConsoleTurnResult> {
-  const request = await prepareConsoleTurn(project, text, target, resumeId, io, runId);
+  const request = await prepareConsoleTurn(project, text, target, resumeId, io, runId, freshText, originalRequest);
   return dispatchPreparedConsoleTurn(request, target, io);
 }
 
@@ -192,6 +194,10 @@ async function prepareConsoleTurn(
   resumeId: string,
   io: ConsoleCommands,
   runId: string,
+  // 新会话要看的全文（补的比续聊多）；不传则与 text 相同。
+  freshText = text,
+  // text 带了补上的对话时，这里传用户原话；不传则与 text 相同。
+  originalRequest = text,
 ): Promise<DispatchStageRequest> {
   const resources = await io.listDispatchableModels();
   if (resources.error) throw new Error(`读取资源失败：${resources.error}`);
@@ -201,10 +207,11 @@ async function prepareConsoleTurn(
   const nodeId = crypto.randomUUID();
   const node = buildNodeRequest(nodeId, modelTarget(model), {
     models: resources.models,
-    prompt: text,
+    // 引擎续聊时发 currentMessage；新会话，或 ACP 失败清掉会话改走一次性 CLI 时，发 prompt。
+    prompt: freshText,
     materials: [],
     currentMessage: text,
-    originalRequest: text,
+    originalRequest,
     upstreamArtifacts: [],
     sessionId: resumeId,
     previousRunner: '',
@@ -262,10 +269,13 @@ export async function dispatchConsoleTurnWithFallback(
   onExpired: () => void,
   io: ConsoleCommands = commands,
   runId = newConsoleChatRunId(),
+  // 新会话要看的全文：什么都没看过，要补的比续聊多。会话失效重开发的就是它。不传则沿用 text。
+  freshText?: string,
+  originalRequest?: string,
 ): Promise<ConsoleTurnResult> {
-  if (resumeId === '') return dispatchConsoleTurn(project, text, target, '', io, runId);
+  if (resumeId === '') return dispatchConsoleTurn(project, text, target, '', io, runId, freshText, originalRequest);
   // 资源读取与目标检查在回退判断之外；发派前失败不能据此清除有效续聊 id。
-  const request = await prepareConsoleTurn(project, text, target, resumeId, io, runId);
+  const request = await prepareConsoleTurn(project, text, target, resumeId, io, runId, freshText, originalRequest);
   try {
     const resumed = await dispatchPreparedConsoleTurn(request, target, io);
     if (resumed.result.status !== 'error' || !isExpiredResumeError(resumed.result.error)) return resumed;
@@ -274,7 +284,8 @@ export async function dispatchConsoleTurnWithFallback(
   }
   onExpired();
   // 重派用同一 runId 前缀：权限卡片按前缀认领。
-  return dispatchConsoleTurn(project, text, target, '', io, `${runId}-fresh`);
+  const fresh = freshText ?? text;
+  return dispatchConsoleTurn(project, fresh, target, '', io, `${runId}-fresh`, fresh, originalRequest);
 }
 
 export async function dispatchConsolePreset(

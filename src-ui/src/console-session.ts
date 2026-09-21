@@ -28,6 +28,8 @@ export interface ConsoleMessage {
   stage?: number;
   /** 关联的模式运行记录；收尾消息用它打开详情。 */
   runId?: string;
+  /** 单线聊天里这条回复所属的续聊会话键。 */
+  resumeKey?: string;
 }
 
 export interface ConsoleMentionResult {

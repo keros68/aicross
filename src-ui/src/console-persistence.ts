@@ -53,6 +53,7 @@ function messageFrom(value: unknown): ConsoleMessage | null {
       ? { stage: message.stage }
       : {}),
     ...(typeof message.runId === 'string' && message.runId !== '' ? { runId: message.runId } : {}),
+    ...(typeof message.resumeKey === 'string' && message.resumeKey !== '' ? { resumeKey: message.resumeKey } : {}),
   };
 }
 

@@ -31,6 +31,12 @@ import {
 } from '../../console-acp';
 import { selectConsoleGraph } from '../../console-channel';
 import {
+  consoleCatchupNotice,
+  consoleReplyResumeKey,
+  projectConsoleCatchup,
+  type ConsoleCatchup,
+} from '../../console-projection';
+import {
   consoleScrollRestoreTop,
   consoleScrollSnapshot,
   consoleAutoScrollStep,
@@ -269,7 +275,20 @@ export function ConsoleChat({ session }: Props) {
       append(consoleMessage('system', '请输入要发送的内容。'));
       return;
     }
+    // 各家各有续聊会话：把这家没看到的那一段拼在前面发出去；消息流里仍显示用户原文。
+    // 续聊发 catchup（只补上次之后的），新会话发 freshCatchup（补全部）。引擎在 ACP 失败时会自己
+    // 清掉会话改发后者，界面不知道，这时提示的条数与实际发出的不一致，以派发记录里的全文为准。
+    const resumeId = consoleResumeId(session.resumeId, selected);
+    const freshCatchup = projectConsoleCatchup(messages, selected, outbound, { fresh: true, mentions });
+    const catchup = resumeId === ''
+      ? freshCatchup
+      : projectConsoleCatchup(messages, selected, outbound, { fresh: false, mentions });
+    const announceCatchup = (sent: ConsoleCatchup) => {
+      const notice = consoleCatchupNotice(sent, agentDisplayName(selected.agent));
+      if (notice !== '') append(consoleMessage('system', notice));
+    };
     append(consoleMessage('user', raw));
+    announceCatchup(catchup);
     setDraft('');
     busyRef.current = true;
     setBusy(true);
@@ -278,9 +297,9 @@ export function ConsoleChat({ session }: Props) {
     try {
       const turn = await dispatchConsoleTurnWithFallback(
         session.folderPath ?? '',
-        outbound,
+        catchup.text,
         selected,
-        consoleResumeId(session.resumeId, selected),
+        resumeId,
         () => {
           dispatch({
             type: 'SET_CONSOLE_RESUME_ID',
@@ -289,9 +308,15 @@ export function ConsoleChat({ session }: Props) {
             resumeId: '',
           });
           append(consoleMessage('system', '上次的会话已失效，已开新会话'));
+          // 新会话发的是 freshText；条数与刚才报的不同才再报一次。
+          if (freshCatchup.included !== catchup.included || freshCatchup.omitted !== catchup.omitted) {
+            announceCatchup(freshCatchup);
+          }
         },
         commands,
         runId,
+        freshCatchup.text,
+        outbound,
       );
       if (turn.result.sessionId) {
         dispatch({
@@ -301,7 +326,9 @@ export function ConsoleChat({ session }: Props) {
           resumeId: turn.result.sessionId,
         });
       }
-      append(consoleResultMessage(selected, turn.result));
+      // 记下这条回复属于哪个续聊会话；下次补对话从它之后取。
+      const resumeKey = consoleReplyResumeKey(selected, turn.result, outbound);
+      append({ ...consoleResultMessage(selected, turn.result), ...(resumeKey ? { resumeKey } : {}) });
     } catch (error) {
       append(consoleMessage('system', String(error).replace(/^Error:\s*/, '')));
     } finally {

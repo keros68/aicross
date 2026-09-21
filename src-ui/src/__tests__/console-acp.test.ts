@@ -116,4 +116,67 @@ describe('控制台 ACP：/ 补全与权限卡片', () => {
     await dispatchConsoleTurnWithFallback('D:/work', '你好', claude, 'old', () => {}, io, 'console-chat-x');
     expect(runIds).toEqual(['console-chat-x', 'console-chat-x-fresh']);
   });
+
+  it('带 freshText 时会话失效重开发出的是 freshText，不带则沿用 text', async () => {
+    const sent: any[] = [];
+    const io = {
+      listDispatchableModels: async () => ({ models: [{
+        id: claude.model, agent: 'claude', provider: '', vendor: 'anthropic', billing_source: '',
+        tier: 'pro', thinking: '中', status: 'ready', verification: 'native',
+      }], error: '' }),
+      dispatchGraphStage: vi.fn(async (value: any) => {
+        sent.push(value.nodes[0]);
+        const expired = value.nodes[0].sessionId !== '';
+        return { results: [{ nodeId: value.nodes[0].nodeId, status: expired ? 'error' : 'ok', text: '',
+          sessionId: '', durationMs: 1, fallbackTo: '', modelReported: '',
+          error: expired ? 'No conversation found with session ID: old' : '' }] };
+      }),
+    } as any;
+    await dispatchConsoleTurnWithFallback(
+      'D:/work', '补一段\n\n[当前消息]\n你好', claude, 'old', () => {}, io, 'console-chat-y',
+      '补全部\n\n[当前消息]\n你好', '你好',
+    );
+    expect(sent.map((node) => node.sessionId)).toEqual(['old', '']);
+    expect(sent[0].currentMessage).toBe('补一段\n\n[当前消息]\n你好');
+    expect(sent[0].prompt).toBe('补全部\n\n[当前消息]\n你好');
+    expect(sent[1].prompt).toBe('补全部\n\n[当前消息]\n你好');
+    expect(sent[1].currentMessage).toBe('补全部\n\n[当前消息]\n你好');
+    expect(sent[1].originalRequest).toBe('你好');
+
+    sent.length = 0;
+    await dispatchConsoleTurnWithFallback('D:/work', '你好', claude, 'old', () => {}, io, 'console-chat-z');
+    expect(sent.map((node) => node.prompt)).toEqual(['你好', '你好']);
+    expect(sent[1].originalRequest).toBe('你好');
+  });
+
+  it('续聊请求里 currentMessage 是只补上次之后的那份，prompt 是补全部的那份，originalRequest 是原话', async () => {
+    let node: any;
+    const io = {
+      listDispatchableModels: async () => ({ models: [{
+        id: kimi.model, agent: 'kimi', provider: '', vendor: 'moonshot', billing_source: '',
+        tier: 'pro', thinking: '中', status: 'ready', verification: 'native',
+      }], error: '' }),
+      dispatchGraphStage: vi.fn(async (value: any) => {
+        node = value.nodes[0];
+        return { results: [{ nodeId: node.nodeId, status: 'ok', text: '好', sessionId: 's', durationMs: 1,
+          fallbackTo: '', modelReported: '', error: '' }] };
+      }),
+    } as any;
+    const resumed = '前缀\n\n[用户]\n补上回收\n\n[当前消息]\n上面的方案有什么问题';
+    const fresh = '前缀\n\n[用户]\n给个方案\n\n[用户]\n补上回收\n\n[当前消息]\n上面的方案有什么问题';
+    await dispatchConsoleTurnWithFallback(
+      'D:/work', resumed, kimi, 'kimi-session', () => {}, io, 'console-chat-k', fresh, '上面的方案有什么问题',
+    );
+    expect(node.sessionId).toBe('kimi-session');
+    // 引擎续聊发 currentMessage；ACP 失败清会话改走一次性 CLI 时发 prompt。
+    expect(node.currentMessage).toBe(resumed);
+    expect(node.prompt).toBe(fresh);
+    expect(node.originalRequest).toBe('上面的方案有什么问题');
+
+    // 没有续聊 id 的那条路同样带两份；不传 freshText 时两项相同。
+    await dispatchConsoleTurnWithFallback('D:/work', resumed, kimi, '', () => {}, io, 'console-chat-k2', fresh, '原话');
+    expect([node.sessionId, node.currentMessage, node.prompt, node.originalRequest]).toEqual(['', resumed, fresh, '原话']);
+    await dispatchConsoleTurn('D:/work', '你好', kimi, 's', io, 'console-chat-k3');
+    expect([node.currentMessage, node.prompt, node.originalRequest]).toEqual(['你好', '你好', '你好']);
+  });
 });
