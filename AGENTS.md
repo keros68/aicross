@@ -4,7 +4,7 @@
 
 ## 项目是什么
 
-aicross：多厂商 agent 的桌面派发控制台。用户在一个窗口里接入本机的 agent CLI（Claude Code / Codex / Kimi Code / pi agent 等），看到调用方案，手动编排，在对话区 @ 各家模型干活；模型提议、用户裁决、控制台执行。产品说明在 `docs/PRODUCT.md`，界面基准是 `docs/proto/index.html`（可点击原型，假数据）。
+aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常用的宿主（Claude Code / Codex / Kimi Code / pi agent 等，装 ai-cross skill）里说话，模型提议派发、用户采纳；aicross 以命令行拉起各家 CLI、隔离盲审、核对真身、留痕，并在查看器里把各路结果并排交给用户裁决。产品说明在 `docs/PRODUCT.md`，**09-30 定案**（对话留在宿主，窗口只留查看器）优先于其中更早的界面定案；`docs/proto/index.html` 是 09-30 之前的界面原型，只作历史参考。
 
 ## 技术栈
 

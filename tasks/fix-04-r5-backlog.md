@@ -5,10 +5,10 @@
 1. **验证重试到顶后，从未派出的验收节点显示「失败」**（中）：应显示「已跳过」或保持「待派」并说明「上游验证未通过」。图卡、右栏节点链、结果屏三处一致。
 2. **重试节点的路由行文案**（小）：现在是「验证命令未通过，请修正后重新运行。 验证命令失败 → codex/…」，理由被塞进角色位。应是「执行（修正 2/3）→ codex/… ｜ …」，理由另起一行。
 3. ~~**验证失败 error 文本带 ANSI 转义**（小）：`验证命令失败（exit=Some(1)）\e[33m…`，剥掉转义再写留痕与 Reply；`exit=Some(1)` 改成 `exit=1`。~~ 已修（09-16，TASK-23）
-4. **盖预设菜单（portal）不响应 Escape 与外点**（小）：只有再点「盖预设」或滚画布才收起。加 Escape + 外点关闭。
-5. **新开 tab 不继承工作目录**（小）：`+` 新建 tab 后左栏要重新选目录；应继承上一个活动 tab 的 folderPath（或 localStorage `cc-folder`）。
-6. **切 tab 后右栏仍显示上一张图的节点链**（小）：`graphFocus` 只在关 tab 时清；切到没有图的 tab 时也应清或按当前 tab 的图显示。
-7. **根列直接发消息默认「未指定模型」**（小）：`appendTurn` 的 `defaultTurnTarget()` 空 agent；改为按 roles.json 的执行默认填。
+4. ~~**盖预设菜单（portal）不响应 Escape 与外点**（小）：只有再点「盖预设」或滚画布才收起。加 Escape + 外点关闭。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+5. ~~**新开 tab 不继承工作目录**（小）：`+` 新建 tab 后左栏要重新选目录；应继承上一个活动 tab 的 folderPath（或 localStorage `cc-folder`）。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+6. ~~**切 tab 后右栏仍显示上一张图的节点链**（小）：`graphFocus` 只在关 tab 时清；切到没有图的 tab 时也应清或按当前 tab 的图显示。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+7. ~~**根列直接发消息默认「未指定模型」**（小）：`appendTurn` 的 `defaultTurnTarget()` 空 agent；改为按 roles.json 的执行默认填。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 8. ~~**diff.patch 新增文件头 `+++ after/...`**（小）：git `--no-index` 对新文件输出的 `+++ "after/..."` 带引号没被 R3-21 的行头改写命中；补引号形态。~~ 已修（09-16，TASK-23）
 9. ~~kimi 验收留痕 `identity`/usage 为空（已知，kimi 不报），留痕里明示「kimi 不报用量/真身」而不是空串。~~ 已修（09-16，TASK-23）
 
@@ -38,15 +38,15 @@
 26. ~~入口脏检查不过滤排除目录，批中验证留下的 `__pycache__` 会让下一批入口整批 skipped；plan 侧 `check_swarm_plan` 的 status 也未带 `-uall`。（DS 6/9、GLM 4）~~ 已修（09-16，TASK-24）
 ## TASK-10 R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
-27. 损坏的 commander.json 拒写后前端 `.catch(() => {})` 吞错，快照不消费，每次重启 tab 反复重试且无提示；给保存失败一个可见提示。（GLM 1）
-28. 启动器目录选择器 `pickFolder` 不置 `seeded`，晚到的默认可能覆盖用户刚选的目录。（GLM 2 / DS 6 同类）
-29. `graphViewTabs` 按 session id 索引，RESTART_TERMINAL 换 id 后标记丢失、关 tab 不清理；空白 tab 换目录会翻回启动器。（GLM 3 / DS 5）
-30. 保存默认按闭包捕获的旧 id 消费，保存在途时换目录会把旧快照留在新 id 上（窗口几毫秒）。（DS 4）
+27. ~~损坏的 commander.json 拒写后前端 `.catch(() => {})` 吞错，快照不消费，每次重启 tab 反复重试且无提示；给保存失败一个可见提示。（GLM 1）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+28. ~~启动器目录选择器 `pickFolder` 不置 `seeded`，晚到的默认可能覆盖用户刚选的目录。（GLM 2 / DS 6 同类）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+29. ~~`graphViewTabs` 按 session id 索引，RESTART_TERMINAL 换 id 后标记丢失、关 tab 不清理；空白 tab 换目录会翻回启动器。（GLM 3 / DS 5）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+30. ~~保存默认按闭包捕获的旧 id 消费，保存在途时换目录会把旧快照留在新 id 上（窗口几毫秒）。（DS 4）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 
 ## TASK-10 窗口实测（09-15 16:25）
 
-31. 控制台 PTY 继承了宿主环境里的 `CLAUDE_CODE_CHILD_SESSION` 标记（开发窗口从 Claude Code 会话里起时出现，Claude Code 提示 transcript saving off）：起控制台时清掉 `CLAUDE_CODE_*` 之类宿主会话变量，用户从 Claude Code 里启动 aicross 时也不受影响。
-32. 控制台 tab 标题被 CLI 的 OSC 标题（「Claude Code」）盖掉，看不到 `agent · 模型 · 目录名`；改成 commanderTitle 优先、OSC 标题进悬停。
+31. ~~控制台 PTY 继承了宿主环境里的 `CLAUDE_CODE_CHILD_SESSION` 标记（开发窗口从 Claude Code 会话里起时出现，Claude Code 提示 transcript saving off）：起控制台时清掉 `CLAUDE_CODE_*` 之类宿主会话变量，用户从 Claude Code 里启动 aicross 时也不受影响。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+32. ~~控制台 tab 标题被 CLI 的 OSC 标题（「Claude Code」）盖掉，看不到 `agent · 模型 · 目录名`；改成 commanderTitle 优先、OSC 标题进悬停。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 
 ## TASK-14 R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
@@ -64,9 +64,9 @@
 
 ## TASK-18 复审剩余（09-15，两家都判可交付；低危，择期）
 
-41. 右栏预设下拉的 listbox 角色混排（组标签 div、details/summary 在 listbox 内，规划项无 role=option），方向键/字母跳转不如原生 select。（DS 5 / GLM 3）
-42. 规划中两项只在右栏下拉出现，盖预设菜单与讲解页没有；盖预设菜单的源码字符串断言偏弱。（DS 7 / GLM 5）
-43. 没有用户预设时不出现「自定义模式」组；只有一个用户预设时组标签与条目同名两行。（DS 6）
+41. ~~右栏预设下拉的 listbox 角色混排（组标签 div、details/summary 在 listbox 内，规划项无 role=option），方向键/字母跳转不如原生 select。（DS 5 / GLM 3）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+42. ~~规划中两项只在右栏下拉出现，盖预设菜单与讲解页没有；盖预设菜单的源码字符串断言偏弱。（DS 7 / GLM 5）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+43. ~~没有用户预设时不出现「自定义模式」组；只有一个用户预设时组标签与条目同名两行。（DS 6）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 
 ## TASK-13 R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
@@ -79,14 +79,14 @@
 
 ## TASK-15 R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
-50. 自动直启的「真实接入」断言仍是源码文本比对；把 effect 判定抽成纯函数再单测。（DS 2）
-51. tab 条上的 claude/codex 图标仍是内联字面量副本（CLAUDE_SVG/CODEX_SVG），与 public/icons/tools 同源但各存一份；设置页与接入页两处仍直出机器 id。（DS 4/5、GLM 5）
-52. 启动器 `onShown` 每次渲染重复登记（幂等，无功能影响）；有存量默认时探测期间首屏短暂空白属有意取舍。（GLM 2/3）
+50. ~~自动直启的「真实接入」断言仍是源码文本比对；把 effect 判定抽成纯函数再单测。（DS 2）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+51. ~~tab 条上的 claude/codex 图标仍是内联字面量副本（CLAUDE_SVG/CODEX_SVG），与 public/icons/tools 同源但各存一份；设置页与接入页两处仍直出机器 id。（DS 4/5、GLM 5）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+52. ~~启动器 `onShown` 每次渲染重复登记（幂等，无功能影响）；有存量默认时探测期间首屏短暂空白属有意取舍。（GLM 2/3）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 
 ## TASK-16 R1 复审剩余（09-15，两家都判可交付；低危，择期）
 
-53. 控制台 run 未接图进度 store（图上节点卡无心跳）：`startPipelineHeadless` 支持 begin/end，但 progress store 挂在 GraphTab 内，通道拿不到；需要 graphId → store 的注册表。（DS 2）
-54. `aicross adopt` 要求图在内存 state 中，用户关掉该图 tab 后得 409；先 loadGraph 兜底。（GLM N4）
+53. ~~控制台 run 未接图进度 store（图上节点卡无心跳）：`startPipelineHeadless` 支持 begin/end，但 progress store 挂在 GraphTab 内，通道拿不到；需要 graphId → store 的注册表。（DS 2）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+54. ~~`aicross adopt` 要求图在内存 state 中，用户关掉该图 tab 后得 409；先 loadGraph 兜底。（GLM N4）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 55. `head_and_options_are_http_methods` 与 `HTTP_TIMEOUT` 两条测试仍是自证；NSIS 脚本本体无自动化测试，只有 TS 镜像的纯函数测试。（GLM N5 / 5）
 
 ## TASK-17 R1 复审剩余（09-15，两家都判可交付；低危，择期）
@@ -101,13 +101,13 @@
 
 ## TASK-19 复审剩余（09-16，低危，择期）
 
-60. `src-ui/src/components/left/Explorer.css` 仍有既有的 `12.5px` 字号，与 12 / 13 / 14 / 15 / 16 / 18 的整数阶梯不一致；本期不扩大到 Explorer 的全量字号整理。
+60. ~~`src-ui/src/components/left/Explorer.css` 仍有既有的 `12.5px` 字号，与 12 / 13 / 14 / 15 / 16 / 18 的整数阶梯不一致；本期不扩大到 Explorer 的全量字号整理。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 
 ## TASK-19 R1 复审剩余（09-16，两家都判可交付；低危，择期）
 
 61. ~~缩放回退的幂等只在当前 JS 会话内；页面重载后仍可能叠一次 CSS 倍率。~~ **已修（09-16）**：生效模式（webview / css）跟着档位一起存进 localStorage，重载后内存表为空时改问存档；存储不可用时退回只靠内存，不抛错。红绿核过。
-62. `rail-density-19.test.tsx` 的结构正则是贪婪匹配，状态槽之后再插一列不会红；只有插在名字与状态之间才红。（GLM 3）**同型的另一处已修（09-16）**：`ui-scale-19.test.ts` 扫 PRODUCT.md 定案编号时一路切到「## 顺序」，中间插一节定案就会把别节编号算进来，已改成切到下一个二级标题为止。本条的 rail 正则仍待收紧。
-63. `docs/PRODUCT.md` 字号阶梯未记「终端与 pre 例外」，与清理后仅剩的两处 11px 字面上不一致。（GLM 4）
+62. ~~`rail-density-19.test.tsx` 的结构正则是贪婪匹配，状态槽之后再插一列不会红；只有插在名字与状态之间才红。（GLM 3）**同型的另一处已修（09-16）**：`ui-scale-19.test.ts` 扫 PRODUCT.md 定案编号时一路切到「## 顺序」，中间插一节定案就会把别节编号算进来，已改成切到下一个二级标题为止。本条的 rail 正则仍待收紧。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+63. ~~`docs/PRODUCT.md` 字号阶梯未记「终端与 pre 例外」，与清理后仅剩的两处 11px 字面上不一致。（GLM 4）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 
 64. ~~Tauri dev 的文件监听把 `src-ui/node_modules/.vite/vitest/**/results.json` 也算成变更，在开发窗口开着时跑 vitest 会触发整轮 Rust 重编 + 重启 app（09-16 窗口实测）。~~ 已加 `.taurignore`（09-16）；**下次启动 dev 时才生效，当时运行中的窗口未重启验证**。
 
@@ -126,9 +126,9 @@
 
 ## TASK-22 R1 复审剩余（09-16，Gemini 判可交付；低危）
 
-71. 单线聊天路径没有额度预检：额度用尽的 `@` 目标照样派出，错误要等引擎回来才以消息形式出现。补全列表也不过滤 `quota_exhausted_until`。（GLM 6）
+71. ~~单线聊天路径没有额度预检：额度用尽的 `@` 目标照样派出，错误要等引擎回来才以消息形式出现。补全列表也不过滤 `quota_exhausted_until`。（GLM 6）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 72. ~~续聊 id 与消息流只在内存，关 tab 或重启即失。`docs/MANUAL.md` 已写明现状，第二期接持久化或 HistoryBoard 式恢复。（GLM 4）~~ 已修（09-17，TASK-25：`console-persistence.ts` 落 localStorage，最近 200 条）
-73. 直启路径的遗留辅助函数（`commanderNewTabLaunch` / `commanderTabTransition` / `commanderArgs`）已无生产调用方，只剩测试供养；第二期收口直启路径时一并删。（GLM 7）
+73. ~~直启路径的遗留辅助函数（`commanderNewTabLaunch` / `commanderTabTransition` / `commanderArgs`）已无生产调用方，只剩测试供养；第二期收口直启路径时一并删。（GLM 7）~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 74. 改名只还原了 `tasks/` 下的 `review-*` / `REPORT-*` / `fix-*`；扫描测试目前只钉住前两类。`fix-*.md` 这类当时的任务清单同属历史记录，扫描范围可一并扩上。
 
 ## 控制台第一期窗口实测发现（09-16 夜，编排者）
@@ -180,5 +180,5 @@
 ## TASK-35 合并后窗口实测（09-21，编排者，main `9cb38cd`）
 
 94. **【中】ACP 回退一次性 CLI 的那一轮，留痕「任务全文」不是实际发出的内容**：引擎 `reset_acp_fallback` 后发的是 `oneshot_outbound`（完整 `prompt`），而 `write_record` 传的是 `outbound`（续聊的 `current_message`）（`src/dispatch.rs` 约 4276 行）。实测：kimi 旧 ACP 进程已退，回退后 `~/.aicross/runs/<run>/tasks/<node>.txt` 是 8 段全量，`.dispatch/` 留痕只记了 2 段增量。留痕是外发内容的唯一人读记录，应与实际一致。改法：走一次性 CLI 时记 `oneshot_outbound`；补测试断言回退那一轮的留痕含完整上下文（参照 `run_one_dead_acp_falls_back_once_without_resume_and_rewrites_full_task`）。`!uses_acp && previous_runner == "acp"` 那条分支同理。
-95. 【低】控制台单线聊天不传 `previousRunner`（`console-chat.ts` `prepareConsoleTurn` 恒为空串）：设置里关掉 ACP、且该 agent 不是 interactive 走 ACP 的情况下，旧 ACP 会话 id 会原样交给一次性 CLI。现状 claude / codex / kimi 在单线聊天里都走 ACP，回退由引擎的 `Fallback` 分支兜住，暂无表现。
-96. 【低】成功但空正文的回复在消息流里显示为「已完成。」，补对话时会作为该家的回复发给别家（TASK-35 GLM 低 5）。
+95. ~~【低】控制台单线聊天不传 `previousRunner`（`console-chat.ts` `prepareConsoleTurn` 恒为空串）：设置里关掉 ACP、且该 agent 不是 interactive 走 ACP 的情况下，旧 ACP 会话 id 会原样交给一次性 CLI。现状 claude / codex / kimi 在单线聊天里都走 ACP，回退由引擎的 `Fallback` 分支兜住，暂无表现。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+96. ~~【低】成功但空正文的回复在消息流里显示为「已完成。」，补对话时会作为该家的回复发给别家（TASK-35 GLM 低 5）。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
