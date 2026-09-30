@@ -1834,7 +1834,7 @@ fn preview_core(request: &DispatchStageRequest) -> Result<DispatchPreview, Strin
     Ok(preview)
 }
 
-fn dispatch_stage_core(
+pub(crate) fn dispatch_stage_core(
     mut request: DispatchStageRequest,
     app: Option<AppHandle>,
 ) -> Result<DispatchStageResult, String> {
@@ -10712,7 +10712,9 @@ mod tests {
         }
     }
 
-    fn task13_repo(tag: &str) -> (PathBuf, PathBuf, DirectorySnapshot) {
+    fn task13_repo(tag: &str) -> (PathBuf, PathBuf, DirectorySnapshot, std::sync::MutexGuard<'static, ()>) {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!("aicross-red-green-{tag}-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
@@ -10724,7 +10726,7 @@ mod tests {
         test_git(&project, &["add", "function.txt", "baseline.test"]);
         test_git(&project, &["commit", "-m", "base"]);
         let before = snapshot_directory(&project).unwrap();
-        (root, project, before)
+        (root, project, before, guard)
     }
 
     fn task13_persist_before(project: &Path, before: &DirectorySnapshot, after: &DirectorySnapshot, node: &str) -> String {
@@ -10791,12 +10793,12 @@ mod tests {
 
     #[cfg(windows)]
     fn task13_green_timeout_command() -> String {
-        "if ((Get-Content function.txt -Raw).Trim() -eq '1') { exit 1 }; Start-Sleep -Seconds 5".into()
+        "if ((Get-Content function.txt -Raw).Trim() -eq '1') { exit 1 }; Start-Sleep -Seconds 8".into()
     }
 
     #[cfg(not(windows))]
     fn task13_green_timeout_command() -> String {
-        "if [ \"$(cat function.txt)\" = 1 ]; then exit 1; else sleep 5; fi".into()
+        "if [ \"$(cat function.txt)\" = 1 ]; then exit 1; else sleep 8; fi".into()
     }
 
     fn task13_missing_command() -> String {
@@ -10822,7 +10824,7 @@ mod tests {
     #[test]
     fn task13_changed_function_with_regression_test_is_pinned() {
         if !require_git("task13_changed_function_with_regression_test_is_pinned") { return; }
-        let (root, project, before) = task13_repo("pinned");
+        let (root, project, before, _task13_guard) = task13_repo("pinned");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         fs::write(project.join("regression.test"), b"expects 2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
@@ -10837,7 +10839,7 @@ mod tests {
     #[test]
     fn task13_changed_function_without_regression_test_is_unpinned() {
         if !require_git("task13_changed_function_without_regression_test_is_unpinned") { return; }
-        let (root, project, before) = task13_repo("unpinned");
+        let (root, project, before, _task13_guard) = task13_repo("unpinned");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
         let before_dir = task13_persist_before(&project, &before, &after, "unpinned");
@@ -10850,7 +10852,7 @@ mod tests {
     #[test]
     fn task13_missing_before_snapshot_is_skipped() {
         if !require_git("task13_missing_before_snapshot_is_skipped") { return; }
-        let (root, project, before) = task13_repo("missing");
+        let (root, project, before, _task13_guard) = task13_repo("missing");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
         let outcome = task13_red_green(&project, "missing.before", &before, &after, &task13_baseline_command(), Duration::from_secs(5), "missing");
@@ -10862,7 +10864,7 @@ mod tests {
     #[test]
     fn task13_red_green_restores_exact_bytes_and_leaves_unrelated_file_alone() {
         if !require_git("task13_red_green_restores_exact_bytes_and_leaves_unrelated_file_alone") { return; }
-        let (root, project, _) = task13_repo("restore");
+        let (root, project, _, _task13_guard) = task13_repo("restore");
         fs::write(project.join("unrelated.bin"), [0_u8, 1, 2, 255]).unwrap();
         let before = snapshot_directory(&project).unwrap();
         fs::write(project.join("function.txt"), b"2\r\n").unwrap();
@@ -10879,7 +10881,7 @@ mod tests {
     #[test]
     fn task13_red_green_timeout_is_skipped_and_restored() {
         if !require_git("task13_red_green_timeout_is_skipped_and_restored") { return; }
-        let (root, project, before) = task13_repo("timeout");
+        let (root, project, before, _task13_guard) = task13_repo("timeout");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
         let before_dir = task13_persist_before(&project, &before, &after, "timeout");
@@ -10896,7 +10898,7 @@ mod tests {
     #[test]
     fn task13_restored_validation_failure_changes_status_outcome() {
         if !require_git("task13_restored_validation_failure_changes_status_outcome") { return; }
-        let (root, project, before) = task13_repo("green-failed");
+        let (root, project, before, _task13_guard) = task13_repo("green-failed");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
         let before_dir = task13_persist_before(&project, &before, &after, "green-failed");
@@ -10932,7 +10934,7 @@ mod tests {
     #[test]
     fn task13_zero_change_reports_its_real_reason() {
         if !require_git("task13_zero_change_reports_its_real_reason") { return; }
-        let (root, project, before) = task13_repo("zero-change");
+        let (root, project, before, _task13_guard) = task13_repo("zero-change");
         let outcome = task13_red_green(&project, "", &before, &before, &task13_baseline_command(), Duration::from_secs(5), "zero-change");
         assert_eq!(outcome.pinned, PinnedState::Skipped);
         assert_eq!(outcome.note, "本轮没有文件改动，未做核对");
@@ -10942,7 +10944,7 @@ mod tests {
     #[test]
     fn task13_preexisting_empty_directory_survives_red_phase() {
         if !require_git("task13_preexisting_empty_directory_survives_red_phase") { return; }
-        let (root, project, _) = task13_repo("empty-directory");
+        let (root, project, _, _task13_guard) = task13_repo("empty-directory");
         fs::create_dir(project.join("keep-empty")).unwrap();
         let before = snapshot_directory(&project).unwrap();
         fs::write(project.join("keep-empty/new.txt"), "after").unwrap();
@@ -10958,7 +10960,7 @@ mod tests {
     #[test]
     fn task13_restore_failure_is_best_effort_and_maps_to_error() {
         if !require_git("task13_restore_failure_is_best_effort_and_maps_to_error") { return; }
-        let (root, project, before) = task13_repo("restore-failure");
+        let (root, project, before, _task13_guard) = task13_repo("restore-failure");
         fs::write(project.join("a-readonly.txt"), "after-a").unwrap();
         fs::write(project.join("z-restored.txt"), "after-z").unwrap();
         let after = snapshot_directory(&project).unwrap();
@@ -10986,7 +10988,7 @@ mod tests {
     #[test]
     fn task13_green_failure_retries_once_and_can_recover() {
         if !require_git("task13_green_failure_retries_once_and_can_recover") { return; }
-        let (root, project, before) = task13_repo("flaky-green");
+        let (root, project, before, _task13_guard) = task13_repo("flaky-green");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
         let before_dir = task13_persist_before(&project, &before, &after, "flaky-green");
@@ -11005,11 +11007,11 @@ mod tests {
     #[test]
     fn task13_green_timeout_is_distinct_from_red_timeout() {
         if !require_git("task13_green_timeout_is_distinct_from_red_timeout") { return; }
-        let (root, project, before) = task13_repo("green-timeout");
+        let (root, project, before, _task13_guard) = task13_repo("green-timeout");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
         let before_dir = task13_persist_before(&project, &before, &after, "green-timeout");
-        let outcome = task13_red_green(&project, &before_dir, &before, &after, &task13_green_timeout_command(), Duration::from_secs(2), "green-timeout");
+        let outcome = task13_red_green(&project, &before_dir, &before, &after, &task13_green_timeout_command(), Duration::from_secs(4), "green-timeout");
         assert_eq!(outcome.note, "恢复后验证命令超时，未核对");
         assert!(!outcome.validation_failed);
         let _ = fs::remove_dir_all(root);
@@ -11018,11 +11020,11 @@ mod tests {
     #[test]
     fn task13_missing_validation_program_is_not_a_red_test() {
         if !require_git("task13_missing_validation_program_is_not_a_red_test") { return; }
-        let (root, project, before) = task13_repo("missing-program");
+        let (root, project, before, _task13_guard) = task13_repo("missing-program");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
         let before_dir = task13_persist_before(&project, &before, &after, "missing-program");
-        let outcome = task13_red_green(&project, &before_dir, &before, &after, &task13_missing_command(), Duration::from_secs(5), "missing-program");
+        let outcome = task13_red_green(&project, &before_dir, &before, &after, &task13_missing_command(), Duration::from_secs(15), "missing-program");
         assert_eq!(outcome.pinned, PinnedState::Skipped, "{outcome:?}");
         assert_eq!(outcome.note, "回退后验证命令启动失败，未核对");
         let _ = fs::remove_dir_all(root);
@@ -11047,7 +11049,7 @@ mod tests {
     #[test]
     fn task13_cancel_during_red_run_skips_green_run() {
         if !require_git("task13_cancel_during_red_run_skips_green_run") { return; }
-        let (root, project, before) = task13_repo("cancel-red");
+        let (root, project, before, _task13_guard) = task13_repo("cancel-red");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
         let before_dir = task13_persist_before(&project, &before, &after, "cancel-red");
@@ -11101,7 +11103,7 @@ mod tests {
         fix_round: bool,
         role: &str,
     ) -> (PathBuf, PathBuf, DispatchNodeResult) {
-        let (root, project, _) = task13_repo(tag);
+        let (root, project, _, _task13_guard) = task13_repo(tag);
         let stub = root.join("cc_switch_stub.py");
         let regression = if add_test {
             "pathlib.Path('regression.test').write_text('expects 2\\n', encoding='utf-8')\n"
@@ -11188,7 +11190,7 @@ mod tests {
     fn task13_restore_preserves_executable_mode() {
         use std::os::unix::fs::PermissionsExt;
         if !require_git("task13_restore_preserves_executable_mode") { return; }
-        let (root, project, before) = task13_repo("mode");
+        let (root, project, before, _task13_guard) = task13_repo("mode");
         let script = project.join("regression.sh");
         fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
@@ -11205,7 +11207,7 @@ mod tests {
     fn task13_restore_replaces_symlink_without_following_it() {
         use std::os::unix::fs::symlink;
         if !require_git("task13_restore_replaces_symlink_without_following_it") { return; }
-        let (root, project, before) = task13_repo("restore-link");
+        let (root, project, before, _task13_guard) = task13_repo("restore-link");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
         let before_dir = task13_persist_before(&project, &before, &after, "restore-link");

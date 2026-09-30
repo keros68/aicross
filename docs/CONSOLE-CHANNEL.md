@@ -132,6 +132,8 @@ run 的 `status` 为 `proposed`、`running`、`done`、`failed`、`rejected` 或
 
 ## 命令行
 
+`dispatch`、`status`、`adopt` 与 `cancel` 直接使用无窗口引擎，不需要启动 aicross 窗口。`propose` 仍通过本机 HTTP 服务把建议交给窗口。
+
 多行派发文本必须写入文件，不放进 argv：
 
 ```powershell
@@ -153,23 +155,33 @@ aicross cancel <run_id>
 | `economy` | `builtin-economy` |
 | `blind` | `builtin-blind` |
 
-开发态使用相同参数，但读取 `console.dev.json`：
+开发态使用相同参数。只有 `propose` 读取 `console.dev.json`：
 
 ```powershell
 cargo run -- dispatch --project D:\work\project --preset economy --text-file D:\tmp\dispatch.txt
 cargo run -- propose --project D:\work\project --preset blind --reason "需要独立核对" --text-file D:\tmp\dispatch.txt
 ```
 
-ai-cross skill 收到 `/派发` 时，把当前请求写入 UTF-8 临时文件后调用 `aicross propose`；`/派发 共享`、`/派发 经济`、`/派发 盲审` 分别传 `--preset shared|economy|blind`。命令只生成建议，用户仍需在控制台采纳。脚本需要直接执行时继续使用 `aicross dispatch`。
+ai-cross skill 收到已确认的派发请求后，把当前请求写入 UTF-8 临时文件并调用 `aicross dispatch`；`/派发 共享`、`/派发 经济`、`/派发 盲审` 分别传 `--preset shared|economy|blind`。首个响应带真实的 `graph_id` 与本次新建的 `node_ids`：
 
-命令把 JSON 写到 stdout，把一行说明写到 stderr。每轮状态查询都会重读清单。HTTP 客户端单次请求总超时为 30 秒；`status --wait` 到时以退出码 1 结束。HTTP 200 但正文不是 JSON 时，以退出码 1 结束，并输出原文首行。
+```json
+{ "run_id": "…", "accepted": true, "graph_id": "…", "node_ids": ["…"] }
+```
+
+run 摘要存放在 `~/.aicross/runs/<run_id>.json`。后台引擎逐阶段更新节点摘要、在飞节点、遗留项和结束状态；取消标记存放在同目录的 `<run_id>.cancel`，处理完成后删除。
+
+命令行派发设置存放在 `~/.aicross/dispatch-settings.json`，字段与窗口设置相同。文件不存在或内容无效时使用默认值。窗口设置页仍使用浏览器本地设置，两处暂不同步。
+
+窗口派发与命令行派发共用 `~/.aicross/graphs/`。同一项目同时从窗口和命令行写图时没有并发保护。
+
+命令把 JSON 写到 stdout，把一行说明写到 stderr。每轮状态查询都会重读 run 文件；发现 `running` 对应的后台进程已退出时，将 run 改为 `failed` 并返回 `引擎进程已退出`。`status --wait` 到时以退出码 1 结束。`propose` 的 HTTP 客户端单次请求总超时为 30 秒；HTTP 200 但正文不是 JSON 时，以退出码 1 结束，并输出原文首行。
 
 | 退出码 | 含义 |
 | --- | --- |
 | 0 | 请求成功 |
-| 1 | HTTP 业务失败、等待超时或响应不是 JSON |
+| 1 | 业务失败、等待超时或 `propose` 响应不是 JSON |
 | 2 | 命令参数、文本文件或编码错误 |
-| 3 | 控制台未运行、清单无效、PID 已结束或端点不可达 |
+| 3 | 无法确定引擎目录、run 目录不可写或后台进程无法启动 |
 
 skill 仅在退出码 3 时回退到原有通道。Windows 的 NSIS/MSI 安装包会把安装目录作为独立项加入当前用户 PATH，并在卸载时只删除该项；macOS 与 Linux 安装包不修改 PATH。
 

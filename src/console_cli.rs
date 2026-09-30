@@ -10,14 +10,14 @@ use std::time::{Duration, Instant};
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
-    if !matches!(args.get(1).map(String::as_str), Some("dispatch" | "propose" | "status" | "adopt" | "cancel")) {
+    if !matches!(args.get(1).map(String::as_str), Some("dispatch" | "propose" | "status" | "adopt" | "cancel" | "__run")) {
         return None;
     }
     attach_parent_console();
     let root = match crate::paths::aicross_root() {
         Ok(root) => root,
         Err(_) => {
-            eprintln!("控制台未运行");
+            eprintln!("引擎不可用");
             return Some(3);
         }
     };
@@ -25,6 +25,13 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
 }
 
 fn run_at(args: &[String], root: &Path, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+    if args.get(1).map(String::as_str) == Some("__run") {
+        let Some(run_id) = args.get(2) else { return 2 };
+        return match crate::engine::run_background(root, run_id) {
+            Ok(()) => 0,
+            Err(message) => { let _ = writeln!(stderr, "{message}"); 1 }
+        };
+    }
     let request = match build_request(args) {
         Ok(value) => value,
         Err(message) => {
@@ -32,6 +39,34 @@ fn run_at(args: &[String], root: &Path, stdout: &mut dyn Write, stderr: &mut dyn
             return 2;
         }
     };
+    match args.get(1).map(String::as_str) {
+        Some("dispatch") => {
+            let input = match serde_json::from_value(request.body.unwrap_or_default()) {
+                Ok(value) => value,
+                Err(error) => { let _ = writeln!(stderr, "派发请求无效：{error}"); return 2; }
+            };
+            return match crate::engine::start_dispatch(root, input) {
+                Ok(response) => {
+                    let accepted = response.get("accepted").and_then(Value::as_bool) == Some(true);
+                    let _ = writeln!(stdout, "{}", serde_json::to_string(&response).unwrap_or_else(|_| "{}".into()));
+                    let _ = writeln!(stderr, "{}", if accepted { "引擎已接收派发" } else { "派发被拒绝" });
+                    if accepted { 0 } else { 1 }
+                }
+                Err(crate::engine::StartError::Unavailable(message)) => { let _ = writeln!(stderr, "{message}"); 3 }
+            };
+        }
+        Some("status") => return run_status(root, args, request.timeout, stdout, stderr),
+        Some("adopt") => {
+            let Some(run_id) = positional(args, 2) else { return 2 };
+            let Some(node_id) = positional(args, 3) else { return 2 };
+            return match crate::engine::adopt(root, &run_id, &node_id) { Ok(run) => output_run(run, stdout, stderr), Err(message) => { let _=writeln!(stderr,"{message}"); 1 } };
+        }
+        Some("cancel") => {
+            let Some(run_id) = positional(args, 2) else { return 2 };
+            return match crate::engine::cancel(root, &run_id) { Ok(run) => output_run(run, stdout, stderr), Err(message) => { let _=writeln!(stderr,"{message}"); 1 } };
+        }
+        _ => {}
+    }
     let wait = request.wait;
     let started = Instant::now();
     loop {
@@ -74,6 +109,24 @@ fn run_at(args: &[String], root: &Path, stdout: &mut dyn Write, stderr: &mut dyn
             return 1;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+fn output_run(run: crate::engine::EngineRun, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+    let _ = writeln!(stdout, "{}", serde_json::to_string(&run).unwrap_or_else(|_| "{}".into()));
+    let _ = writeln!(stderr, "引擎请求完成");
+    0
+}
+
+fn run_status(root: &Path, args: &[String], timeout: Duration, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+    let Some(run_id) = positional(args, 2) else { return 2 };
+    let wait = args.iter().any(|arg| arg == "--wait");
+    let started = Instant::now();
+    loop {
+        let run = match crate::engine::read_run(root, &run_id) { Ok(run) => run, Err(message) => { let _=writeln!(stderr,"{message}"); return 1 } };
+        if !wait || run.status != "running" { return output_run(run, stdout, stderr); }
+        if started.elapsed() >= timeout { let _=writeln!(stderr,"等待状态超时"); return 1; }
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 
@@ -238,15 +291,15 @@ mod tests {
     use uuid::Uuid;
 
     #[test]
-    fn no_console_manifest_exits_three_with_one_line() {
+    fn missing_run_is_a_business_failure_without_console_manifest() {
         let root = std::env::temp_dir().join(format!("aicross-cli-missing-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let args = vec!["aicross".into(), "status".into(), "run-1".into()];
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        assert_eq!(run_at(&args, &root, &mut stdout, &mut stderr), 3);
+        assert_eq!(run_at(&args, &root, &mut stdout, &mut stderr), 1);
         assert!(stdout.is_empty());
-        assert_eq!(String::from_utf8(stderr).unwrap(), "控制台未运行\n");
+        assert!(String::from_utf8(stderr).unwrap().contains("读取 run 失败"));
         let _ = fs::remove_dir_all(root);
     }
 

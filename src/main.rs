@@ -4,6 +4,7 @@ mod channels;
 mod console_api;
 mod console_cli;
 mod dispatch;
+mod engine;
 mod fonts;
 mod fs_watcher;
 mod git;

@@ -1,0 +1,179 @@
+{
+  "name": "验收 NEEDS_FIX → 修正轮 → 通过",
+  "inputGraph": {
+    "version": 1,
+    "id": "graph-1",
+    "title": "契约",
+    "root": "root",
+    "project": "D:/project",
+    "source": "console",
+    "created_at": "TIME_1",
+    "updated_at": "TIME_1",
+    "nodes": {
+      "root": {
+        "id": "root",
+        "kind": "material",
+        "parents": [],
+        "user": {
+          "text": "实现任务",
+          "attachments": []
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "node": {
+        "id": "node",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": ""
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "验收",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读"
+        },
+        "created_at": "TIME_2",
+        "source": "console"
+      }
+    }
+  },
+  "settings": {
+    "maxRequests": 8,
+    "fixRoundLimit": 1
+  },
+  "injectedResults": [
+    [
+      {
+        "nodeId": "node",
+        "stage": 1,
+        "status": "ok",
+        "text": "NEEDS_FIX\n- 补回归测试",
+        "modelReported": "gpt-test",
+        "sessionId": "",
+        "tokensIn": 1,
+        "tokensOut": 2,
+        "cacheRead": 0,
+        "durationMs": 3,
+        "error": "",
+        "runner": "oneshot",
+        "artifacts": null
+      }
+    ],
+    [
+      {
+        "nodeId": "node",
+        "stage": 1,
+        "status": "ok",
+        "text": "完成",
+        "modelReported": "gpt-test",
+        "sessionId": "",
+        "tokensIn": 1,
+        "tokensOut": 2,
+        "cacheRead": 0,
+        "durationMs": 3,
+        "error": "",
+        "runner": "oneshot",
+        "artifacts": null
+      }
+    ]
+  ],
+  "requests": [
+    {
+      "nodeId": "node",
+      "stage": 1,
+      "agent": "codex",
+      "provider": "",
+      "model": "gpt-test",
+      "vendor": "",
+      "billingSource": "",
+      "role": "验收",
+      "tier": "",
+      "thinking": "中",
+      "visibility": "盲",
+      "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n请按以下固定维度验收：需求完整性、逻辑正确性、边界情况、代码质量、测试覆盖、实际运行结果。\n末尾必须单独回答：对照原始需求，是否完整实现？只写 PASS 或 NEEDS_FIX。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。",
+      "currentMessage": "",
+      "materials": [],
+      "sessionId": "",
+      "previousRunner": "",
+      "write": "只读",
+      "originalRequest": "实现任务",
+      "upstreamArtifacts": []
+    }
+  ],
+  "finalGraph": {
+    "version": 1,
+    "id": "graph-1",
+    "title": "契约",
+    "root": "root",
+    "project": "D:/project",
+    "source": "console",
+    "created_at": "TIME_1",
+    "updated_at": "TIME_1",
+    "nodes": {
+      "root": {
+        "id": "root",
+        "kind": "material",
+        "parents": [],
+        "user": {
+          "text": "实现任务",
+          "attachments": []
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "node": {
+        "id": "node",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "done",
+          "text": "NEEDS_FIX\n- 补回归测试",
+          "model_reported": "gpt-test",
+          "tokens_in": 1,
+          "tokens_out": 2,
+          "ms": 3,
+          "runner": "oneshot"
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "验收",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读"
+        },
+        "created_at": "TIME_2",
+        "source": "console"
+      }
+    }
+  },
+  "runSummary": [
+    {
+      "node_id": "node",
+      "role": "验收",
+      "agent": "codex",
+      "model": "gpt-test",
+      "status": "done",
+      "text_excerpt": "NEEDS_FIX\n- 补回归测试",
+      "artifacts_dir": ""
+    }
+  ],
+  "observation": false
+}

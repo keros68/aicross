@@ -1,0 +1,300 @@
+{
+  "name": "盲审模式三路",
+  "inputGraph": {
+    "version": 1,
+    "id": "graph-1",
+    "title": "契约",
+    "root": "root",
+    "project": "D:/project",
+    "source": "console",
+    "created_at": "TIME_1",
+    "updated_at": "TIME_1",
+    "nodes": {
+      "root": {
+        "id": "root",
+        "kind": "material",
+        "parents": [],
+        "user": {
+          "text": "实现任务",
+          "attachments": []
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "node": {
+        "id": "node",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": ""
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "验收",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读"
+        },
+        "created_at": "TIME_2",
+        "source": "console"
+      },
+      "verify1": {
+        "id": "verify1",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": ""
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "验证",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读"
+        },
+        "created_at": "TIME_3",
+        "source": "console"
+      },
+      "verify2": {
+        "id": "verify2",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": ""
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "验证",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读"
+        },
+        "created_at": "TIME_4",
+        "source": "console"
+      }
+    }
+  },
+  "settings": {
+    "maxRequests": 8,
+    "fixRoundLimit": 1
+  },
+  "injectedResults": [],
+  "requests": [
+    {
+      "nodeId": "node",
+      "stage": 1,
+      "agent": "codex",
+      "provider": "",
+      "model": "gpt-test",
+      "vendor": "",
+      "billingSource": "",
+      "role": "验收",
+      "tier": "",
+      "thinking": "中",
+      "visibility": "盲",
+      "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n请按以下固定维度验收：需求完整性、逻辑正确性、边界情况、代码质量、测试覆盖、实际运行结果。\n末尾必须单独回答：对照原始需求，是否完整实现？只写 PASS 或 NEEDS_FIX。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。",
+      "currentMessage": "",
+      "materials": [],
+      "sessionId": "",
+      "previousRunner": "",
+      "write": "只读",
+      "originalRequest": "实现任务",
+      "upstreamArtifacts": []
+    },
+    {
+      "nodeId": "verify1",
+      "stage": 1,
+      "agent": "codex",
+      "provider": "",
+      "model": "gpt-test",
+      "vendor": "",
+      "billingSource": "",
+      "role": "验证",
+      "tier": "",
+      "thinking": "中",
+      "visibility": "盲",
+      "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务",
+      "currentMessage": "",
+      "materials": [],
+      "sessionId": "",
+      "previousRunner": "",
+      "write": "只读",
+      "originalRequest": "实现任务",
+      "upstreamArtifacts": [],
+      "reviewMaterialValidation": true
+    },
+    {
+      "nodeId": "verify2",
+      "stage": 1,
+      "agent": "codex",
+      "provider": "",
+      "model": "gpt-test",
+      "vendor": "",
+      "billingSource": "",
+      "role": "验证",
+      "tier": "",
+      "thinking": "中",
+      "visibility": "盲",
+      "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务",
+      "currentMessage": "",
+      "materials": [],
+      "sessionId": "",
+      "previousRunner": "",
+      "write": "只读",
+      "originalRequest": "实现任务",
+      "upstreamArtifacts": [],
+      "reviewMaterialValidation": true
+    }
+  ],
+  "finalGraph": {
+    "version": 1,
+    "id": "graph-1",
+    "title": "契约",
+    "root": "root",
+    "project": "D:/project",
+    "source": "console",
+    "created_at": "TIME_1",
+    "updated_at": "TIME_1",
+    "nodes": {
+      "root": {
+        "id": "root",
+        "kind": "material",
+        "parents": [],
+        "user": {
+          "text": "实现任务",
+          "attachments": []
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "node": {
+        "id": "node",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": ""
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "验收",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读"
+        },
+        "created_at": "TIME_2",
+        "source": "console"
+      },
+      "verify1": {
+        "id": "verify1",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": ""
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "验证",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读"
+        },
+        "created_at": "TIME_3",
+        "source": "console"
+      },
+      "verify2": {
+        "id": "verify2",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": ""
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "验证",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读"
+        },
+        "created_at": "TIME_4",
+        "source": "console"
+      }
+    }
+  },
+  "runSummary": [
+    {
+      "node_id": "node",
+      "role": "验收",
+      "agent": "codex",
+      "model": "gpt-test",
+      "status": "draft",
+      "text_excerpt": "",
+      "artifacts_dir": ""
+    },
+    {
+      "node_id": "verify1",
+      "role": "验证",
+      "agent": "codex",
+      "model": "gpt-test",
+      "status": "draft",
+      "text_excerpt": "",
+      "artifacts_dir": ""
+    },
+    {
+      "node_id": "verify2",
+      "role": "验证",
+      "agent": "codex",
+      "model": "gpt-test",
+      "status": "draft",
+      "text_excerpt": "",
+      "artifacts_dir": ""
+    }
+  ]
+}

@@ -1,0 +1,150 @@
+{
+  "name": "派发前拒绝 8",
+  "inputGraph": {
+    "version": 1,
+    "id": "graph-1",
+    "title": "契约",
+    "root": "root",
+    "project": "D:/project",
+    "source": "console",
+    "created_at": "TIME_1",
+    "updated_at": "TIME_1",
+    "nodes": {
+      "root": {
+        "id": "root",
+        "kind": "material",
+        "parents": [],
+        "user": {
+          "text": "实现任务",
+          "attachments": []
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "node": {
+        "id": "node",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": ""
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "执行",
+          "thinking": "中",
+          "visibility": "共享",
+          "write": "只读"
+        },
+        "created_at": "TIME_2",
+        "source": "console"
+      }
+    }
+  },
+  "settings": {
+    "maxRequests": 8,
+    "fixRoundLimit": 1
+  },
+  "injectedResults": [],
+  "requests": [
+    {
+      "nodeId": "node",
+      "stage": 1,
+      "agent": "codex",
+      "provider": "",
+      "model": "gpt-test",
+      "vendor": "",
+      "billingSource": "",
+      "role": "执行",
+      "tier": "",
+      "thinking": "中",
+      "visibility": "共享",
+      "prompt": "需要精确数值的部分必须写代码并执行，给出运行结果；不得心算。\n不得 git push、发布、安装依赖或调用付费接口；这些留给用户在验收之后做。\n\n[用户]\n实现任务",
+      "currentMessage": "",
+      "materials": [],
+      "sessionId": "",
+      "previousRunner": "",
+      "write": "只读",
+      "originalRequest": "实现任务",
+      "upstreamArtifacts": []
+    }
+  ],
+  "finalGraph": {
+    "version": 1,
+    "id": "graph-1",
+    "title": "契约",
+    "root": "root",
+    "project": "D:/project",
+    "source": "console",
+    "created_at": "TIME_1",
+    "updated_at": "TIME_1",
+    "nodes": {
+      "root": {
+        "id": "root",
+        "kind": "material",
+        "parents": [],
+        "user": {
+          "text": "实现任务",
+          "attachments": []
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "node": {
+        "id": "node",
+        "kind": "turn",
+        "parents": [
+          "root"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": ""
+        },
+        "target": {
+          "agent": "codex",
+          "model": "gpt-test",
+          "role": "执行",
+          "thinking": "中",
+          "visibility": "共享",
+          "write": "只读"
+        },
+        "created_at": "TIME_2",
+        "source": "console"
+      }
+    }
+  },
+  "runSummary": [
+    {
+      "node_id": "node",
+      "role": "执行",
+      "agent": "codex",
+      "model": "gpt-test",
+      "status": "draft",
+      "text_excerpt": "",
+      "artifacts_dir": ""
+    }
+  ],
+  "observation": {
+    "reason": "目标额度用尽：codex/gpt-test；恢复时间 2026-10-01T00:00:00Z",
+    "precedingChecks": [
+      "同时在飞 run 已达上限 3",
+      "读取资源失败：示例",
+      "找不到预设：missing",
+      "角色「执行」没有可派发目标",
+      "未接入",
+      "验收/验证节点只能只读",
+      "目标验证失败：codex/gpt-test"
+    ]
+  }
+}
