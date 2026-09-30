@@ -11,7 +11,7 @@ aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常
 - Tauri 2（Rust 后端）+ React 19 + TypeScript + Vite 前端；终端用 `@xterm/xterm`，pty 用 `portable-pty`。
 - 目录（fork 之后）：`src/`（Rust，`Cargo.toml` 在根目录）、`src-ui/`（前端）、`tasks/`（任务书与完成报告）、`docs/`、`port/`（第 0/1 期的旧代码，不参与编译，第 3 期并回）。
 - Windows 优先（开发机是 Windows 11），macOS/Linux 不能破坏但不强求验证。
-- 现有 Python 脚本（`D:\work\agentteam\dist\ai-cross\references\cc_switch.py` / `verify_model.py` / `usage_probe.py`）当子进程调用，不重写。
+- 现有 Python 脚本（`D:\work\skill\xiaoyu-skill\skills\ai-cross\references\cc_switch.py` / `verify_model.py` / `usage_probe.py`）当子进程调用，不重写。
 
 ## 与 coffeecli 的关系（必须遵守）
 
