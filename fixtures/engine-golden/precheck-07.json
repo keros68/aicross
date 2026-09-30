@@ -1,149 +1,243 @@
 {
-  "name": "派发前拒绝 7",
-  "inputGraph": {
-    "version": 1,
-    "id": "graph-1",
-    "title": "契约",
-    "root": "root",
-    "project": "D:/project",
-    "source": "console",
-    "created_at": "TIME_1",
-    "updated_at": "TIME_1",
-    "nodes": {
-      "root": {
-        "id": "root",
-        "kind": "material",
-        "parents": [],
-        "user": {
-          "text": "实现任务",
-          "attachments": []
-        },
-        "created_at": "TIME_1",
-        "source": "console"
+  "name": "派发前拒绝：目标验证失败",
+  "input": {
+    "event": {
+      "run_id": "run-1",
+      "project": "D:/project",
+      "text": "实现任务",
+      "preset": "builtin-shared"
+    },
+    "settings": {
+      "timeoutSecs": 600,
+      "concurrency": 3,
+      "maxRequests": 8,
+      "classificationModel": "",
+      "classifyProposals": false,
+      "swarmLimit": 4,
+      "consoleRunLimit": 3,
+      "redact": true,
+      "writeProjectDispatch": true,
+      "ccSwitchPath": "",
+      "validationCommand": "",
+      "acpEnabled": false,
+      "fixRoundLimit": 1
+    },
+    "models": [
+      {
+        "id": "plan",
+        "agent": "claude",
+        "provider": "",
+        "vendor": "claude-vendor",
+        "billing_source": "订阅",
+        "tier": "高",
+        "thinking": "高",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
       },
-      "node": {
-        "id": "node",
-        "kind": "turn",
-        "parents": [
-          "root"
-        ],
-        "user": {
-          "text": "",
-          "attachments": []
-        },
-        "reply": {
-          "status": "draft",
-          "text": ""
-        },
-        "target": {
-          "agent": "codex",
-          "model": "gpt-test",
-          "role": "执行",
-          "thinking": "中",
-          "visibility": "共享",
-          "write": "只读"
-        },
-        "created_at": "TIME_2",
-        "source": "console"
+      {
+        "id": "exec",
+        "agent": "codex",
+        "provider": "",
+        "vendor": "codex-vendor",
+        "billing_source": "订阅",
+        "tier": "低",
+        "thinking": "低",
+        "status": "已接入",
+        "verification": "failed",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
+      },
+      {
+        "id": "review",
+        "agent": "kimi",
+        "provider": "",
+        "vendor": "kimi-vendor",
+        "billing_source": "订阅",
+        "tier": "中",
+        "thinking": "中",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
       }
+    ],
+    "resourcesError": null,
+    "presets": [
+      {
+        "id": "builtin-shared",
+        "name": "共享模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "执行",
+                "thinking": "中",
+                "visibility": "共享",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "builtin-economy",
+        "name": "经济模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "出方案",
+                "tier": "高",
+                "thinking": "高",
+                "visibility": "共享",
+                "write": "只读"
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "执行",
+                "tier": "低",
+                "thinking": "低",
+                "visibility": "共享",
+                "write": "单写者"
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "验收",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "builtin-blind",
+        "name": "盲审模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "验收",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "roles": {
+      "version": 1,
+      "planning": {
+        "agent": "claude",
+        "provider": "",
+        "model": "plan",
+        "tier": "高",
+        "thinking": "高"
+      },
+      "execution": {
+        "agent": "codex",
+        "provider": "",
+        "model": "exec",
+        "tier": "低",
+        "thinking": "低"
+      },
+      "acceptance": {
+        "agent": "kimi",
+        "provider": "",
+        "model": "review",
+        "tier": "中",
+        "thinking": "中"
+      }
+    },
+    "runs": [
+      {
+        "run_id": "run-1",
+        "graph_id": "",
+        "project": "D:/project",
+        "status": "running",
+        "nodes": [],
+        "leftover": [],
+        "started_at": "TIME_1",
+        "in_flight_node_ids": []
+      }
+    ],
+    "existingGraphs": [],
+    "git": {
+      "state": "no_git"
     }
   },
-  "settings": {
-    "maxRequests": 8,
-    "fixRoundLimit": 1
-  },
-  "injectedResults": [],
-  "requests": [
+  "stages": [],
+  "runUpdates": [
     {
-      "nodeId": "node",
-      "stage": 1,
-      "agent": "codex",
-      "provider": "",
-      "model": "gpt-test",
-      "vendor": "",
-      "billingSource": "",
-      "role": "执行",
-      "tier": "",
-      "thinking": "中",
-      "visibility": "共享",
-      "prompt": "需要精确数值的部分必须写代码并执行，给出运行结果；不得心算。\n不得 git push、发布、安装依赖或调用付费接口；这些留给用户在验收之后做。\n\n[用户]\n实现任务",
-      "currentMessage": "",
-      "materials": [],
-      "sessionId": "",
-      "previousRunner": "",
-      "write": "只读",
-      "originalRequest": "实现任务",
-      "upstreamArtifacts": []
+      "run_id": "run-1",
+      "graph_id": "UUID_1",
+      "status": "rejected",
+      "nodes": [],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": "目标验证失败：codex/exec"
     }
   ],
-  "finalGraph": {
-    "version": 1,
-    "id": "graph-1",
-    "title": "契约",
-    "root": "root",
-    "project": "D:/project",
-    "source": "console",
-    "created_at": "TIME_1",
-    "updated_at": "TIME_1",
-    "nodes": {
-      "root": {
-        "id": "root",
-        "kind": "material",
-        "parents": [],
-        "user": {
-          "text": "实现任务",
-          "attachments": []
-        },
-        "created_at": "TIME_1",
-        "source": "console"
-      },
-      "node": {
-        "id": "node",
-        "kind": "turn",
-        "parents": [
-          "root"
-        ],
-        "user": {
-          "text": "",
-          "attachments": []
-        },
-        "reply": {
-          "status": "draft",
-          "text": ""
-        },
-        "target": {
-          "agent": "codex",
-          "model": "gpt-test",
-          "role": "执行",
-          "thinking": "中",
-          "visibility": "共享",
-          "write": "只读"
-        },
-        "created_at": "TIME_2",
-        "source": "console"
-      }
-    }
-  },
-  "runSummary": [
-    {
-      "node_id": "node",
-      "role": "执行",
-      "agent": "codex",
-      "model": "gpt-test",
-      "status": "draft",
-      "text_excerpt": "",
-      "artifacts_dir": ""
-    }
-  ],
-  "observation": {
-    "reason": "目标验证失败：codex/gpt-test",
-    "precedingChecks": [
-      "同时在飞 run 已达上限 3",
-      "读取资源失败：示例",
-      "找不到预设：missing",
-      "角色「执行」没有可派发目标",
-      "未接入",
-      "验收/验证节点只能只读"
-    ]
-  }
+  "finalGraph": null,
+  "notes": []
 }

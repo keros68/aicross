@@ -1,112 +1,419 @@
 {
-  "name": "某路 quota_exhausted",
-  "inputGraph": {
-    "version": 1,
-    "id": "graph-1",
-    "title": "契约",
-    "root": "root",
-    "project": "D:/project",
-    "source": "console",
-    "created_at": "TIME_1",
-    "updated_at": "TIME_1",
-    "nodes": {
-      "root": {
-        "id": "root",
-        "kind": "material",
-        "parents": [],
-        "user": {
-          "text": "实现任务",
-          "attachments": []
-        },
-        "created_at": "TIME_1",
-        "source": "console"
+  "name": "执行路 quota_exhausted，节点记额度用尽，run 仍收尾 done",
+  "input": {
+    "event": {
+      "run_id": "run-1",
+      "project": "D:/project",
+      "text": "实现任务",
+      "preset": "builtin-shared"
+    },
+    "settings": {
+      "timeoutSecs": 600,
+      "concurrency": 3,
+      "maxRequests": 8,
+      "classificationModel": "",
+      "classifyProposals": false,
+      "swarmLimit": 4,
+      "consoleRunLimit": 3,
+      "redact": true,
+      "writeProjectDispatch": true,
+      "ccSwitchPath": "",
+      "validationCommand": "",
+      "acpEnabled": false,
+      "fixRoundLimit": 1
+    },
+    "models": [
+      {
+        "id": "plan",
+        "agent": "claude",
+        "provider": "",
+        "vendor": "claude-vendor",
+        "billing_source": "订阅",
+        "tier": "高",
+        "thinking": "高",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
       },
-      "node": {
-        "id": "node",
-        "kind": "turn",
-        "parents": [
-          "root"
-        ],
-        "user": {
-          "text": "",
-          "attachments": []
-        },
-        "reply": {
-          "status": "draft",
-          "text": ""
-        },
-        "target": {
-          "agent": "codex",
-          "model": "gpt-test",
-          "role": "执行",
-          "thinking": "中",
-          "visibility": "共享",
-          "write": "只读"
-        },
-        "created_at": "TIME_2",
-        "source": "console"
+      {
+        "id": "exec",
+        "agent": "codex",
+        "provider": "",
+        "vendor": "codex-vendor",
+        "billing_source": "订阅",
+        "tier": "低",
+        "thinking": "低",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
+      },
+      {
+        "id": "review",
+        "agent": "kimi",
+        "provider": "",
+        "vendor": "kimi-vendor",
+        "billing_source": "订阅",
+        "tier": "中",
+        "thinking": "中",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
       }
+    ],
+    "resourcesError": null,
+    "presets": [
+      {
+        "id": "builtin-shared",
+        "name": "共享模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "执行",
+                "thinking": "中",
+                "visibility": "共享",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "builtin-economy",
+        "name": "经济模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "出方案",
+                "tier": "高",
+                "thinking": "高",
+                "visibility": "共享",
+                "write": "只读"
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "执行",
+                "tier": "低",
+                "thinking": "低",
+                "visibility": "共享",
+                "write": "单写者"
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "验收",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "builtin-blind",
+        "name": "盲审模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "验收",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "roles": {
+      "version": 1,
+      "planning": {
+        "agent": "claude",
+        "provider": "",
+        "model": "plan",
+        "tier": "高",
+        "thinking": "高"
+      },
+      "execution": {
+        "agent": "codex",
+        "provider": "",
+        "model": "exec",
+        "tier": "低",
+        "thinking": "低"
+      },
+      "acceptance": {
+        "agent": "kimi",
+        "provider": "",
+        "model": "review",
+        "tier": "中",
+        "thinking": "中"
+      }
+    },
+    "runs": [
+      {
+        "run_id": "run-1",
+        "graph_id": "",
+        "project": "D:/project",
+        "status": "running",
+        "nodes": [],
+        "leftover": [],
+        "started_at": "TIME_1",
+        "in_flight_node_ids": []
+      }
+    ],
+    "existingGraphs": [],
+    "git": {
+      "state": "no_git"
     }
   },
-  "settings": {
-    "maxRequests": 8,
-    "fixRoundLimit": 1
-  },
-  "injectedResults": [
-    [
-      {
-        "nodeId": "node",
-        "stage": 1,
-        "status": "quota_exhausted",
-        "text": "",
-        "modelReported": "gpt-test",
-        "sessionId": "",
-        "tokensIn": 1,
-        "tokensOut": 2,
-        "cacheRead": 0,
-        "durationMs": 3,
-        "error": "额度用尽",
-        "runner": "oneshot",
-        "artifacts": null,
-        "quotaResetsAt": "2026-10-01T00:00:00Z"
-      }
-    ]
-  ],
-  "requests": [
+  "stages": [
     {
-      "nodeId": "node",
-      "stage": 1,
-      "agent": "codex",
-      "provider": "",
-      "model": "gpt-test",
-      "vendor": "",
-      "billingSource": "",
-      "role": "执行",
-      "tier": "",
-      "thinking": "中",
-      "visibility": "共享",
-      "prompt": "需要精确数值的部分必须写代码并执行，给出运行结果；不得心算。\n不得 git push、发布、安装依赖或调用付费接口；这些留给用户在验收之后做。\n\n[用户]\n实现任务",
-      "currentMessage": "",
-      "materials": [],
-      "sessionId": "",
-      "previousRunner": "",
-      "write": "只读",
-      "originalRequest": "实现任务",
-      "upstreamArtifacts": []
+      "request": {
+        "runId": "run-1",
+        "stage": 1,
+        "projectDir": "D:/project",
+        "settings": {
+          "timeoutSecs": 600,
+          "concurrency": 3,
+          "maxRequests": 8,
+          "redact": true,
+          "writeProjectDispatch": true,
+          "ccSwitchPath": "",
+          "validationCommand": "",
+          "acpEnabled": false,
+          "fixRoundLimit": 1
+        },
+        "nodes": [
+          {
+            "nodeId": "UUID_1",
+            "stage": 1,
+            "agent": "codex",
+            "provider": "",
+            "model": "exec",
+            "vendor": "codex-vendor",
+            "billingSource": "订阅",
+            "role": "执行",
+            "tier": "低",
+            "thinking": "低",
+            "visibility": "共享",
+            "prompt": "需要精确数值的部分必须写代码并执行，给出运行结果；不得心算。\n不得 git push、发布、安装依赖或调用付费接口；这些留给用户在验收之后做。\n\n[用户]\n实现任务",
+            "currentMessage": "",
+            "materials": [],
+            "sessionId": "",
+            "previousRunner": "",
+            "write": "只读",
+            "originalRequest": "实现任务",
+            "upstreamArtifacts": []
+          }
+        ]
+      },
+      "injected": {
+        "results": [
+          {
+            "nodeId": "UUID_1",
+            "stage": 1,
+            "status": "quota_exhausted",
+            "text": "",
+            "rawStdout": "",
+            "rawStderr": "",
+            "modelReported": "exec",
+            "sessionId": "",
+            "tokensIn": 11,
+            "tokensOut": 22,
+            "cacheRead": 0,
+            "durationMs": 33,
+            "exitCode": 1,
+            "timedOut": false,
+            "truncated": false,
+            "redacted": 0,
+            "isolation": "完全",
+            "runner": "oneshot",
+            "workdir": "",
+            "dispatchFile": "",
+            "frontmatter": "",
+            "outputPreview": "",
+            "error": "额度用尽",
+            "artifacts": null,
+            "validationOutput": "",
+            "fallbackFrom": "",
+            "fallbackTo": "",
+            "quotaResetsAt": "2026-10-01T00:00:00Z"
+          }
+        ]
+      }
+    }
+  ],
+  "runUpdates": [
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_2",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_2",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [
+        "UUID_1"
+      ],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_2",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "pending",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [
+        "UUID_1"
+      ],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_2",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "quota_exhausted",
+          "text_excerpt": "额度用尽",
+          "artifacts_dir": "",
+          "quota_resets_at": "2026-10-01T00:00:00Z"
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_2",
+      "status": "done",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "quota_exhausted",
+          "text_excerpt": "额度用尽",
+          "artifacts_dir": "",
+          "quota_resets_at": "2026-10-01T00:00:00Z"
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
     }
   ],
   "finalGraph": {
     "version": 1,
-    "id": "graph-1",
-    "title": "契约",
-    "root": "root",
-    "project": "D:/project",
-    "source": "console",
-    "created_at": "TIME_1",
-    "updated_at": "TIME_1",
+    "id": "UUID_2",
+    "title": "实现任务",
+    "root": "UUID_3",
     "nodes": {
-      "root": {
-        "id": "root",
+      "UUID_3": {
+        "id": "UUID_3",
         "kind": "material",
         "parents": [],
         "user": {
@@ -116,11 +423,11 @@
         "created_at": "TIME_1",
         "source": "console"
       },
-      "node": {
-        "id": "node",
+      "UUID_1": {
+        "id": "UUID_1",
         "kind": "turn",
         "parents": [
-          "root"
+          "UUID_3"
         ],
         "user": {
           "text": "",
@@ -131,34 +438,30 @@
           "text": "额度用尽",
           "quota_resets_at": "2026-10-01T00:00:00Z",
           "error_kind": "quota_exhausted",
-          "model_reported": "gpt-test",
-          "tokens_in": 1,
-          "tokens_out": 2,
-          "ms": 3,
+          "model_reported": "exec",
+          "tokens_in": 11,
+          "tokens_out": 22,
+          "ms": 33,
           "runner": "oneshot"
         },
         "target": {
           "agent": "codex",
-          "model": "gpt-test",
+          "model": "exec",
           "role": "执行",
-          "thinking": "中",
+          "thinking": "低",
           "visibility": "共享",
-          "write": "只读"
+          "write": "只读",
+          "provider": "",
+          "tier": "低"
         },
-        "created_at": "TIME_2",
+        "created_at": "TIME_1",
         "source": "console"
       }
-    }
+    },
+    "created_at": "TIME_1",
+    "updated_at": "TIME_1",
+    "project": "D:/project",
+    "source": "console"
   },
-  "runSummary": [
-    {
-      "node_id": "node",
-      "role": "执行",
-      "agent": "codex",
-      "model": "gpt-test",
-      "status": "quota_exhausted",
-      "text_excerpt": "额度用尽",
-      "artifacts_dir": ""
-    }
-  ]
+  "notes": []
 }

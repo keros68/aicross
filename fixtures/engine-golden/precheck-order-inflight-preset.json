@@ -1,0 +1,273 @@
+{
+  "name": "在飞上限与找不到预设同时成立 → 先报在飞上限",
+  "input": {
+    "event": {
+      "run_id": "run-1",
+      "project": "D:/project",
+      "text": "实现任务",
+      "preset": "missing"
+    },
+    "settings": {
+      "timeoutSecs": 600,
+      "concurrency": 3,
+      "maxRequests": 8,
+      "classificationModel": "",
+      "classifyProposals": false,
+      "swarmLimit": 4,
+      "consoleRunLimit": 3,
+      "redact": true,
+      "writeProjectDispatch": true,
+      "ccSwitchPath": "",
+      "validationCommand": "",
+      "acpEnabled": false,
+      "fixRoundLimit": 1
+    },
+    "models": [
+      {
+        "id": "plan",
+        "agent": "claude",
+        "provider": "",
+        "vendor": "claude-vendor",
+        "billing_source": "订阅",
+        "tier": "高",
+        "thinking": "高",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
+      },
+      {
+        "id": "exec",
+        "agent": "codex",
+        "provider": "",
+        "vendor": "codex-vendor",
+        "billing_source": "订阅",
+        "tier": "低",
+        "thinking": "低",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
+      },
+      {
+        "id": "review",
+        "agent": "kimi",
+        "provider": "",
+        "vendor": "kimi-vendor",
+        "billing_source": "订阅",
+        "tier": "中",
+        "thinking": "中",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
+      }
+    ],
+    "resourcesError": null,
+    "presets": [
+      {
+        "id": "builtin-shared",
+        "name": "共享模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "执行",
+                "thinking": "中",
+                "visibility": "共享",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "builtin-economy",
+        "name": "经济模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "出方案",
+                "tier": "高",
+                "thinking": "高",
+                "visibility": "共享",
+                "write": "只读"
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "执行",
+                "tier": "低",
+                "thinking": "低",
+                "visibility": "共享",
+                "write": "单写者"
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "验收",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "builtin-blind",
+        "name": "盲审模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "验收",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "roles": {
+      "version": 1,
+      "planning": {
+        "agent": "claude",
+        "provider": "",
+        "model": "plan",
+        "tier": "高",
+        "thinking": "高"
+      },
+      "execution": {
+        "agent": "codex",
+        "provider": "",
+        "model": "exec",
+        "tier": "低",
+        "thinking": "低"
+      },
+      "acceptance": {
+        "agent": "kimi",
+        "provider": "",
+        "model": "review",
+        "tier": "中",
+        "thinking": "中"
+      }
+    },
+    "runs": [
+      {
+        "run_id": "run-a",
+        "graph_id": "g",
+        "project": "D:/project",
+        "status": "running",
+        "nodes": [],
+        "leftover": [],
+        "started_at": "TIME_1",
+        "in_flight_node_ids": []
+      },
+      {
+        "run_id": "run-b",
+        "graph_id": "g",
+        "project": "D:/project",
+        "status": "running",
+        "nodes": [],
+        "leftover": [],
+        "started_at": "TIME_1",
+        "in_flight_node_ids": []
+      },
+      {
+        "run_id": "run-c",
+        "graph_id": "g",
+        "project": "D:/project",
+        "status": "running",
+        "nodes": [],
+        "leftover": [],
+        "started_at": "TIME_1",
+        "in_flight_node_ids": []
+      },
+      {
+        "run_id": "run-1",
+        "graph_id": "",
+        "project": "D:/project",
+        "status": "running",
+        "nodes": [],
+        "leftover": [],
+        "started_at": "TIME_2",
+        "in_flight_node_ids": []
+      }
+    ],
+    "existingGraphs": [],
+    "git": {
+      "state": "no_git"
+    }
+  },
+  "stages": [],
+  "runUpdates": [
+    {
+      "run_id": "run-1",
+      "graph_id": "",
+      "status": "rejected",
+      "nodes": [],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": "同时在飞 run 已达上限 3"
+    }
+  ],
+  "finalGraph": null,
+  "notes": []
+}
