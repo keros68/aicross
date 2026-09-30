@@ -228,7 +228,7 @@ describe('TASK-22 控制台消息流', () => {
     walk(join(root, 'src-ui', 'src'));
     walk(join(root, 'src'));
     files.push(join(root, 'docs', 'MANUAL.md'));
-    const product = readFileSync(join(root, 'docs', 'PRODUCT.md'), 'utf8');
+    const product = readFileSync(join(root, 'docs', 'history', 'PRODUCT-0830-0930.md'), 'utf8');
     const currentSection = product.split('## 控制台就是对话窗（09-16 定案，用户裁决）')[1]
       ?.split('\n## ')[0] ?? '';
     const currentCopy = (file: string) => readFileSync(file, 'utf8')

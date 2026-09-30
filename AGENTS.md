@@ -4,14 +4,14 @@
 
 ## 项目是什么
 
-aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常用的宿主（Claude Code / Codex / Kimi Code / pi agent 等，装 ai-cross skill）里说话，模型提议派发、用户采纳；aicross 以命令行拉起各家 CLI、隔离盲审、核对真身、留痕，并在查看器里把各路结果并排交给用户裁决。产品说明在 `docs/PRODUCT.md`，**09-30 定案**（对话留在宿主，窗口只留查看器）优先于其中更早的界面定案；`docs/proto/index.html` 是 09-30 之前的界面原型，只作历史参考。
+aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常用的宿主（Claude Code / Codex / Kimi Code / pi agent 等，装 ai-cross skill）里说话，模型提议派发、用户采纳；aicross 以命令行拉起各家 CLI、隔离盲审、核对真身、留痕，并在查看器里把各路结果并排交给用户裁决。现行产品说明在 `docs/PRODUCT.md`；08-30 至 09-30 的定案原文在 `docs/history/PRODUCT-0830-0930.md`，只作追溯。`docs/proto/index.html` 是 09-30 之前的界面原型，只作历史参考。
 
 ## 技术栈
 
 - Tauri 2（Rust 后端）+ React 19 + TypeScript + Vite 前端；终端用 `@xterm/xterm`，pty 用 `portable-pty`。
 - 目录（fork 之后）：`src/`（Rust，`Cargo.toml` 在根目录）、`src-ui/`（前端）、`tasks/`（任务书与完成报告）、`docs/`、`port/`（第 0/1 期的旧代码，不参与编译，第 3 期并回）。
 - Windows 优先（开发机是 Windows 11），macOS/Linux 不能破坏但不强求验证。
-- 现有 Python 脚本（`D:\work\agentteam\dist\ai-cross\references\cc_switch.py` / `verify_model.py` / `usage_probe.py`）当子进程调用，不重写。
+- 现有 Python 脚本（`D:\work\skill\xiaoyu-skill\skills\ai-cross\references\cc_switch.py` / `verify_model.py` / `usage_probe.py`）当子进程调用，不重写。
 
 ## 与 coffeecli 的关系（必须遵守）
 
