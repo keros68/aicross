@@ -1,16 +1,10 @@
 # 任务书与交付流程
 
-| 期 | 任务书 | 内容 | 状态 |
-|---|---|---|---|
-| 0 | `TASK-00-skeleton.md` | 三栏 tab、终端 tab、文件树、修改记录、会话记录 | 代码验收完成（三轮），窗口手测待用户 |
-| 1 | `TASK-01-resources.md` | agent→模型两级、四事实源探测、手动输入、冒烟、`resources.json` v1 | 代码验收完成（三轮），窗口手测待用户 |
-| 1B | `TASK-1B-visual.md` | 界面对齐到 08-31 原型：视觉纪律、外壳与标签栏、左栏只列可派发、接入卡片页 | 已提交（a73c3e8），未盲审，窗口手测待用户 |
-| F1 | `TASK-F1-rebrand.md` | fork Coffee CLI 后改名换标，履行 AGPL 与商标义务 | 已提交（a73c3e8），未盲审 |
-| F2 | `TASK-F2-decouple.md` | 切断与上游的运行时冲突：不自动写外部 CLI 配置，状态迁到 `~/.aicross` | 已提交（a73c3e8），未盲审 |
-| 2 | `TASK-02-orchestration.md` | 对话图（节点 / 分叉 / 扇入 / 三列面板）、上下文计算、预设图章、一行记法、构建器、讲解页。09-13 按「对话即图」重写 | 代码验收完成（kimi 实现 → GLM-5.3-Flash 盲审 → kimi 修 R1 → GLM 复审 12 条全核实），编排者复跑 cargo 93 / vitest 51 / build 全绿，窗口手测 10 项全过（REPORT-02 末节）。未提交 |
-| 3 | `TASK-03-dispatch.md` | 通道执行器、盲审真跑、`.dispatch/` 契约、G1/G2/G3、共享对话续聊。09-13 加 0 节对接对话图 | 代码验收完成（codex 实现 → GLM + qwen 双盲审 → codex 修 R1 23 条 → 编排者补修 kimi 解析/adopted/正文脱敏 → GLM + qwen 复审放行）。真机：三路盲审 ok、续聊 ok、kimi `-S` 续聊 ok。提交 09-13 |
-| 4 | `TASK-04-pipeline.md` | 阶段传递、执行产物交付验收、经济规则、闭环 G4。09-13 加 0 节衔接与第 3 期遗留 | 代码验收完成（codex 实现 → GLM + qwen 双盲审 → codex 修 R1 17 条 + R2 16 条）。真机：经济流水线 3 次请求 ok、cc-switch 路 ok。**R2 之后未再派复审、未做窗口手测**，09-14 首件事 |
-| 5 | `TASK-05-acp-and-polish.md` | ACP 长驻、第 2 期预设、打包与手册 | 后置 |
+## 状态
+
+TASK-00 至 TASK-35 均已合并 main（最后一期 TASK-35，09-21 `dcaf39c`）；每期的实现、审查与修正记录在本目录的 `REPORT-NN*.md`、`review-NN-*.md`、`fix-NN-*.md`，进度流水在 `D:\work\agentteam\archive\PROGRESS-0707-0930.md`。
+
+当前：TASK-36（引擎无窗口可跑，`TASK-36-headless-engine.md`）。低危积压统一记在 `fix-04-r5-backlog.md`，随 09-30 定案作废的条目已划掉并注明。
 
 ## Runbook（编排者操作手册，2026-09-15 定稿）
 
@@ -43,9 +37,3 @@
 **不再做的事**：`cargo fmt`（上游文件 263 处会翻面）；三轮复审；等某家额度恢复；主线程自己实现整期。
 
 **真机验收项**（发模型请求、pi 锁目录、ACP 续聊）沙箱跑不了，由主线程在沙箱外补跑并记进 REPORT 或 PROGRESS。
-
-## 门槛
-
-- 第 2 期开工前：用户先在窗口里过一遍第 0、1 期的手动 smoke 清单。
-- 第 3 期开工前：`.dispatch/` 契约（TASK-03 C 节）同步进 skill 的 `channels.md`（skill 侧一个版本）。
-- 第 4 期开工前：第 3 期的盲审真跑在编排者机器上通过。

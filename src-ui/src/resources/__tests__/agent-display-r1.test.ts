@@ -12,7 +12,7 @@ import resourcesTabSource from '../../components/resources/ResourcesTab.tsx?raw'
 import resourcesOverlaySource from '../../components/resources/ResourcesOverlay.tsx?raw';
 import historySource from '../../components/right/HistoryBoard.tsx?raw';
 import brandMarksSource from '../../components/resources/brand-marks.ts?raw';
-import productSource from '../../../../docs/PRODUCT.md?raw';
+import productSource from '../../../../docs/history/PRODUCT-0830-0930.md?raw';
 import manualSource from '../../../../docs/MANUAL.md?raw';
 import readmeSource from '../../../../README.md?raw';
 import agentsSource from '../../../../AGENTS.md?raw';

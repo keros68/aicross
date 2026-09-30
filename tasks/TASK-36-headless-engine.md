@@ -4,9 +4,9 @@
 
 ## 背景
 
-`docs/PRODUCT.md`「定案（09-30）：对话留在宿主，aicross 只做引擎和结果查看器」：用户在 Claude Code、Codex 等宿主里说话，ai-cross skill 调 `aicross` 命令行派发，结果并排交给查看器裁决。本期是「顺序」第 1 步：`aicross dispatch / status / adopt / cancel` 在**窗口没开时**也能跑完整条流水线。
+`docs/PRODUCT.md`「为什么是这个形态」「机制」两节：用户在 Claude Code、Codex 等宿主里说话，ai-cross skill 调 `aicross` 命令行派发，结果并排交给查看器裁决。本期是「顺序」第 1 步：`aicross dispatch / status / adopt / cancel` 在**窗口没开时**也能跑完整条流水线。
 
-现状（同一节「待验证 1」写了查清的边界）：
+现状（查清的边界原文在 `docs/history/PRODUCT-0830-0930.md` 末节「待验证 1」）：
 
 - 单阶段执行 `dispatch_stage_core(request, app: Option<AppHandle>)` 传 `None` 即可无窗口跑（`src/dispatch.rs` 的测试就是这样调的）。图、预设、角色的读写在 `src/orchestration.rs`。
 - 「一次派发怎么走完」只在前端：`src-ui/src/console-channel.ts` 的 `runConsoleDispatch`，经 `src-ui/src/graph/` 下的 `stamp.ts`、`context.ts`、`validate.ts`、`dispatch.ts`（`buildNodeRequest`、`runStageLoop`、`nextStageStep`、`reducePipelineStep`、`applyDispatchResults` 等）。
