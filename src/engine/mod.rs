@@ -336,8 +336,10 @@ fn process_creation_time(handle: windows::Win32::Foundation::HANDLE) -> Option<u
 
 #[cfg(windows)]
 fn process_alive(pid: u32, pid_started_at: &str) -> bool {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     if pid == 0 {
         return false;
     }
@@ -345,9 +347,18 @@ fn process_alive(pid: u32, pid_started_at: &str) -> bool {
     else {
         return false;
     };
+    // 进程已结束但还有别的句柄指着它时，OpenProcess 仍会成功、创建时间也读得到；
+    // 只有退出码还是 STILL_ACTIVE 才算活着（10-01 真机：杀掉后台进程后 status
+    // 仍报 running）。
+    let mut exit_code = 0u32;
+    let exited = unsafe { GetExitCodeProcess(handle, &mut exit_code) }.is_ok()
+        && exit_code != STILL_ACTIVE.0 as u32;
     let creation = process_creation_time(handle);
     unsafe {
         let _ = CloseHandle(handle);
+    }
+    if exited {
+        return false;
     }
     match (creation, pid_started_at.is_empty()) {
         // 有创建时间且 run 记录了创建时间：一致才算存活（pid 复用核对）。

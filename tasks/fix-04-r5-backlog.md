@@ -182,3 +182,9 @@
 94. ~~**【中】ACP 回退一次性 CLI 的那一轮，留痕「任务全文」不是实际发出的内容**：引擎 `reset_acp_fallback` 后发的是 `oneshot_outbound`（完整 `prompt`），而 `write_record` 传的是 `outbound`（续聊的 `current_message`）（`src/dispatch.rs` 约 4276 行）。实测：kimi 旧 ACP 进程已退，回退后 `~/.aicross/runs/<run>/tasks/<node>.txt` 是 8 段全量，`.dispatch/` 留痕只记了 2 段增量。留痕是外发内容的唯一人读记录，应与实际一致。改法：走一次性 CLI 时记 `oneshot_outbound`；补测试断言回退那一轮的留痕含完整上下文（参照 `run_one_dead_acp_falls_back_once_without_resume_and_rewrites_full_task`）。`!uses_acp && previous_runner == "acp"` 那条分支同理。~~ 已修（10-01，分支 engine/backlog94）
 95. ~~【低】控制台单线聊天不传 `previousRunner`（`console-chat.ts` `prepareConsoleTurn` 恒为空串）：设置里关掉 ACP、且该 agent 不是 interactive 走 ACP 的情况下，旧 ACP 会话 id 会原样交给一次性 CLI。现状 claude / codex / kimi 在单线聊天里都走 ACP，回退由引擎的 `Fallback` 分支兜住，暂无表现。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
 96. ~~【低】成功但空正文的回复在消息流里显示为「已完成。」，补对话时会作为该家的回复发给别家（TASK-35 GLM 低 5）。~~ 作废（09-30 定案：对话留在宿主，窗口界面下线）
+
+## TASK-36 合并后真机核（10-01，编排者，窗口关闭，main 合并 `2316fab` 之后）
+
+97. 【中】引擎后台进程被杀后，它正在等待的模型 CLI 子进程（如 pi）继续运行成孤儿，直到自己结束；额度照扣、结果无人收。候选：后台进程把子进程放进 Job Object 并设 KILL_ON_JOB_CLOSE。
+98. 【中】经济模式下单写者执行改了文件后，首轮验收只拿到 `diff.patch` 与 `changed/`，没有项目副本，跑不了测试，易判 NEEDS_FIX 触发修正轮；修正轮在已改好的工作区上产出空 diff，第二轮验收据此判「交付为零」，修复被当成来历不明，最后进遗留。实测 run `9900e4e6`（修一行 bug，9 分钟，修正轮 + 遗留 15 条）。候选：有改动的验收也附项目只读副本；修正轮的验收材料带上上一轮的 diff。
+99. 【低】运行中取消时，在飞那一路的正文是被结束的 CLI 吐出的最后输出（实测为 pi 的一行警告），不是「派发已取消」；状态为 failed 正确。

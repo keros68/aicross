@@ -1283,3 +1283,25 @@ fn pipeline_continues_from_merged_graph_and_never_dispatches_other_runs_nodes() 
     assert!(outcome.graph.nodes.contains_key("x1"), "推进循环应改用合并后的图继续");
     assert_eq!(outcome.graph.nodes["x1"].reply.as_ref().unwrap().status, "draft");
 }
+
+#[cfg(windows)]
+#[test]
+fn exited_process_is_not_alive_even_while_a_handle_is_open() {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // `child` 持有句柄直到函数末尾：进程已退出，但仍能被 OpenProcess 打开。
+    let mut child = std::process::Command::new("cmd")
+        .args(["/C", "exit", "0"])
+        .spawn()
+        .expect("起子进程");
+    let pid = child.id();
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.expect("打开子进程");
+    let started = process_creation_time(handle).expect("读创建时间").to_string();
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    child.wait().expect("等子进程退出");
+    assert!(!process_alive(pid, &started), "已退出的进程不能判为存活");
+    assert!(process_alive(std::process::id(), &own_process_started_at()), "本进程应判为存活");
+    drop(child);
+}
