@@ -6,15 +6,12 @@
 //! 只是没有 `/` 补全与权限卡片。没有 Node.js（npm）的机器同样回退，并在界面说明原因。
 
 use crate::process::run_process;
-use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
-
-pub const SETUP_EVENT: &str = "acp-setup";
 
 struct Adapter {
     agent: &'static str,
@@ -46,8 +43,7 @@ fn adapter(agent: &str) -> Option<&'static Adapter> {
     ADAPTERS.iter().find(|adapter| adapter.agent == agent)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "state", content = "detail")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SetupState {
     /// 还没检查或不需要（本机没有对应 CLI）。
     Idle,
@@ -55,14 +51,6 @@ pub enum SetupState {
     Ready,
     NoNode,
     Failed(String),
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SetupEvent {
-    agent: String,
-    #[serde(flatten)]
-    state: SetupState,
 }
 
 fn states() -> &'static Mutex<HashMap<&'static str, SetupState>> {
@@ -79,9 +67,8 @@ fn last_failure() -> &'static Mutex<Option<std::time::Instant>> {
 
 fn set_state(agent: &'static str, state: SetupState) {
     if let Ok(mut states) = states().lock() {
-        states.insert(agent, state.clone());
+        states.insert(agent, state);
     }
-    super::acp::emit_event(SETUP_EVENT, SetupEvent { agent: agent.to_string(), state });
 }
 
 pub fn state(agent: &str) -> SetupState {
@@ -253,16 +240,6 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "-g" || arg == "--global"));
         assert_eq!(args.last().unwrap(), "@agentclientprotocol/codex-acp@1.12.0");
         assert!(ADAPTERS.iter().all(|adapter| !adapter.version.is_empty() && !adapter.version.starts_with('^')));
-    }
-
-    #[test]
-    fn setup_event_shape_matches_the_console() {
-        let ready = serde_json::to_value(SetupEvent { agent: "codex".into(), state: SetupState::Ready }).unwrap();
-        assert_eq!(ready, serde_json::json!({"agent":"codex","state":"ready"}));
-        let failed = serde_json::to_value(SetupEvent { agent: "claude".into(), state: SetupState::Failed("x".into()) }).unwrap();
-        assert_eq!(failed, serde_json::json!({"agent":"claude","state":"failed","detail":"x"}));
-        let no_node = serde_json::to_value(SetupEvent { agent: "claude".into(), state: SetupState::NoNode }).unwrap();
-        assert_eq!(no_node["state"], "noNode");
     }
 
     #[test]

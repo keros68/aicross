@@ -2,14 +2,29 @@
 // ../tauri.ts（镜像 Rust src/run_view.rs），这里只做展示前的纯变换；
 // RunViewer.tsx 不掺逻辑，测试全部落在这层。
 //
-// 复用的现成纯函数：graph/dispatch.ts 的 parseAcceptance（验收结论）、
-// resources/agent-display.ts 的 agentModelDisplay（次标题）、
-// components/center/ConsoleRunDetail.tsx 的 compactRunNumber（token 数缩写）。
+// 原先复用的三个纯函数（TASK-40）：验收结论解析 parseAcceptance（原
+// graph/dispatch.ts）、token 数缩写 compactRunNumber（原
+// components/center/ConsoleRunDetail.tsx）内联在本文件，agent/model 显示
+// 坐标 agentModelDisplay 搬到 ./agent-display，行为不变。
 
-import { parseAcceptance } from '../graph/dispatch';
-import { agentModelDisplay } from '../resources/agent-display';
-import { compactRunNumber } from '../components/center/ConsoleRunDetail';
+import { agentModelDisplay } from './agent-display';
 import type { RunView, RunViewNode } from '../tauri';
+
+export type AcceptanceVerdictParsed = 'PASS' | 'NEEDS_FIX' | 'UNKNOWN';
+
+/** 验收 / 验证结论取正文尾部 1200 字符里最后一次出现的判定词。 */
+export function parseAcceptance(text: string): AcceptanceVerdictParsed {
+  const tail = text.slice(-1200).toUpperCase();
+  const matches = [...tail.matchAll(/\b(?:PASS|NEEDS_FIX)\b/g)];
+  return (matches.at(-1)?.[0] as AcceptanceVerdictParsed | undefined) ?? 'UNKNOWN';
+}
+
+/** token 数缩写：1.2k / 3.4m，行为与原 ConsoleRunDetail 的同名函数一致。 */
+export function compactRunNumber(value: number): string {
+  if (value < 10_000) return String(value);
+  if (value < 1_000_000) return `${Number((value / 1000).toFixed(1))}k`;
+  return `${Number((value / 1_000_000).toFixed(1))}m`;
+}
 
 /** run 运行中时查看页的轮询间隔；终态返回 null，轮询停止。 */
 export const RUN_VIEW_POLL_INTERVAL_MS = 2000;

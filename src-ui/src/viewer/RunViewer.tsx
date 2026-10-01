@@ -7,8 +7,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { commands, type RunView, type RunViewNode } from '../tauri';
-import { ConsoleMarkdown } from '../components/center/ConsoleMarkdown';
-import { vendorColor } from '../graph/vendor';
+import { ConsoleMarkdown } from './ConsoleMarkdown';
+import { vendorColor } from './vendor';
 import {
   RUN_VIEW_POLL_INTERVAL_MS,
   acceptanceVerdict,

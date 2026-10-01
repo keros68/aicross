@@ -17,30 +17,15 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Tier Terminal — PTY (portable-pty, WezTerm's cross-platform PTY library)
-portable-pty = "0.9"
-# tokio: only the features we actually touch (grep'd against src/). Trimmed
-# from "full" to drop unused subsystems (process, signal, tracing, parking_lot
-# pulled in by full but not used here). `rt-multi-thread` + `macros` for
-# #[tokio::main] / spawn; `net` for TcpListener; `time` for sleep; `io-util`
-# for AsyncBufReadExt/AsyncWriteExt; `sync` for Mutex.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync"] }
-
-# Regex (used by terminal.rs for ANSI strip)
+# Regex（dispatch / channels / resources 的文本判定与脱敏）
 regex = "1"
-glob = "0.3.3"
-
-# CLI
-clap = { version = "4", features = ["derive"] }
 
 # Tauri
 # `devtools` feature dropped: it only enables WebView devtools in *release*
 # builds, and our shipped UI explicitly blocks F12 / Ctrl+Shift+I and the
-# context menu (see src-ui/src/main.tsx + App.tsx). Dev builds get devtools
-# automatically without the feature flag, so dev workflow is unaffected.
-tauri = { version = "2", features = ["protocol-asset"] }
-tauri-plugin-dialog = "2"
-tauri-plugin-clipboard-manager = "2"
+# context menu (see src-ui/src/main.tsx). Dev builds get devtools
+# automatically without the feature flag.
+tauri = { version = "2", features = [] }
 
 # Utilities
 serde = { version = "1", features = ["derive"] }
@@ -53,39 +38,7 @@ serde_yaml = "0.9"
 toml = "0.9"
 anyhow = "1"
 chrono = { version = "0.4", features = ["clock"] }
-
-log = "0.4"
 dirs = "5"
-# Pure-Rust font parsing for the terminal font picker (list installed
-# families + monospace flag). No system deps, unlike font-kit.
-ttf-parser = "0.20"
-base64 = "0.22.1"
-# PNG encoder for clipboard-image paste (issue #96): the Tauri clipboard
-# plugin's read_image() returns raw RGBA — no original format — so we encode
-# to PNG before writing the temp file the AI CLI references by path. Reuses
-# the same png 0.17.x already pulled in transitively by tauri, no extra build.
-png = "0.17"
-# In-app self-update downloader (Windows). Blocking + rustls, runs on a
-# spawn_blocking thread; streams the installer so we can emit download %.
-ureq = "2"
-# Compile-time embed of openai/skills .curated tree (~6 MB / 38 skills / 742
-# files) into the binary's rodata. Seeded into ~/.coffee-cli/skills-library/
-# on first launch — avoids GitHub API at runtime (rate limit, GFW, errors)
-# at the cost of ~2-3 MB in the shipped installer post-compression.
-include_dir = "0.7"
-notify = "6.1.1"
-# Coalesces bursts of fs events (e.g. CLI writing 50 files in a row) into a
-# single handler callback so the frontend doesn't re-scan 50 times.
-notify-debouncer-full = "0.3"
-rusqlite = { version = "0.32", features = ["bundled"] }
-keyring = "3"
-
-# Multi-agent MCP server (v1.0: 3 tools, HTTP Streamable transport)
-# See docs/MULTI-AGENT-ARCHITECTURE.md §5.5 for why HTTP over stdio.
-# Note: schemars is NOT a direct dep — we use rmcp's re-exported schemars
-# to avoid version conflicts (rmcp 0.8 uses schemars 1.x internally).
-rmcp = { version = "0.8", features = ["server", "macros", "transport-streamable-http-server"] }
-axum = "0.7"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
@@ -132,8 +85,8 @@ tauri-plugin-single-instance = "2"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
-    "Win32_Graphics_Dwm",
     "Win32_Security",
+    "Win32_Graphics_Dwm",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_JobObjects",

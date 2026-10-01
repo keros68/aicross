@@ -1,10 +1,9 @@
-//! TASK-37 查看器第一版：`aicross open <run_id>` 的参数解析，以及
-//! `load_run_view` / `adopt_run_node` 两条 Tauri 命令。
+//! TASK-37 查看器第一版：`aicross open <run_id>` 的参数解析，首页列表
+//! （TASK-40）与 `load_run_view` / `adopt_run_node` 两条 Tauri 命令。
 //!
-//! 打开方式照 `launch` 的冷热两条路：冷启动经 `AppState::pending_open` 与
-//! `take_pending_open`；热启动由单实例回调在这里重解析 argv 后向前端发
-//! `open-run-request` 事件（见 server.rs）。打开查看页只读 run 文件与图
-//! 文件，不派发、不改文件。
+//! 冷启动经 `AppState::pending_open` 与 `take_pending_open`；热启动由单实例
+//! 回调在这里重解析 argv 后向前端发 `open-run-request` 事件（见 server.rs）。
+//! 打开查看页只读 run 文件与图文件，不派发、不改文件。
 //!
 //! 数据只从 TASK-36 的产出读：`~/.aicross/runs/<run_id>.json`（经
 //! `engine::read_run`，会顺带完成死进程判定）加 `~/.aicross/graphs/` 里该
@@ -27,8 +26,7 @@ pub enum OpenParse {
     Valid(String),
 }
 
-/// 与 `launch::parse_launch_args` 并列的解析：argv[0] 形状不定（裸名、完整
-/// 路径或单实例转发），`open` 认 0 或 1 下标；`--flag` / `--flag=value`
+/// argv[0] 形状不定（裸名、完整路径或单实例转发），`open` 认 0 或 1 下标；`--flag` / `--flag=value`
 /// 一律拒绝（本命令没有选项），只收一个 run_id，字符集先过 `valid_id`。
 pub fn parse_open_args(args: &[String]) -> OpenParse {
     let start = match args.first().map(String::as_str) {
@@ -376,6 +374,73 @@ pub fn adopt_view(root: &Path, run_id: &str, node_id: &str) -> Result<RunView, S
 #[tauri::command]
 pub fn adopt_run_node(run_id: String, node_id: String) -> Result<RunView, String> {
     adopt_view(&crate::paths::aicross_root()?, &run_id, &node_id)
+}
+
+// ── TASK-40 首页「最近的派发」────────────────────────────────────────────
+
+/// 首页列表条目。模式名与任务名同查看页一套取名规则（`preset_display_name`
+/// 与 `task_title`）。
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunListItem {
+    pub run_id: String,
+    pub preset_name: String,
+    pub status: String,
+    pub started_at: String,
+    pub task_title: String,
+}
+
+/// 首页列表条数上限：只展示最近 50 条，更早的仍在磁盘上，`aicross open <run_id>`
+/// 随时可开。
+const LIST_RUNS_LIMIT: usize = 50;
+
+/// 读 run 目录里的 run 摘要，按 `updated_at` 倒序取最近 50 条。与引擎
+/// `active_runs` 同一口径：只认 `.json` 且文件名不以 `.` 开头；解析失败的
+/// 文件跳过，不让一张坏文件拽垮整个列表。
+pub fn list_runs_at(root: &Path) -> Vec<RunListItem> {
+    let Ok(entries) = std::fs::read_dir(root.join("runs")) else {
+        return Vec::new();
+    };
+    let mut items: Vec<(String, crate::engine::EngineRun)> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().and_then(|e| e.to_str()) == Some("json")
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| !n.starts_with('.'))
+        })
+        .filter_map(|path| {
+            let bytes = std::fs::read(&path).ok()?;
+            let run = serde_json::from_slice::<crate::engine::EngineRun>(&bytes).ok()?;
+            Some((path, run))
+        })
+        .map(|(path, run)| {
+            let run_id = if run.run_id.is_empty() {
+                path.file_stem()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                run.run_id.clone()
+            };
+            (run_id, run)
+        })
+        .collect();
+    // updated_at 是 ISO 字符串，字典序即时间序；倒序取最近的。
+    items.sort_by(|a, b| b.1.updated_at.cmp(&a.1.updated_at));
+    items
+        .into_iter()
+        .take(LIST_RUNS_LIMIT)
+        .map(|(run_id, run)| RunListItem {
+            preset_name: preset_display_name(root, &run.preset_id),
+            task_title: task_title(&run.original_request),
+            run_id,
+            status: run.status,
+            started_at: run.started_at,
+        })
+        .collect()
 }
 
 /// 原始需求的第一行非空文本，最多 40 个字符（超出加「…」）。
@@ -887,5 +952,109 @@ mod tests {
         );
         let ids: std::collections::HashSet<String> = ["my-accept".to_string()].into_iter().collect();
         assert_eq!(run_leftover(&graph, &ids), vec!["本 run 的遗留".to_string()]);
+    }
+    // ── TASK-40 首页列表（list_runs_at）────────────────────────────
+
+    fn run_summary(run_id: &str, updated_at: &str) -> crate::engine::EngineRun {
+        crate::engine::EngineRun {
+            run_id: run_id.into(),
+            graph_id: "g1".into(),
+            project: "D:/p".into(),
+            status: "done".into(),
+            nodes: Vec::new(),
+            started_at: "2026-10-01T08:00:00Z".into(),
+            reason: String::new(),
+            pid: 0,
+            pid_started_at: String::new(),
+            original_request: "给解析器加测试\n顺便补文档".into(),
+            preset_id: "builtin-economy".into(),
+            leftover: Vec::new(),
+            in_flight_node_ids: Vec::new(),
+            updated_at: updated_at.into(),
+        }
+    }
+
+    fn write_run(root: &std::path::Path, run_id: &str, updated_at: &str) {
+        let runs = root.join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        let value = serde_json::to_string(&run_summary(run_id, updated_at)).unwrap();
+        std::fs::write(runs.join(format!("{run_id}.json")), value).unwrap();
+    }
+
+    #[test]
+    fn list_runs_sorts_by_updated_at_desc_and_caps_at_50() {
+        let root = temp("list-runs-sort");
+        for index in 0..55 {
+            let stamp = format!("2026-10-01T{:02}:{:02}:00Z", index / 60, index % 60);
+            write_run(&root, &format!("run-{index:02}"), &stamp);
+        }
+        let items = list_runs_at(&root);
+        assert_eq!(items.len(), 50);
+        // 最新（updated_at 最大）在前。
+        assert_eq!(items[0].run_id, "run-54");
+        assert_eq!(items[49].run_id, "run-05");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_runs_only_counts_json_files_without_leading_dot() {
+        let root = temp("list-runs-filter");
+        write_run(&root, "run-a", "2026-10-01T08:00:00Z");
+        let runs = root.join("runs");
+        // 非 .json 与以 . 开头的文件一律不算。
+        std::fs::write(runs.join("run-b.txt"), "x").unwrap();
+        std::fs::write(runs.join(".run-c.json"), "x").unwrap();
+        // json 扩展名大小写也只认小写 .json（与引擎 active_runs 同一口径）。
+        std::fs::write(runs.join("run-d.JSON"), "x").unwrap();
+        let items = list_runs_at(&root);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].run_id, "run-a");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_runs_skips_unparsable_files_and_uses_file_stem_when_run_id_missing() {
+        let root = temp("list-runs-parse");
+        let runs = root.join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(runs.join("broken.json"), "not json").unwrap();
+        // 旧 run 文件 run_id 为空串：解析成功，run_id 退回文件名去扩展名。
+        std::fs::write(
+            runs.join("legacy.json"),
+            r#"{"run_id":"","project":"D:/p","status":"done","started_at":"2026-10-01T08:00:00Z","pid":0,"updated_at":"2026-10-01T09:00:00Z"}"#,
+        )
+        .unwrap();
+        let items = list_runs_at(&root);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].run_id, "legacy");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_runs_names_preset_and_task_like_the_viewer() {
+        let root = temp("list-runs-naming");
+        write_run(&root, "run-a", "2026-10-01T08:00:00Z");
+        let items = list_runs_at(&root);
+        assert_eq!(items[0].preset_name, "经济模式");
+        assert_eq!(items[0].task_title, "给解析器加测试");
+        assert_eq!(items[0].status, "done");
+        // 任务名取第一行；空请求给空标题。
+        let runs = root.join("runs");
+        let mut empty = run_summary("run-b", "2026-10-01T07:00:00Z");
+        empty.original_request = String::new();
+        empty.preset_id = String::new();
+        std::fs::write(runs.join("run-b.json"), serde_json::to_vec(&empty).unwrap()).unwrap();
+        let items = list_runs_at(&root);
+        let empty_item = items.iter().find(|i| i.run_id == "run-b").unwrap();
+        assert_eq!(empty_item.preset_name, "自定义模式");
+        assert_eq!(empty_item.task_title, "");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_runs_on_missing_dir_is_empty() {
+        let root = temp("list-runs-empty");
+        assert!(list_runs_at(&root).is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

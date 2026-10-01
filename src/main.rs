@@ -1,56 +1,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod channels;
-mod console_api;
 mod console_cli;
 mod dispatch;
 mod engine;
-mod fonts;
-mod fs_watcher;
 mod git;
-mod hook_forwarder;
-mod hook_installer;
-mod hook_server;
-mod launch;
-mod marketplace;
 mod orchestration;
 mod paths;
 mod process;
 mod resources;
 mod run_view;
 mod server;
-mod shell_probe;
-mod skills;
-mod terminal;
 mod tool_config;
-mod tools;
 #[cfg(target_os = "windows")]
 mod windows_path;
 
 use anyhow::Result;
 
 fn main() -> Result<()> {
-    // ── Native hook forwarder (fast path) ───────────────────────────────
-    // Invoked by Claude Code (`<exe> __hook`), Codex hooks (`<exe>
-    // __codex-hook`, stdin JSON), Codex legacy notify (`<exe>
-    // __codex-notify <json>`), and Kimi Code hooks (`<exe> __kimi-hook`,
-    // Claude-shaped stdin JSON) to forward agent status to the dynamic
-    // island. This MUST run before any GUI / Linux-backend / PATH-inherit
-    // setup below — the PATH fix spawns a login shell, which we don't want
-    // firing on every tool-call hook. Each arm calls process::exit and
-    // never returns. See hook_forwarder.rs for why this replaced the Python
-    // forwarders (no more `python`-not-found errors on Windows).
-    {
-        let argv: Vec<String> = std::env::args().collect();
-        match argv.get(1).map(|s| s.as_str()) {
-            Some("__hook") => hook_forwarder::run_claude_hook(),
-            Some("__codex-hook") => hook_forwarder::run_codex_hook(),
-            Some("__codex-notify") => hook_forwarder::run_codex_notify(&argv),
-            Some("__kimi-hook") => hook_forwarder::run_kimi_hook(),
-            _ => {}
-        }
-    }
-
     // ── Linux GUI backend selection ─────────────────────────────────────
     // Older WebKit2GTK (≤ 2.44) had a Wayland blank-window bug on
     // Ubuntu 24.04: WebView never paints, so the original workaround
@@ -62,9 +29,9 @@ fn main() -> Result<()> {
     // Skia falls back to CPU software rasterization, and four
     // SkiaCPUWorker threads peg ~19% CPU at idle — fan spins up
     // continuously even with no user input. WebKitWebProcess goes
-    // from 47% (X11) down to 8% (native Wayland) just by removing
-    // the workaround on this WebKit version, because Skia uses
-    // DMABUF + Mesa for GPU paint instead.
+    // from 47% (X11) down to 8% (native Wayland) just by removing the
+    // workaround on this WebKit version, because Skia uses DMABUF +
+    // Mesa for GPU paint instead.
     //
     // Strategy: detect installed WebKit minor version from the .so
     // file. ≥ 2.46 → leave GDK_BACKEND unset and let GTK pick the
@@ -91,11 +58,11 @@ fn main() -> Result<()> {
     }
 
     // ── Raise fd soft limit (macOS / Linux) ─────────────────────────────
-    // macOS defaults RLIMIT_NOFILE soft to 256; a process hosting many PTY
-    // tabs (each = master+slave fds, plus git subprocesses) hits EMFILE fast,
-    // surfacing as portable-pty spawn failures. Raise the soft limit to
-    // min(hard, 1<<20) once at startup — never exceeds the hard limit, best-
-    // effort (errors ignored). Windows has no equivalent.
+    // macOS defaults RLIMIT_NOFILE soft to 256; a process spawning many
+    // concurrent model CLIs (each with sockets + pipes) hits EMFILE fast.
+    // Raise the soft limit to min(hard, 1<<20) once at startup — never
+    // exceeds the hard limit, best-effort (errors ignored). Windows has
+    // no equivalent.
     #[cfg(unix)]
     unsafe {
         let mut rlim: libc::rlimit = libc::rlimit {
@@ -122,13 +89,13 @@ fn main() -> Result<()> {
     // — they do NOT source the user's interactive shell rc files. So tools
     // installed via Homebrew, nvm, volta, asdf, npm-global, cargo, bun,
     // ~/.local/bin, etc. are invisible to every Command::new() in the
-    // process. Symptom: tool-detection cards stay greyed out even though
-    // `claude` / `codex` / `agy` / `hermes` are clearly installed.
+    // process. Symptom: resource detection reports 未安装 even though
+    // `claude` / `codex` / `kimi` / `pi` are clearly installed.
     //
     // Fix: ask the user's login shell for its real PATH ONCE at startup
     // and replace the process PATH. Every downstream subprocess
-    // (tool-detection `which`, PTY spawns, etc.) inherits this and
-    // resolves binaries the same way the user's terminal would.
+    // (resource detection, model CLI spawns) inherits this and resolves
+    // binaries the same way the user's terminal would.
     //
     // We use `-ilc` (interactive + login) so both .zprofile/.bash_profile
     // AND .zshrc/.bashrc are sourced — matches what the user sees when
@@ -175,24 +142,21 @@ fn main() -> Result<()> {
     // `Path` (auto-expanded) and merge those dirs into the process PATH.
     // Append-only + existence-gated: it can only make more tools resolvable,
     // never removes or shadows anything — a harmless no-op when PATH is
-    // already complete. GUI launch only — hook subcommands exit far above.
+    // already complete.
     #[cfg(target_os = "windows")]
     {
         windows_path::hydrate();
     }
 
     // CLI subcommand dispatch — short-circuit GUI launch when invoked
-    // with a known subcommand. This is opt-in; double-clicking the
+    // with a known subcommand (`aicross dispatch/status/adopt/cancel/
+    // resources/config/__run`). This is opt-in; double-clicking the
     // executable still gets the GUI (no argv).
     let args: Vec<String> = std::env::args().collect();
     if let Some(code) = console_cli::run_if_subcommand(&args) {
         std::process::exit(code);
     }
-    // `launch --tool <id> [--cwd <dir>]` doesn't short-circuit: the GUI
-    // starts as usual, but the request rides along and the frontend drains
-    // it on mount (see launch.rs for the cold/warm delivery paths).
-    let pending_launch = launch::parse_launch_args(&args);
-    // `aicross open <run_id>` 同样不短路：校验参数与 run 存在性后照常起窗口，
+    // `aicross open <run_id>` 不短路：校验参数与 run 存在性后照常起窗口，
     // 请求随 AppState::pending_open 走；窗口已开时由单实例插件转发（server.rs）。
     // 打开动作只读，不派发、不改文件。退出码：0 已打开 / 2 参数错 /
     // 3 窗口起不来（引擎根不可用、其它读取错误同按 3）；只有 run 文件
@@ -240,26 +204,16 @@ fn main() -> Result<()> {
                 }
             }
         } else {
-            // 被拉起的窗口进程：清掉标记，不往下传（从应用内终端再调 open
-            // 仍走拉起路，不会变成阻塞的进程内起窗）。
+            // 被拉起的窗口进程：清掉标记，不往下传。
             std::env::remove_var(run_view::OPEN_WINDOW_ENV);
         }
     }
-    if let Some(sub) = args.get(1) {
-        match sub.as_str() {
-            // Forward-compatible: unknown subcommands fall through
-            // to the GUI rather than failing, so users who type
-            // garbage still get a working app.
-            _ => {}
-        }
-    }
 
-    // Default: launch the GUI. Each tab picks its own CWD at
-    // launch time — no initial directory needed.
+    // Default: launch the GUI (首页「最近的派发」，或 `open` 带来的查看页)。
     // 冷启动 `aicross open` 起不来窗口时退出 3；其余路径保持原行为
     // （走到这里的 open 只剩被拉起的窗口进程）。
     let open_requested = pending_open.is_some();
-    match server::start_ui(pending_launch, pending_open) {
+    match server::start_ui(pending_open) {
         Ok(()) => Ok(()),
         Err(error) => {
             if open_requested {

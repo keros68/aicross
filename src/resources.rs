@@ -192,42 +192,12 @@ pub struct ResourceOperation {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-pub struct ResourceModelRequest {
-    pub agent_id: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub vendor: String,
-    #[serde(default)]
-    pub tier: String,
-    #[serde(default)]
-    pub note: String,
-    #[serde(default)]
-    pub fallback_order: Option<Vec<String>>,
-    /// 用户确认额度已恢复时显式清除限额状态；缺失时保持原值。
-    #[serde(default)]
-    pub clear_quota_exhausted: bool,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
 pub struct ResourceModelKey {
     pub agent_id: String,
     #[serde(default)]
     pub id: String,
     #[serde(default)]
     pub provider: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct AddManualAgentRequest {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub binary: String,
-    #[serde(default)]
-    pub args: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,41 +291,6 @@ fn clear_expired_quota(store: &mut ResourceStore) -> bool {
 
 pub(crate) fn resource_model_key(agent: &str, provider: &str, model: &str) -> String {
     format!("{agent}/{provider}/{model}")
-}
-
-#[cfg(test)]
-fn parse_resource_model_key(value: &str) -> Option<(&str, &str, &str)> {
-    let mut parts = value.splitn(3, '/');
-    let agent = parts.next()?.trim();
-    let provider = parts.next()?.trim();
-    let model = parts.next()?.trim();
-    (!agent.is_empty() && !model.is_empty()).then_some((agent, provider, model))
-}
-
-#[cfg(test)]
-fn fallback_models_at(path: &Path, agent: &str, provider: &str, model: &str) -> Result<Vec<ResourceModel>, String> {
-    let _guard = store_lock();
-    let mut store = load_or_default(path)?;
-    clear_expired_quota(&mut store);
-    let current = store
-        .agents
-        .iter()
-        .flat_map(|agent| &agent.models)
-        .find(|item| item.agent == agent && item.provider == provider && item.id == model);
-    let Some(current) = current else { return Ok(Vec::new()) };
-    let mut result = Vec::new();
-    for key in &current.fallback_order {
-        let Some((next_agent, next_provider, next_model)) = parse_resource_model_key(key) else { continue };
-        if let Some(found) = store
-            .agents
-            .iter()
-            .flat_map(|owner| &owner.models)
-            .find(|item| item.agent == next_agent && item.provider == next_provider && item.id == next_model)
-        {
-            result.push(found.clone());
-        }
-    }
-    Ok(result)
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -1641,111 +1576,6 @@ fn append_note_marker(note: &str, marker: &str) -> String {
     }
 }
 
-// ── 手动录入与编辑 ────────────────────────────────────────────────────────
-
-pub fn add_model(
-    mut store: ResourceStore,
-    request: ResourceModelRequest,
-) -> Result<ResourceStore, String> {
-    let id = request.id.trim();
-    if id.is_empty() {
-        return Err("手动接入失败：模型 ID 不能为空".to_string());
-    }
-    let Some(agent) = store
-        .agents
-        .iter_mut()
-        .find(|agent| agent.id == request.agent_id)
-    else {
-        return Err(format!("手动接入失败：未知 agent：{}", request.agent_id));
-    };
-    let provider = request.provider.trim();
-    if request.agent_id == "pi" && provider.is_empty() {
-        return Err("手动接入失败：pi 模型必须填写 provider".to_string());
-    }
-    if agent.models.iter().any(|model| {
-        model.id == id && model.provider == provider && model.agent == request.agent_id
-    }) {
-        return Err("手动接入失败：该模型已存在".to_string());
-    }
-    let verification = inferred_verification(&request.agent_id, STATUS_PENDING).to_string();
-    let resolved_id = resolved_id_for(&request.agent_id, id);
-    agent.models.push(ResourceModel {
-        id: id.to_string(),
-        agent: request.agent_id,
-        provider: provider.to_string(),
-        vendor: if request.vendor.trim().is_empty() {
-            infer_vendor(id).to_string()
-        } else {
-            request.vendor.trim().to_string()
-        },
-        billing_source: if provider.is_empty() {
-            agent.id.clone()
-        } else {
-            provider.to_string()
-        },
-        tier: request.tier.trim().to_string(),
-        thinking: "未知".to_string(),
-        status: STATUS_PENDING.to_string(),
-        verification,
-        login: ResourceLogin::Unknown,
-        login_checked_at: String::new(),
-        resolved_id,
-        resolved_source: RESOLVED_SOURCE_ALIAS_TABLE.to_string(),
-        source: source_value("用户申报", &Local::now().format("%Y-%m-%d").to_string()),
-        smoked_at: String::new(),
-        smoke_model: String::new(),
-        smoke_failure: String::new(),
-        meta: String::new(),
-        note: request.note.trim().to_string(),
-        fallback_order: request.fallback_order.unwrap_or_default(),
-        quota_exhausted_until: None,
-    });
-    Ok(store)
-}
-
-pub fn update_model(
-    mut store: ResourceStore,
-    request: ResourceModelRequest,
-) -> Result<ResourceStore, String> {
-    let model = find_model_mut(
-        &mut store,
-        &request.agent_id,
-        &request.provider,
-        &request.id,
-    )?;
-    model.vendor = request.vendor.trim().to_string();
-    model.tier = request.tier.trim().to_string();
-    model.note = request.note.trim().to_string();
-    if let Some(fallback_order) = request.fallback_order {
-        model.fallback_order = fallback_order;
-    }
-    if request.clear_quota_exhausted {
-        model.quota_exhausted_until = None;
-    }
-    Ok(store)
-}
-
-pub fn remove_model(
-    mut store: ResourceStore,
-    request: ResourceModelKey,
-) -> Result<ResourceStore, String> {
-    let Some(agent) = store
-        .agents
-        .iter_mut()
-        .find(|agent| agent.id == request.agent_id)
-    else {
-        return Err(format!("移除失败：未知 agent：{}", request.agent_id));
-    };
-    let before = agent.models.len();
-    agent
-        .models
-        .retain(|model| !(model.id == request.id && model.provider == request.provider));
-    if before == agent.models.len() {
-        return Err("移除失败：模型不存在".to_string());
-    }
-    Ok(store)
-}
-
 // ── 冒烟 ──────────────────────────────────────────────────────────────────
 
 /// 冒烟成功的结果：响应里的模型真身（identity）+ 需要留进 meta 的说明
@@ -2398,43 +2228,6 @@ pub(crate) fn get_resources_at(path: &Path) -> Result<ResourceStore, String> {
     Ok(store)
 }
 
-fn detect_resource_agent_at(
-    path: &Path,
-    agent_id: &str,
-    cc_switch_path: Option<&str>,
-) -> Result<ResourceOperation, String> {
-    let pi_binary = (agent_id == "pi").then(|| resolve_cli("pi")).flatten();
-    detect_resource_agent_at_with_pi_binary(path, agent_id, cc_switch_path, pi_binary)
-}
-
-fn detect_resource_agent_at_with_pi_binary(
-    path: &Path,
-    agent_id: &str,
-    cc_switch_path: Option<&str>,
-    pi_binary: Option<PathBuf>,
-) -> Result<ResourceOperation, String> {
-    let prepared_pi = (agent_id == "pi").then(|| prepare_pi_detection(pi_binary));
-    let _guard = store_lock();
-    let mut store = load_or_default(path)?;
-    ensure_agents(&mut store);
-    let mut errors = Vec::new();
-    if let Some(prepared) = prepared_pi {
-        apply_prepared_pi_detection(&mut store, prepared, &mut errors);
-    } else {
-        detect_into(&mut store, agent_id, &mut errors);
-    }
-    let (cc_switch_hints, hint_error) = detect_cc_switch_hints(cc_switch_path);
-    if let Some(error) = hint_error {
-        errors.push(error);
-    }
-    save_store(path, &store)?;
-    Ok(ResourceOperation {
-        store,
-        errors,
-        cc_switch_hints,
-    })
-}
-
 pub(crate) fn detect_all_resources_at(
     path: &Path,
     cc_switch_path: Option<&str>,
@@ -2468,91 +2261,12 @@ pub(crate) fn detect_all_resources_at(
     })
 }
 
-/// 单个 pi provider 的重新检查。检查阶段不持有资源库写锁，最多等待 10 秒；
-/// 结束后才短暂加锁写入该 provider 的状态和时间，避免阻塞其它资源操作。
-fn check_pi_provider_login_at(path: &Path, provider: &str) -> Result<ResourceOperation, String> {
-    let binary = resolve_cli("pi");
-    check_pi_provider_login_at_with_binary(path, provider, binary.as_deref())
-}
-
-fn check_pi_provider_login_at_with_binary(
-    path: &Path,
-    provider: &str,
-    binary: Option<&Path>,
-) -> Result<ResourceOperation, String> {
-    let provider = provider.trim();
-    if provider.is_empty() {
-        return Err("重新检查失败：provider 不能为空".to_string());
-    }
-    let missing = binary.is_none();
-    let login = binary
-        .map(|binary| check_pi_provider_login_with(binary, provider, PI_LOGIN_CHECK_TIMEOUT))
-        .unwrap_or(ResourceLogin::Unknown);
-    let _guard = store_lock();
-    let mut store = load_or_default(path)?;
-    ensure_agents(&mut store);
-    let Some(agent) = store.agents.iter_mut().find(|agent| agent.id == "pi") else {
-        return Err("重新检查失败：未找到 pi agent".to_string());
-    };
-    apply_pi_provider_login(&mut agent.models, provider, login);
-    save_store(path, &store)?;
-    Ok(ResourceOperation {
-        store,
-        errors: if missing {
-            vec!["未找到 pi，登录状态未检查".to_string()]
-        } else {
-            Vec::new()
-        },
-        cc_switch_hints: Vec::new(),
-    })
-}
-
-fn add_resource_model_at(
-    path: &Path,
-    request: ResourceModelRequest,
-) -> Result<ResourceStore, String> {
-    let _guard = store_lock();
-    let mut store = load_or_default(path)?;
-    ensure_agents(&mut store);
-    let store = add_model(std::mem::take(&mut store), request)?;
-    save_store(path, &store)?;
-    Ok(store)
-}
-
-fn update_resource_model_at(
-    path: &Path,
-    request: ResourceModelRequest,
-) -> Result<ResourceStore, String> {
-    let _guard = store_lock();
-    let store = update_model(load_or_default(path)?, request)?;
-    save_store(path, &store)?;
-    Ok(store)
-}
-
-fn remove_resource_model_at(path: &Path, request: ResourceModelKey) -> Result<ResourceStore, String> {
-    let _guard = store_lock();
-    let store = remove_model(load_or_default(path)?, request)?;
-    save_store(path, &store)?;
-    Ok(store)
-}
-
 pub(crate) fn smoke_resource_model_at(path: &Path, request: ResourceModelKey) -> Result<ResourceStore, String> {
     let _guard = store_lock();
     let mut store = load_or_default(path)?;
     smoke_one_in_place(&mut store, &request)?;
     save_store(path, &store)?;
     Ok(store)
-}
-
-/// 冒烟某个 agent 的全部模型；失败汇总进 errors（单条失败不中断整批）。
-/// 每冒烟一条都重新 load → 改 → 写盘，不整批长持旧 store——一次冒烟最长
-/// 60s，整批持旧数据会把期间其他写方的更新整体抹掉（审查 2.4）。
-fn smoke_agent_models_at(
-    path: &Path,
-    agent_id: &str,
-    smoke: impl FnMut(&ResourceModel) -> Result<SmokeSuccess, String>,
-) -> Result<ResourceOperation, String> {
-    smoke_agent_models_filtered_at(path, agent_id, |_| true, smoke)
 }
 
 /// TASK-39：命令行按 agent 冒烟只挑第三方模型；原生模型不发请求
@@ -2627,117 +2341,6 @@ fn smoke_agent_models_filtered_at(
         errors,
         cc_switch_hints: Vec::new(),
     })
-}
-
-#[tauri::command]
-pub fn get_resources() -> Result<ResourceStore, String> {
-    get_resources_at(&store_path()?)
-}
-
-#[tauri::command]
-pub async fn detect_resource_agent(
-    agent_id: String,
-    cc_switch_path: Option<String>,
-) -> Result<ResourceOperation, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        detect_resource_agent_at(&store_path()?, &agent_id, cc_switch_path.as_deref())
-    })
-    .await
-    .map_err(|error| format!("探测任务失败：{error}"))?
-}
-
-#[tauri::command]
-pub async fn detect_all_resources(
-    cc_switch_path: Option<String>,
-) -> Result<ResourceOperation, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        detect_all_resources_at(&store_path()?, cc_switch_path.as_deref())
-    })
-    .await
-    .map_err(|error| format!("探测任务失败：{error}"))?
-}
-
-#[tauri::command]
-pub async fn check_pi_provider_login(provider: String) -> Result<ResourceOperation, String> {
-    tauri::async_runtime::spawn_blocking(move || check_pi_provider_login_at(&store_path()?, &provider))
-        .await
-        .map_err(|error| format!("重新检查任务失败：{error}"))?
-}
-
-#[tauri::command]
-pub fn add_resource_model(request: ResourceModelRequest) -> Result<ResourceStore, String> {
-    add_resource_model_at(&store_path()?, request)
-}
-
-#[tauri::command]
-pub fn update_resource_model(request: ResourceModelRequest) -> Result<ResourceStore, String> {
-    update_resource_model_at(&store_path()?, request)
-}
-
-#[tauri::command]
-pub fn remove_resource_model(request: ResourceModelKey) -> Result<ResourceStore, String> {
-    remove_resource_model_at(&store_path()?, request)
-}
-
-/// 手动 agent：二进制与启动参数存 ~/.aicross/tools.json（key = manual-<uuid>），
-/// 名字存 resources.json。登记后立即做一次探测，探测错误随 errors 返回前端。
-#[tauri::command]
-pub async fn add_manual_agent(request: AddManualAgentRequest) -> Result<ResourceOperation, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let name = request.name.trim();
-        let binary = request.binary.trim();
-        if name.is_empty() || binary.is_empty() {
-            return Err("手动接入失败：名称和二进制名不能为空".to_string());
-        }
-        let id = format!("manual-{}", Uuid::new_v4());
-        crate::tool_config::set(
-            &id,
-            crate::tool_config::ToolConfigEntry {
-                command: binary.to_string(),
-                extra_args: request.args.clone(),
-                ..Default::default()
-            },
-        )
-        .map_err(|error| format!("保存手动 agent 配置失败：{error}"))?;
-        let path = store_path()?;
-        let _guard = store_lock();
-        let mut store = load_or_default(&path)?;
-        ensure_agents(&mut store);
-        store.agents.push(ResourceAgent {
-            id: id.clone(),
-            name: name.to_string(),
-            kind: "手动".to_string(),
-            detected: false,
-            version: "未检测".to_string(),
-            models: Vec::new(),
-        });
-        let mut errors = Vec::new();
-        detect_into(&mut store, &id, &mut errors);
-        save_store(&path, &store)?;
-        Ok(ResourceOperation {
-            store,
-            errors,
-            cc_switch_hints: Vec::new(),
-        })
-    })
-    .await
-    .map_err(|error| format!("手动接入任务失败：{error}"))?
-}
-
-#[tauri::command]
-pub async fn smoke_resource_model(request: ResourceModelKey) -> Result<ResourceStore, String> {
-    tauri::async_runtime::spawn_blocking(move || smoke_resource_model_at(&store_path()?, request))
-        .await
-        .map_err(|error| format!("验证任务失败：{error}"))?
-}
-
-#[tauri::command]
-pub async fn smoke_agent_models(agent_id: String) -> Result<ResourceOperation, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        smoke_agent_models_at(&store_path()?, &agent_id, run_smoke)
-    })
-    .await
-    .map_err(|error| format!("验证任务失败：{error}"))?
 }
 
 #[cfg(test)]
@@ -3127,119 +2730,6 @@ mod tests {
     /// TASK-17：假 pi 只接受精确的只读 argv。返回 JSON 中刻意放入凭据字段，
     /// 断言资源状态与落盘 JSON 均不含它，防止实现退回整份认证对象的解析/持久化。
     #[test]
-    fn task17_pi_login_check_uses_safe_args_once_and_ignores_credentials() {
-        let root = std::env::temp_dir().join(format!("aicross-pi-login-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        #[cfg(windows)]
-        let body = r#"@echo off
-if /I "%~1"=="auth" goto auth
-exit /b 2
-:auth
->> "%~dp0argv-%~4.log" echo %*
-if /I "%~4"=="ready" (
-  echo {"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"},"reason":"do-not-read"}
-  exit /b 0
-)
-if /I "%~4"=="bad-exit" (
-  echo {"status":"ready","provider":"bad-exit","authType":"api_key"}
-  exit /b 1
-)
-if /I "%~4"=="legacy-bool" (
-  echo {"ready":true,"credentials":{"access_token":"do-not-read"}}
-  exit /b 0
-)
-echo {"status":"not_ready","provider":"logged-out","reason":"do-not-read"}
-exit /b 0
-"#;
-        #[cfg(not(windows))]
-        let body = r#"#!/bin/sh
-printf '%s\n' "$*" >> "$(dirname "$0")/argv-$4.log"
-if [ "$4" = ready ]; then
-  printf '%s\n' '{"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"},"reason":"do-not-read"}'
-  exit 0
-fi
-if [ "$4" = bad-exit ]; then
-  printf '%s\n' '{"status":"ready","provider":"bad-exit","authType":"api_key"}'
-  exit 1
-fi
-if [ "$4" = legacy-bool ]; then
-  printf '%s\n' '{"ready":true,"credentials":{"access_token":"do-not-read"}}'
-  exit 0
-fi
-printf '%s\n' '{"status":"not_ready","provider":"logged-out","reason":"do-not-read"}'
-exit 0
-"#;
-        let script = write_fake_pi(&root, body);
-        let checked = check_pi_provider_logins_with(
-            &script,
-            vec![
-                "ready".into(),
-                "logged-out".into(),
-                "bad-exit".into(),
-                "legacy-bool".into(),
-                "ready".into(),
-            ],
-            PI_LOGIN_CHECK_TIMEOUT,
-        );
-        assert_eq!(
-            checked,
-            vec![
-                ("bad-exit".into(), ResourceLogin::LoggedOut),
-                ("legacy-bool".into(), ResourceLogin::LoggedIn),
-                ("logged-out".into(), ResourceLogin::LoggedOut),
-                ("ready".into(), ResourceLogin::LoggedIn),
-            ]
-        );
-        // 每个 provider 写各自的 argv 文件：四个 cmd 并发 `>>` 同一个文件时，
-        // Windows 上会有一次写因文件被占用而丢失（09-17 编排者核对：登录结果断言已过、
-        // 只有行数 3≠4，说明进程都跑完了，丢的是日志行，不是超时）。
-        let mut argv = String::new();
-        let mut entries = fs::read_dir(&root)
-            .unwrap()
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("argv-") && name.ends_with(".log"))
-            })
-            .collect::<Vec<_>>();
-        entries.sort();
-        for path in entries {
-            argv.push_str(&fs::read_to_string(path).expect("fake pi argv"));
-        }
-        let lines = argv.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 4, "each provider is checked once: {argv}");
-        for provider in ["ready", "logged-out", "bad-exit", "legacy-bool"] {
-            assert!(
-                lines.iter().any(|line| *line == format!("auth check --provider {provider} --json --no-refresh")),
-                "exact auth argv missing for {provider}: {argv}"
-            );
-        }
-        assert!(!argv.contains("--credentials"));
-        let store_path = root.join("resources.json");
-        let before = ResourceModel {
-            id: "m".into(), agent: "pi".into(), provider: "ready".into(), note: "keep".into(),
-            verification: VERIFICATION_UNVERIFIED.into(), resolved_id: "m".into(), resolved_source: "alias-table".into(),
-            ..Default::default()
-        };
-        save_store(&store_path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![before.clone()])] }).unwrap();
-        let operation = check_pi_provider_login_at_with_binary(&store_path, "ready", Some(&script)).unwrap();
-        assert!(operation.errors.is_empty(), "{:?}", operation.errors);
-        let raw = fs::read_to_string(&store_path).unwrap();
-        assert!(!raw.contains("do-not-read"), "credential and reason text must not enter resources data");
-        assert!(!raw.contains("credentials"));
-        let persisted = load(&store_path).unwrap();
-        let model = find_model(&persisted, "pi", "ready", "m").unwrap();
-        assert_eq!(model.login, ResourceLogin::LoggedIn);
-        assert!(!model.login_checked_at.is_empty());
-        let mut unchanged = model.clone();
-        unchanged.login = before.login.clone();
-        unchanged.login_checked_at = before.login_checked_at.clone();
-        assert_eq!(unchanged, before, "recheck may only change login fields");
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn task17_pi_status_fixtures_match_live_output_shape() {
         let result = |stdout: &str, code| ProcessResult {
             code: Some(code), stdout: stdout.to_string(), stderr: String::new(), timed_out: false,
@@ -3275,142 +2765,6 @@ exit 0
         };
         assert_eq!(pi_login_from_check(Ok(result)), ResourceLogin::LoggedOut);
     }
-
-    #[test]
-    fn task17_pi_detect_list_auth_merge_persists_without_auth_payload() {
-        let root = std::env::temp_dir().join(format!("aicross-pi-detect-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        #[cfg(windows)]
-        let body = r#"@echo off
-if /I "%~1"=="--version" goto version
-if /I "%~1"=="--list-models" goto list
-if /I "%~1"=="auth" goto auth
-exit /b 2
-:version
-echo pi test
-exit /b 0
-:list
-echo ready model-a
-exit /b 0
-:auth
-echo {"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"}}
-exit /b 0
-"#;
-        #[cfg(not(windows))]
-        let body = r#"#!/bin/sh
-if [ "$1" = --version ]; then printf '%s\n' 'pi test'; exit 0; fi
-if [ "$1" = --list-models ]; then printf '%s\n' 'ready model-a'; exit 0; fi
-if [ "$1" = auth ]; then printf '%s\n' '{"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"}}'; exit 0; fi
-exit 2
-"#;
-        let script = write_fake_pi(&root, body);
-        let path = root.join("resources.json");
-        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
-        let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, Some(script)).unwrap();
-        assert!(operation.errors.is_empty(), "{:?}", operation.errors);
-        let persisted = load(&path).unwrap();
-        let model = find_model(&persisted, "pi", "ready", "model-a").expect("detected model");
-        assert_eq!(model.login, ResourceLogin::LoggedIn);
-        assert!(!model.login_checked_at.is_empty());
-        let raw = fs::read_to_string(&path).unwrap();
-        assert!(!raw.contains("do-not-read"));
-        assert!(!raw.contains("credentials"));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task17_recheck_missing_pi_reports_and_persists_unknown() {
-        let root = std::env::temp_dir().join(format!("aicross-pi-missing-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("resources.json");
-        let model = ResourceModel {
-            id: "m".into(), agent: "pi".into(), provider: "p".into(),
-            login: ResourceLogin::LoggedIn, login_checked_at: "old".into(), ..Default::default()
-        };
-        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![model])] }).unwrap();
-        let operation = check_pi_provider_login_at_with_binary(&path, "p", None).unwrap();
-        assert_eq!(operation.errors, ["未找到 pi，登录状态未检查"]);
-        let saved = find_model(&load(&path).unwrap(), "pi", "p", "m").unwrap().clone();
-        assert_eq!(saved.login, ResourceLogin::Unknown);
-        assert!(!saved.login_checked_at.is_empty());
-        assert_ne!(saved.login_checked_at, "old");
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task17_missing_pi_detection_clears_stale_login() {
-        let root = std::env::temp_dir().join(format!("aicross-pi-stale-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("resources.json");
-        let model = ResourceModel {
-            id: "m".into(), agent: "pi".into(), provider: "p".into(),
-            login: ResourceLogin::LoggedIn, ..Default::default()
-        };
-        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![model])] }).unwrap();
-        let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, None).unwrap();
-        let pi = operation.store.agents.iter().find(|agent| agent.id == "pi").unwrap();
-        assert!(!pi.detected);
-        assert_eq!(pi.models[0].login, ResourceLogin::Unknown);
-        assert!(!pi.models[0].login_checked_at.is_empty());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task17_pi_login_probe_runs_before_store_lock() {
-        let root = std::env::temp_dir().join(format!("aicross-pi-lock-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let marker = root.join("auth-started");
-        #[cfg(windows)]
-        let body = r#"@echo off
-if /I "%~1"=="--version" goto version
-if /I "%~1"=="--list-models" goto list
-if /I "%~1"=="auth" goto auth
-exit /b 2
-:version
-echo pi test
-exit /b 0
-:list
-echo p model-a
-exit /b 0
-:auth
-type nul > "%~dp0auth-started"
-ping -n 3 127.0.0.1 > nul
-echo {"status":"ready","provider":"p"}
-exit /b 0
-"#;
-        #[cfg(not(windows))]
-        let body = r#"#!/bin/sh
-if [ "$1" = --version ]; then printf '%s\n' 'pi test'; exit 0; fi
-if [ "$1" = --list-models ]; then printf '%s\n' 'p model-a'; exit 0; fi
-if [ "$1" = auth ]; then : > "$(dirname "$0")/auth-started"; sleep 1; printf '%s\n' '{"status":"ready","provider":"p"}'; exit 0; fi
-exit 2
-"#;
-        let script = write_fake_pi(&root, body);
-        let path = root.join("resources.json");
-        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
-        let thread_path = path.clone();
-        let handle = std::thread::spawn(move || {
-            detect_resource_agent_at_with_pi_binary(&thread_path, "pi", None, Some(script))
-        });
-        for _ in 0..200 {
-            if marker.is_file() { break; }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(marker.is_file(), "fake pi auth check did not start");
-        let mut available = false;
-        for _ in 0..20 {
-            if let Ok(guard) = store_mutex().try_lock() {
-                drop(guard);
-                available = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(available, "pi auth check must not hold the resource store lock");
-        handle.join().unwrap().unwrap();
-        let _ = fs::remove_dir_all(root);
-    }
-
     /// TASK-17：检查分批并行，但同一时刻最多四个 provider 子进程。
     #[test]
     fn task17_pi_login_checks_cap_concurrency_at_four() {
@@ -3480,80 +2834,6 @@ exit 2
         assert!(old.login_checked_at.is_empty());
         let _ = fs::remove_dir_all(root);
     }
-
-    #[test]
-    fn add_model_requires_provider_for_pi() {
-        let pi_store = ResourceStore {
-            version: 1,
-            agents: vec![fixture_agent("pi", Vec::new())],
-        };
-        let error = add_model(
-            pi_store,
-            ResourceModelRequest {
-                agent_id: "pi".to_string(),
-                id: "glm-4.7".to_string(),
-                provider: String::new(),
-                vendor: "Zhipu".to_string(),
-                tier: String::new(),
-                note: String::new(),
-                fallback_order: Some(Vec::new()),
-                clear_quota_exhausted: false,
-            },
-        )
-        .expect_err("pi provider is required");
-        assert!(error.contains("必须填写 provider"));
-    }
-
-    #[test]
-    fn task14_fallback_order_roundtrips_and_quota_expiry_is_cleared() {
-        let root = std::env::temp_dir().join(format!("aicross-quota-store-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("resources.json");
-        let mut primary = fixture_model("main");
-        primary.agent = "pi".into();
-        primary.provider = "p0".into();
-        primary.fallback_order = vec!["pi/p1/backup-a".into(), "pi/p2/backup-b".into()];
-        primary.quota_exhausted_until = Some("2000-01-01T00:00:00+08:00".into());
-        let mut backup_a = fixture_model("backup-a");
-        backup_a.agent = "pi".into();
-        backup_a.provider = "p1".into();
-        let mut backup_b = fixture_model("backup-b");
-        backup_b.agent = "pi".into();
-        backup_b.provider = "p2".into();
-        let store = ResourceStore {
-            version: 1,
-            agents: vec![fixture_agent("pi", vec![primary, backup_a, backup_b])],
-        };
-        save_store(&path, &store).unwrap();
-
-        let ordered = fallback_models_at(&path, "pi", "p0", "main").unwrap();
-        assert_eq!(ordered.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["backup-a", "backup-b"]);
-
-        let visible = get_resources_at(&path).unwrap();
-        let main = find_model(&visible, "pi", "p0", "main").unwrap();
-        assert_eq!(main.fallback_order, ["pi/p1/backup-a", "pi/p2/backup-b"]);
-        assert!(main.quota_exhausted_until.is_none());
-        assert!(fs::read_to_string(&path).unwrap().contains("\"fallback_order\""));
-
-        let preserved = update_model(visible, ResourceModelRequest {
-            agent_id: "pi".into(), id: "main".into(), provider: "p0".into(),
-            vendor: "Zhipu".into(), tier: "中".into(), note: String::new(), fallback_order: None,
-            clear_quota_exhausted: false,
-        }).unwrap();
-        assert_eq!(find_model(&preserved, "pi", "p0", "main").unwrap().fallback_order, ["pi/p1/backup-a", "pi/p2/backup-b"]);
-
-        mark_quota_exhausted_at(&path, "pi", "p0", "main", Some("2099-01-01T00:00:00+08:00")).unwrap();
-        assert_eq!(find_model(&load(&path).unwrap(), "pi", "p0", "main").unwrap().quota_exhausted_until.as_deref(), Some("2099-01-01T00:00:00+08:00"));
-        let cleared = update_resource_model_at(&path, ResourceModelRequest {
-            agent_id: "pi".into(), id: "main".into(), provider: "p0".into(),
-            vendor: "Zhipu".into(), tier: "中".into(), note: String::new(), fallback_order: None,
-            clear_quota_exhausted: true,
-        }).unwrap();
-        assert!(find_model(&cleared, "pi", "p0", "main").unwrap().quota_exhausted_until.is_none());
-        assert!(find_model(&load(&path).unwrap(), "pi", "p0", "main").unwrap().quota_exhausted_until.is_none());
-        let _ = fs::remove_dir_all(root);
-    }
-
     #[test]
     fn safe_summary_redacts_common_cli_secret_shapes() {
         let summary = safe_summary(
@@ -3577,38 +2857,6 @@ exit 2
         };
         assert_eq!(process_error_summary(&timeout), "20 秒超时");
     }
-
-    #[test]
-    fn pi_list_models_is_primary_store_only_supplies_metadata() {
-        // --list-models 为主：store 里没有的模型（清单新上的）必须出现在
-        // 结果里；store 只补 contextWindow/reasoning 元数据。
-        let listed = "provider       model           context\n\
-                      deepseek       deepseek-chat   128000\n\
-                      zai-coding-cn  glm-5.3-flash   128000";
-        let store = r#"{"zai-coding-cn":{"models":[
-            {"id":"glm-5.3-flash","provider":"zai-coding-cn","reasoning":true,"contextWindow":200000}
-        ]}}"#;
-        let models = parse_pi_sources(store, listed, "读:fixture").expect("pi listed primary");
-        assert_eq!(models.len(), 2);
-        let chat = models
-            .iter()
-            .find(|model| model.id == "deepseek-chat")
-            .expect("store 里没有的模型也要收入");
-        assert_eq!(chat.provider, "deepseek");
-        assert_eq!(chat.thinking, "未知");
-        assert!(!chat.meta.contains("上下文"));
-        let flash = models
-            .iter()
-            .find(|model| model.id == "glm-5.3-flash")
-            .expect("glm-5.3-flash");
-        assert_eq!(flash.thinking, "支持");
-        assert!(flash.meta.contains("200000"));
-        // store 损坏不拦截探测（只丢元数据）
-        let degraded = parse_pi_sources("{ 损坏", "p glm-4.7", "读:fixture").expect("坏 store 不拦截");
-        assert_eq!(degraded.len(), 1);
-        assert_eq!(degraded[0].thinking, "未知");
-    }
-
     #[test]
     fn declared_models_are_not_marked_missing() {
         // 申报 source 的消失条目不标「未在事实源中」（修正轮 R1 补测）。
@@ -3648,75 +2896,6 @@ exit 2
                 .contains(MISSING_MARKER)
         );
     }
-
-    #[test]
-    fn corrupted_store_blocks_writes_and_keeps_bytes() {
-        // 损坏的 resources.json：load_or_default 报错不覆盖；add/update 命令
-        // 报错且文件字节不变（钉住「损坏不覆盖」保证）。
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("resources.json");
-        fs::write(&path, "{ 损坏").unwrap();
-        let before = fs::read(&path).unwrap();
-        assert!(load_or_default(&path).is_err());
-        let request = || ResourceModelRequest {
-            agent_id: "codex".to_string(),
-            id: "x".to_string(),
-            provider: String::new(),
-            vendor: String::new(),
-            tier: String::new(),
-            note: String::new(),
-            fallback_order: Some(Vec::new()),
-            clear_quota_exhausted: false,
-        };
-        assert!(add_resource_model_at(&path, request()).is_err());
-        assert!(update_resource_model_at(&path, request()).is_err());
-        assert_eq!(fs::read(&path).unwrap(), before);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn smoke_agent_models_partial_failure_writes_each_result() {
-        // 两条模型一成一败：store 里一已接入一冒烟失败，errors 恰含一条，
-        // 且每条结果都落了盘。
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("resources.json");
-        fs::write(
-            &path,
-            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
-                {"id":"a","agent":"pi","provider":"p","status":"待冒烟"},
-                {"id":"b","agent":"pi","provider":"p","status":"待冒烟"}
-            ]}]}"#,
-        )
-        .unwrap();
-        let operation = smoke_agent_models_at(&path, "pi", |model| {
-            if model.id == "a" {
-                Ok(SmokeSuccess {
-                    identity: "a".to_string(),
-                    meta_marker: None,
-                })
-            } else {
-                Err("403: denied".to_string())
-            }
-        })
-        .expect("smoke batch");
-        assert_eq!(operation.errors.len(), 1);
-        assert!(operation.errors[0].contains("pi/b"));
-        let ok = find_model(&operation.store, "pi", "p", "a").expect("a");
-        let failed = find_model(&operation.store, "pi", "p", "b").expect("b");
-        assert_eq!(ok.status, STATUS_CONNECTED);
-        assert_eq!(ok.smoke_model, "a");
-        assert_eq!(failed.status, STATUS_FAILED);
-        assert!(failed.smoke_failure.contains("403"));
-        let on_disk = load(&path).expect("disk store");
-        assert_eq!(
-            find_model(&on_disk, "pi", "p", "b").expect("b on disk").status,
-            STATUS_FAILED
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
     // ── TASK-09b：别名 → 真实模型 ID ──────────────────────────────────────
 
     /// 四个 claude 别名按已知表落 `resolved_id`；非别名模型 `resolved_id == id`；
@@ -4008,49 +3187,6 @@ exit 2
 
     /// 修正轮 R1（GLM「最该补的测试 1」）：手动录入这条路径原来零测试，
     /// 把 `resolved_id` / `resolved_source` 那两行删掉现有测试也全绿。
-    #[test]
-    fn task09b_add_model_resolves_claude_alias() {
-        let store = ResourceStore {
-            version: 1,
-            agents: vec![fixture_agent("claude", Vec::new())],
-        };
-        let store = add_model(
-            store,
-            ResourceModelRequest {
-                agent_id: "claude".to_string(),
-                id: "sonnet".to_string(),
-                provider: String::new(),
-                vendor: "Anthropic".to_string(),
-                tier: String::new(),
-                note: String::new(),
-                fallback_order: Some(Vec::new()),
-                clear_quota_exhausted: false,
-            },
-        )
-        .expect("manual claude alias");
-        let added = find_model(&store, "claude", "", "sonnet").expect("sonnet");
-        assert_eq!(added.resolved_id, "claude-sonnet-5");
-        assert_eq!(added.resolved_source, RESOLVED_SOURCE_ALIAS_TABLE);
-
-        // 非别名的手动条目：resolved_id == id
-        let store = add_model(
-            store,
-            ResourceModelRequest {
-                agent_id: "claude".to_string(),
-                id: "claude-opus-5".to_string(),
-                provider: String::new(),
-                vendor: "Anthropic".to_string(),
-                tier: String::new(),
-                note: String::new(),
-                fallback_order: Some(Vec::new()),
-                clear_quota_exhausted: false,
-            },
-        )
-        .expect("manual full id");
-        let full = find_model(&store, "claude", "", "claude-opus-5").expect("opus");
-        assert_eq!(full.resolved_id, "claude-opus-5");
-    }
-
     /// 修正轮 R1（DS 10）：真身前缀剥离的边界。原来只测了「前缀与 provider
     /// 完全同形」一条，大小写不同 / 前缀不符 / provider 为空都没钉住。
     #[test]
@@ -4316,10 +3452,6 @@ exit 2
             ]
         );
         assert_eq!(PI_AGENT, ("pi", "pi agent"));
-        for (id, name) in NATIVE_AGENTS.into_iter().chain(std::iter::once(PI_AGENT)) {
-            let tool_id = if id == "kimi" { "kimicode" } else { id };
-            assert_eq!(crate::tools::find(tool_id).unwrap().display_name, name);
-        }
 
         let mut store = ResourceStore::default();
         ensure_agents(&mut store);

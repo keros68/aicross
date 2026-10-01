@@ -6,8 +6,8 @@
 .run-viewer {
   position: fixed;
   /* R1-6：让出 40px 自绘标题栏（.titlebar 高度，见 global.css），缩放边
-     条由 html.run-viewer-open 抬到本层之上；位于对话图结果屏
-     （.dispatch-overlay，12000）之上。 */
+     条由 html.run-viewer-open 抬到本层之上（TASK-40 起窗口只有首页与查看
+     页两层）。 */
   top: 40px;
   left: 0;
   right: 0;

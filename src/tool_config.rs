@@ -31,11 +31,8 @@
 //!   v1; document the limitation.
 //! - `extra_args`: appended AFTER the built-in args (so `--mcp-config`
 //!   etc still come first). String list, NOT split.
-//! - `default_cwd`: pre-fills the cwd selector when starting a new tab
-//!   of this tool. Empty falls through to the launchpad's last-used cwd.
-//! - `history_path`: directory containing this tool's session history
-//!   files. Empty falls through to the built-in scan path. Used by the
-//!   history board's per-tool collectors.
+//! - `default_cwd` 与 `history_path` 是旧界面的遗留字段：读取时原样保留
+//!   （格式兼容），当前代码不使用。
 //!
 //! All four fields are independent — set just `extra_args` to add a flag
 //! without overriding the binary, set just `command` for a wrapper like
@@ -57,15 +54,6 @@ pub struct ToolConfigEntry {
     pub history_path: String,
 }
 
-impl ToolConfigEntry {
-    pub fn is_empty(&self) -> bool {
-        self.command.is_empty()
-            && self.extra_args.is_empty()
-            && self.default_cwd.is_empty()
-            && self.history_path.is_empty()
-    }
-}
-
 pub type ToolConfig = HashMap<String, ToolConfigEntry>;
 
 fn config_path() -> Option<PathBuf> {
@@ -82,39 +70,9 @@ pub fn load() -> ToolConfig {
     serde_json::from_str::<ToolConfig>(&s).unwrap_or_default()
 }
 
-pub fn save(cfg: &ToolConfig) -> std::io::Result<()> {
-    let Some(p) = config_path() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "no home dir",
-        ));
-    };
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let body = serde_json::to_string_pretty(cfg).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-    })?;
-    // Atomic write so an interrupted save can't leave the file
-    // half-written and unparseable on the next launch.
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, &p)?;
-    Ok(())
-}
-
+/// 取单个工具的配置；不存在时回默认。资源探测解析手动 agent 的二进制用它。
 pub fn get(tool: &str) -> ToolConfigEntry {
     load().remove(tool).unwrap_or_default()
-}
-
-pub fn set(tool: &str, entry: ToolConfigEntry) -> std::io::Result<()> {
-    let mut cfg = load();
-    if entry.is_empty() {
-        cfg.remove(tool);
-    } else {
-        cfg.insert(tool.to_string(), entry);
-    }
-    save(&cfg)
 }
 
 /// Whitespace-split the user's `command` field into (binary, prefix_args).
@@ -127,37 +85,6 @@ pub fn parse_command(cmd: &str) -> (Option<String>, Vec<String>) {
     };
     let rest: Vec<String> = parts.map(|s| s.to_string()).collect();
     (Some(bin.to_string()), rest)
-}
-
-/// Expand a leading `~/` or bare `~` to the user's home directory.
-/// Used by both `default_cwd` and `history_path` overrides since users
-/// reasonably write `~/.hermes/sessions` and expect us to handle it.
-/// Windows paths (`\\wsl.localhost\...` / `C:\...`) and absolute Unix
-/// paths pass through unchanged.
-pub fn expand_path(input: &str) -> std::path::PathBuf {
-    if input == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
-        return std::path::PathBuf::from("~");
-    }
-    if let Some(stripped) = input.strip_prefix("~/").or_else(|| input.strip_prefix("~\\")) {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(stripped);
-        }
-    }
-    std::path::PathBuf::from(input)
-}
-
-/// Resolve a tool's effective history-scan directory: user override
-/// (with ~ expansion) if set, else `default` (caller-supplied).
-pub fn history_path_for(tool: &str, default: std::path::PathBuf) -> std::path::PathBuf {
-    let cfg = get(tool).history_path;
-    if cfg.is_empty() {
-        default
-    } else {
-        expand_path(&cfg)
-    }
 }
 
 #[cfg(test)]
@@ -181,37 +108,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn expand_path_handles_tilde_and_passthrough() {
-        let home = dirs::home_dir().expect("test needs a home dir");
-        // Tilde forms expand
-        assert_eq!(expand_path("~"), home);
-        assert_eq!(expand_path("~/.hermes/sessions"), home.join(".hermes").join("sessions"));
-        // Backslash form on Windows-style paths
-        assert_eq!(expand_path("~\\.hermes\\sessions"), home.join(".hermes\\sessions"));
-        // Non-tilde paths pass through verbatim — UNC, absolute Unix, drive letters
-        assert_eq!(
-            expand_path("\\\\nas01\\share\\sessions"),
-            std::path::PathBuf::from("\\\\nas01\\share\\sessions"),
-        );
-        assert_eq!(expand_path("/abs/unix/path"), std::path::PathBuf::from("/abs/unix/path"));
-        assert_eq!(expand_path("C:\\Users\\someone"), std::path::PathBuf::from("C:\\Users\\someone"));
-        // Tilde-in-middle does NOT expand (only leading)
-        assert_eq!(expand_path("/foo/~/bar"), std::path::PathBuf::from("/foo/~/bar"));
-    }
-
-    #[test]
-    fn empty_entry_check() {
-        assert!(ToolConfigEntry::default().is_empty());
-        assert!(!ToolConfigEntry {
-            command: "x".into(),
-            ..Default::default()
-        }
-        .is_empty());
-        assert!(!ToolConfigEntry {
-            extra_args: vec!["x".into()],
-            ..Default::default()
-        }
-        .is_empty());
-    }
 }

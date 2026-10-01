@@ -7,6 +7,101 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+// ── Windows：子进程绑进 kill-on-close 的 Job Object ────────────────────────
+// 每个派发出的 CLI 子进程（cmd → claude.exe → node.exe）都挂到进程级 Job
+// Object 上（JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE）。引擎进程退出（正常退出、
+// 崩溃、任务管理器强杀）时内核关闭 job 句柄，一并终止所有后代进程。没有这
+// 一层，孤儿 claude.exe 会在引擎退出后继续占着 ~/.claude/ 的会话锁。
+#[cfg(target_os = "windows")]
+mod windows_job {
+    use std::sync::OnceLock;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+
+    // Win32 HANDLE is a raw pointer wrapper; not Send/Sync by default. The
+    // Job Object handle is a kernel handle, safe to use from any thread —
+    // the OS owns serialization. Wrap it so OnceLock can hold it.
+    struct JobHandle(HANDLE);
+    unsafe impl Send for JobHandle {}
+    unsafe impl Sync for JobHandle {}
+
+    static JOB: OnceLock<Option<JobHandle>> = OnceLock::new();
+
+    fn get_or_create_job() -> Option<HANDLE> {
+        JOB.get_or_init(|| unsafe {
+            let job = match CreateJobObjectW(None, None) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("[process] CreateJobObjectW failed: {:?}", e);
+                    return None;
+                }
+            };
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let info_ptr = &info as *const _ as *const _;
+            let info_size =
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+            if let Err(e) = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                info_ptr,
+                info_size,
+            ) {
+                eprintln!("[process] SetInformationJobObject failed: {:?}", e);
+                let _ = CloseHandle(job);
+                return None;
+            }
+            Some(JobHandle(job))
+        })
+        .as_ref()
+        .map(|h| h.0)
+    }
+
+    pub fn assign_pid(pid: u32) {
+        let Some(job) = get_or_create_job() else { return };
+        unsafe {
+            let proc = match OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE,
+                false,
+                pid,
+            ) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!(
+                        "[process] OpenProcess(pid={}) failed: {:?}",
+                        pid, e
+                    );
+                    return;
+                }
+            };
+            if let Err(e) = AssignProcessToJobObject(job, proc) {
+                // Nested-job conflicts can fail here on older Windows; not
+                // fatal — the kill-on-close job still covers normal shutdowns.
+                eprintln!(
+                    "[process] AssignProcessToJobObject(pid={}) failed: {:?}",
+                    pid, e
+                );
+            }
+            let _ = CloseHandle(proc);
+        }
+    }
+}
+
+/// 把已启动的子进程绑进 kill-on-close Job Object（仅 Windows 生效）。
+pub(crate) fn assign_process_to_job(pid: u32) {
+    #[cfg(target_os = "windows")]
+    windows_job::assign_pid(pid);
+    #[cfg(not(target_os = "windows"))]
+    let _ = pid;
+}
+
 pub const MAX_PROCESS_OUTPUT: u64 = 4 * 1024 * 1024;
 pub const MAX_INTERACTIVE_OUTPUT: usize = 8 * 1024 * 1024;
 
@@ -190,7 +285,7 @@ pub fn spawn_interactive(
     let mut child = command
         .spawn()
         .map_err(|error| format!("启动 {} 失败：{error}", program.display()))?;
-    crate::terminal::assign_process_to_job(child.id());
+    crate::process::assign_process_to_job(child.id());
     let stdin = child
         .stdin
         .take()

@@ -1,37 +1,22 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="aicross — 多厂商 agent CLI 的桌面派发控制台" />
+    <meta name="description" content="aicross — 多厂商 agent 的派发引擎与结果查看器" />
     <title>aicross</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <!-- Preload bundled Inter weights so the browser warms its font cache during
-         startup. Without this, Inter loads lazily the first time a glyph in its
-         range is needed for paint — most visibly when the language menu opens
-         (Cyrillic "Русский", Vietnamese "Tiếng Việt", and the glyph badges hit
-         characters not yet seen elsewhere). The lazy load + font-display: swap
-         caused a visible font jitter as rows reflowed from system fallback to
-         Inter. Each weight is ~22KB local, so preloading all four costs ~90KB
-         of startup bandwidth (zero on disk-loaded Tauri WebView2) in exchange
-         for jitter-free first paint anywhere Inter is used. -->
-    <link rel="preload" href="/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="preload" href="/fonts/inter-500.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="preload" href="/fonts/inter-600.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="preload" href="/fonts/inter-700.woff2" as="font" type="font/woff2" crossorigin>
-    <!-- Apply theme + shape BEFORE React renders to prevent flash of unstyled variables -->
+    <!-- Apply theme BEFORE React renders to prevent flash of unstyled variables.
+         旧界面还有更多主题，现只保留 dark / light 两套（设置页已删）。 -->
     <script>
       (function() {
         var theme = 'dark';
-        var shape = 'soft';
         try {
           var savedTheme = localStorage.getItem('cc-theme');
           theme = savedTheme === 'light' ? 'light' : 'dark';
           if (savedTheme && savedTheme !== theme) localStorage.setItem('cc-theme', theme);
-          if (localStorage.getItem('cc-shape') !== shape) localStorage.setItem('cc-shape', shape);
         } catch(e) {}
         document.documentElement.setAttribute('data-theme', theme);
-        document.documentElement.setAttribute('data-shape', shape);
       })();
     </script>
   </head>

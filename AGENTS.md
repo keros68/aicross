@@ -8,7 +8,7 @@ aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常
 
 ## 技术栈
 
-- Tauri 2（Rust 后端）+ React 19 + TypeScript + Vite 前端；终端用 `@xterm/xterm`，pty 用 `portable-pty`。
+- Tauri 2（Rust 后端）+ React 19 + TypeScript + Vite 前端。窗口只有自绘标题栏、首页「最近的派发」与查看页；终端、PTY、xterm 已随 TASK-40 下线。
 - 目录（fork 之后）：`src/`（Rust，`Cargo.toml` 在根目录）、`src-ui/`（前端）、`tasks/`（任务书与完成报告）、`docs/`、`port/`（第 0/1 期的旧代码，不参与编译，第 3 期并回）。
 - Windows 优先（开发机是 Windows 11），macOS/Linux 不能破坏但不强求验证。
 - 现有 Python 脚本（`D:\work\skill\xiaoyu-skill\skills\ai-cross\references\cc_switch.py` / `verify_model.py` / `usage_probe.py`）当子进程调用，不重写。
@@ -17,7 +17,7 @@ aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常
 
 **2026-08-31 推翻原规则：本仓库现在是 Coffee CLI 的 fork。** 原来写的「不得复制它的任何文件或函数，每个文件都自己写」已作废，别再照它办事。
 
-上游是 `D:\work\coffeecli`（github.com/edison7009/Coffee-CLI，AGPL-3.0）。桌面外壳、终端、工作区、会话与修改记录直接来自上游代码。
+上游是 `D:\work\coffeecli`（github.com/edison7009/Coffee-CLI，AGPL-3.0）。桌面外壳（自绘标题栏、无边框窗口、单实例转发）来自上游代码；上游的终端、工作区、会话与修改记录已随 TASK-40 下线。
 
 按上游 `TRADEMARKS.md` 的方案 B（完全重新品牌化）执行，四条义务：
 

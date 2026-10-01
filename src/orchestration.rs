@@ -17,7 +17,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::paths::aicross_root;
 use crate::resources::{detected as detected_resources, ResourceModel};
 
 // ── 对话图数据模型（A 节契约） ─────────────────────────────────────────────
@@ -239,14 +238,6 @@ pub struct PresetFile {
     pub presets: Vec<Preset>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct GraphMeta {
-    pub id: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub updated_at: String,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DispatchableModels {
@@ -288,79 +279,6 @@ impl Default for RoleSettings {
             planning: RoleProfile::default(),
             execution: RoleProfile::default(),
             acceptance: RoleProfile::default(),
-        }
-    }
-}
-
-// ── 控制台默认（TASK-10；`~/.aicross/commander.json`） ──────────────────────
-
-/// 上一次启动控制台用的 agent / 模型 / 目录。字段名是 snake_case 跨期契约，
-/// 前端 `commander/types.ts` 与之逐字段对应。模型留空 = 启动时不加模型参数。
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct CommanderSettings {
-    #[serde(default = "commander_version")]
-    pub version: u32,
-    #[serde(default)]
-    pub agent: String,
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default)]
-    pub cwd: String,
-    #[serde(default)]
-    pub updated_at: String,
-}
-
-fn commander_version() -> u32 {
-    1
-}
-
-impl Default for CommanderSettings {
-    fn default() -> Self {
-        Self {
-            version: 1,
-            agent: String::new(),
-            provider: String::new(),
-            model: String::new(),
-            cwd: String::new(),
-            updated_at: String::new(),
-        }
-    }
-}
-
-// ── 前提台账（TASK-05B 前提抽查；`~/.aicross/premises.json`，不动图契约） ──
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct Premise {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub text: String,
-    #[serde(default)]
-    pub recorded_at: String,
-    #[serde(default)]
-    pub last_checked_at: Option<String>,
-    #[serde(default)]
-    pub last_result: Option<String>,
-    #[serde(default)]
-    pub attachments: Vec<String>,
-    #[serde(default)]
-    pub last_graph_id: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct PremiseFile {
-    pub version: u32,
-    #[serde(default)]
-    pub premises: Vec<Premise>,
-}
-
-impl Default for PremiseFile {
-    fn default() -> Self {
-        Self {
-            version: 1,
-            premises: Vec::new(),
         }
     }
 }
@@ -524,83 +442,6 @@ fn roles_path(root: &Path) -> PathBuf {
     root.join("roles.json")
 }
 
-fn premises_path(root: &Path) -> PathBuf {
-    root.join("premises.json")
-}
-
-/// 缺失、解析失败或 version != 1 都返回空台账，绝不改文件本身
-/// （损坏文件由 save 侧拒写保护，见 save_premises_in）。
-fn premises_from(root: &Path) -> PremiseFile {
-    fs::read_to_string(premises_path(root))
-        .ok()
-        .and_then(|text| serde_json::from_str::<PremiseFile>(&text).ok())
-        .filter(|file| file.version == 1)
-        .unwrap_or_default()
-}
-
-fn save_premises_in(root: &Path, file: &PremiseFile) -> Result<(), String> {
-    if file.version != 1 {
-        return Err(format!("前提台账 version 只支持 1，收到 {}", file.version));
-    }
-    let path = premises_path(root);
-    // 损坏文件不覆盖：存在但解析失败 → 拒写，让用户先手动处理，避免静默丢数据。
-    if let Ok(contents) = fs::read_to_string(&path) {
-        if serde_json::from_str::<PremiseFile>(&contents).is_err() {
-            return Err(format!(
-                "{} 解析失败，为避免覆盖请先手动处理该文件",
-                path.display()
-            ));
-        }
-    }
-    write_json_atomic(&path, file)
-}
-
-fn commander_path(root: &Path) -> PathBuf {
-    root.join("commander.json")
-}
-
-/// 缺失、解析失败或 version != 1 都返回空默认（agent 为空），前端据此判「还没有
-/// 默认」——首屏不显示一键行。与 premises 一样，读侧绝不改文件本身。
-fn commander_from(root: &Path) -> CommanderSettings {
-    fs::read_to_string(commander_path(root))
-        .ok()
-        .and_then(|text| serde_json::from_str::<CommanderSettings>(&text).ok())
-        .filter(|settings| settings.version == 1)
-        .unwrap_or_default()
-}
-
-fn save_commander_in(root: &Path, settings: &CommanderSettings) -> Result<(), String> {
-    if settings.version != 1 {
-        return Err(format!(
-            "控制台默认 version 只支持 1，收到 {}",
-            settings.version
-        ));
-    }
-    for (field, value) in [("provider", settings.provider.as_str()), ("model", settings.model.as_str())] {
-        if !valid_commander_identifier(value) {
-            return Err(format!("控制台 {field} id 含非法字符"));
-        }
-    }
-    let path = commander_path(root);
-    if let Ok(contents) = fs::read_to_string(&path) {
-        if serde_json::from_str::<CommanderSettings>(&contents).is_err() {
-            return Err(format!(
-                "{} 解析失败，为避免覆盖请先手动处理该文件",
-                path.display()
-            ));
-        }
-    }
-    write_json_atomic(&path, settings)
-}
-
-fn valid_commander_identifier(value: &str) -> bool {
-    value.is_empty()
-        || (!value.starts_with('-')
-            && value.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'/' | b'@' | b'+' | b'-')
-            }))
-}
-
 pub(crate) fn roles_from(root: &Path) -> RoleSettings {
     fs::read_to_string(roles_path(root))
         .ok()
@@ -611,9 +452,8 @@ pub(crate) fn roles_from(root: &Path) -> RoleSettings {
 
 /// fix-39-r1 R1-2：命令行的严格读取。`roles_from` 对损坏或版本不认的文件
 /// 静默回默认值，`config set-role` 改一个角色后整份写回会把其余角色丢掉；
-/// 这里文件存在但解析失败或 version != 1 时返回 Err 让调用方拒写（参照
-/// `save_premises_in` / `save_commander_in` 遇损坏拒写的做法）。文件缺失与
-/// `roles_from` 一致回默认值。
+/// 这里文件存在但解析失败或 version != 1 时返回 Err 让调用方拒写（遇损坏
+/// 拒写，避免把其余角色静默丢掉）。文件缺失与 `roles_from` 一致回默认值。
 pub(crate) fn roles_from_strict(root: &Path) -> Result<RoleSettings, String> {
     let Ok(text) = fs::read_to_string(roles_path(root)) else {
         return Ok(RoleSettings::default());
@@ -633,48 +473,6 @@ pub(crate) fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), 
         ));
     }
     write_json_atomic(&roles_path(root), settings)
-}
-
-pub(crate) fn fill_role_defaults(
-    presets: &mut [Preset],
-    roles: &RoleSettings,
-) {
-    for preset in presets {
-        // 擂台三路、盲审 / 评审的多路盲验证都要由用户逐家选不同厂商，不填默认。
-        if matches!(preset.id.as_str(), "builtin-arena" | "builtin-blind" | "builtin-jury") {
-            continue;
-        }
-        for target in preset
-            .stages
-            .iter_mut()
-            .flat_map(|stage| stage.nodes.iter_mut())
-        {
-            if target.role == "拆分" {
-                target.write = "只读".into();
-                target.visibility = "共享".into();
-            }
-            if !target.model.is_empty() {
-                continue;
-            }
-            let profile = match target.role.as_str() {
-                "出方案" | "拆分" => roles.planning.clone(),
-                "执行" => roles.execution.clone(),
-                // 验证（TASK-12 经济模式的盲审那一路）沿用验收的默认目标。
-                "验收" | "验证" => roles.acceptance.clone(),
-                _ => continue,
-            };
-            if profile.model.is_empty() {
-                continue;
-            }
-            target.agent.clone_from(&profile.agent);
-            target.provider = (!profile.provider.is_empty()).then(|| profile.provider.clone());
-            target.model.clone_from(&profile.model);
-            target.tier = (!profile.tier.is_empty()).then(|| profile.tier.clone());
-            if !profile.thinking.is_empty() {
-                target.thinking.clone_from(&profile.thinking);
-            }
-        }
-    }
 }
 
 /// 原子写：先写同目录临时文件（flush + sync）再 rename。Windows 上
@@ -760,17 +558,9 @@ pub(crate) fn dispatchable_from(root: &Path) -> DispatchableModels {
     }
 }
 
-/// 内置三个预设 + presets.json 里的用户预设；文件不存在、解析失败或
+/// 内置预设 + presets.json 里的用户预设；文件不存在、解析失败或
 /// version != 1 时拒绝该文件、只返回内置（与 graphs 的版本校验对齐）。
-pub(crate) fn presets_from(root: &Path) -> PresetFile {
-    let mut file = raw_presets_from(root);
-    fill_role_defaults(&mut file.presets, &roles_from(root));
-    file
-}
-
-/// 与 `presets_from` 同一份清单但不填角色默认。引擎的建图盖章走
-/// TS `runConsoleDispatch` 口径：预设原样取出，角色默认由引擎自己在
-/// `apply_role_defaults` 里套，避免填两遍。
+/// 角色默认不在这里填：引擎建图盖章时自己套，避免填两遍。
 pub(crate) fn raw_presets_from(root: &Path) -> PresetFile {
     let mut presets = builtin_presets();
     let path = presets_path(root);
@@ -785,17 +575,6 @@ pub(crate) fn raw_presets_from(root: &Path) -> PresetFile {
         version: 1,
         presets,
     }
-}
-
-fn save_user_presets_in(root: &Path, presets: Vec<Preset>) -> Result<(), String> {
-    // 防御性剔除 builtin=true 条目：内置不可改不可删，由 list_presets
-    // 永远合并内置保证。
-    let presets: Vec<Preset> = presets.into_iter().filter(|p| !p.builtin).collect();
-    let file = PresetFile {
-        version: 1,
-        presets,
-    };
-    write_json_atomic(&presets_path(root), &file)
 }
 
 pub(crate) fn save_graph_in(root: &Path, graph: &Graph) -> Result<(), String> {
@@ -823,119 +602,6 @@ pub(crate) fn load_graph_in(root: &Path, id: &str) -> Result<Option<Graph>, Stri
         ));
     }
     Ok(Some(graph))
-}
-
-fn list_graphs_in(root: &Path) -> Vec<GraphMeta> {
-    let dir = graphs_dir(root);
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(_) => return Vec::new(),
-    };
-    let mut metas: Vec<GraphMeta> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        // 解析失败的跳过，不让一张坏图拖垮整个列表。
-        let Ok(contents) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(graph) = serde_json::from_str::<Graph>(&contents) else {
-            continue;
-        };
-        metas.push(GraphMeta {
-            id: graph.id,
-            title: graph.title,
-            updated_at: graph.updated_at,
-        });
-    }
-    // 最近更新的排前面（updated_at 是 ISO 字符串，字典序即时间序）。
-    metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    metas
-}
-
-// ── Tauri 命令 ────────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub fn list_dispatchable_models() -> DispatchableModels {
-    match aicross_root() {
-        Ok(root) => dispatchable_from(&root),
-        Err(e) => DispatchableModels {
-            models: Vec::new(),
-            error: Some(format!("无法确定用户目录：{e}")),
-        },
-    }
-}
-
-#[tauri::command]
-pub fn list_presets() -> PresetFile {
-    match aicross_root() {
-        Ok(root) => presets_from(&root),
-        Err(_) => PresetFile {
-            version: 1,
-            presets: builtin_presets(),
-        },
-    }
-}
-
-#[tauri::command]
-pub fn save_user_presets(presets: Vec<Preset>) -> Result<(), String> {
-    save_user_presets_in(&aicross_root()?, presets)
-}
-
-#[tauri::command]
-pub fn save_graph(graph: Graph) -> Result<(), String> {
-    save_graph_in(&aicross_root()?, &graph)
-}
-
-#[tauri::command]
-pub fn load_graph(id: String) -> Result<Option<Graph>, String> {
-    load_graph_in(&aicross_root()?, &id)
-}
-
-#[tauri::command]
-pub fn list_graphs() -> Vec<GraphMeta> {
-    match aicross_root() {
-        Ok(root) => list_graphs_in(&root),
-        Err(_) => Vec::new(),
-    }
-}
-
-#[tauri::command]
-pub fn load_roles() -> RoleSettings {
-    aicross_root()
-        .map(|root| roles_from(&root))
-        .unwrap_or_default()
-}
-
-#[tauri::command]
-pub fn save_roles(settings: RoleSettings) -> Result<(), String> {
-    save_roles_in(&aicross_root()?, &settings)
-}
-
-#[tauri::command]
-pub fn load_commander() -> CommanderSettings {
-    aicross_root()
-        .map(|root| commander_from(&root))
-        .unwrap_or_default()
-}
-
-#[tauri::command]
-pub fn save_commander(settings: CommanderSettings) -> Result<(), String> {
-    save_commander_in(&aicross_root()?, &settings)
-}
-
-#[tauri::command]
-pub fn load_premises() -> PremiseFile {
-    aicross_root()
-        .map(|root| premises_from(&root))
-        .unwrap_or_default()
-}
-
-#[tauri::command]
-pub fn save_premises(file: PremiseFile) -> Result<(), String> {
-    save_premises_in(&aicross_root()?, &file)
 }
 
 // ── 单元测试 ──────────────────────────────────────────────────────────────
@@ -1054,23 +720,9 @@ mod tests {
     }
 
     #[test]
-    fn presets_roundtrip() {
-        let root = temp_root("presets-rt");
-        save_user_presets_in(&root, vec![user_preset("u1"), user_preset("u2")]).unwrap();
-        let file = presets_from(&root);
-        assert_eq!(file.version, 1);
-        // 6 个内置 + 2 个用户
-        assert_eq!(file.presets.len(), 8);
-        let user: Vec<&Preset> = file.presets.iter().filter(|p| !p.builtin).collect();
-        assert_eq!(user.len(), 2);
-        assert_eq!(*user[0], user_preset("u1"));
-        assert_eq!(*user[1], user_preset("u2"));
-    }
-
-    #[test]
     fn presets_missing_file_returns_builtins() {
         let root = temp_root("presets-missing");
-        let file = presets_from(&root);
+        let file = raw_presets_from(&root);
         assert_eq!(file.presets.len(), 6);
         assert!(file.presets.iter().all(|p| p.builtin));
         assert_eq!(file.presets[0].id, "builtin-shared");
@@ -1109,29 +761,6 @@ mod tests {
     }
 
     #[test]
-    fn task08a_r1_builtin_swarm_is_single_filled_readonly_split_node() {
-        let mut presets = builtin_presets();
-        let roles = RoleSettings {
-            version: 1,
-            planning: RoleProfile {
-                agent: "codex".into(),
-                model: "planner".into(),
-                ..RoleProfile::default()
-            },
-            ..RoleSettings::default()
-        };
-        fill_role_defaults(&mut presets, &roles);
-        let swarm = presets.iter().find(|preset| preset.id == "builtin-swarm").unwrap();
-        assert_eq!(swarm.name, "蜂群模式");
-        assert_eq!(swarm.stages.len(), 1);
-        assert_eq!(swarm.stages[0].nodes.len(), 1);
-        let target = &swarm.stages[0].nodes[0];
-        assert_eq!((target.role.as_str(), target.write.as_str(), target.visibility.as_str()), ("拆分", "只读", "共享"));
-        assert_eq!((target.agent.as_str(), target.model.as_str()), ("codex", "planner"));
-        assert_eq!(target.preset_text, include_str!("../fixtures/prompts/split.txt").trim());
-    }
-
-    #[test]
     fn target_fallback_json_roundtrip() {
         // Rust/TS 往返：前端 graph/types.ts 的 fallback 形状（snake_case 契约内
         // 唯一追加字段）必须原样过 Rust serde。
@@ -1161,86 +790,10 @@ mod tests {
     }
 
     #[test]
-    fn premises_roundtrip() {
-        let root = temp_root("premises-rt");
-        assert_eq!(premises_from(&root), PremiseFile::default());
-        let file = PremiseFile {
-            version: 1,
-            premises: vec![Premise {
-                id: "p1".into(),
-                text: "上游 API 保持 v2 兼容".into(),
-                recorded_at: "2026-09-14T10:00:00Z".into(),
-                last_checked_at: None,
-                last_result: None,
-                attachments: Vec::new(),
-                last_graph_id: None,
-            }],
-        };
-        save_premises_in(&root, &file).unwrap();
-        assert_eq!(premises_from(&root), file);
-        let mut checked = file.clone();
-        checked.premises[0].last_checked_at = Some("2026-09-14T12:00:00Z".into());
-        checked.premises[0].last_result = Some("仍成立".into());
-        save_premises_in(&root, &checked).unwrap();
-        assert_eq!(premises_from(&root), checked);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn premises_attachments_and_last_graph_id_roundtrip() {
-        let root = temp_root("premises-attachments");
-        let file = PremiseFile {
-            version: 1,
-            premises: vec![Premise {
-                id: "p1".into(),
-                text: "上游 API 保持 v2 兼容".into(),
-                recorded_at: "2026-09-14T10:00:00Z".into(),
-                last_checked_at: Some("2026-09-14T12:00:00Z".into()),
-                last_result: Some("仍成立".into()),
-                attachments: vec!["docs/spec.pdf".into(), "notes.md".into()],
-                last_graph_id: Some("graph-123".into()),
-            }],
-        };
-        save_premises_in(&root, &file).unwrap();
-        assert_eq!(premises_from(&root), file);
-        let raw = fs::read_to_string(root.join("premises.json")).unwrap();
-        assert!(raw.contains("\"attachments\""));
-        assert!(raw.contains("\"last_graph_id\""));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn premises_legacy_format_without_new_fields_parses_empty() {
-        let json = r#"{"version":1,"premises":[{"id":"p1","text":"旧台账","recorded_at":"2026-09-01T00:00:00Z","last_checked_at":null,"last_result":null}]}"#;
-        let file: PremiseFile = serde_json::from_str(json).unwrap();
-        assert_eq!(file.premises.len(), 1);
-        assert!(file.premises[0].attachments.is_empty());
-        assert_eq!(file.premises[0].last_graph_id, None);
-        // 旧格式台账文件照常经读写管道解析
-        let root = temp_root("premises-legacy");
-        fs::write(root.join("premises.json"), json).unwrap();
-        assert_eq!(premises_from(&root), file);
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn premises_broken_file_loads_empty_and_save_refuses_to_overwrite() {
-        let root = temp_root("premises-broken");
-        fs::write(root.join("premises.json"), "{ not json").unwrap();
-        // 读取侧：损坏 → 空台账，不动文件
-        assert_eq!(premises_from(&root), PremiseFile::default());
-        // 写入侧：损坏 → 拒写，文件原文还在
-        let err = save_premises_in(&root, &PremiseFile::default()).unwrap_err();
-        assert!(err.contains("解析失败"));
-        assert_eq!(fs::read_to_string(root.join("premises.json")).unwrap(), "{ not json");
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn presets_broken_file_returns_builtins() {
         let root = temp_root("presets-broken");
         fs::write(root.join("presets.json"), "{ not json").unwrap();
-        let file = presets_from(&root);
+        let file = raw_presets_from(&root);
         assert_eq!(file.presets.len(), 6);
     }
 
@@ -1257,7 +810,7 @@ mod tests {
             serde_json::to_string_pretty(&file).unwrap(),
         )
         .unwrap();
-        let merged = presets_from(&root);
+        let merged = raw_presets_from(&root);
         assert_eq!(merged.presets.len(), 6);
         assert!(merged.presets.iter().all(|p| p.builtin));
         // version 合法的同内容文件正常合并
@@ -1270,12 +823,12 @@ mod tests {
             serde_json::to_string_pretty(&file).unwrap(),
         )
         .unwrap();
-        let merged = presets_from(&root);
+        let merged = raw_presets_from(&root);
         assert_eq!(merged.presets.len(), 7);
     }
 
     #[test]
-    fn roles_roundtrip_and_fill_economy_nodes() {
+    fn roles_roundtrip() {
         let root = temp_root("roles");
         let roles = RoleSettings {
             version: 1,
@@ -1303,15 +856,6 @@ mod tests {
         };
         save_roles_in(&root, &roles).unwrap();
         assert_eq!(roles_from(&root), roles);
-        let presets = presets_from(&root);
-        let economy = presets
-            .presets
-            .iter()
-            .find(|preset| preset.id == "builtin-economy")
-            .unwrap();
-        assert_eq!(economy.stages[0].nodes[0].model, "glm-5.3-flash");
-        assert_eq!(economy.stages[1].nodes[0].write, "单写者");
-        assert_eq!(economy.stages[2].nodes[0].model, "kimi-code/k3-256k");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1340,156 +884,6 @@ mod tests {
     }
 
     #[test]
-    fn task10_commander_roundtrip_and_missing_field_defaults() {
-        let root = temp_root("commander");
-        // 没有文件 → 空默认（agent 为空即「还没有默认」）
-        assert_eq!(commander_from(&root), CommanderSettings::default());
-        assert_eq!(commander_from(&root).version, 1);
-
-        let settings = CommanderSettings {
-            version: 1,
-            agent: "claude".into(),
-            provider: String::new(),
-            model: "fable".into(),
-            cwd: r"D:\work\aicross".into(),
-            updated_at: "2026-09-15T10:00:00Z".into(),
-        };
-        save_commander_in(&root, &settings).unwrap();
-        assert_eq!(commander_from(&root), settings);
-
-        // 缺字段落成默认值；version 缺失时按当前契约版本 1 读。
-        fs::write(root.join("commander.json"), r#"{"version":1,"agent":"pi"}"#).unwrap();
-        let partial = commander_from(&root);
-        assert_eq!(partial.agent, "pi");
-        assert_eq!(
-            (
-                partial.provider.as_str(),
-                partial.model.as_str(),
-                partial.cwd.as_str(),
-                partial.updated_at.as_str()
-            ),
-            ("", "", "", "")
-        );
-        fs::write(root.join("commander.json"), r#"{"agent":"codex"}"#).unwrap();
-        let without_version = commander_from(&root);
-        assert_eq!(without_version.version, 1);
-        assert_eq!(without_version.agent, "codex");
-
-        // version != 1 / 解析失败 → 空默认，文件不动
-        fs::write(root.join("commander.json"), r#"{"version":2,"agent":"codex"}"#).unwrap();
-        assert_eq!(commander_from(&root), CommanderSettings::default());
-        fs::write(root.join("commander.json"), "not json").unwrap();
-        assert_eq!(commander_from(&root), CommanderSettings::default());
-        assert_eq!(
-            fs::read_to_string(root.join("commander.json")).unwrap(),
-            "not json"
-        );
-        assert!(save_commander_in(&root, &settings).is_err());
-        assert_eq!(
-            fs::read_to_string(root.join("commander.json")).unwrap(),
-            "not json"
-        );
-
-        // 写侧拒绝非 1 的 version，且已有文件不变。
-        fs::write(root.join("commander.json"), serde_json::to_string(&settings).unwrap()).unwrap();
-        let before_bad_version = fs::read_to_string(root.join("commander.json")).unwrap();
-        let bad = CommanderSettings { version: 2, ..CommanderSettings::default() };
-        assert!(save_commander_in(&root, &bad).is_err());
-        assert_eq!(
-            fs::read_to_string(root.join("commander.json")).unwrap(),
-            before_bad_version
-        );
-
-        // model/provider 必须原样满足标识符白名单；空格、shell 元字符、前导旗标均拒绝。
-        for (provider, model) in [
-            ("", "model id"),
-            ("", "x&calc"),
-            ("", "-danger"),
-            ("", "   "),
-            ("bad provider", "model"),
-        ] {
-            let invalid = CommanderSettings {
-                provider: provider.into(),
-                model: model.into(),
-                ..settings.clone()
-            };
-            assert!(save_commander_in(&root, &invalid).is_err());
-            assert_eq!(
-                fs::read_to_string(root.join("commander.json")).unwrap(),
-                before_bad_version
-            );
-        }
-
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn single_writer_role_uses_configured_writable_agent() {
-        let mut presets = builtin_presets();
-        let roles = RoleSettings {
-            version: 1,
-            execution: RoleProfile {
-                agent: "pi".into(),
-                model: "configured-model".into(),
-                thinking: "低".into(),
-                ..RoleProfile::default()
-            },
-            ..RoleSettings::default()
-        };
-        fill_role_defaults(&mut presets, &roles);
-        let execution = &presets
-            .iter()
-            .find(|preset| preset.id == "builtin-economy")
-            .unwrap()
-            .stages[1]
-            .nodes[0];
-        assert_eq!(execution.agent, "pi");
-        assert_eq!(execution.model, "configured-model");
-    }
-
-    #[test]
-    fn arena_role_defaults_stay_empty() {
-        let mut presets = builtin_presets();
-        let roles = RoleSettings {
-            version: 1,
-            execution: RoleProfile {
-                agent: "pi".into(),
-                model: "configured-model".into(),
-                thinking: "低".into(),
-                ..RoleProfile::default()
-            },
-            ..RoleSettings::default()
-        };
-        fill_role_defaults(&mut presets, &roles);
-        let arena = presets
-            .iter()
-            .find(|preset| preset.id == "builtin-arena")
-            .unwrap();
-        for stage in &arena.stages {
-            for node in &stage.nodes {
-                assert_eq!(node.model, "");
-                assert_eq!(node.agent, "");
-            }
-        }
-    }
-
-    #[test]
-    fn save_strips_builtin_entries() {
-        let root = temp_root("presets-strip");
-        let mut forged = user_preset("forged");
-        forged.builtin = true;
-        save_user_presets_in(&root, vec![forged, user_preset("u1")]).unwrap();
-        // 磁盘上只剩非内置条目
-        let contents = fs::read_to_string(root.join("presets.json")).unwrap();
-        let file: PresetFile = serde_json::from_str(&contents).unwrap();
-        assert_eq!(file.presets.len(), 1);
-        assert_eq!(file.presets[0].id, "u1");
-        // 读回来仍是 6 内置 + 1 用户，伪造的内置没进去
-        let merged = presets_from(&root);
-        assert_eq!(merged.presets.iter().filter(|p| p.builtin).count(), 6);
-    }
-
-    #[test]
     fn graph_roundtrip() {
         let root = temp_root("graph-rt");
         let graph = sample_graph();
@@ -1512,39 +906,6 @@ mod tests {
         }));
         let legacy: GraphNode = serde_json::from_str(r#"{"id":"old","kind":"turn"}"#).unwrap();
         assert_eq!(legacy.swarm, None);
-    }
-
-    #[test]
-    fn task08a_split_role_uses_planning_target_and_frozen_readonly_prompt() {
-        let mut presets = vec![Preset {
-            id: "swarm-test".into(),
-            stages: vec![Stage { nodes: vec![Target {
-                role: "拆分".into(),
-                write: "worktree".into(),
-                visibility: "盲".into(),
-                ..blank_target()
-            }] }],
-            ..Preset::default()
-        }];
-        let roles = RoleSettings {
-            version: 1,
-            planning: RoleProfile {
-                agent: "codex".into(),
-                provider: "official".into(),
-                model: "planner".into(),
-                tier: "高".into(),
-                thinking: "高".into(),
-            },
-            ..RoleSettings::default()
-        };
-        fill_role_defaults(&mut presets, &roles);
-        let target = &presets[0].stages[0].nodes[0];
-        assert_eq!((target.agent.as_str(), target.provider.as_deref(), target.model.as_str()), ("codex", Some("official"), "planner"));
-        assert_eq!((target.write.as_str(), target.visibility.as_str()), ("只读", "共享"));
-        let prompt = include_str!("../fixtures/prompts/split.txt");
-        assert!(prompt.contains("只输出一个 JSON 围栏"));
-        assert!(prompt.contains("不超过 N 件"));
-        assert!(prompt.contains("有先后依赖的工作合并成一件"));
     }
 
     #[test]
@@ -1598,23 +959,6 @@ mod tests {
         let mut graph = sample_graph();
         graph.version = 2;
         assert!(save_graph_in(&root, &graph).is_err());
-    }
-
-    #[test]
-    fn list_graphs_skips_broken_files() {
-        let root = temp_root("graph-list");
-        save_graph_in(&root, &sample_graph()).unwrap();
-        fs::write(graphs_dir(&root).join("broken.json"), "{ nope").unwrap();
-        let metas = list_graphs_in(&root);
-        assert_eq!(metas.len(), 1);
-        assert_eq!(
-            metas[0],
-            GraphMeta {
-                id: "g-1".into(),
-                title: "测试图".into(),
-                updated_at: "2026-09-13T10:02:00Z".into(),
-            }
-        );
     }
 
     #[test]
@@ -1699,29 +1043,6 @@ mod tests {
             assert_eq!((target.visibility.as_str(), target.write.as_str()), ("盲", "只读"));
             assert!(target.model.is_empty());
         }
-    }
-
-    #[test]
-    fn task12_fill_role_defaults_fills_economy_verification_from_acceptance_but_not_blind_preset() {
-        let mut presets = builtin_presets();
-        let roles = RoleSettings {
-            version: 1,
-            acceptance: RoleProfile {
-                agent: "kimi".into(),
-                model: "kimi-code/k3-256k".into(),
-                ..RoleProfile::default()
-            },
-            ..RoleSettings::default()
-        };
-        fill_role_defaults(&mut presets, &roles);
-        let economy = presets.iter().find(|p| p.id == "builtin-economy").unwrap();
-        for target in &economy.stages[2].nodes {
-            assert_eq!((target.agent.as_str(), target.model.as_str()), ("kimi", "kimi-code/k3-256k"), "{}", target.role);
-        }
-        let blind = presets.iter().find(|p| p.id == "builtin-blind").unwrap();
-        assert!(blind.stages[0].nodes.iter().all(|t| t.model.is_empty()));
-        let jury = presets.iter().find(|p| p.id == "builtin-jury").unwrap();
-        assert!(jury.stages[0].nodes.iter().all(|t| t.model.is_empty()));
     }
 
     #[test]

@@ -53,8 +53,8 @@ fn git_output(dir: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// True if a `git` binary is on PATH. Not cached — the changes panel only
-/// calls it on folder / agent-status ticks, never on a hot path.
+/// True if a `git` binary is on PATH. Not cached — callers run it at most
+/// once per command, never on a hot path.
 fn git_on_path() -> bool {
     let mut cmd = Command::new("git");
     cmd.arg("--version");
@@ -161,43 +161,6 @@ fn numstat_worktree_vs_head(repo_root: &str) -> HashMap<String, (u32, u32)> {
     parse_numstat(out)
 }
 
-/// Most-recent-commit summary (HEAD) for the "已提交" group. `None` on a repo
-/// with no commits (fresh `git init`) — `git log -1` exits non-zero there.
-/// `files` come from `git diff-tree --numstat --root HEAD`, which compares HEAD
-/// to its parent (or to empty for the initial commit, so all files read as
-/// additions). `--no-renames` keeps parsing simple (rename → delete+add); the
-/// diff viewer doesn't need rename tracking.
-/// Files changed in a single commit vs its parent: `diff-tree --numstat`.
-/// `--root` makes the initial commit (no parent) read as all-additions;
-/// `--no-renames` keeps parsing simple (rename → delete+add). Used by the
-/// `git_commit_files` IPC (any commit hash) when a session commit is expanded.
-fn commit_files(repo_root: &str, hash: &str) -> Vec<GitFileEntry> {
-    let out = git_output(
-        repo_root,
-        &["diff-tree", "--no-commit-id", "-r", "--numstat", "-z", "--no-renames", "--root", hash],
-    )
-    .unwrap_or_default();
-    let counts = parse_numstat(out);
-    let mut files = Vec::new();
-    for (rel, (added, deleted)) in counts {
-        // Derive a display status from the numstat: add-only → A, del-only → D,
-        // else M. (A rename shows here as a D + an A under --no-renames.)
-        let status = if added > 0 && deleted == 0 { 'A' }
-            else if deleted > 0 && added == 0 { 'D' }
-            else { 'M' };
-        files.push(GitFileEntry {
-            path: join_abs(repo_root, &rel),
-            rel,
-            status: status.to_string(),
-            added,
-            deleted,
-        });
-    }
-    // diff-tree gives no ordering guarantee; sort by path for a stable list.
-    files.sort_by(|a, b| a.rel.cmp(&b.rel));
-    files
-}
-
 /// Current HEAD hash, or "" on an unborn branch (fresh `git init`, no commits).
 /// The empty sentinel means session_commits_since lists ALL commits (every
 /// commit IS "made this window" when the repo had none at launch).
@@ -289,13 +252,27 @@ fn count_lines(path: &str) -> u32 {
 }
 
 fn join_abs(repo_root: &str, rel: &str) -> String {
-    crate::server::normalize_path_key(&format!("{}/{}", repo_root.trim_end_matches('/'), rel))
+    normalize_path_key(&format!("{}/{}", repo_root.trim_end_matches('/'), rel))
 }
 
-/// List the active folder's git working-tree changes. One IPC call; the
-/// frontend polls it on the same agent-status / fs-refresh triggers the old
-/// `compute_folder_stats` used.
-#[tauri::command]
+/// 路径键：反斜杠转正斜杠，Windows 盘符统一大写，使同一目录的不同写法落同一个键。
+fn normalize_path_key(path: &str) -> String {
+    let s = path.replace('\\', "/");
+    #[cfg(windows)]
+    {
+        let bytes = s.as_bytes();
+        if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+            let mut out = String::with_capacity(s.len());
+            out.push((bytes[0] as char).to_ascii_uppercase());
+            out.push_str(&s[1..]);
+            return out;
+        }
+    }
+    s
+}
+
+/// List a folder's git working-tree changes.
+/// 引擎建图前的脏树核对走这里（engine::plan 的 git_dirty_count）。
 pub fn git_changes(folder: String) -> GitChanges {
     if !git_on_path() {
         return GitChanges::NoGit;
@@ -401,72 +378,4 @@ pub fn git_changes(folder: String) -> GitChanges {
         untracked,
         session_commits,
     }
-}
-
-/// Content of a file at a git revision, e.g. `git show HEAD:src/a.ts` or
-/// `git show :src/a.ts` (the staged/index blob). `spec` is "<ref>:<rel>" with
-/// `rel` repo-root-relative. Returns None when the path doesn't exist at that
-/// revision (a newly-added file has no HEAD blob) — the frontend treats None
-/// as an empty side, so the file renders as all-additions.
-///
-/// This is the ONLY data the DiffPanel needs: it feeds the returned old/new
-/// blobs straight into the existing jsdiff + Shiki pipeline, so the diff
-/// rendering (folding, syntax colors, size guards) is reused unchanged. The
-/// staged/unstaged old↔new mapping lives in the frontend:
-///   • unstaged tracked: old = `:rel` (index)   new = working file on disk
-///   • staged   tracked: old = `HEAD:rel`        new = `:rel` (index)
-///   • untracked:        old = ""                new = working file on disk
-#[tauri::command]
-pub fn git_show_file(repo_root: String, spec: String) -> Option<String> {
-    // Defense against arg-injection: `spec` is frontend-built (HEAD:rel,
-    // <hash>:rel, :rel). Reject a leading '-' so a crafted commitHash can't
-    // lead the spec and be parsed as a git option. (A legit spec never starts
-    // with '-' — it's HEAD, a hex hash, or ':rel'.)
-    if spec.starts_with('-') {
-        return None;
-    }
-    git_output(&repo_root, &["show", &spec]).ok()
-}
-
-/// `git init` the given folder so the not-a-repo state's "initialize here"
-/// button can turn an ordinary folder into a tracked workspace in one click.
-#[tauri::command]
-pub fn git_init(folder: String) -> Result<(), String> {
-    git_output(&folder, &["init"]).map(|_| ())
-}
-
-/// Capture the session baseline (current HEAD) for a repo, idempotently.
-/// Called at app launch + on tab switch (NOT poll-gated — one rev-parse).
-/// Scopes the "修改记录" session-commits list to commits made this window.
-#[tauri::command]
-pub fn git_capture_baseline(folder: String) {
-    let repo_root = match git_output(&folder, &["rev-parse", "--show-toplevel"]) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => return, // not a repo — nothing to baseline
-    };
-    if let Ok(mut map) = baselines().lock() {
-        if !map.contains_key(&repo_root) {
-            // rev-parse HEAD fails on an unborn branch (fresh `git init`) —
-            // capture "" as a sentinel so session_commits_since lists ALL
-            // commits (every commit IS "made this window" when the repo had
-            // none at launch). Without this the first commit would be missed
-            // until the next tab switch re-captured a baseline.
-            let head = current_head(&repo_root);
-            map.insert(repo_root, head);
-        }
-    }
-}
-
-/// Files changed in a single commit (lazy — called when the user expands a
-/// session commit in the 修改记录 list). Reuses `commit_files`.
-#[tauri::command]
-pub fn git_commit_files(repo_root: String, hash: String) -> Vec<GitFileEntry> {
-    // Defense against arg-injection: `hash` is round-tripped through the
-    // frontend (session_commits[].hash). Reject non-hex so a crafted value
-    // can't reach `git diff-tree` as an option. (Internal `commit_files("HEAD")`
-    // bypasses this — "HEAD" is a literal, not frontend input.)
-    if !hash.bytes().all(|b| b.is_ascii_hexdigit()) || !(4..=40).contains(&hash.len()) {
-        return Vec::new();
-    }
-    commit_files(&repo_root, &hash)
 }

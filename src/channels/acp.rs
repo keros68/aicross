@@ -1,5 +1,5 @@
 use super::{ChannelOutput, Usage};
-use crate::process::{run_process, spawn_interactive, InteractiveProcess, ProcessActivity, RecvLineError};
+use crate::process::{spawn_interactive, InteractiveProcess, ProcessActivity, RecvLineError};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -8,31 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
 
 const MAX_RAW: usize = 8 * 1024 * 1024;
-
-// 控制台单线聊天（interactive）走 ACP 时，权限请求与 slash 命令清单要送到界面：
-// 引擎不持有 AppHandle 的调用链很长，这里在应用启动时存一份全局句柄。
-static APP: OnceLock<AppHandle> = OnceLock::new();
-
-pub fn install_app_handle(app: AppHandle) {
-    let _ = APP.set(app);
-}
-
-fn emit<S: Serialize + Clone>(event: &str, payload: S) {
-    if let Some(app) = APP.get() {
-        let _ = app.emit(event, payload);
-    }
-}
-
-pub(crate) fn emit_event<S: Serialize + Clone>(event: &str, payload: S) {
-    emit(event, payload);
-}
-
-pub const PERMISSION_EVENT: &str = "acp-permission";
-pub const PERMISSION_CLOSED_EVENT: &str = "acp-permission-closed";
-pub const COMMANDS_EVENT: &str = "acp-commands";
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -40,15 +17,6 @@ pub struct AcpCommand {
     pub name: String,
     pub description: String,
     pub hint: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CommandsEvent {
-    agent: String,
-    /// 归一化目录（正斜杠、小写、无尾斜杠），界面按同一规则比对。
-    cwd: String,
-    commands: Vec<AcpCommand>,
 }
 
 /// 正斜杠、去尾斜杠；只有 Windows 盘符路径（大小写不敏感）才转小写，
@@ -73,104 +41,14 @@ pub struct PermissionOption {
     pub kind: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PermissionEvent {
-    pub request_id: String,
-    /// `run_id:node_id`，界面据 run 前缀认领自己那一路。
-    pub dispatch_key: String,
-    pub agent: String,
-    pub title: String,
-    pub kind: String,
-    pub detail: String,
-    pub options: Vec<PermissionOption>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PermissionClosed {
-    request_id: String,
-}
-
 fn pending_permissions() -> &'static Mutex<HashMap<String, mpsc::Sender<Option<String>>>> {
     static PENDING: OnceLock<Mutex<HashMap<String, mpsc::Sender<Option<String>>>>> = OnceLock::new();
     PENDING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 界面已关掉的轮次（runId 前缀）：之后到的权限请求不再上卡片，直接拒。
-/// 只在持有 pending_permissions 锁时读写（锁序 pending → closed），与登记挂起请求原子。
-/// 这一轮（含续聊失效的重派）彻底结束后由界面调 forget_acp_run 删掉。
-fn closed_runs() -> &'static Mutex<Vec<String>> {
-    static CLOSED: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
-    CLOSED.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn run_closed(dispatch_key: &str) -> bool {
-    closed_runs().lock().is_ok_and(|closed| {
-        closed.iter().any(|prefix| {
-            dispatch_key.starts_with(&format!("{prefix}:")) || dispatch_key.starts_with(&format!("{prefix}-fresh:"))
-        })
-    })
-}
-
-/// 控制台 tab 关闭：本轮挂着的权限请求立即按拒绝回，之后再到的也直接拒，
-/// 不让引擎等到整轮超时、占着进程锁。
-#[tauri::command]
-pub fn close_acp_permissions(run_id: String) {
-    if run_id.is_empty() {
-        return;
-    }
-    let senders = pending_permissions()
-        .lock()
-        .map(|mut pending| {
-            if let Ok(mut closed) = closed_runs().lock() {
-                closed.push(run_id.clone());
-            }
-            let keys = pending
-                .keys()
-                .filter(|key| key.starts_with(&format!("{run_id}:")) || key.starts_with(&format!("{run_id}-fresh:")))
-                .cloned()
-                .collect::<Vec<_>>();
-            keys.into_iter().filter_map(|key| pending.remove(&key)).collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    for sender in senders {
-        let _ = sender.send(None);
-    }
-}
-
-/// 关 tab 那一轮的派发全部结束后删掉关闭记录（此后不会再有这一轮的权限请求）。
-#[tauri::command]
-pub fn forget_acp_run(run_id: String) {
-    if let Ok(_pending) = pending_permissions().lock() {
-        if let Ok(mut closed) = closed_runs().lock() {
-            closed.retain(|prefix| prefix != &run_id);
-        }
-    }
-}
-
-/// 取命令清单失败（适配器没起来、建会话失败）只记 5 分钟：短时间内不反复等，恢复后能再取。
-fn command_failures() -> &'static Mutex<HashMap<String, Instant>> {
-    static FAILURES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-    FAILURES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-const COMMAND_FAILURE_TTL: Duration = Duration::from_secs(300);
-
 fn command_cache() -> &'static Mutex<HashMap<String, Vec<AcpCommand>>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Vec<AcpCommand>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// 界面对权限卡片的回答。`option_id` 为空表示拒绝；找不到挂起请求（已超时 / 已取消）时报错。
-#[tauri::command]
-pub fn answer_acp_permission(request_id: String, option_id: Option<String>) -> Result<(), String> {
-    let sender = pending_permissions()
-        .lock()
-        .map_err(|_| "权限请求表不可用".to_string())?
-        .remove(&request_id)
-        .ok_or_else(|| "这条权限请求已结束".to_string())?;
-    sender.send(option_id).map_err(|_| "这条权限请求已结束".to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,16 +86,6 @@ pub struct AcpOutput {
     pub raw_stdout: String,
     pub raw_stderr: String,
     pub runner_note: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpAdapterStatus {
-    pub id: String,
-    pub label: String,
-    pub installed: bool,
-    pub command: String,
-    pub detail: String,
 }
 
 struct AcpClient {
@@ -678,11 +546,10 @@ impl AcpClient {
         if let Ok(mut cache) = command_cache().lock() {
             cache.insert(command_key(&self.agent, &self.cwd), commands.clone());
         }
-        emit(COMMANDS_EVENT, CommandsEvent { agent: self.agent.clone(), cwd: self.cwd.clone(), commands });
     }
 
-    /// 把权限请求交给界面卡片，阻塞到用户点选、派发取消或超时；后两者按拒绝回。
-    /// 卡片只给「允许一次 / 拒绝」两个选项：永不持久授权。
+    /// 把权限请求登记为挂起，阻塞到引擎取消或超时；两者按拒绝回。无窗口形态
+    /// 下没有权限卡片可答，这条路径只在 interactive 会话里出现（kimi 单线）。
     fn ask_user_permission(
         &mut self,
         message: &Value,
@@ -694,15 +561,15 @@ impl AcpClient {
         let request_id = format!("{dispatch_key}#{}", COUNTER.fetch_add(1, Ordering::Relaxed));
         let options = permission_options(message);
         let (sender, receiver) = mpsc::channel();
-        // 查「已关」与登记挂起在同一把锁里：关 tab 要么先发生（这里直接拒），要么后发生（它能扫到这条）。
-        let closed = match pending_permissions().lock() {
-            Ok(mut pending) if !run_closed(dispatch_key) => {
+        // 登记挂起；锁不可用时立即按拒绝回。
+        let registered = match pending_permissions().lock() {
+            Ok(mut pending) => {
                 pending.insert(request_id.clone(), sender);
-                false
+                true
             }
-            _ => true,
+            Err(_) => false,
         };
-        if closed {
+        if !registered {
             let reject = options.iter().find(|option| option.kind == "reject_once").map(|option| option.option_id.clone());
             let result = reject
                 .map(|id| json!({"outcome":{"outcome":"selected","optionId":id}}))
@@ -712,7 +579,6 @@ impl AcpClient {
                 .send_json_line(&json!({"jsonrpc":"2.0","id":message["id"],"result":result}))
                 .map_err(|e| AcpError::new(AcpErrorKind::Process, e));
         }
-        emit(PERMISSION_EVENT, permission_event(message, &request_id, dispatch_key, &self.agent, options.clone()));
         let choice = loop {
             if !cancel_key.is_empty() && crate::dispatch::is_cancelled(cancel_key) {
                 break None;
@@ -730,7 +596,6 @@ impl AcpClient {
         if let Ok(mut pending) = pending_permissions().lock() {
             pending.remove(&request_id);
         }
-        emit(PERMISSION_CLOSED_EVENT, PermissionClosed { request_id });
         let selected = choice
             .filter(|id| options.iter().any(|option| &option.option_id == id))
             .or_else(|| options.iter().find(|option| option.kind == "reject_once").map(|option| option.option_id.clone()));
@@ -1042,45 +907,6 @@ fn permission_options(message: &Value) -> Vec<PermissionOption> {
         .unwrap_or_default()
 }
 
-/// 卡片正文：claude 给 rawInput（命令、参数），kimi 只给 content 文本；脱敏后截到 800 字。
-fn permission_event(
-    message: &Value,
-    request_id: &str,
-    dispatch_key: &str,
-    agent: &str,
-    options: Vec<PermissionOption>,
-) -> PermissionEvent {
-    let tool = message.pointer("/params/toolCall").unwrap_or(&Value::Null);
-    let title = tool.get("title").and_then(Value::as_str).unwrap_or("未命名工具").to_string();
-    let raw_input = tool
-        .get("rawInput")
-        .filter(|value| !value.is_null() && value.as_object().is_none_or(|object| !object.is_empty()))
-        .map(|value| value.to_string());
-    let content = tool.get("content").and_then(Value::as_array).map(|items| {
-        items
-            .iter()
-            .filter_map(|item| item.pointer("/content/text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
-    let detail = raw_input.or(content.filter(|text| !text.is_empty())).unwrap_or_default();
-    let (detail, _) = crate::dispatch::redact_text(&detail, true);
-    let detail = if detail.chars().count() > 800 {
-        format!("{}…", detail.chars().take(800).collect::<String>())
-    } else {
-        detail
-    };
-    PermissionEvent {
-        request_id: request_id.to_string(),
-        dispatch_key: dispatch_key.to_string(),
-        agent: agent.to_string(),
-        title,
-        kind: tool.get("kind").and_then(Value::as_str).unwrap_or("").to_string(),
-        detail,
-        options,
-    }
-}
-
 fn option_values(option: &Value) -> Vec<String> {
     option
         .get("options")
@@ -1245,9 +1071,15 @@ pub fn shutdown_all() {
 pub(crate) fn test_answer_pending(prefix: &str, option: Option<&str>) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let id = pending_permissions().lock().unwrap().keys().find(|key| key.starts_with(prefix)).cloned();
-        if let Some(id) = id {
-            answer_acp_permission(id, option.map(str::to_string)).unwrap();
+        let sender = pending_permissions()
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(key, _)| key.starts_with(prefix))
+            .map(|(key, sender)| (key.clone(), sender.clone()));
+        if let Some((id, sender)) = sender {
+            pending_permissions().lock().unwrap().remove(&id);
+            sender.send(option.map(str::to_string)).unwrap();
             return;
         }
         assert!(Instant::now() < deadline, "没等到挂起的权限请求");
@@ -1309,133 +1141,6 @@ pub(crate) fn test_wait_for_process_exit(
         }
         thread::sleep(Duration::from_millis(10));
     }
-}
-/// 控制台输入 `/` 时的命令清单。先看缓存（任一次 ACP 会话推来的都算）；没有就临时起一个
-/// 适配器进程、建会话、等它推 `available_commands_update`，不发 prompt、不耗 token，拿到即关。
-#[tauri::command]
-pub async fn acp_commands(agent: String, cwd: String) -> Result<Vec<AcpCommand>, String> {
-    let normalized = super::normalize_agent(&agent).to_string();
-    if !supports(&normalized, true) {
-        return Ok(Vec::new());
-    }
-    let key = command_key(&normalized, &normalize_cwd(&cwd));
-    if let Some(cached) = command_cache().lock().ok().and_then(|cache| cache.get(&key).cloned()) {
-        return Ok(cached);
-    }
-    if matches!(normalized.as_str(), "claude" | "codex") && super::acp_setup::resolve_adapter(&normalized).is_err() {
-        super::acp_setup::ensure_installed();
-        return Err(super::acp_setup::unavailable_reason(&normalized));
-    }
-    let recently_failed = command_failures()
-        .lock()
-        .is_ok_and(|failures| failures.get(&key).is_some_and(|at| at.elapsed() < COMMAND_FAILURE_TTL));
-    if recently_failed {
-        return Ok(Vec::new());
-    }
-    let outcome = tauri::async_runtime::spawn_blocking(move || probe_commands(&normalized, Path::new(&cwd)))
-        .await
-        .map_err(|e| format!("读取命令清单失败：{e}"))?;
-    if outcome.as_ref().map_or(true, Vec::is_empty) {
-        if let Ok(mut failures) = command_failures().lock() {
-            failures.insert(key, Instant::now());
-        }
-    }
-    outcome
-}
-
-fn probe_commands(agent: &str, cwd: &Path) -> Result<Vec<AcpCommand>, String> {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut client = start_agent(agent, "", cwd, Duration::from_secs(20)).map_err(|e| e.message)?;
-    let outcome = (|| {
-        client
-            .request("session/new", json!({"cwd":cwd,"mcpServers":[]}), deadline, None, false, true, "", None)
-            .map_err(|e| e.message)?;
-        let key = command_key(agent, &client.cwd);
-        loop {
-            if let Some(found) = command_cache().lock().ok().and_then(|cache| cache.get(&key).cloned()) {
-                return Ok(found);
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(Vec::new());
-            }
-            match client.process.recv_line(remaining.min(Duration::from_millis(200))) {
-                Ok(line) => {
-                    if let Ok(message) = serde_json::from_str::<Value>(&line) {
-                        client.observe_commands(&message);
-                    }
-                }
-                Err(RecvLineError::Timeout) => {}
-                Err(RecvLineError::Disconnected(error)) => return Err(error),
-            }
-        }
-    })();
-    client.process.terminate();
-    outcome
-}
-
-#[tauri::command]
-pub fn release_acp_pool() {
-    shutdown_all();
-}
-
-fn probe(binary: &str, fallback: Option<std::path::PathBuf>, args: &[&str]) -> (bool, String) {
-    let Ok(program) = super::resolve_binary(binary, fallback) else {
-        return (false, "未检测到".into());
-    };
-    let args = args.iter().map(|v| v.to_string()).collect::<Vec<_>>();
-    match run_process(&program, &args, None, Duration::from_secs(3), None) {
-        Ok(r) if !r.timed_out && r.code == Some(0) => (
-            true,
-            r.stdout
-                .lines()
-                .chain(r.stderr.lines())
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("可用")
-                .chars()
-                .take(120)
-                .collect(),
-        ),
-        Ok(_) => (false, "命令不可用".into()),
-        Err(e) => (false, e),
-    }
-}
-#[tauri::command]
-pub async fn detect_acp_adapters() -> Result<Vec<AcpAdapterStatus>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let (k, kd) = probe("kimi", super::kimi_fallback(), &["acp", "--help"]);
-        let adapter_probe = |agent: &str| match super::acp_setup::resolve_adapter(agent) {
-            Ok(program) => probe(&program.to_string_lossy(), None, &["--version"]),
-            Err(_) => (false, super::acp_setup::unavailable_reason(agent)),
-        };
-        let (c, cd) = adapter_probe("claude");
-        let (x, xd) = adapter_probe("codex");
-        Ok(vec![
-            AcpAdapterStatus {
-                id: "kimi".into(),
-                label: "Kimi ACP".into(),
-                installed: k,
-                command: "kimi acp".into(),
-                detail: kd,
-            },
-            AcpAdapterStatus {
-                id: "claude".into(),
-                label: "Claude Code ACP".into(),
-                installed: c,
-                command: "claude-agent-acp".into(),
-                detail: cd,
-            },
-            AcpAdapterStatus {
-                id: "codex".into(),
-                label: "Codex ACP".into(),
-                installed: x,
-                command: "codex-acp".into(),
-                detail: xd,
-            },
-        ])
-    })
-    .await
-    .map_err(|e| format!("ACP 探测任务失败：{e}"))?
 }
 
 #[cfg(test)]
@@ -1937,9 +1642,6 @@ mod tests {
         assert_eq!(options.iter().map(|o| o.option_id.as_str()).collect::<Vec<_>>(), ["allow-once", "reject"]);
         let duplicated = json!({"params":{"options":[{"optionId":"a1","kind":"allow_once"},{"optionId":"a2","kind":"allow_once"},{"optionId":"r1","kind":"reject_once"},{"optionId":"r2","kind":"reject_once"}]}});
         assert_eq!(permission_options(&duplicated).iter().map(|o| o.option_id.as_str()).collect::<Vec<_>>(), ["a1", "r1"]);
-        let event = permission_event(&request, "r#1", "run:node", "claude", options);
-        assert_eq!(event.title, "mcp__kimi-cu__list_apps");
-        assert!(!event.detail.contains("abcdefghijklmnopqrstuvwxyz0123456789"), "卡片正文要脱敏：{}", event.detail);
     }
     #[test]
     fn interactive_turn_hands_execute_permission_to_the_user_and_honours_the_answer() {
@@ -1961,33 +1663,6 @@ mod tests {
         answer.join().unwrap();
         assert_eq!(rejected.channel.text, "turn-2:no");
         assert!(pending_permissions().lock().unwrap().keys().all(|key| !key.starts_with("card-run:")));
-    }
-    #[test]
-    fn closing_the_tab_rejects_pending_and_later_permissions_of_that_run() {
-        let cwd = std::env::current_dir().unwrap();
-        let Some(mut client) = fake_client() else { return };
-        client.interactive = Some("closed-run:node".into());
-        let closer = thread::spawn(|| {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while !pending_permissions().lock().unwrap().keys().any(|key| key.starts_with("closed-run:")) {
-                assert!(Instant::now() < deadline, "没等到挂起的权限请求");
-                thread::sleep(Duration::from_millis(10));
-            }
-            close_acp_permissions("closed-run".into());
-        });
-        let first = client
-            .prompt("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
-            .unwrap();
-        closer.join().unwrap();
-        assert_eq!(first.channel.text, "turn-1:no");
-        // 关掉之后同一轮再来的请求不挂起，立即拒。
-        let second = client
-            .prompt("fake-model", Some(&first.channel.session_id), "second", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
-            .unwrap();
-        assert_eq!(second.channel.text, "turn-2:no");
-        assert!(pending_permissions().lock().unwrap().keys().all(|key| !key.starts_with("closed-run:")));
-        forget_acp_run("closed-run".into());
-        assert!(!run_closed("closed-run:node"));
     }
     #[test]
     fn late_permission_from_another_session_is_auto_answered_not_carded() {
