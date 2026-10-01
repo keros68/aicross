@@ -1,16 +1,13 @@
 //! ACP 适配器自备（09-18 用户要求「别让用户自己去搞额外的配置」）。
 //!
 //! claude-agent-acp / codex-acp 各带一份原生 CLI，装好后分别约 270 MB / 400 MB，塞不进安装包。
-//! 做法：本机装了对应 CLI、又找不到适配器时，命令行拉起会话的后台用 npm 装进
-//! 私有目录 `~/.aicross/acp`（不碰全局 npm），版本钉死。装好之前派发照常可用——
-//! 自动的回退一次性 CLI。没有 Node.js（npm）的机器同样回退，原因写在节点错误里。
+//! 做法（10-01 定案）：用户执行 `aicross config set acpEnabled true` 时当场检查，本机装了对应 CLI、
+//! 又找不到适配器的，在前台用 npm 装进私有目录 `~/.aicross/acp`（不碰全局 npm），版本钉死，
+//! 每家结果直接输出。派发途中不安装：适配器不在就回退一次性 CLI，原因写在节点错误里。
 
-use crate::process::run_process;
-use std::collections::HashMap;
+use crate::process::{run_process, ProcessResult};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::thread;
 use std::time::Duration;
 
 struct Adapter {
@@ -43,40 +40,36 @@ fn adapter(agent: &str) -> Option<&'static Adapter> {
     ADAPTERS.iter().find(|adapter| adapter.agent == agent)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SetupState {
-    /// 还没检查或不需要（本机没有对应 CLI）。
-    Idle,
-    Installing,
+/// 一家适配器的检查或安装结果；序列化成 `config` 命令输出里 `acp` 数组的一项。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum AdapterState {
+    #[serde(rename = "已就绪")]
     Ready,
-    NoNode,
-    Failed(String),
+    #[serde(rename = "刚装好")]
+    Installed,
+    #[serde(rename = "未装对应 CLI")]
+    NoCli,
+    #[serde(rename = "未安装")]
+    Missing,
+    #[serde(rename = "没有 npm")]
+    NoNpm,
+    #[serde(rename = "安装失败")]
+    Failed,
 }
 
-fn states() -> &'static Mutex<HashMap<&'static str, SetupState>> {
-    static STATES: OnceLock<Mutex<HashMap<&'static str, SetupState>>> = OnceLock::new();
-    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct AdapterReport {
+    pub agent: &'static str,
+    pub state: AdapterState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
-static INSTALLING: AtomicBool = AtomicBool::new(false);
-
-fn last_failure() -> &'static Mutex<Option<std::time::Instant>> {
-    static LAST: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
-    LAST.get_or_init(|| Mutex::new(None))
-}
-
-fn set_state(agent: &'static str, state: SetupState) {
-    if let Ok(mut states) = states().lock() {
-        states.insert(agent, state);
+impl AdapterReport {
+    /// 本机有对应 CLI 却没装上：派发对这家回退一次性 CLI。
+    pub fn not_installed(&self) -> bool {
+        matches!(self.state, AdapterState::NoNpm | AdapterState::Failed)
     }
-}
-
-pub fn state(agent: &str) -> SetupState {
-    states()
-        .lock()
-        .ok()
-        .and_then(|states| states.get(agent).cloned())
-        .unwrap_or(SetupState::Idle)
 }
 
 fn prefix() -> Result<PathBuf, String> {
@@ -123,97 +116,109 @@ pub fn unavailable_reason(agent: &str) -> String {
         "codex" => "Codex",
         other => other,
     };
-    match state(agent) {
-        SetupState::Installing => format!("正在后台准备 {name} 的 ACP 适配器（首次需下载几百 MB，约几分钟）；本轮回退一次性 CLI"),
-        SetupState::NoNode => format!("未检测到 Node.js，{name} 的 ACP 适配器不可用；本轮回退一次性 CLI"),
-        SetupState::Failed(detail) => format!("{name} 的 ACP 适配器安装失败：{detail}；本轮回退一次性 CLI"),
-        _ => format!("{name} 的 ACP 适配器尚未就绪；本轮回退一次性 CLI"),
-    }
+    format!("{name} 的 ACP 适配器尚未就绪；本轮回退一次性 CLI")
 }
 
-/// 缺哪家装哪家（只装本机有对应 CLI 的），一次 npm 调用装完；同一时间只跑一个安装。
-/// 非阻塞：立即返回，装完前拉起适配器的调用按回退处理（见 `unavailable_reason`）。
-pub fn ensure_installed() {
-    let missing = ADAPTERS
+/// 安装用到的本机探测与 npm 执行；生产走 `install_missing_blocking`，测试注入假实现。
+pub(crate) struct InstallEnv<'a> {
+    pub adapter_ready: &'a dyn Fn(&str) -> bool,
+    pub cli_present: &'a dyn Fn(&str) -> bool,
+    pub npm: Option<PathBuf>,
+    pub prefix: Result<PathBuf, String>,
+    pub run_npm: &'a dyn Fn(&Path, &[String], &Path) -> Result<ProcessResult, String>,
+}
+
+/// 每家适配器当前是否就绪，只查不装。
+pub(crate) fn adapter_status() -> Vec<AdapterReport> {
+    adapter_status_with(&|agent| resolve_adapter(agent).is_ok(), &|cli| super::resolve_binary(cli, None).is_ok())
+}
+
+fn adapter_status_with(adapter_ready: &dyn Fn(&str) -> bool, cli_present: &dyn Fn(&str) -> bool) -> Vec<AdapterReport> {
+    ADAPTERS
         .iter()
-        .filter(|adapter| resolve_adapter(adapter.agent).is_err())
-        .filter(|adapter| super::resolve_binary(adapter.cli, None).is_ok())
-        .collect::<Vec<_>>();
-    for adapter in ADAPTERS.iter().filter(|adapter| resolve_adapter(adapter.agent).is_ok()) {
-        if state(adapter.agent) != SetupState::Ready {
-            set_state(adapter.agent, SetupState::Ready);
-        }
-    }
-    if missing.is_empty() {
-        return;
-    }
-    let npm = match super::resolve_binary("npm", None) {
-        Ok(npm) => npm,
-        Err(_) => {
-            for adapter in &missing {
-                set_state(adapter.agent, SetupState::NoNode);
-            }
-            return;
-        }
-    };
-    // 刚失败过（网络、npm 报错）就先别每次输入 / 都重装一遍：10 分钟后或重启应用再试。
-    let recently_failed = last_failure()
-        .lock()
-        .is_ok_and(|at| at.is_some_and(|at| at.elapsed() < Duration::from_secs(600)));
-    if recently_failed {
-        return;
-    }
-    if INSTALLING.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    let prefix = match prefix() {
-        Ok(prefix) => prefix,
-        Err(error) => {
-            for adapter in &missing {
-                set_state(adapter.agent, SetupState::Failed(error.clone()));
-            }
-            INSTALLING.store(false, Ordering::Release);
-            return;
-        }
-    };
-    for adapter in &missing {
-        set_state(adapter.agent, SetupState::Installing);
-    }
-    let agents = missing.iter().map(|adapter| adapter.agent).collect::<Vec<_>>();
-    let packages = missing
-        .iter()
-        .map(|adapter| format!("{}@{}", adapter.package, adapter.version))
-        .collect::<Vec<_>>();
-    thread::spawn(move || {
-        let _ = std::fs::create_dir_all(&prefix);
-        let outcome = run_process(&npm, &install_args(&packages, &prefix), None, Duration::from_secs(1800), Some(&prefix));
-        for agent in agents {
-            let Some(adapter) = adapter(agent) else { continue };
-            let state = if private_binary_in(&prefix, adapter.binary).is_some() {
-                SetupState::Ready
+        .map(|adapter| AdapterReport {
+            agent: adapter.agent,
+            state: if adapter_ready(adapter.agent) {
+                AdapterState::Ready
+            } else if !cli_present(adapter.cli) {
+                AdapterState::NoCli
             } else {
-                let detail = match &outcome {
-                    Ok(result) if result.timed_out => "npm 安装超时".to_string(),
-                    Ok(result) => result
-                        .stderr
-                        .lines()
-                        .rev()
-                        .find(|line| !line.trim().is_empty())
-                        .unwrap_or("npm 未报原因")
-                        .chars()
-                        .take(200)
-                        .collect(),
-                    Err(error) => error.clone(),
-                };
-                if let Ok(mut at) = last_failure().lock() {
-                    *at = Some(std::time::Instant::now());
-                }
-                SetupState::Failed(detail)
-            };
-            set_state(adapter.agent, state);
+                AdapterState::Missing
+            },
+            reason: None,
+        })
+        .collect()
+}
+
+/// 缺哪家装哪家（只装本机有对应 CLI 的），一次 npm 调用装完，装完才返回。
+pub(crate) fn install_missing_blocking() -> Vec<AdapterReport> {
+    if cfg!(test) {
+        panic!("测试里不得真的执行 npm 安装，改用 install_missing_with 注入");
+    }
+    let adapter_ready = |agent: &str| resolve_adapter(agent).is_ok();
+    let cli_present = |cli: &str| super::resolve_binary(cli, None).is_ok();
+    let run_npm = |npm: &Path, args: &[String], prefix: &Path| {
+        let _ = std::fs::create_dir_all(prefix);
+        run_process(npm, args, None, Duration::from_secs(1800), Some(prefix))
+    };
+    install_missing_with(&InstallEnv {
+        adapter_ready: &adapter_ready,
+        cli_present: &cli_present,
+        npm: super::resolve_binary("npm", None).ok(),
+        prefix: prefix(),
+        run_npm: &run_npm,
+    })
+}
+
+pub(crate) fn install_missing_with(env: &InstallEnv) -> Vec<AdapterReport> {
+    let mut reports = adapter_status_with(env.adapter_ready, env.cli_present);
+    let missing = reports
+        .iter()
+        .filter(|report| report.state == AdapterState::Missing)
+        .filter_map(|report| adapter(report.agent))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return reports;
+    }
+    let outcome = match (&env.npm, &env.prefix) {
+        (None, _) => Err((AdapterState::NoNpm, "未检测到 npm（Node.js）".to_string())),
+        (_, Err(error)) => Err((AdapterState::Failed, error.clone())),
+        (Some(npm), Ok(prefix)) => {
+            let packages = missing
+                .iter()
+                .map(|adapter| format!("{}@{}", adapter.package, adapter.version))
+                .collect::<Vec<_>>();
+            Ok((env.run_npm)(npm, &install_args(&packages, prefix), prefix))
         }
-        INSTALLING.store(false, Ordering::Release);
-    });
+    };
+    for report in reports.iter_mut().filter(|report| report.state == AdapterState::Missing) {
+        let Some(adapter) = adapter(report.agent) else { continue };
+        let (state, reason) = match (&outcome, &env.prefix) {
+            (Err((state, reason)), _) => (*state, Some(reason.clone())),
+            (Ok(_), Ok(prefix)) if private_binary_in(prefix, adapter.binary).is_some() => (AdapterState::Installed, None),
+            (Ok(result), _) => (AdapterState::Failed, Some(npm_failure(result))),
+        };
+        report.state = state;
+        report.reason = reason;
+    }
+    reports
+}
+
+/// npm 没装出可执行入口时的原因：超时，或输出的最后几行。
+fn npm_failure(result: &Result<ProcessResult, String>) -> String {
+    match result {
+        Ok(result) if result.timed_out => "npm 安装超时".to_string(),
+        Ok(result) => {
+            let text = if result.stderr.trim().is_empty() { &result.stdout } else { &result.stderr };
+            let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>();
+            if lines.is_empty() {
+                return "npm 未报原因".to_string();
+            }
+            let tail = lines.split_off(lines.len().saturating_sub(3));
+            tail.join(" / ").chars().take(300).collect()
+        }
+        Err(error) => error.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -244,16 +249,141 @@ mod tests {
 
     #[test]
     fn reasons_are_plain_and_say_the_turn_falls_back() {
-        for state in [SetupState::Installing, SetupState::NoNode, SetupState::Failed("网络错误".into())] {
-            set_state("codex", state);
-            let reason = unavailable_reason("codex");
-            assert!(reason.contains("Codex") && reason.contains("回退一次性 CLI"), "{reason}");
-            // 不再提旧界面的概念（TASK-40 R1-7）。
-            assert!(!reason.contains("聊天"));
-            assert!(!reason.contains("权限卡片"));
-            assert!(!reason.contains("重启"));
+        let reason = unavailable_reason("codex");
+        assert!(reason.contains("Codex") && reason.contains("回退一次性 CLI"), "{reason}");
+        // 不再提旧界面的概念（TASK-40 R1-7），也不再说后台在装。
+        assert!(!reason.contains("聊天"));
+        assert!(!reason.contains("权限卡片"));
+        assert!(!reason.contains("重启"));
+        assert!(!reason.contains("后台"));
+    }
+
+    fn temp_prefix() -> PathBuf {
+        std::env::temp_dir().join(format!("aicross-acp-install-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn npm_result(stderr: &str) -> ProcessResult {
+        ProcessResult {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+            timed_out: false,
+            truncated: false,
+            timeout: Duration::from_secs(1800),
         }
-        set_state("codex", SetupState::Idle);
+    }
+
+    fn state_of(reports: &[AdapterReport], agent: &str) -> AdapterState {
+        reports.iter().find(|report| report.agent == agent).unwrap().state
+    }
+
+    #[test]
+    fn task45_install_skips_npm_when_all_adapters_ready() {
+        let calls = std::cell::Cell::new(0);
+        let run_npm = |_: &Path, _: &[String], _: &Path| -> Result<ProcessResult, String> {
+            calls.set(calls.get() + 1);
+            Ok(npm_result(""))
+        };
+        let reports = install_missing_with(&InstallEnv {
+            adapter_ready: &|_| true,
+            cli_present: &|_| true,
+            npm: Some(PathBuf::from("npm")),
+            prefix: Ok(temp_prefix()),
+            run_npm: &run_npm,
+        });
+        assert_eq!(calls.get(), 0);
+        assert!(reports.iter().all(|report| report.state == AdapterState::Ready && !report.not_installed()));
+        assert_eq!(serde_json::to_value(&reports[0]).unwrap(), serde_json::json!({"agent": "claude", "state": "已就绪"}));
+    }
+
+    #[test]
+    fn task45_install_runs_npm_in_foreground_and_reports_fresh_install() {
+        let prefix = temp_prefix();
+        let calls = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let run_npm = |_: &Path, args: &[String], prefix: &Path| -> Result<ProcessResult, String> {
+            calls.borrow_mut().push(args.to_vec());
+            let bin = prefix.join("node_modules").join(".bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            let name = if cfg!(windows) { "claude-agent-acp.cmd" } else { "claude-agent-acp" };
+            std::fs::write(bin.join(name), "").unwrap();
+            Ok(npm_result(""))
+        };
+        let reports = install_missing_with(&InstallEnv {
+            adapter_ready: &|agent| agent == "codex",
+            cli_present: &|_| true,
+            npm: Some(PathBuf::from("npm")),
+            prefix: Ok(prefix.clone()),
+            run_npm: &run_npm,
+        });
+        let calls = calls.into_inner();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], install_args(&["@agentclientprotocol/claude-agent-acp@0.79.0".to_string()], &prefix));
+        assert_eq!(state_of(&reports, "claude"), AdapterState::Installed);
+        assert_eq!(state_of(&reports, "codex"), AdapterState::Ready);
+        let _ = std::fs::remove_dir_all(prefix);
+    }
+
+    #[test]
+    fn task45_install_skips_agents_without_their_cli() {
+        let calls = std::cell::Cell::new(0);
+        let run_npm = |_: &Path, _: &[String], _: &Path| -> Result<ProcessResult, String> {
+            calls.set(calls.get() + 1);
+            Ok(npm_result(""))
+        };
+        let reports = install_missing_with(&InstallEnv {
+            adapter_ready: &|agent| agent == "claude",
+            cli_present: &|cli| cli == "claude",
+            npm: Some(PathBuf::from("npm")),
+            prefix: Ok(temp_prefix()),
+            run_npm: &run_npm,
+        });
+        assert_eq!(calls.get(), 0);
+        assert_eq!(state_of(&reports, "codex"), AdapterState::NoCli);
+        assert!(!reports.iter().any(AdapterReport::not_installed));
+    }
+
+    #[test]
+    fn task45_install_reports_missing_npm() {
+        let run_npm = |_: &Path, _: &[String], _: &Path| -> Result<ProcessResult, String> {
+            panic!("没有 npm 时不应执行安装")
+        };
+        let reports = install_missing_with(&InstallEnv {
+            adapter_ready: &|_| false,
+            cli_present: &|_| true,
+            npm: None,
+            prefix: Ok(temp_prefix()),
+            run_npm: &run_npm,
+        });
+        assert!(reports.iter().all(|report| report.state == AdapterState::NoNpm && report.not_installed()));
+        assert!(reports[0].reason.as_deref().unwrap().contains("npm"));
+        assert_eq!(serde_json::to_value(&reports[0]).unwrap()["state"], "没有 npm");
+    }
+
+    #[test]
+    fn task45_install_failure_carries_last_npm_lines() {
+        let prefix = temp_prefix();
+        let run_npm = |_: &Path, _: &[String], _: &Path| -> Result<ProcessResult, String> {
+            Ok(npm_result("npm warn 第一行
+npm error code ETIMEDOUT
+npm error network 连接超时
+npm error 日志在 x.log
+"))
+        };
+        let reports = install_missing_with(&InstallEnv {
+            adapter_ready: &|_| false,
+            cli_present: &|_| true,
+            npm: Some(PathBuf::from("npm")),
+            prefix: Ok(prefix.clone()),
+            run_npm: &run_npm,
+        });
+        for report in &reports {
+            assert_eq!(report.state, AdapterState::Failed);
+            assert!(report.not_installed());
+            let reason = report.reason.as_deref().unwrap();
+            assert!(reason.contains("ETIMEDOUT") && reason.contains("日志在 x.log"), "{reason}");
+            assert!(!reason.contains("第一行"), "{reason}");
+        }
+        assert_eq!(serde_json::to_value(&reports[1]).unwrap()["state"], "安装失败");
+        let _ = std::fs::remove_dir_all(prefix);
     }
 }
-

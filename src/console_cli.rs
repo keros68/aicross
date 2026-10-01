@@ -1,6 +1,7 @@
 //! `aicross dispatch/status/adopt/cancel/resources/config` 命令行入口。
 //! `resources` 与 `config`（TASK-39）直读资源库与配置文件，不经过窗口。
 
+use crate::channels::acp_setup::{self, AdapterReport};
 use crate::orchestration::RoleProfile;
 use crate::resources::{
     self, ResourceAgent, ResourceModelKey, ResourceOperation, ResourceStore,
@@ -79,7 +80,7 @@ fn run_at_with(
             return 2;
         }
         Some("resources") => return run_resources(root, args, ops, stdout, stderr),
-        Some("config") => return run_config(root, args, stdout, stderr),
+        Some("config") => return run_config(root, args, &AcpOps::production(), stdout, stderr),
         _ => {}
     }
     let request = match build_request(args) {
@@ -403,7 +404,22 @@ fn setting_kind(key: &str) -> Option<SettingKind> {
     })
 }
 
-fn run_config(root: &Path, args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+/// ACP 适配器的检查与安装；生产走 acp_setup，测试注入假实现，不在单测里真跑 npm。
+struct AcpOps {
+    install: Box<dyn Fn() -> Vec<AdapterReport>>,
+    status: Box<dyn Fn() -> Vec<AdapterReport>>,
+}
+
+impl AcpOps {
+    fn production() -> Self {
+        AcpOps {
+            install: Box::new(acp_setup::install_missing_blocking),
+            status: Box::new(acp_setup::adapter_status),
+        }
+    }
+}
+
+fn run_config(root: &Path, args: &[String], acp: &AcpOps, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
     match args.get(2).map(String::as_str) {
         Some("show") => {
             if let Some(message) = extra_arg_error(args, 3) {
@@ -421,13 +437,14 @@ fn run_config(root: &Path, args: &[String], stdout: &mut dyn Write, stderr: &mut
             let value = json!({
                 "roles": roles,
                 "dispatch": crate::engine::load_settings(root),
+                "acp": (acp.status)(),
             });
             let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
             let _ = writeln!(stderr, "已读取配置");
             0
         }
         Some("set-role") => run_config_set_role(root, args, stdout, stderr),
-        Some("set") => run_config_set(root, args, stdout, stderr),
+        Some("set") => run_config_set(root, args, acp, stdout, stderr),
         None => {
             let _ = writeln!(stderr, "缺少子命令");
             2
@@ -583,6 +600,7 @@ fn clamp_setting_value(key: &str, number: f64) -> Value {
 fn run_config_set(
     root: &Path,
     args: &[String],
+    acp: &AcpOps,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> i32 {
@@ -658,6 +676,24 @@ fn run_config_set(
         return 1;
     }
     let dispatch = crate::engine::load_settings(root);
+    // 10-01 定案：打开 ACP 时当场装适配器；装不上不回滚设置，退出码 1，派发对这几家回退一次性 CLI。
+    if key == "acpEnabled" && dispatch.acp_enabled {
+        let reports = (acp.install)();
+        let value = json!({ "dispatch": dispatch, "acp": reports });
+        let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
+        let described = |report: &AdapterReport| {
+            let state = serde_json::to_value(report.state).ok();
+            format!("{} {}", report.agent, state.as_ref().and_then(Value::as_str).unwrap_or(""))
+        };
+        let failed = reports.iter().filter(|report| report.not_installed()).map(described).collect::<Vec<_>>();
+        if failed.is_empty() {
+            let states = reports.iter().map(described).collect::<Vec<_>>();
+            let _ = writeln!(stderr, "已写入派发设置；ACP 适配器：{}", states.join("，"));
+            return 0;
+        }
+        let _ = writeln!(stderr, "已写入派发设置；ACP 适配器未装上：{}；派发对这几家回退一次性 CLI", failed.join("，"));
+        return 1;
+    }
     let _ = writeln!(stdout, "{}", serde_json::to_string(&dispatch).unwrap_or_else(|_| "{}".into()));
     match clamped {
         Some(note) => {
@@ -1695,6 +1731,101 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
         assert_eq!(parsed["id"], "codex");
         assert_eq!(parsed["state"], "未安装");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn run_config_acp(root: &Path, args: &[&str], acp: &AcpOps) -> (i32, String, String) {
+        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_config(root, &args, acp, &mut stdout, &mut stderr);
+        (code, String::from_utf8(stdout).unwrap(), String::from_utf8(stderr).unwrap())
+    }
+
+    fn fake_acp(reports: Vec<AdapterReport>) -> (AcpOps, std::rc::Rc<std::cell::Cell<u32>>) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counter = calls.clone();
+        let installed = reports.clone();
+        let ops = AcpOps {
+            install: Box::new(move || {
+                counter.set(counter.get() + 1);
+                installed.clone()
+            }),
+            status: Box::new(move || reports.clone()),
+        };
+        (ops, calls)
+    }
+
+    fn report(agent: &'static str, state: acp_setup::AdapterState, reason: Option<&str>) -> AdapterReport {
+        AdapterReport { agent, state, reason: reason.map(str::to_string) }
+    }
+
+    #[test]
+    fn task45_config_set_acp_enabled_installs_and_reports() {
+        let root = fixture_root("acp-on");
+        let (ops, calls) = fake_acp(vec![
+            report("claude", acp_setup::AdapterState::Ready, None),
+            report("codex", acp_setup::AdapterState::Installed, None),
+        ]);
+        let (code, stdout, stderr) = run_config_acp(&root, &["aicross", "config", "set", "acpEnabled", "true"], &ops);
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(calls.get(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["dispatch"]["acpEnabled"], true);
+        assert_eq!(parsed["acp"][0], json!({"agent": "claude", "state": "已就绪"}));
+        assert_eq!(parsed["acp"][1]["state"], "刚装好");
+        assert_eq!(stderr.lines().count(), 1, "{stderr}");
+        assert!(stderr.contains("claude 已就绪") && stderr.contains("codex 刚装好"), "{stderr}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task45_config_set_acp_enabled_failure_exits_1_and_keeps_setting() {
+        let root = fixture_root("acp-fail");
+        let (ops, calls) = fake_acp(vec![
+            report("claude", acp_setup::AdapterState::NoNpm, Some("未检测到 npm（Node.js）")),
+            report("codex", acp_setup::AdapterState::Failed, Some("npm error code ETIMEDOUT")),
+        ]);
+        let (code, stdout, stderr) = run_config_acp(&root, &["aicross", "config", "set", "acpEnabled", "true"], &ops);
+        assert_eq!(code, 1, "{stderr}");
+        assert_eq!(calls.get(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["acp"][1]["state"], "安装失败");
+        assert_eq!(parsed["acp"][1]["reason"], "npm error code ETIMEDOUT");
+        assert!(stderr.contains("claude 没有 npm") && stderr.contains("codex 安装失败"), "{stderr}");
+        assert!(stderr.contains("回退一次性 CLI"), "{stderr}");
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join("dispatch-settings.json")).unwrap()).unwrap();
+        assert_eq!(saved["acpEnabled"], true);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task45_config_set_acp_disabled_does_not_install() {
+        let root = fixture_root("acp-off");
+        let (ops, calls) = fake_acp(vec![report("claude", acp_setup::AdapterState::Ready, None)]);
+        let (code, stdout, stderr) = run_config_acp(&root, &["aicross", "config", "set", "acpEnabled", "false"], &ops);
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(calls.get(), 0);
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["acpEnabled"], false);
+        assert!(parsed.get("acp").is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task45_config_show_lists_acp_status_without_installing() {
+        let root = fixture_root("acp-show");
+        let (ops, calls) = fake_acp(vec![
+            report("claude", acp_setup::AdapterState::Ready, None),
+            report("codex", acp_setup::AdapterState::Missing, None),
+        ]);
+        let (code, stdout, stderr) = run_config_acp(&root, &["aicross", "config", "show"], &ops);
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(calls.get(), 0);
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["acp"][0]["state"], "已就绪");
+        assert_eq!(parsed["acp"][1]["state"], "未安装");
         let _ = fs::remove_dir_all(root);
     }
 }

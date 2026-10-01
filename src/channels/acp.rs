@@ -3,7 +3,7 @@ use crate::process::{spawn_interactive, InteractiveProcess, ProcessActivity, Rec
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -292,15 +292,9 @@ fn start_agent(agent: &str, _provider: &str, cwd: &Path, timeout: Duration) -> R
         client.agent = normalized;
         return Ok(client);
     }
-    // claude / codex 的适配器由应用自备（acp_setup）：缺了就在后台装，本轮以 Process 错误回退一次性 CLI。
+    // claude / codex 的适配器在打开 ACP 时安装（acp_setup）；派发途中不装，缺了以 Process 错误回退一次性 CLI。
     let (program, args) = match normalized.as_str() {
-        "claude" | "codex" => {
-            let program = super::acp_setup::resolve_adapter(&normalized).map_err(|_| {
-                super::acp_setup::ensure_installed();
-                AcpError::new(AcpErrorKind::Process, super::acp_setup::unavailable_reason(&normalized))
-            })?;
-            (program, Vec::new())
-        }
+        "claude" | "codex" => (adapter_program(&normalized, &super::acp_setup::resolve_adapter)?, Vec::new()),
         _ => (
             super::resolve_binary("kimi", super::kimi_fallback()).map_err(|e| AcpError::new(AcpErrorKind::Process, e))?,
             vec!["acp".to_string()],
@@ -309,6 +303,10 @@ fn start_agent(agent: &str, _provider: &str, cwd: &Path, timeout: Duration) -> R
     let mut client = start_client(&program, &args, cwd, timeout)?;
     client.agent = normalized;
     Ok(client)
+}
+
+fn adapter_program(agent: &str, resolve: &dyn Fn(&str) -> Result<PathBuf, String>) -> Result<PathBuf, AcpError> {
+    resolve(agent).map_err(|_| AcpError::new(AcpErrorKind::Process, super::acp_setup::unavailable_reason(agent)))
 }
 
 fn start_client(
@@ -1804,5 +1802,15 @@ mod tests {
             .prompt("gpt-5.6-sol", None, "config", &cwd, Instant::now() + Duration::from_secs(5), "高", true, false, "")
             .unwrap();
         assert_eq!(writer.channel.text, "config:gpt-5.6-sol:agent:high");
+    }
+
+    #[test]
+    fn task45_missing_adapter_falls_back_without_installing() {
+        // 安装只在 `config set acpEnabled true` 时做；这里若触发安装，测试构建下的安装入口会 panic。
+        let error = adapter_program("codex", &|_| Err("找不到".to_string())).unwrap_err();
+        assert!(matches!(error.kind, AcpErrorKind::Process));
+        assert_eq!(error.message, super::super::acp_setup::unavailable_reason("codex"));
+        let found = adapter_program("claude", &|_| Ok(PathBuf::from("claude-agent-acp"))).unwrap();
+        assert_eq!(found, PathBuf::from("claude-agent-acp"));
     }
 }

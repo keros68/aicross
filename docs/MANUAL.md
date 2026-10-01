@@ -36,6 +36,12 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 逐项改。角色（出方案 / 执行 / 验收）在 `~/.aicross/roles.json`，用
 `config set-role` 改；三个角色一次定好，之后每次派发复用。
 
+ACP 默认关闭，派发走各家 CLI 自带的续聊。要用 ACP 时执行
+`aicross config set acpEnabled true`：写入设置后当场安装 claude、codex 的 ACP
+适配器并输出每家结果。安装需要 npm 与对应的 CLI；装不上的，命令退出 1 并说明
+原因，派发对它们回退一次性 CLI。`aicross config show` 的 `acp` 一项显示各家
+适配器是否就绪。
+
 ## 资源接入
 
 接入是申报制：aicross 不扫描本机，资源清单在 `~/.aicross/resources.json`。
