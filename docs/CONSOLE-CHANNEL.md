@@ -76,13 +76,23 @@ cc-switch 发现提示的路径取派发设置里的 `ccSwitchPath`。单个 age
 在同名模型挂多个 provider 时指定端点；原生模型不冒烟，退出 0。冒烟失败退出 1，
 stderr 给脱敏后的原因。
 
-`config show` 输出 `{ "roles": …, "dispatch": … }`。`config set-role` 把角色指
+`config show` 输出 `{ "roles": …, "dispatch": …, "acp": … }`，`acp` 列出每家
+ACP 适配器当前是否就绪，只查不装。`config set-role` 把角色指
 到资源库里的模型，目标不在资源库时退出 2 并列出可选模型；`roles.json` 损坏时
 退出 1，不写盘。`config set` 只认 `dispatch-settings.json` 的键
 （`timeoutSecs`、`concurrency`、`maxRequests`、`fixRoundLimit`、`swarmLimit`、
 `consoleRunLimit`、`validationCommand`、`redact`、`writeProjectDispatch`、
 `acpEnabled`、`ccSwitchPath`、`classificationModel`、`classifyProposals`）；
 越界夹取与小数取整在 stderr 说明，未知键退出 2；文件损坏时退出 1，不覆盖。
+
+ACP 默认关闭，派发走各家 CLI 自带的续聊。`config set acpEnabled true` 写入设置
+后当场检查并安装 claude、codex 的 ACP 适配器（npm 装进 `~/.aicross/acp`，版本
+固定），装完才返回；安装需要 npm 与对应的 CLI，没装对应 CLI 的那家跳过。stdout
+输出 `{ "dispatch": …, "acp": [{ "agent": "claude", "state": "已就绪" }, …] }`，
+`state` 为 已就绪 / 刚装好 / 未装对应 CLI / 没有 npm / 安装失败，后两种带
+`reason`（失败时为 npm 输出的最后几行）。有一家没装上时设置照样保留，退出 1，
+stderr 写明是哪几家；派发对它们回退一次性 CLI。派发途中不安装。设为 `false`
+时不安装。
 
 ## 查看
 
