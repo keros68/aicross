@@ -42,6 +42,10 @@ run 摘要记录本次派发的原始需求文本（`original_request`）、所�
 （`pid_started_at`）。后台引擎逐阶段更新；取消标记存放在同目录的
 `<run_id>.cancel`，处理完成后删除。
 
+后台引擎启动的各家 CLI 子进程（含它们再拉起的进程）在 Windows 上挂进
+kill-on-close Job：引擎进程退出或被杀时随之结束，不留继续消耗额度的孤儿进程。
+其它平台不做这项保证。
+
 存活判定：run 为 `running` 且 pid 非 0 时，Windows 核对进程存在且创建时间与
 `pid_started_at` 一致（防止 pid 复用误判）；macOS 与 Linux 只核对进程存在。
 派发刚接收、后台进程尚未报到时 pid 为 0：`updated_at` 在 30 秒内视为启动中；
@@ -75,6 +79,10 @@ cc-switch 发现提示的路径取派发设置里的 `ccSwitchPath`。单个 age
 的第三方模型各发一次短请求并核对真身；`--model` 只冒烟这一个，`--provider`
 在同名模型挂多个 provider 时指定端点；原生模型不冒烟，退出 0。冒烟失败退出 1，
 stderr 给脱敏后的原因。
+
+单次冒烟最长等 180 秒。超时记「冒烟超时」（资源库 `verification` 为 `timeout`），
+不算验证失败，派发前检查不拦，可再跑一次 `resources smoke` 重试；真身核对不通过
+才记「验证失败」并拦下派发。
 
 `config show` 输出 `{ "roles": …, "dispatch": …, "acp": … }`，`acp` 列出每家
 ACP 适配器当前是否就绪，只查不装。`config set-role` 把角色指

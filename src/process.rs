@@ -92,6 +92,28 @@ mod windows_job {
             let _ = CloseHandle(proc);
         }
     }
+
+    /// 只在测试里用：查某 pid 是否已挂进进程级 kill-on-close Job。
+    /// `IsProcessInJob` 对着我们自己的 job 句柄查，嵌套在外层 Job 里也不误报。
+    #[cfg(test)]
+    pub(crate) fn is_pid_in_job(pid: u32) -> bool {
+        use windows::Win32::System::JobObjects::IsProcessInJob;
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_INFORMATION,
+        };
+        let Some(job) = get_or_create_job() else { return false };
+        unsafe {
+            let proc = match OpenProcess(PROCESS_QUERY_INFORMATION, false, pid) {
+                Ok(h) => h,
+                Err(_) => return false,
+            };
+            let mut in_job = Default::default();
+            let contained =
+                IsProcessInJob(proc, job, &mut in_job).is_ok() && in_job.as_bool();
+            let _ = CloseHandle(proc);
+            contained
+        }
+    }
 }
 
 /// 把已启动的子进程绑进 kill-on-close Job Object（仅 Windows 生效）。
@@ -448,6 +470,10 @@ pub fn run_process_registered_with_activity(
     let mut child = command
         .spawn()
         .map_err(|error| format!("启动 {} 失败：{error}", program.display()))?;
+    // 一次性派发与冒烟同样挂进 kill-on-close Job（TASK-42）：引擎被杀时，
+    // 它正在等待的 CLI 子进程随之结束，不留继续扣额度的孤儿。孙进程按继承
+    // 规则自动进入同一个 Job。非 Windows 无操作（保持现状，文档已注明）。
+    assign_process_to_job(child.id());
     if let Some(key) = registry_key {
         if let Ok(mut running) = running_processes().lock() {
             running.insert(key.to_string(), child.id());
@@ -661,6 +687,32 @@ mod tests {
         {
             (std::path::PathBuf::from("/bin/sh"), vec!["-c".to_string()])
         }
+    }
+
+    /// 一次性派发路径（run_process → run_process_registered_with_activity）
+    /// spawn 后必须把子进程挂进 kill-on-close Job（TASK-42）：直启子进程再拉
+    /// 一个孙子后退出，孙子靠继承留在同一个 Job 里。改回不挂 Job，这条就红。
+    #[cfg(windows)]
+    #[test]
+    fn oneshot_grandchild_lands_in_the_kill_on_close_job() {
+        let (program, mut args) = shell();
+        args.push(
+            "$p = Start-Process pwsh -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 15' -PassThru -WindowStyle Hidden; Write-Output $p.Id"
+                .to_string(),
+        );
+        let result = run_process(&program, &args, None, Duration::from_secs(60), None)
+            .expect("直启子进程");
+        assert_eq!(result.code, Some(0), "stderr: {}", result.stderr);
+        let pid: u32 = result
+            .stdout
+            .trim()
+            .parse()
+            .expect("孙子进程 pid 应打印到 stdout");
+        assert!(
+            windows_job::is_pid_in_job(pid),
+            "孙子进程 {pid} 不在 kill-on-close Job 里"
+        );
+        terminate_process_id(pid);
     }
 
     #[test]

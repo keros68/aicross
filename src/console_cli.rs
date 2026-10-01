@@ -1121,6 +1121,35 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// TASK-42：冒烟超时的模型在 `resources` 输出里记「冒烟超时」，note 给
+    /// 重试命令；不与「验证失败」混档。
+    #[test]
+    fn task42_resources_lists_smoke_timeout_with_retry_note() {
+        let root = fixture_root("timeout-state");
+        fs::write(
+            root.join("resources.json"),
+            r#"{"version":1,"agents":[
+                {"id":"pi","name":"pi agent","kind":"内置","detected":true,"version":"0.86.1","models":[
+                    {"id":"glm-5.3","agent":"pi","provider":"zai-coding-cn","status":"冒烟失败","verification":"timeout","smoke_failure":"冒烟超时（180 秒）","resolved_id":"glm-5.3","resolved_source":"alias-table"},
+                    {"id":"bad","agent":"pi","provider":"zai-coding-cn","status":"冒烟失败","verification":"failed","smoke_failure":"403: denied","resolved_id":"bad","resolved_source":"alias-table"}
+                ]}
+            ]}"#,
+        )
+        .unwrap();
+        let (code, stdout, stderr) =
+            run_with(&root, &["aicross", "resources"], &ResourcesOps::production());
+        assert_eq!(code, 0, "{stderr}");
+        let timeout = model_state_in(&stdout, "pi", "zai-coding-cn", "glm-5.3");
+        assert_eq!(timeout["state"], "冒烟超时");
+        assert_eq!(
+            timeout["note"],
+            "可重试 aicross resources smoke pi --model glm-5.3；不影响派发"
+        );
+        let failed = model_state_in(&stdout, "pi", "zai-coding-cn", "bad");
+        assert_eq!(failed["state"], "验证失败");
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn task39_resources_detect_uses_injected_detector_and_passes_cc_switch() {
         let root = fixture_root("detect");
