@@ -4277,7 +4277,8 @@ fn run_one_attempt(
         log_dir,
         &record,
         &frontmatter,
-        &outbound,
+        // 走了一次性 CLI 的轮次记实际发出的内容（ACP 回退时是重置后的完整上下文）
+        if needs_oneshot { &oneshot_outbound } else { &outbound },
         &channel_output.text,
         artifacts.as_ref(),
         &record_stdout,
@@ -7240,6 +7241,35 @@ mod tests {
         assert!(!second.raw_stdout.contains("'-S'"));
         assert!(!second.raw_stdout.contains("'-r'"));
         assert_eq!(fs::read_to_string(root.join("runs-2/tasks/node-1.txt")).unwrap(), "完整祖先上下文\n当前追问");
+        let record = fs::read_to_string(&second.dispatch_file).unwrap();
+        assert!(record.contains("## 任务全文\n\n完整祖先上下文\n当前追问\n\n## 回复正文"), "{record}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_one_live_acp_follow_up_records_only_current_message() {
+        let _pool_guard = channels::acp::test_pool_guard();
+        let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
+        let root = std::env::temp_dir().join(format!("aicross-run-one-acp-follow-up-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let (mut request, mut settings, count) = acp_run_one_fixture(&root, &[]);
+        settings.timeout_secs = 10;
+        request.current_message = request.prompt.clone();
+        let first = run_one("acp-follow-up-1", &project, &root.join("runs-1"), &log_dir, &settings, request.clone());
+        assert_eq!(first.runner, "acp", "{}", first.error);
+        request.session_id = first.session_id;
+        request.previous_runner = "acp".into();
+        request.current_message = "当前追问".into();
+        let second = run_one("acp-follow-up-2", &project, &root.join("runs-2"), &log_dir, &settings, request);
+        assert_eq!(second.status, "ok", "{}", second.error);
+        assert_eq!(second.runner, "acp");
+        assert!(!count.exists());
+        let record = fs::read_to_string(&second.dispatch_file).unwrap();
+        assert!(record.contains("## 任务全文\n\n当前追问\n\n## 回复正文"), "{record}");
+        channels::acp::shutdown_all();
         let _ = fs::remove_dir_all(root);
     }
 
@@ -7272,6 +7302,8 @@ mod tests {
         assert!(result.text.contains("stub full context"));
         assert!(result.raw_stdout.contains("--task-file"));
         assert!(!result.raw_stdout.contains("old-acp-session"));
+        let record = fs::read_to_string(&result.dispatch_file).unwrap();
+        assert!(record.contains("## 任务全文\n\n完整祖先上下文\n当前追问\n\n## 回复正文"), "{record}");
         let _ = fs::remove_dir_all(root);
     }
 
