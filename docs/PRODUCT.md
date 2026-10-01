@@ -172,6 +172,11 @@
 
    对 skill 的含义：派发后不在宿主里长时间干等，默认先把 run id 和各路去向告诉用户、继续对话，要结果时再 `aicross status --wait`；在 Codex 里尤其如此。还没测的：超过 10 分钟的等待、交互式会话里的表现（批准弹窗只需点一次）。
 3. 查看器用现有 Tauri 窗口砍到一页，还是本地网页。倾向前者以复用结果屏代码；排在 1、2 之后。
+   **10-01 备料**：
+   - 可复用的现成部件：对话图结果屏（`src-ui/src/components/center/graph/DispatchOverlay.tsx`）已有按阶段并排、产物 diff、worktree 提示、采纳 / 取消采纳 / 重派 / 升级；控制台 run 详情（`src-ui/src/console-run-detail.ts`）已有每路的请求模型与实际模型、token、耗时、备选切换、验收结论。
+   - TASK-36 之后的数据源：`~/.aicross/runs/<run_id>.json`（run 摘要）+ 图文件 + 项目里的 `.dispatch/` 留痕，查看器只读这三样，不需要窗口在派发时开着。
+   - Tauri 路线：命令行加 `aicross open <run_id>`，启动窗口直接进这一页；打包、图标、字体都已有。本地网页路线要另起本地服务、把这些组件搬出 Tauri 依赖，工作量更大。
+   - 「重派」在查看器里点，等于对该节点再走一次无窗口引擎；动作要落回 run 文件，宿主里的 skill 用 `status` 能看到。
 
 ## 已采纳、未排期
 
