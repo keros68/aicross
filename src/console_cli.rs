@@ -92,6 +92,9 @@ fn run_at_with(
     };
     match args.get(1).map(String::as_str) {
         Some("dispatch") => {
+            for note in &request.notes {
+                let _ = writeln!(stderr, "{note}");
+            }
             let input = match serde_json::from_value(request.body.unwrap_or_default()) {
                 Ok(value) => value,
                 Err(error) => { let _ = writeln!(stderr, "派发请求无效：{error}"); return 2; }
@@ -809,6 +812,8 @@ pub(crate) fn attach_parent_console() {}
 struct CliRequest {
     body: Option<Value>,
     timeout: Duration,
+    /// TASK-43：需要写到 stderr 的说明（如 --accept-file 过大截断）。
+    notes: Vec<String>,
 }
 
 /// 命令行参数校验与派发请求体的组装。status / adopt / cancel 的位置参数与
@@ -824,6 +829,19 @@ fn build_request(args: &[String]) -> Result<CliRequest, String> {
             let bytes = fs::read(&text_file).map_err(|error| format!("读取文本文件失败：{error}"))?;
             let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
             let text = String::from_utf8(bytes.to_vec()).map_err(|_| "文本文件必须是 UTF-8 编码".to_string())?;
+            // TASK-43：--accept-file 可选，验收条件随派发下发给盲验收与盲审节点。
+            let mut notes = Vec::new();
+            let accept_criteria = if args.iter().any(|arg| arg == "--accept-file") {
+                let path = option_value(args, "--accept-file")
+                    .ok_or_else(|| "缺少 --accept-file 的值".to_string())?;
+                let (content, note) = read_accept_file(&path)?;
+                if let Some(note) = note {
+                    notes.push(note);
+                }
+                content
+            } else {
+                String::new()
+            };
             let preset = option_value(args, "--preset").unwrap_or_else(|| "economy".into());
             let preset = match preset.as_str() {
                 "shared" => "builtin-shared",
@@ -831,25 +849,30 @@ fn build_request(args: &[String]) -> Result<CliRequest, String> {
                 "blind" => "builtin-blind",
                 other => other,
             };
+            let mut body = json!({ "project": project, "preset": preset, "text": text });
+            if !accept_criteria.is_empty() {
+                body["accept_criteria"] = Value::String(accept_criteria);
+            }
             Ok(CliRequest {
-                body: Some(json!({ "project": project, "preset": preset, "text": text })),
+                body: Some(body),
                 timeout: Duration::from_secs(30),
+                notes,
             })
         }
         Some("status") => {
             positional(args, 2).ok_or_else(|| "缺少 run_id".to_string())?;
             let timeout = option_value(args, "--timeout").map(|value| value.parse::<u64>().map_err(|_| "--timeout 必须是正整数".to_string())).transpose()?.unwrap_or(600);
             if timeout == 0 { return Err("--timeout 必须是正整数".into()); }
-            Ok(CliRequest { body: None, timeout: Duration::from_secs(timeout) })
+            Ok(CliRequest { body: None, timeout: Duration::from_secs(timeout), notes: Vec::new() })
         }
         Some("adopt") => {
             positional(args, 2).ok_or_else(|| "缺少 run_id".to_string())?;
             let node_id = positional(args, 3).ok_or_else(|| "缺少 node_id".to_string())?;
-            Ok(CliRequest { body: Some(json!({ "node_id": node_id })), timeout: Duration::from_secs(30) })
+            Ok(CliRequest { body: Some(json!({ "node_id": node_id })), timeout: Duration::from_secs(30), notes: Vec::new() })
         }
         Some("cancel") => {
             positional(args, 2).ok_or_else(|| "缺少 run_id".to_string())?;
-            Ok(CliRequest { body: Some(json!({})), timeout: Duration::from_secs(30) })
+            Ok(CliRequest { body: Some(json!({})), timeout: Duration::from_secs(30), notes: Vec::new() })
         }
         _ => Err("未知命令".into()),
     }
@@ -860,6 +883,25 @@ fn option_value(args: &[String], name: &str) -> Option<String> {
         .and_then(|index| args.get(index + 1))
         .filter(|value| !value.starts_with('-'))
         .cloned()
+}
+
+/// TASK-43：验收条件文件。UTF-8，可带 BOM（同 --text-file）；超过 64 KB
+/// 截断，说明文字由调用方写到 stderr。
+fn read_accept_file(path: &str) -> Result<(String, Option<String>), String> {
+    const ACCEPT_FILE_LIMIT: usize = 64 * 1024;
+    let bytes = fs::read(path).map_err(|error| format!("读取验收条件文件失败：{error}"))?;
+    let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
+    let mut text = String::from_utf8(bytes.to_vec())
+        .map_err(|_| "验收条件文件必须是 UTF-8 编码".to_string())?;
+    if text.len() > ACCEPT_FILE_LIMIT {
+        let mut limit = ACCEPT_FILE_LIMIT;
+        while !text.is_char_boundary(limit) {
+            limit -= 1;
+        }
+        text.truncate(limit);
+        return Ok((text, Some("验收条件文件超过 64 KB，已截断".into())));
+    }
+    Ok((text, None))
 }
 
 fn positional(args: &[String], index: usize) -> Option<String> {
@@ -942,6 +984,94 @@ mod tests {
         assert_eq!(build_request(&args).unwrap().body.unwrap()["text"], "正文");
         fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
         assert!(matches!(build_request(&args), Err(error) if error == "文本文件必须是 UTF-8 编码"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dispatch_accept_file_requires_value_and_existing_utf8_file() {
+        let root = std::env::temp_dir().join(format!("aicross-cli-accept-missing-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let text_path = root.join("t.txt");
+        fs::write(&text_path, "正文").unwrap();
+        let text_arg: String = text_path.to_string_lossy().into();
+        let no_value = vec![
+            "aicross".into(), "dispatch".into(), "--project".into(), "D:/p".into(),
+            "--text-file".into(), text_arg.clone(), "--accept-file".into(),
+        ];
+        assert!(matches!(
+            build_request(&no_value),
+            Err(error) if error == "缺少 --accept-file 的值"
+        ));
+        let missing = vec![
+            "aicross".into(), "dispatch".into(), "--project".into(), "D:/p".into(),
+            "--text-file".into(), text_arg.clone(),
+            "--accept-file".into(), root.join("nope.md").to_string_lossy().into(),
+        ];
+        assert!(matches!(
+            build_request(&missing),
+            Err(error) if error.starts_with("读取验收条件文件失败：")
+        ));
+        let path = root.join("accept.md");
+        fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        let non_utf8 = vec![
+            "aicross".into(), "dispatch".into(), "--project".into(), "D:/p".into(),
+            "--text-file".into(), text_arg,
+            "--accept-file".into(), path.to_string_lossy().into(),
+        ];
+        assert!(matches!(
+            build_request(&non_utf8),
+            Err(error) if error == "验收条件文件必须是 UTF-8 编码"
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dispatch_accept_file_goes_into_request_body_and_truncates_at_64kb() {
+        let root = std::env::temp_dir().join(format!("aicross-cli-accept-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let text_path = root.join("t.txt");
+        fs::write(&text_path, "正文").unwrap();
+        let text_arg: String = text_path.to_string_lossy().into();
+        let path = root.join("accept.md");
+        fs::write(&path, [vec![0xef, 0xbb, 0xbf], "逐条核对".as_bytes().to_vec()].concat()).unwrap();
+        let args = vec![
+            "aicross".into(), "dispatch".into(), "--project".into(), "D:/p".into(),
+            "--text-file".into(), text_arg.clone(), "--accept-file".into(), path.to_string_lossy().into(),
+        ];
+        let request = build_request(&args).unwrap();
+        assert_eq!(request.body.unwrap()["accept_criteria"], "逐条核对");
+        assert!(request.notes.is_empty());
+
+        let big = root.join("big.md");
+        fs::write(&big, "a".repeat(70 * 1024)).unwrap();
+        let args = vec![
+            "aicross".into(), "dispatch".into(), "--project".into(), "D:/p".into(),
+            "--text-file".into(), text_arg, "--accept-file".into(), big.to_string_lossy().into(),
+        ];
+        let request = build_request(&args).unwrap();
+        assert_eq!(request.body.unwrap()["accept_criteria"].as_str().unwrap().len(), 64 * 1024);
+        assert_eq!(request.notes, vec!["验收条件文件超过 64 KB，已截断".to_string()]);
+
+        // 第 65536 字节落在多字节字符中间：退到字符边界截断，不 panic。
+        let wide = root.join("wide.md");
+        fs::write(&wide, format!("ab{}", "中".repeat(30_000))).unwrap();
+        let args = vec![
+            "aicross".into(), "dispatch".into(), "--project".into(), "D:/p".into(),
+            "--text-file".into(), root.join("t.txt").to_string_lossy().into(),
+            "--accept-file".into(), wide.to_string_lossy().into(),
+        ];
+        let request = build_request(&args).unwrap();
+        let truncated = request.body.unwrap()["accept_criteria"].as_str().unwrap().to_string();
+        assert_eq!(truncated.len(), 65_534);
+        assert!(truncated.ends_with('中'));
+
+        // 未给 --accept-file 时请求体里没有该字段。
+        let plain = build_request(&[
+            "aicross".into(), "dispatch".into(), "--project".into(), "D:/p".into(),
+            "--text-file".into(), root.join("t.txt").to_string_lossy().into(),
+        ])
+        .unwrap();
+        assert!(plain.body.unwrap().get("accept_criteria").is_none());
         let _ = fs::remove_dir_all(root);
     }
 

@@ -184,6 +184,10 @@ pub struct EngineRun {
     /// 本次派发的原始需求文本，建图时写入，后台直接读，不从图上反推。
     #[serde(default)]
     pub original_request: String,
+    /// TASK-43：验收条件全文（命令行 `--accept-file` 读入），随派发落 run 文件；
+    /// 空为未提供，不写出。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub accept_criteria: String,
     /// 本次派发所用预设的 id（如 builtin-economy）；按 targets 直给时为
     /// 空串（fix-37-r1 R1-4）。旧 run 文件没有该字段，按空处理。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1258,6 +1262,9 @@ fn build_request(
         project_dir: project.into(),
         nodes,
         settings: settings.dispatch(),
+        // TASK-43：验收条件由 FileSink 在派出前从 run 文件盖到请求上；
+        // 这里恒为空，金标准夹具的请求不受影响。
+        accept_criteria: String::new(),
     }
 }
 
@@ -2533,6 +2540,9 @@ pub(crate) struct DispatchInput {
     pub attachments: Vec<String>,
     #[serde(default)]
     pub targets: Vec<Target>,
+    /// TASK-43：验收条件全文（命令行 `--accept-file` 读入）；空为未提供。
+    #[serde(default)]
+    pub accept_criteria: String,
 }
 
 #[derive(Debug)]
@@ -2665,6 +2675,7 @@ fn start_dispatch_with(
         nodes: node_summary(&graph, created.clone()),
         started_at: started,
         original_request: original,
+        accept_criteria: input.accept_criteria,
         pid: 0,
         updated_at: now(),
         preset_id,
@@ -2864,7 +2875,11 @@ impl PipelineSink for FileSink<'_> {
         write_run(self.root, self.run)
     }
     fn dispatch(&mut self, request: &DispatchStageRequest) -> Result<DispatchStageResult, String> {
-        dispatch::dispatch_stage_core(request.clone())
+        // TASK-43：验收条件随请求下发（run 文件 → 本阶段请求）。金标准夹具走的
+        // 记录型 sink 不在这里盖章，请求保持与夹具逐字一致。
+        let mut outbound = request.clone();
+        outbound.accept_criteria = self.run.accept_criteria.clone();
+        dispatch::dispatch_stage_core(outbound)
     }
     fn note_in_flight(&mut self, ids: &[String]) {
         if let Ok(mut active) = self.active.lock() {
@@ -3030,3 +3045,52 @@ mod golden;
 
 #[cfg(test)]
 mod tests;
+
+/// TASK-43：验收条件随派发进入 run 文件；未给 --accept-file 时不写出。
+#[cfg(test)]
+mod accept_criteria_run_file {
+    use super::*;
+
+    fn dispatch_input(project: &Path, accept: &str) -> DispatchInput {
+        DispatchInput {
+            project: project.to_string_lossy().into_owned(),
+            text: "实现任务".into(),
+            accept_criteria: accept.into(),
+            targets: vec![Target {
+                agent: "codex".into(),
+                model: "exec".into(),
+                role: "执行".into(),
+                thinking: "中".into(),
+                visibility: "共享".into(),
+                write: "只读".into(),
+                ..Target::default()
+            }],
+            ..DispatchInput::default()
+        }
+    }
+
+    #[test]
+    fn accept_criteria_is_stored_in_the_run_file_and_omitted_when_empty() {
+        let root = std::env::temp_dir().join(format!("aicross-accept43-run-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("resources.json"),
+            r#"{"version":1,"agents":[{"id":"codex","models":[{"id":"exec","agent":"codex"}]}]}"#,
+        )
+        .unwrap();
+        let spawn_stub = |_: &Path, _: &[String]| Ok(0_u32);
+        let run_json = |response: Value| {
+            let run_id = response["run_id"].as_str().unwrap().to_string();
+            fs::read_to_string(runs_dir(&root).join(format!("{run_id}.json"))).unwrap()
+        };
+        let first = start_dispatch_with(&root, dispatch_input(&root, "逐条核对后给结论"), spawn_stub).unwrap();
+        let stored = run_json(first);
+        assert!(stored.contains("accept_criteria"), "{stored}");
+        assert!(stored.contains("逐条核对后给结论"), "{stored}");
+
+        let second = start_dispatch_with(&root, dispatch_input(&root, ""), spawn_stub).unwrap();
+        let stored = run_json(second);
+        assert!(!stored.contains("accept_criteria"), "{stored}");
+        let _ = fs::remove_dir_all(root);
+    }
+}

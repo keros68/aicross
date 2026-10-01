@@ -23,6 +23,13 @@ aicross open <run_id>
 共享 / 经济 / 盲审模式，也可以直接写预设 id。`--text-file` 接受 UTF-8，
 可带 UTF-8 BOM；其它编码返回参数错误。不接受 `--text` 或 `--text=...`。
 
+`--accept-file` 可选，给验收条件文件：UTF-8、可带 BOM，超过 64 KB 截断并在
+stderr 说明。内容随派发存进 run 文件（`accept_criteria`，未给时不写出），
+盲验收与盲审的隔离目录写成 `ACCEPT.md`，执行节点不收；未给时不生成这个
+文件。盲验收的隔离目录一律附项目只读副本 `project/`（上游执行在自己
+worktree 时取该 worktree；多路上游各附一份，`project-2/` 起递增），
+`REQUEST.md` 头部写项目与执行者 worktree 的提交号（非 git 项目不写）。
+
 首个响应带真实的 `graph_id` 与本次新建的 `node_ids`：
 
 ```json
@@ -37,7 +44,8 @@ aicross open <run_id>
 那路的改动要按查看页提示手动合并。`cancel <run_id>` 写取消标记，不改写 run
 文件；run 已不在 `running` 时取消静默成功（退出 0，打印当前 run）。
 
-run 摘要记录本次派发的原始需求文本（`original_request`）、所用预设 id
+run 摘要记录本次派发的原始需求文本（`original_request`）、验收条件全文
+（`accept_criteria`，未给 `--accept-file` 时不写出）、所用预设 id
 （`preset_id`，按 targets 直给时为空）、后台进程 pid 与进程创建时间
 （`pid_started_at`）。后台引擎逐阶段更新；取消标记存放在同目录的
 `<run_id>.cancel`，处理完成后删除。

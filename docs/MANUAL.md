@@ -17,7 +17,7 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 
 | 命令 | 用途 |
 |---|---|
-| `aicross dispatch --project <目录> --preset <模式> --text-file <文件>` | 派发一次；多行任务文本走文件，不进 argv |
+| `aicross dispatch --project <目录> --preset <模式> --text-file <文件> [--accept-file <文件>]` | 派发一次；多行任务文本走文件，不进 argv |
 | `aicross status <run_id> [--wait] [--timeout 秒]` | 看一次 run 的状态；`--wait` 等到结束 |
 | `aicross adopt <run_id> <node_id>` | 采纳某一路的结果 |
 | `aicross cancel <run_id>` | 叫停一次派发 |
@@ -26,7 +26,9 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 | `aicross config show \| set-role \| set` | 看与改角色、派发设置 |
 
 `--preset` 认 `shared` / `economy` / `blind`（共享 / 经济 / 盲审），也可以直接
-写预设 id；缺省经济模式。`--text-file` 要 UTF-8。命令把 JSON 写到 stdout、
+写预设 id；缺省经济模式。`--text-file` 要 UTF-8。`--accept-file` 可选，给
+验收条件文件：内容随派发存进 run 文件，盲验收与盲审的隔离目录写成
+`ACCEPT.md`，执行节点不收；超过 64 KB 截断。命令把 JSON 写到 stdout、
 一行说明写到 stderr；退出码：0 成功，1 业务失败或等待超时，2 参数错误，
 3 引擎不可用（skill 只在 3 时回退到直接调各家 CLI）。契约全文见
 `docs/CONSOLE-CHANNEL.md`。
@@ -151,6 +153,8 @@ Markdown 文件，头部 YAML 记着模型真身、用量、耗时、可见性�
 | 修正轮自动回退并恢复改动后核对测试 | 红绿核对（结果：测试已钉住 / 测试未钉住） | 查看页卡片 |
 | 修正轮到顶后未闭合的条目 | 遗留 | 查看页页头 |
 | 派盲审前附上的验证命令输出 | VALIDATION.txt | 盲目录、派发记录 |
+| `--accept-file` 给出的验收条件 | ACCEPT.md | 盲目录、run 摘要 |
+| 供验收核对的项目只读副本 | project/（多路上游时 project-2/ 起递增） | 盲目录 |
 | 上游结果未进入验收的节点 | 已跳过 | 查看页卡片 |
 | 模型限额已触发 | 额度用尽 | 资源输出、查看页卡片 |
 | 模型额度重新可用的时间 | 恢复时间 | 资源输出、查看页卡片 |

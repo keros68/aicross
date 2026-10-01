@@ -188,6 +188,10 @@ pub struct DispatchStageRequest {
     pub nodes: Vec<DispatchNodeRequest>,
     #[serde(default)]
     pub settings: DispatchSettings,
+    /// TASK-43：验收条件全文（`--accept-file` 读入）。空为未提供：不序列化、
+    /// 不写 ACCEPT.md；只有盲验收与盲审节点经 ACCEPT.md 收到，执行节点不收。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub accept_criteria: String,
 }
 
 fn default_stage() -> u32 {
@@ -698,12 +702,13 @@ pub(crate) fn dispatch_stage_core(
             let tx = sender.clone();
             let run_id = request.run_id.clone();
             let settings = request.settings.clone();
+            let accept_criteria = request.accept_criteria.clone();
             let project = project.clone();
             let run_root = run_root.clone();
             let log_dir = log_dir.clone();
             thread::spawn(move || {
                 let activity = ProcessActivity::new();
-                let result = run_one_with_activity(&run_id, &project, &run_root, &log_dir, &settings, node, activity);
+                let result = run_one_with_activity(&run_id, &project, &run_root, &log_dir, &settings, &accept_criteria, node, activity);
                 let _ = tx.send((agents, single_writer, result));
             });
         }
@@ -2056,7 +2061,7 @@ fn run_one(
     settings: &DispatchSettings,
     node: DispatchNodeRequest,
 ) -> DispatchNodeResult {
-    run_one_with_activity(run_id, project, run_root, log_dir, settings, node, ProcessActivity::new())
+    run_one_with_activity(run_id, project, run_root, log_dir, settings, "", node, ProcessActivity::new())
 }
 
 fn run_one_with_activity(
@@ -2065,6 +2070,7 @@ fn run_one_with_activity(
     run_root: &Path,
     log_dir: &Path,
     settings: &DispatchSettings,
+    accept_criteria: &str,
     node: DispatchNodeRequest,
     activity: ProcessActivity,
 ) -> DispatchNodeResult {
@@ -2087,6 +2093,7 @@ fn run_one_with_activity(
         run_root,
         log_dir,
         settings,
+        accept_criteria,
         node.clone(),
         "主",
         // 05B：可写节点非额度失败不切备选，留痕与结果都标原因；额度用尽的情况在下面回滚后切，不标。
@@ -2170,7 +2177,7 @@ fn run_one_with_activity(
         }
         attempt_index += 1;
         let mut next = run_fallback_attempt(
-            run_id, project, run_root, log_dir, settings, &node, &candidate,
+            run_id, project, run_root, log_dir, settings, accept_criteria, &node, &candidate,
             &format!("备 {attempt_index}"), &activity,
         );
         next.fallback_from = previous_route.clone();
@@ -2286,7 +2293,7 @@ fn run_fallback(
     activity: &ProcessActivity,
 ) -> DispatchNodeResult {
     let fallback = node.fallback.clone().unwrap_or_default();
-    run_fallback_attempt(run_id, project, run_root, log_dir, settings, node, &fallback, "备", activity)
+    run_fallback_attempt(run_id, project, run_root, log_dir, settings, "", node, &fallback, "备", activity)
 }
 
 fn run_fallback_attempt(
@@ -2295,6 +2302,7 @@ fn run_fallback_attempt(
     run_root: &Path,
     log_dir: &Path,
     settings: &DispatchSettings,
+    accept_criteria: &str,
     node: &DispatchNodeRequest,
     fallback: &FallbackSpec,
     attempt: &str,
@@ -2332,7 +2340,7 @@ fn run_fallback_attempt(
     };
     retry.fallback = None; // 备选不再套备选，最多重跑一次
     retry.session_id = String::new(); // 换通道不续接旧会话
-    let mut result = run_one_attempt(run_id, project, run_root, log_dir, settings, retry, attempt, "", activity);
+    let mut result = run_one_attempt(run_id, project, run_root, log_dir, settings, accept_criteria, retry, attempt, "", activity);
     // R2-1：这个 session 属于备选通道，而节点 target 仍是主目标；写回会让下游
     // 同目标「共享」子节点经 continuationSession 把它续到主通道（-S/-r 一个
     // 主通道不存在的会话）。备选作答 = 另起会话不续聊：结果 session 置空，
@@ -2432,6 +2440,7 @@ fn run_one_attempt(
     run_root: &Path,
     log_dir: &Path,
     settings: &DispatchSettings,
+    accept_criteria: &str,
     mut node: DispatchNodeRequest,
     attempt: &str,
     fallback_skip_reason: &str,
@@ -2554,6 +2563,7 @@ fn run_one_attempt(
             &workdir,
             blind,
             project,
+            accept_criteria,
             &cancel_key,
             timeout,
         )
@@ -3186,6 +3196,10 @@ const REVIEW_ANSWER_PROMPT_NOTE: &str = "执行者未改文件，其最终回复
 const REVIEW_ANSWER_TRUNCATED_NOTE: &str = "（回复较长，已截断至前 2000 字）";
 const REVIEW_PROJECT_DIR: &str = "project";
 const REVIEW_PROJECT_PROMPT_NOTE: &str = "项目只读副本见 project/，用于核对回答，不要修改";
+const REVIEW_ACCEPT_FILE: &str = "ACCEPT.md";
+const REVIEW_ACCEPT_PROMPT_NOTE: &str = "本次验收条件见 ACCEPT.md，请逐条判断是否满足";
+const REVIEW_PROJECT_UNCHANGED_NOTE: &str = "本轮执行未改文件，以 project/ 当前内容为准";
+const REVIEW_PROJECTS_UNCHANGED_NOTE: &str = "本轮执行未改文件，以各项目副本当前内容为准";
 const REVIEW_PROJECT_FILE_LIMIT: u64 = 1024 * 1024;
 const REVIEW_PROJECT_TOTAL_LIMIT: u64 = 50 * 1024 * 1024;
 const REVIEW_PROJECT_COUNT_LIMIT: usize = 5000;
@@ -3287,42 +3301,62 @@ fn secret_project_file(path: &Path) -> bool {
         || name.starts_with("id_ed25519")
 }
 
-fn readonly_project_source(
+/// TASK-43：每个上游一份项目只读副本的来源：上游执行是 worktree 节点时取该
+/// worktree（须已登记），否则取项目目录；相同来源只附一份，按上游顺序排列。
+/// 返回（来源目录，是否 worktree，对应上游节点标识）。
+fn readonly_project_sources(
     project: &Path,
     artifacts: &[DispatchArtifacts],
     cancel_key: &str,
-) -> Result<PathBuf, String> {
-    let requested = artifacts
-        .iter()
-        .filter_map(|artifact| artifact.worktree.as_deref())
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
-    if requested.is_empty() {
-        return Ok(project.to_path_buf());
+) -> Result<Vec<(PathBuf, bool, String)>, String> {
+    let has_worktree = artifacts.iter().any(|artifact| {
+        artifact
+            .worktree
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|path| !path.is_empty())
+    });
+    let registered = if has_worktree {
+        Some(
+            registered_worktrees(project, cancel_key)
+                .map_err(|error| format!("核对执行节点 worktree 失败：{error}"))?,
+        )
+    } else {
+        None
+    };
+    let mut sources: Vec<(PathBuf, bool, String)> = Vec::new();
+    for (index, artifact) in artifacts.iter().enumerate() {
+        let upstream = match artifact.source_node_id.trim() {
+            "" => (index + 1).to_string(),
+            id => id.to_string(),
+        };
+        let (source, from_worktree) = match artifact
+            .worktree
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            Some(path) => {
+                let canonical = fs::canonicalize(path)
+                    .map_err(|error| format!("执行节点 worktree 不可用 {path}：{error}"))?;
+                if !registered
+                    .as_ref()
+                    .is_some_and(|set| set.contains(&canonical))
+                {
+                    return Err(format!(
+                        "执行节点 worktree 未登记：{}",
+                        canonical.display()
+                    ));
+                }
+                (canonical, true)
+            }
+            None => (project.to_path_buf(), false),
+        };
+        if !sources.iter().any(|(seen, _, _)| *seen == source) {
+            sources.push((source, from_worktree, upstream));
+        }
     }
-    if requested.len() != artifacts.len() {
-        return Err("只读回答来自项目目录与 worktree，无法确定项目副本来源".into());
-    }
-    let mut requested = requested
-        .into_iter()
-        .map(|source| {
-            fs::canonicalize(&source)
-                .map_err(|error| format!("执行节点 worktree 不可用 {}：{error}", source.display()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    requested.sort();
-    requested.dedup();
-    if requested.len() != 1 {
-        return Err("只读回答来自多个 worktree，无法确定项目副本来源".into());
-    }
-    let source = requested.pop().unwrap();
-    let registered = registered_worktrees(project, cancel_key)
-        .map_err(|error| format!("核对执行节点 worktree 失败：{error}"))?;
-    if !registered.contains(&source) {
-        return Err(format!("执行节点 worktree 未登记：{}", source.display()));
-    }
-    Ok(source)
+    Ok(sources)
 }
 
 fn readonly_project_paths(
@@ -3531,25 +3565,136 @@ fn copy_readonly_project_with_limits(
     Ok(summary)
 }
 
-fn copy_readonly_project(
+/// 盲目录里的项目只读副本：目录名、复制摘要、来源与对应上游。
+struct ProjectCopy {
+    name: String,
+    summary: ProjectCopySummary,
+    from_worktree: bool,
+    upstream: String,
+}
+
+/// TASK-43：有上游产物的盲验收一律附项目只读副本；多路上游各有 worktree 时
+/// 按上游顺序各附一份（project/、project-2/ …），相同来源只附一份。
+fn copy_readonly_projects(
     project: &Path,
     artifacts: &[DispatchArtifacts],
-    destination: &Path,
+    workdir: &Path,
     redact: bool,
     cancel_key: &str,
     timeout: Duration,
-) -> Result<ProjectCopySummary, String> {
-    let source = readonly_project_source(project, artifacts, cancel_key)?;
-    copy_readonly_project_with_limits(
-        &source,
-        destination,
-        redact,
-        cancel_key,
-        timeout,
-        REVIEW_PROJECT_FILE_LIMIT,
-        REVIEW_PROJECT_TOTAL_LIMIT,
-        REVIEW_PROJECT_COUNT_LIMIT,
-    )
+) -> Result<Vec<ProjectCopy>, String> {
+    let sources = readonly_project_sources(project, artifacts, cancel_key)?;
+    let mut copies = Vec::with_capacity(sources.len());
+    for (index, (source, from_worktree, upstream)) in sources.into_iter().enumerate() {
+        let name = if index == 0 {
+            REVIEW_PROJECT_DIR.to_string()
+        } else {
+            format!("{REVIEW_PROJECT_DIR}-{}", index + 1)
+        };
+        let summary = copy_readonly_project_with_limits(
+            &source,
+            &workdir.join(&name),
+            redact,
+            cancel_key,
+            timeout,
+            REVIEW_PROJECT_FILE_LIMIT,
+            REVIEW_PROJECT_TOTAL_LIMIT,
+            REVIEW_PROJECT_COUNT_LIMIT,
+        )?;
+        copies.push(ProjectCopy {
+            name,
+            summary,
+            from_worktree,
+            upstream,
+        });
+    }
+    Ok(copies)
+}
+
+/// 项目副本提示：单副本沿用原句；多副本列出各份目录并写清对应来源。
+fn project_copy_note(copies: &[ProjectCopy]) -> String {
+    if copies.len() == 1 {
+        return REVIEW_PROJECT_PROMPT_NOTE.to_string();
+    }
+    let names = copies
+        .iter()
+        .map(|copy| format!("{}/", copy.name))
+        .collect::<Vec<_>>()
+        .join("、");
+    let origins = copies
+        .iter()
+        .map(|copy| {
+            if copy.from_worktree {
+                format!("上游节点 {} 的 worktree", copy.upstream)
+            } else {
+                "项目目录".to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("、");
+    format!("项目只读副本见 {names}，分别来自 {origins}，用于核对回答，不要修改")
+}
+
+/// TASK-43：盲目录 REQUEST.md 头部的提交信息。项目是 git 仓库时给项目 HEAD
+/// 短 sha（有未提交改动时注明），上游是 worktree 节点时给该 worktree 的 HEAD
+/// 短 sha；不是 git 仓库或取不到时不写，不报错。
+fn request_commit_header(
+    project: &Path,
+    artifacts: &[DispatchArtifacts],
+    cancel_key: &str,
+    timeout: Duration,
+) -> String {
+    let short_head = |dir: &Path| -> Option<String> {
+        let result = git_result_with_timeout(
+            &["rev-parse", "--short", "HEAD"],
+            dir,
+            Some(cancel_key),
+            timeout,
+        )
+        .ok()?;
+        if !process_succeeded(&result) {
+            return None;
+        }
+        let sha = result.stdout.trim().to_string();
+        (!sha.is_empty()).then_some(sha)
+    };
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(sha) = short_head(project) {
+        let dirty = match crate::git::git_changes(project.to_string_lossy().into_owned()) {
+            crate::git::GitChanges::Ok {
+                uncommitted,
+                untracked,
+                ..
+            } => !uncommitted.is_empty() || !untracked.is_empty(),
+            _ => false,
+        };
+        lines.push(if dirty {
+            format!("项目提交：{sha}（含未提交改动）")
+        } else {
+            format!("项目提交：{sha}")
+        });
+    }
+    let mut worktree_shas: Vec<String> = Vec::new();
+    for artifact in artifacts {
+        let Some(worktree) = artifact
+            .worktree
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        else {
+            continue;
+        };
+        let Some(sha) = short_head(Path::new(worktree)) else {
+            continue;
+        };
+        if !worktree_shas.contains(&sha) {
+            worktree_shas.push(sha);
+        }
+    }
+    for sha in worktree_shas {
+        lines.push(format!("执行者 worktree 提交：{sha}"));
+    }
+    lines.join("\n")
 }
 
 fn prepare_outbound(
@@ -3558,6 +3703,7 @@ fn prepare_outbound(
     workdir: &Path,
     blind: bool,
     project: &Path,
+    accept_criteria: &str,
     cancel_key: &str,
     timeout: Duration,
 ) -> Result<(String, Vec<String>, usize), String> {
@@ -3576,6 +3722,13 @@ fn prepare_outbound(
         if !node.upstream_artifacts.is_empty() {
             let (request, hits) = redact_text(&node.original_request, redact);
             count += hits;
+            // TASK-43：头部两行写明项目与执行者 worktree 的提交号，验收据此对版本。
+            let header = request_commit_header(project, &node.upstream_artifacts, cancel_key, timeout);
+            let request = if header.is_empty() {
+                request
+            } else {
+                format!("{header}\n\n{request}")
+            };
             fs::write(workdir.join("REQUEST.md"), request)
                 .map_err(|error| format!("写入 REQUEST.md 失败：{error}"))?;
             let diffs = node
@@ -3621,34 +3774,73 @@ fn prepare_outbound(
                 prompt.push_str("\n\n[diff.patch 全文]\n");
                 prompt.push_str(&diffs);
             }
-            if let Some((answer, hits)) = readonly_answer_material(&node.upstream_artifacts, redact) {
+            let readonly_answer = readonly_answer_material(&node.upstream_artifacts, redact);
+            if let Some((answer, hits)) = &readonly_answer {
                 count += hits;
-                fs::write(workdir.join(REVIEW_ANSWER_FILE), &answer)
+                fs::write(workdir.join(REVIEW_ANSWER_FILE), answer)
                     .map_err(|error| format!("写入 ANSWER.md 失败：{error}"))?;
                 names.push(REVIEW_ANSWER_FILE.into());
-                let copied = copy_readonly_project(
+            }
+            // TASK-43：有上游产物的盲验收一律附项目只读副本（10-01 真机：没有
+            // 副本跑不了测试，空 diff 被误读成交付为零）；其余盲节点维持原状，
+            // 只在执行者未改文件、回答即交付时才附。
+            if readonly_answer.is_some() || node.role == "验收" {
+                let copies = copy_readonly_projects(
                     project,
                     &node.upstream_artifacts,
-                    &workdir.join(REVIEW_PROJECT_DIR),
+                    workdir,
                     redact,
                     cancel_key,
                     timeout,
                 )?;
-                count += copied.redacted;
-                names.push(format!("{REVIEW_PROJECT_DIR}/"));
-                prompt.push_str("\n\n");
-                prompt.push_str(REVIEW_ANSWER_PROMPT_NOTE);
-                prompt.push_str("\n");
-                prompt.push_str(REVIEW_PROJECT_PROMPT_NOTE);
-                if !copied.incomplete.is_empty() {
-                    prompt.push_str("\n副本不完整：");
-                    prompt.push_str(&copied.incomplete.join("；"));
+                let mut incomplete: Vec<String> = Vec::new();
+                for copy in &copies {
+                    count += copy.summary.redacted;
+                    names.push(format!("{}/", copy.name));
+                    incomplete.extend(copy.summary.incomplete.iter().cloned());
                 }
-                if answer.len() < 30 * 1024 {
-                    prompt.push_str("\n\n[ANSWER.md 全文]\n");
-                    prompt.push_str(&answer);
+                if readonly_answer.is_some() {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(REVIEW_ANSWER_PROMPT_NOTE);
+                }
+                prompt.push_str("\n");
+                prompt.push_str(&project_copy_note(&copies));
+                if !incomplete.is_empty() {
+                    prompt.push_str("\n副本不完整：");
+                    prompt.push_str(&incomplete.join("；"));
+                }
+                let unchanged = node.upstream_artifacts.iter().all(|artifact| {
+                    artifact.diff.trim().is_empty() && artifact.changed_files.is_empty()
+                });
+                if unchanged {
+                    prompt.push_str("\n");
+                    prompt.push_str(if copies.len() > 1 {
+                        REVIEW_PROJECTS_UNCHANGED_NOTE
+                    } else {
+                        REVIEW_PROJECT_UNCHANGED_NOTE
+                    });
+                }
+                if let Some((answer, _)) = &readonly_answer {
+                    if answer.len() < 30 * 1024 {
+                        prompt.push_str("\n\n[ANSWER.md 全文]\n");
+                        prompt.push_str(answer);
+                    }
                 }
             }
+        }
+        // TASK-43：验收条件只给盲验收与盲审节点，写在它们自己的隔离目录里；执行、
+        // 出方案等节点不收，非盲节点的工作目录是项目本身，也不写。
+        if blind
+            && !accept_criteria.trim().is_empty()
+            && matches!(node.role.as_str(), "验收" | "验证" | "仲裁")
+        {
+            let (accept_text, hits) = redact_text(accept_criteria, redact);
+            count += hits;
+            fs::write(workdir.join(REVIEW_ACCEPT_FILE), accept_text)
+                .map_err(|error| format!("写入 ACCEPT.md 失败：{error}"))?;
+            names.push(REVIEW_ACCEPT_FILE.into());
+            prompt.push_str("\n");
+            prompt.push_str(REVIEW_ACCEPT_PROMPT_NOTE);
         }
         let mut reserved = names
             .iter()
@@ -4149,6 +4341,16 @@ mod tests {
         workdir: &Path,
         blind: bool,
     ) -> Result<(String, Vec<String>, usize), String> {
+        prepare_outbound_test_with_accept(request, redact, workdir, blind, "")
+    }
+
+    fn prepare_outbound_test_with_accept(
+        request: &DispatchNodeRequest,
+        redact: bool,
+        workdir: &Path,
+        blind: bool,
+        accept_criteria: &str,
+    ) -> Result<(String, Vec<String>, usize), String> {
         let project = std::env::temp_dir().join(format!("aicross-prepare-source-{}", Uuid::new_v4()));
         fs::create_dir_all(&project).unwrap();
         let result = prepare_outbound(
@@ -4157,6 +4359,7 @@ mod tests {
             workdir,
             blind,
             &project,
+            accept_criteria,
             "prepare-test",
             Duration::from_secs(5),
         );
@@ -4171,6 +4374,7 @@ mod tests {
             project_dir,
             nodes,
             settings: DispatchSettings::default(),
+            accept_criteria: String::new(),
         }
     }
 
@@ -4488,7 +4692,7 @@ mod tests {
         let (request, mut settings, _) = acp_run_one_fixture(&root, &["--repeat-tool-calls", "--fail-prompt-after-tools"]);
         settings.timeout_secs = 10;
         let activity = ProcessActivity::new();
-        let result = run_one_with_activity("run", &project, &root.join("runs"), &log_dir, &settings, request, activity.clone());
+        let result = run_one_with_activity("run", &project, &root.join("runs"), &log_dir, &settings, "", request, activity.clone());
         assert_eq!((result.status.as_str(), result.runner.as_str()), ("ok", "oneshot"), "{}", result.error);
         let (_, _, calls, repeated, last_tool) = activity.snapshot();
         assert_eq!((calls, repeated, last_tool), (0, 0, String::new()));
@@ -5877,6 +6081,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![execute],
                 settings: settings.clone(),
+                accept_criteria: String::new(),
             })
         .unwrap();
         let artifacts = execute_result.results[0]
@@ -5904,6 +6109,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![review],
                 settings,
+                accept_criteria: String::new(),
             })
         .unwrap();
         let item = &review_result.results[0];
@@ -5917,6 +6123,86 @@ mod tests {
         let prompt = fs::read_to_string(task_file).unwrap();
         assert!(prompt.contains("执行者未改文件，其最终回复见 ANSWER.md"), "{prompt}");
         assert!(prompt.contains("[ANSWER.md 全文]\nbeta.py 提供 shout 和 whisper 两个字符串工具函数。"), "{prompt}");
+
+        let runtime_run = dispatch_data_root().unwrap().join("runs").join(&run_id);
+        let _ = fs::remove_dir_all(runtime_run);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-43：验收条件经 dispatch_stage_core 到达盲验收的隔离目录；同一请求里
+    /// 共享的执行节点不收，项目目录里不出现 ACCEPT.md。
+    #[test]
+    fn accept43_accept_criteria_reaches_blind_review_through_dispatch_stage_core() {
+        if channels::resolve_binary("python", None).is_err() {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-accept43-stage-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(
+            &stub,
+            "import sys\nprint('已核对。')\nprint('[usage] input=1 cache_read=0 output=1', file=sys.stderr)\n",
+        )
+        .unwrap();
+        let run_id = format!("accept43-stage-{}", Uuid::new_v4());
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            write_project_dispatch: false,
+            ..DispatchSettings::default()
+        };
+        let criteria = "cargo test 通过；不引入新依赖";
+
+        let mut execute = node(Vec::new());
+        execute.node_id = "accept-execute".into();
+        execute.agent = "cc-switch".into();
+        execute.provider = "stub".into();
+        execute.model = "stub".into();
+        execute.role = "执行".into();
+        execute.visibility = "共享".into();
+        execute.write = "单写者".into();
+        execute.original_request = "说明 beta.py 的用途".into();
+        let execute_result = dispatch_stage_core(DispatchStageRequest {
+            run_id: run_id.clone(),
+            stage: 1,
+            project_dir: project.to_string_lossy().into_owned(),
+            nodes: vec![execute],
+            settings: settings.clone(),
+            accept_criteria: criteria.into(),
+        })
+        .unwrap();
+        assert!(!project.join("ACCEPT.md").exists(), "执行节点不应收到 ACCEPT.md");
+        let artifacts = execute_result.results[0].artifacts.clone().expect("执行节点产物");
+
+        let mut review = node(Vec::new());
+        review.node_id = "accept-review".into();
+        review.agent = "cc-switch".into();
+        review.provider = "stub".into();
+        review.model = "stub".into();
+        review.role = "验收".into();
+        review.visibility = "盲".into();
+        review.write = "只读".into();
+        review.original_request = "说明 beta.py 的用途".into();
+        review.upstream_artifacts = vec![artifacts];
+        let review_result = dispatch_stage_core(DispatchStageRequest {
+            run_id: run_id.clone(),
+            stage: 2,
+            project_dir: project.to_string_lossy().into_owned(),
+            nodes: vec![review],
+            settings,
+            accept_criteria: criteria.into(),
+        })
+        .unwrap();
+        let item = &review_result.results[0];
+        assert_eq!(item.status, "ok", "{}", item.error);
+        let workdir = Path::new(&item.workdir);
+        assert_eq!(fs::read_to_string(workdir.join("ACCEPT.md")).unwrap(), criteria);
+        let tasks = workdir.parent().unwrap().join("tasks");
+        let prompt = fs::read_to_string(tasks.join("accept-review.txt")).unwrap();
+        assert!(prompt.contains("本次验收条件见 ACCEPT.md，请逐条判断是否满足"), "{prompt}");
+        let execute_prompt = fs::read_to_string(tasks.join("accept-execute.txt")).unwrap();
+        assert!(!execute_prompt.contains("ACCEPT.md"), "{execute_prompt}");
 
         let runtime_run = dispatch_data_root().unwrap().join("runs").join(&run_id);
         let _ = fs::remove_dir_all(runtime_run);
@@ -5976,6 +6262,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![execute],
                 settings: settings.clone(),
+                accept_criteria: String::new(),
             })
         .unwrap();
         let artifacts = execute_result.results[0]
@@ -6003,6 +6290,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![review],
                 settings,
+                accept_criteria: String::new(),
             })
         .unwrap();
         let item = &review_result.results[0];
@@ -6104,6 +6392,7 @@ mod tests {
             &workdir,
             true,
             &project,
+            "",
             "task32-nongit",
             Duration::from_secs(5),
         )
@@ -6140,6 +6429,7 @@ mod tests {
             &workdir,
             true,
             &project,
+            "",
             "task32-truncated-list",
             Duration::from_secs(5),
         )
@@ -6171,6 +6461,7 @@ mod tests {
             &workdir,
             true,
             &project,
+            "",
             "task32-read-failure",
             Duration::from_secs(5),
         )
@@ -6228,6 +6519,7 @@ mod tests {
             &workdir,
             true,
             &project,
+            "",
             "task32-parent-link",
             Duration::from_secs(5),
         )
@@ -6258,6 +6550,7 @@ mod tests {
             &workdir,
             true,
             &project,
+            "",
             "task32-limit",
             Duration::from_secs(5),
         )
@@ -6350,6 +6643,7 @@ mod tests {
             &workdir,
             true,
             &project,
+            "",
             "task32-redact",
             Duration::from_secs(5),
         )
@@ -6382,6 +6676,7 @@ mod tests {
             &workdir,
             true,
             &project,
+            "",
             "task32-conflict",
             Duration::from_secs(5),
         )
@@ -6421,6 +6716,7 @@ mod tests {
             &workdir,
             true,
             &project,
+            "",
             "task32-worktree",
             Duration::from_secs(5),
         )
@@ -6440,6 +6736,304 @@ mod tests {
         }];
         prepare_outbound_test(&request, true, &root, true).unwrap();
         assert_eq!(fs::read_to_string(root.join("ANSWER.md")).unwrap(), "最终答案");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-43：单写者执行改了文件后的盲验收，盲目录一律有 project/，内容是改后的文件。
+    #[test]
+    fn accept43_blind_acceptance_always_gets_project_copy_after_changes() {
+        let root = std::env::temp_dir().join(format!("aicross-accept43-project-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let workdir = root.join("blind");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::write(project.join("src/app.py"), "print('fixed')\n").unwrap();
+        let mut request = node(Vec::new());
+        request.role = "验收".into();
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            diff: "--- a/src/app.py\n+++ b/src/app.py\n".into(),
+            changed_files: vec![ChangedFile {
+                path: "src/app.py".into(),
+                content: "print('fixed')\n".into(),
+            }],
+            stdout_summary: "已修复".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, names, _) = prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "",
+            "accept43-project",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(workdir.join("project/src/app.py")).unwrap(),
+            "print('fixed')\n"
+        );
+        assert!(!workdir.join("ANSWER.md").exists(), "改了文件就不该有 ANSWER.md");
+        assert!(names.iter().any(|name| name == "project/"), "{names:?}");
+        assert!(prompt.contains("项目只读副本见 project/"), "{prompt}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-43：多路上游各有 worktree 时按上游顺序各附一份，提示写清对应关系。
+    #[test]
+    fn accept43_project_copies_follow_upstream_worktrees() {
+        if !require_git("accept43_project_copies_follow_upstream_worktrees") {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-accept43-wt-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let worktree_a = root.join("wt-a");
+        let worktree_b = root.join("wt-b");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        test_git(&project, &["init"]);
+        test_git(&project, &["config", "user.name", "aicross test"]);
+        test_git(&project, &["config", "user.email", "aicross@example.invalid"]);
+        fs::write(project.join("app.txt"), "base\n").unwrap();
+        test_git(&project, &["add", "app.txt"]);
+        test_git(&project, &["commit", "-m", "fixture"]);
+        let arg_a = worktree_a.to_string_lossy().into_owned();
+        let arg_b = worktree_b.to_string_lossy().into_owned();
+        test_git(&project, &["worktree", "add", "--detach", &arg_a, "HEAD"]);
+        test_git(&project, &["worktree", "add", "--detach", &arg_b, "HEAD"]);
+        fs::write(worktree_a.join("app.txt"), "from a\n").unwrap();
+        fs::write(worktree_b.join("app.txt"), "from b\n").unwrap();
+        let mut request = node(Vec::new());
+        request.role = "验收".into();
+        request.upstream_artifacts = vec![
+            DispatchArtifacts {
+                source_node_id: "exec-a".into(),
+                diff: "--- a/app.txt\n+++ b/app.txt\n".into(),
+                changed_files: vec![ChangedFile { path: "app.txt".into(), content: "from a\n".into() }],
+                worktree: Some(arg_a.clone()),
+                ..DispatchArtifacts::default()
+            },
+            DispatchArtifacts {
+                source_node_id: "exec-b".into(),
+                diff: "--- a/app.txt\n+++ b/app.txt\n".into(),
+                changed_files: vec![ChangedFile { path: "app.txt".into(), content: "from b\n".into() }],
+                worktree: Some(arg_b.clone()),
+                ..DispatchArtifacts::default()
+            },
+        ];
+        let (prompt, names, _) = prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "",
+            "accept43-wt",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(workdir.join("project/app.txt")).unwrap(), "from a\n");
+        assert_eq!(fs::read_to_string(workdir.join("project-2/app.txt")).unwrap(), "from b\n");
+        assert!(names.iter().any(|name| name == "project-2/"), "{names:?}");
+        assert!(prompt.contains(
+            "项目只读副本见 project/、project-2/，分别来自 上游节点 exec-a 的 worktree、上游节点 exec-b 的 worktree，用于核对回答，不要修改"
+        ), "{prompt}");
+        test_git(&project, &["worktree", "remove", "--force", &arg_a]);
+        test_git(&project, &["worktree", "remove", "--force", &arg_b]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-43：上游 diff 全空、什么也没改时，提示说明以 project/ 当前内容为准。
+    #[test]
+    fn accept43_empty_diff_note_says_nothing_changed() {
+        let root = std::env::temp_dir().join(format!("aicross-accept43-unchanged-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let workdir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("fixed.txt"), "already fixed\n").unwrap();
+        let mut request = node(Vec::new());
+        request.role = "验收".into();
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            stdout_summary: "修正轮确认改动已在工作区".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, _, _) = prepare_outbound(
+            &request,
+            true,
+            &workdir,
+            true,
+            &project,
+            "",
+            "accept43-unchanged",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(prompt.contains("本轮执行未改文件，以 project/ 当前内容为准"), "{prompt}");
+        assert!(workdir.join("project/fixed.txt").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-43：盲目录写 ACCEPT.md；执行节点不收；未给时不写文件、不加提示。
+    #[test]
+    fn accept43_accept_file_reaches_acceptance_but_not_executor() {
+        let root = std::env::temp_dir().join(format!("aicross-accept43-accept-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let blind_dir = root.join("blind");
+        fs::create_dir_all(&project).unwrap();
+        let mut acceptance = node(Vec::new());
+        acceptance.role = "验收".into();
+        acceptance.upstream_artifacts = vec![DispatchArtifacts {
+            diff: "--- a/a.py\n+++ b/a.py\n".into(),
+            changed_files: vec![ChangedFile { path: "a.py".into(), content: "x\n".into() }],
+            stdout_summary: "done".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, names, _) = prepare_outbound_test_with_accept(
+            &acceptance,
+            true,
+            &blind_dir,
+            true,
+            "cargo test 通过；不引入新依赖",
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(blind_dir.join("ACCEPT.md")).unwrap(),
+            "cargo test 通过；不引入新依赖"
+        );
+        assert!(names.iter().any(|name| name == "ACCEPT.md"), "{names:?}");
+        assert!(prompt.contains("本次验收条件见 ACCEPT.md，请逐条判断是否满足"), "{prompt}");
+
+        // 执行节点不收（即使也是盲可见性）。
+        let executor_dir = root.join("executor-blind");
+        let mut executor = node(Vec::new());
+        executor.role = "执行".into();
+        let (prompt, names, _) = prepare_outbound_test_with_accept(
+            &executor,
+            true,
+            &executor_dir,
+            true,
+            "cargo test 通过",
+        )
+        .unwrap();
+        assert!(!executor_dir.join("ACCEPT.md").exists());
+        assert!(!names.iter().any(|name| name == "ACCEPT.md"));
+        assert!(!prompt.contains("ACCEPT.md"), "{prompt}");
+
+        // 盲的出方案节点也不收：验收条件只给验收方。
+        let planner_dir = root.join("planner-blind");
+        let mut planner = node(Vec::new());
+        planner.role = "出方案".into();
+        let (prompt, _, _) =
+            prepare_outbound_test_with_accept(&planner, true, &planner_dir, true, "cargo test 通过").unwrap();
+        assert!(!planner_dir.join("ACCEPT.md").exists());
+        assert!(!prompt.contains("ACCEPT.md"), "{prompt}");
+
+        // 非盲（共享）验收节点的工作目录是项目本身：不往项目里写 ACCEPT.md。
+        let (prompt, names, _) =
+            prepare_outbound_test_with_accept(&acceptance, true, &project, false, "cargo test 通过").unwrap();
+        assert!(!project.join("ACCEPT.md").exists());
+        assert!(!names.iter().any(|name| name == "ACCEPT.md"));
+        assert!(!prompt.contains("ACCEPT.md"), "{prompt}");
+
+        // 未给时不生成文件、不加提示。
+        let plain_dir = root.join("plain");
+        let (_, names, _) = prepare_outbound_test_with_accept(&acceptance, true, &plain_dir, true, "").unwrap();
+        assert!(!plain_dir.join("ACCEPT.md").exists());
+        assert!(!names.iter().any(|name| name == "ACCEPT.md"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-43：未给 --accept-file 时 DispatchStageRequest 序列化与原来逐字相同。
+    #[test]
+    fn accept43_request_serialization_unchanged_without_accept_criteria() {
+        let request = stage_request("D:/p".into(), vec![node(Vec::new())]);
+        let value = serde_json::to_value(&request).unwrap();
+        assert!(value.as_object().unwrap().get("acceptCriteria").is_none());
+        let restored: DispatchStageRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.accept_criteria, "");
+        let mut given = stage_request("D:/p".into(), vec![node(Vec::new())]);
+        given.accept_criteria = "逐条判断".into();
+        let value = serde_json::to_value(&given).unwrap();
+        assert_eq!(value["acceptCriteria"], "逐条判断");
+    }
+
+    /// TASK-43：REQUEST.md 头部写项目提交号；有未提交改动时注明；上游是
+    /// worktree 节点时加执行者 worktree 提交号；非 git 项目不加头部。
+    #[test]
+    fn accept43_request_md_header_carries_commit_ids() {
+        if !require_git("accept43_request_md_header_carries_commit_ids") {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-accept43-header-{}", Uuid::new_v4()));
+        let project = root.join("source");
+        let worktree = root.join("wt");
+        fs::create_dir_all(&project).unwrap();
+        test_git(&project, &["init"]);
+        test_git(&project, &["config", "user.name", "aicross test"]);
+        test_git(&project, &["config", "user.email", "aicross@example.invalid"]);
+        fs::write(project.join("app.txt"), "base\n").unwrap();
+        test_git(&project, &["add", "app.txt"]);
+        test_git(&project, &["commit", "-m", "fixture"]);
+        let head = test_git(&project, &["rev-parse", "--short", "HEAD"]);
+        let arg = worktree.to_string_lossy().into_owned();
+        test_git(&project, &["worktree", "add", "--detach", &arg, "HEAD"]);
+        fs::write(worktree.join("app.txt"), "changed\n").unwrap();
+        test_git(&worktree, &["add", "app.txt"]);
+        test_git(&worktree, &["commit", "-m", "fix"]);
+        let worktree_head = test_git(&worktree, &["rev-parse", "--short", "HEAD"]);
+        assert_ne!(head, worktree_head);
+
+        let make_request = |worktree: Option<String>| {
+            let mut request = node(Vec::new());
+            request.role = "验收".into();
+            request.original_request = "验收这次修复".into();
+            request.upstream_artifacts = vec![DispatchArtifacts {
+                diff: "--- a/app.txt\n+++ b/app.txt\n".into(),
+                changed_files: vec![ChangedFile { path: "app.txt".into(), content: "changed\n".into() }],
+                stdout_summary: "done".into(),
+                worktree,
+                ..DispatchArtifacts::default()
+            }];
+            request
+        };
+
+        // 项目干净、上游是 worktree：两行头部。
+        let clean_dir = root.join("blind-clean");
+        prepare_outbound(
+            &make_request(Some(arg.clone())),
+            true,
+            &clean_dir,
+            true,
+            &project,
+            "",
+            "accept43-header",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(clean_dir.join("REQUEST.md")).unwrap(),
+            format!("项目提交：{head}\n执行者 worktree 提交：{worktree_head}\n\n验收这次修复")
+        );
+
+        // 项目有未提交改动：后缀注明。
+        fs::write(project.join("notes.txt"), "未提交\n").unwrap();
+        let dirty_dir = root.join("blind-dirty");
+        prepare_outbound(
+            &make_request(None),
+            true,
+            &dirty_dir,
+            true,
+            &project,
+            "",
+            "accept43-header",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dirty_dir.join("REQUEST.md")).unwrap(),
+            format!("项目提交：{head}（含未提交改动）\n\n验收这次修复")
+        );
+        test_git(&project, &["worktree", "remove", "--force", &arg]);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -7287,6 +7881,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![a, b],
                 settings,
+                accept_criteria: String::new(),
             })
         .unwrap();
         assert_eq!(result.results.len(), 2);
@@ -7561,6 +8156,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: original,
                 settings: live_settings(3),
+                accept_criteria: String::new(),
             })
         .unwrap();
         println!("BLIND_RUN={} STATE={}", result.run_id, result.state_file);
@@ -7606,6 +8202,7 @@ mod tests {
                         "",
                     )],
                     settings: live_settings(1),
+                    accept_criteria: String::new(),
                 })
             .unwrap();
             let item = &fallback.results[0];
@@ -7647,6 +8244,7 @@ mod tests {
                     "",
                 )],
                 settings: live_settings(1),
+                accept_criteria: String::new(),
             })
         .unwrap();
         let first_item = &first.results[0];
@@ -7685,6 +8283,7 @@ mod tests {
                     &first_item.session_id,
                 )],
                 settings: live_settings(1),
+                accept_criteria: String::new(),
             })
         .unwrap();
         let second_item = &second.results[0];
@@ -7741,6 +8340,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![plan],
                 settings: live_settings(1),
+                accept_criteria: String::new(),
             })
         .unwrap();
         let plan_item = &plan_result.results[0];
@@ -7762,6 +8362,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![execute],
                 settings: execute_settings,
+                accept_criteria: String::new(),
             })
         .unwrap();
         let execute_item = &execute_result.results[0];
@@ -7791,6 +8392,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![accept],
                 settings: live_settings(1),
+                accept_criteria: String::new(),
             })
         .unwrap();
         let accept_item = &accept_result.results[0];
@@ -7856,6 +8458,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![request],
                 settings,
+                accept_criteria: String::new(),
             })
         .unwrap();
         assert_eq!(
@@ -7893,6 +8496,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![first, second],
                 settings: live_settings(2),
+                accept_criteria: String::new(),
             })
         .unwrap();
         println!("ARENA_RUN={} STATE={}", arena.run_id, arena.state_file);
@@ -7955,6 +8559,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![arb],
                 settings: live_settings(1),
+                accept_criteria: String::new(),
             })
         .unwrap();
         let arb = &arbitration.results[0];
