@@ -464,8 +464,9 @@ pub(crate) fn new_graph(project: &str, id: String, root_id: String, time: String
 }
 
 /// 到根的最长路径深度（TS `layout.ts` 的 `depthMap`）：父节点最大深度 + 1，
-/// 根为 0；环路防御按 0，悬空 parents 跳过。
-fn depth_map(graph: &Graph) -> HashMap<String, u32> {
+/// 根为 0；环路防御按 0，悬空 parents 跳过。查看器（run_view.rs）按它给
+/// 节点分阶段。
+pub(crate) fn depth_map(graph: &Graph) -> HashMap<String, u32> {
     fn depth(
         graph: &Graph,
         id: &str,

@@ -143,9 +143,12 @@ aicross status <run_id>
 aicross status <run_id> --wait --timeout 600
 aicross adopt <run_id> <node_id>
 aicross cancel <run_id>
+aicross open <run_id>
 ```
 
-`--timeout` 单位为秒，默认 600。`--text-file` 接受 UTF-8，可带 UTF-8 BOM；其它编码返回参数错误。`dispatch` 与 `propose` 均不接受 `--text` 或 `--text=...`；`propose` 的 `--reason` 只能是一句话。
+`--timeout` 单位为秒，默认 600。`--text-file` 接受 UTF-8，可带 UTF-8 BOM；其它编码返回参数错误。`dispatch` 与 `propose` 均不接受 `--text` 或 `--text=...`；`propose` 的 `--reason` 只能是一句话。`open` 只接受一个 run id，不带选项。
+
+`open` 打开该 run 的查看页：窗口没开时启动窗口并直接进入该页，窗口已开时切到该页；打开动作只读，不派发、不改文件。退出码：0 已打开 / 1 找不到 run / 2 参数错 / 3 窗口起不来。查看页的数据由窗口进程读 run 文件与图文件（同 `status` 的口径，含死进程判定），与命令行其余子命令的退出码含义不同。
 
 预设别名如下：
 

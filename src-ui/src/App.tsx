@@ -8,7 +8,7 @@ import {
   initializeUiScale,
   type UiScale,
 } from './settings/ui-scale';
-import { retryInvoke } from './tauri';
+import { commands, isTauri, retryInvoke } from './tauri';
 import { subscribeAgentStatus } from './lib/agent-status-bus';
 import { routeFileDrop } from './lib/file-drop';
 import { initHistoryAutoRefresh } from './lib/history-cache';
@@ -25,6 +25,8 @@ import { Explorer } from './components/left/Explorer';
 import { CenterPanel } from './components/center/CenterPanel';
 import { RightPanel } from './components/right/Compiler';
 import { GitStatusProvider } from './lib/git-status';
+// TASK-37 查看器：`aicross open <run_id>` 进入的一次 run 一页。
+import { RunViewer } from './viewer/RunViewer';
 import './styles/global.css';
 
 // CSS transition duration on .panel-left / .panel-right in global.css.
@@ -104,6 +106,28 @@ function useSlidingPanel(hidden: boolean): { mounted: boolean; collapsed: boolea
 export function App() {
   const { state } = useAppState();
   const dispatch = useAppDispatch();
+
+  // TASK-37 查看器：冷启动取 argv 里随 `aicross open <run_id>` 带进来的
+  // 请求（取一次），热启动听单实例插件转发的 open-run-request 事件；两种
+  // 来路都只切页面，不派发、不改文件。
+  const [viewerRunId, setViewerRunId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    commands.takePendingOpen()
+      .then((runId) => { if (runId) setViewerRunId(runId); })
+      .catch(() => {});
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen<{ runId: string }>('open-run-request', (event) => {
+          setViewerRunId(event.payload.runId);
+        });
+      } catch { /* event bridge unavailable (e.g. browser dev) — ignore */ }
+    })();
+    return () => { unlisten?.(); };
+  }, []);
 
   const leftPanel = useSlidingPanel(state.leftPanelHidden);
   const rightPanel = useSlidingPanel(state.rightPanelHidden);
@@ -319,6 +343,11 @@ export function App() {
           but the strips fill in Linux's missing cursor + drag behaviour
           for our `decorations: false` borderless window. */}
       <ResizeEdges />
+
+      {/* TASK-37 查看器：盖在整个工作区上的一次 run 一页，Esc 或「关闭」退出。 */}
+      {viewerRunId !== null && (
+        <RunViewer runId={viewerRunId} onClose={() => setViewerRunId(null)} />
+      )}
     </>
   );
 }

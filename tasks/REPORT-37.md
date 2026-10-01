@@ -1,0 +1,158 @@
+# REPORT-37 查看器第一版
+
+对应 `tasks/TASK-37-viewer.md`。分支 `viewer/task37`，基于 TASK-36 合并后的 main（0f93482）。未 commit。
+
+## 做了什么
+
+- 新增命令 `aicross open <run_id>`：照 `launch` 的冷热两条路——冷启动经
+  `AppState::pending_open` 与 `take_pending_open`，热启动经单实例回调重解析 argv
+  后发 `open-run-request` 事件。打开动作只读，不派发、不改文件。退出码按契约：
+  0 已打开（热启动转发后第二个进程由插件退出 0）/ 1 找不到 run / 2 参数错 /
+  3 窗口起不来（引擎根不可用同按 3）。
+- 新增 Tauri 命令 `load_run_view(run_id)`：经 TASK-36 的 `read_run` 读 run 文件
+  （顺带完成死进程判定），再读该 run 的图文件，返回 run 摘要 + 节点（按 run
+  摘要里的节点顺序，阶段号取图深度）。不读 `.dispatch/` 原文。
+- 新增 Tauri 命令 `adopt_run_node(run_id, node_id)`：包 TASK-36 的 `adopt`
+  （经其合并写，不整写 run 文件），随后按同一口径重读整页返回。
+- 前端新增查看页 `RunViewer`：页头（模式名、run 状态、开始时间、总耗时、失败
+  或拒绝原因、遗留条目），按阶段分组、组内各路并排（最多 3 列，超出换行，容器
+  过窄时横向滚动），每路一张卡（标题「角色 · 任务」、次标题 agent/model、厂商
+  色点、请求与实际模型、状态与恢复时间、token 与耗时、备选切换、跳过原因、
+  验收结论、正文 Markdown、产物 diff 折叠、worktree 提示），有结果的卡上只有
+  「采纳 / 取消采纳」一个按钮。run 运行中每 2 秒重取一次，终态停止；run 文件
+  找不到时显示「找不到这次派发」。
+- `docs/CONSOLE-CHANNEL.md` 补 `open` 一条；`docs/MANUAL.md` 加「查看器」一节，
+  术语表补「查看器」一行。
+
+## 改动文件
+
+| 文件 | 改动 |
+|---|---|
+| `src/run_view.rs` | 新增：`parse_open_args`、`build_run_view`、模式名推断、`load_run_view` / `adopt_run_node` 命令与测试 |
+| `src/main.rs` | `mod run_view`；`open` 的参数与存在性校验（退出码 1/2/3）；`start_ui` 多带一个 `pending_open`；起窗失败时 `open` 退出 3 |
+| `src/server.rs` | `AppState::pending_open`；`take_pending_open` 命令；单实例回调转发 `open-run-request`；注册两条查看器命令 |
+| `src/console_cli.rs` | `attach_parent_console` 改 `pub(crate)`（`open` 的错误信息要挂回宿主终端，逻辑未动） |
+| `src/engine/mod.rs` | `depth_map` 改 `pub(crate)`（查看器按它分阶段，逻辑未动） |
+| `src-ui/src/viewer/run-view.ts` | 新增：页面数据组装纯函数（分组、标题、真身、quota、验收、轮询间隔、耗时与数字格式化） |
+| `src-ui/src/viewer/RunViewer.tsx` | 新增：查看页组件 |
+| `src-ui/src/viewer/RunViewer.css` | 新增：按视觉纪律的样式 |
+| `src-ui/src/tauri.ts` | `RunView` / `RunViewNode` 契约类型（camelCase 镜像 Rust）；`takePendingOpen` / `loadRunView` / `adoptRunNode` |
+| `src-ui/src/App.tsx` | 入口接线：冷启动取 `take_pending_open`，热启动听 `open-run-request`，挂载查看页 |
+| `src-ui/src/__tests__/run-viewer-37.test.ts` | 新增：前端纯函数测试 |
+| `docs/CONSOLE-CHANNEL.md` | 命令行一节补 `open`（含退出码语义） |
+| `docs/MANUAL.md` | 「查看器」一节 + 术语表两处 |
+
+未删任何现有窗口界面；`npm install` 曾把 `src-ui/package-lock.json` 换行重写，
+已还原（依赖无变化）。
+
+## 复用的现成部件
+
+- **launch 的冷热启动机制**：`AppState::pending_launch` / `take_pending_launch` /
+  单实例回调发 `launch-request`（`src/launch.rs`、`src/server.rs`、CenterPanel），
+  `open` 逐条对应成 `pending_open` / `take_pending_open` / `open-run-request`。
+- **TASK-36 引擎**：`read_run`（读 run + 死进程判定）、`adopt`（合并写、不动
+  run 文件）、`valid_id`、`depth_map`（分阶段）。引擎行为零改动，只有两处
+  可见性放宽。
+- **`src-ui/src/console-run-detail.ts`**：`compactRunNumber`（token 缩写）直接
+  引用；`reportedModelLabel` 的口径（未报告 / kimi 不报真身 / 运行中「—」，
+  不回填请求值）按 viewer 的数据形状重写，文案一致。
+- **`src-ui/src/graph/dispatch.ts`**：`parseAcceptance`（验收结论判定）直接引用。
+- **`src-ui/src/resources/agent-display.ts`**：`agentModelDisplay`（卡次标题）。
+- **`src-ui/src/graph/vendor.ts`**：`vendorColor`（厂商色点，只做小面积标识）。
+- **`src-ui/src/components/center/ConsoleMarkdown.tsx`**：正文 Markdown 渲染。
+- **结果屏的展示语言**（`DispatchOverlay.tsx` + `GraphTab.css`）：产物
+  `<details>` 折叠、等宽 diff、worktree 提示「采纳前请手动合并：」、采纳卡
+  描边用 `--accent`，样式按同一套视觉纪律重写在 `RunViewer.css`。
+
+## 模式名从哪来（任务书页头要求，run 文件里没有）
+
+TASK-36 的 run 文件不记预设。查看器按 run 摘要里的角色序列（盖章插入序）对
+`raw_presets_from` 的清单做前缀匹配：修正轮补的节点排在初始清单之后，不破坏
+前缀；取最长匹配，同长内置优先；推不出来显示「自定义模式」（用户自建预设命中
+时「自定义模式 · 名称」）。run 被拒前没建节点（G1 拒绝）时省略模式名。根本
+解法是派发时把 preset id 写进 run 文件，属 TASK-36 契约改动，本期未动，见
+「未做」。
+
+## 测试名
+
+Rust（`cargo test run_view`，8 条）：
+
+- `open_parse_covers_argv0_flags_and_invalid_ids`（含 `--flag=value` 形式与非法
+  run id、argv[0] 有无、缺 id、多位置参数）
+- `load_run_view_missing_run_is_error`
+- `load_run_view_running_keeps_status_and_infer_mode`（running 保持 + 模式推断 +
+  四节点分阶段 1/2/3/3）
+- `load_run_view_done_maps_reply_fields`（token / 真身 / 蜂群标题 / diff /
+  worktree / 额度恢复时间 / 备选 / 遗留）
+- `load_run_view_failed_carries_reason_and_degrades_without_graph`（失败原因；
+  图缺失时 run 摘要降级可用）
+- `adopt_run_node_merges_graph_and_leaves_run_file_untouched`（采纳经合并写、
+  同图别的 run 节点不丢、run 文件字节不变）
+- `infer_preset_name_matches_builtin_shapes_and_falls_back`（六个内置形状 +
+  修正轮前缀 + targets 直给退自定义）
+- `infer_preset_name_prefers_longest_match_then_builtin`（用户预设更长时胜出）
+
+前端（`run-viewer-37.test.ts`，13 条，`run viewer data assembly (TASK-37)`）：
+分组与列顺序（`groups nodes by stage in summary order with role titles`、
+`caps stage columns at 3`）、标题取名顺序（`titles take swarm item title, then
+graph title, then agent/model`）、真身显示规则（`reports identity without
+backfilling the requested model`、`flags identity mismatch against the effective
+requested model`）、quota 显示（`shows quota reset time only for quota states`）、
+验收结论（`derives acceptance verdict for review roles only`）、状态与胶囊
+（`labels node statuses including skipped and error kinds`）、备选说明
+（`formats fallback switch text`）、采纳可用性（`offers adopt only on nodes
+with settled results`）、轮询终态停止（`stops polling once the run reaches a
+terminal state`）、总耗时（`computes elapsed time from started_at to updatedAt
+for terminal runs`）、数字格式（`formats durations and token numbers`）。
+
+另做了两条命令行实测（发布语义的参数分支，不经窗口）：
+
+```
+> aicross open            → 缺少 run_id（exit 2）
+> aicross open bad/id     → run_id 无效（exit 2）
+> aicross open --run=abc  → open 不接受选项参数（exit 2）
+> aicross open no-such-run-123 → 读取 run 失败：系统找不到指定的文件。(exit 1)
+```
+
+## 四条验证命令的实际输出
+
+```
+> cargo check --all-targets
+   Compiling aicross v0.1.0 (D:\work\aicross-p37)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.51s
+（零 warning）
+
+> cargo test
+test result: ok. 558 passed; 0 failed; 12 ignored; 0 measured; 0 filtered out; finished in 60.44s
+
+> cd src-ui && npx vitest run --configLoader native --pool threads
+ Test Files  51 passed (51)
+      Tests  742 passed (742)
+
+> cd src-ui && npm run build
+✓ built in 831ms
+（vite 对 main chunk > 500 kB 的提示为既有告警，改动前 518.74 kB、改动后 527.56 kB，与本次无关）
+```
+
+## 未做与理由
+
+1. **真机核**（任务书「编排者真机核」一节）：真派一次经济模式、冷启动打开、
+   运行中逐阶段刷新、采纳后重开、热切换另一个 run。实现者不做，留给编排者。
+2. **run 文件记 preset id**：页头的模式名靠角色序列推断，与内置预设形状相同的
+   用户预设会被标成内置名（如用户自建恰好也是「执行×3」会显示擂台模式）；
+   G1 前被拒的 run 无节点，页头省略模式名。根治要在 `start_dispatch` 写 run 时
+   多记一个字段，属 TASK-36 契约改动，任务书禁止借道改引擎，未做。
+3. **成功路径的验证输出**：引擎 `apply_results` 只在 `validation_failed` 时把
+   `[验证输出]` 并进节点正文；验证通过时的输出只存在于当次的
+   `DispatchNodeResult`，不落图。查看页按图展示，成功路看不到验证输出。这是
+   TASK-36 的既有行为（发现记此处，未改引擎）。红绿核对的 `[红绿核对]` 段在
+   正文里，正常可见。
+4. **开发构建的热启动转发**：单实例插件按上游既有 `#[cfg(not(debug_assertions))]`
+   只在发布包注册；dev 下第二次 `aicross open` 会再开一个窗口（与 `launch`
+   行为一致）。真机核请用发布包或 `cargo build --release`。
+5. **「最多 3 列，超出横向滚动」的实现**：列数上限 3，组内超出换行成多行；
+   容器窄于 3×280px 时横向滚动。若想要「超出的列横向排开」另一种读法，改
+   `stageColumnCount` 与对应 grid 一处即可。
+6. **采纳与运行中 run**：运行中的 run 也允许对已有结果的卡采纳（引擎
+   `adopt` 本就不限状态，且不整写 run 文件）；蜂群件「已并入不给取消采纳」的
+   特例在 DispatchOverlay 有、查看器第一版未复刻（蜂群无窗口派发本就另起一期）。
