@@ -132,7 +132,7 @@ run 的 `status` 为 `proposed`、`running`、`done`、`failed`、`rejected` 或
 
 ## 命令行
 
-`dispatch`、`status`、`adopt` 与 `cancel` 直接使用无窗口引擎，不需要启动 aicross 窗口。`propose` 仍通过本机 HTTP 服务把建议交给窗口。
+`dispatch`、`status`、`adopt` 与 `cancel` 直接使用无窗口引擎，不需要启动 aicross 窗口。`propose` 仍通过本机 HTTP 服务把建议交给窗口。`resources` 与 `config` 直接读写本机文件（见「资源与配置」），同样不需要窗口。
 
 多行派发文本必须写入文件，不放进 argv：
 
@@ -149,6 +149,48 @@ aicross open <run_id>
 `--timeout` 单位为秒，默认 600。`--text-file` 接受 UTF-8，可带 UTF-8 BOM；其它编码返回参数错误。`dispatch` 与 `propose` 均不接受 `--text` 或 `--text=...`；`propose` 的 `--reason` 只能是一句话。`open` 只接受一个 run id，不带选项。
 
 `open` 打开该 run 的查看页：窗口没开时另起窗口进程并直接进入该页，命令随即返回，不等窗口关闭；窗口已开时切到该页。打开动作只读，不派发、不改文件。退出码：0 已打开 / 2 参数错 / 3 窗口起不来或 run 文件读取失败；只有 run 文件不存在按 1（找不到 run）。查看页的数据由窗口进程读 run 文件与图文件（同 `status` 的口径，含死进程判定），与命令行其余子命令的退出码含义不同。
+
+### 资源与配置
+
+资源接入、角色与派发设置都可以用命令查看和修改；窗口接入页与设置页照常可用。探测与冒烟复用接入页的后端函数，不读凭据、不输出令牌。
+
+```powershell
+aicross resources
+aicross resources detect
+aicross resources smoke pi --model glm-4.7 --provider zai-coding-cn
+aicross config show
+aicross config set-role execution --agent pi --model glm-4.7 --provider zai-coding-cn
+aicross config set timeoutSecs 900
+```
+
+`resources` 只读资源库（`~/.aicross/resources.json`，含旧数据迁移与重判），不探测、不发模型请求。`resources detect` 重新探测全部 agent（含 pi provider 登录检查）并写回资源库；cc-switch 发现提示的路径取派发设置里的 `ccSwitchPath`。单个 agent 探不到或事实源读取失败时逐行写 stderr，退出码仍为 0。`resources smoke <agent>` 对该 agent 的第三方模型各发一次短请求并核对真身；`--model` 只冒烟这一个，`--provider` 在同名模型挂多个 provider 时指定端点；原生模型不冒烟，stderr 提示「原生模型无需冒烟」并退出 0。冒烟失败退出 1，stderr 给脱敏后的原因。
+
+`resources` 与 `detect` 输出全部 agent，`smoke` 输出该 agent 的条目：
+
+```json
+{
+  "agents": [
+    {
+      "id": "pi",
+      "name": "pi agent",
+      "version": "0.86.1",
+      "state": "可用",
+      "note": "",
+      "models": [
+        { "id": "glm-4.7", "agent": "pi", "provider": "zai-coding-cn", "resolved_id": "glm-4.7", "state": "已验证", "note": "" }
+      ]
+    }
+  ]
+}
+```
+
+agent 的 `state` 为 `可用`（已探测到）或 `未安装`（未探测到），未安装时 `note` 为「安装后运行 aicross resources detect」。模型的 `state`：原生模型 `可用`；第三方按验证结果为 `未验证` / `已验证` / `验证失败`；pi provider 未登录为 `未登录`，`note` 给登录提示（pi 0.86 起是在 pi 会话里执行 `/login <provider>`，`pi --help` 里没有独立的 login 子命令）；额度恢复时间未过为 `额度用尽`，`note` 写恢复时间。
+
+`config show` 输出 `{ "roles": …, "dispatch": … }`：`roles` 是 `~/.aicross/roles.json` 的内容，`dispatch` 是 `~/.aicross/dispatch-settings.json` 按 `load_settings` 口径（含默认值与夹取）的全部字段。
+
+`config set-role <planning|execution|acceptance> --agent <a> --model <m> [--provider <p>] [--tier <t>] [--thinking <关|低|中|高>]` 把角色指到资源库里的模型；目标不在资源库时退出 2，stderr 列出该 agent 下可选的模型；省略 `--tier` / `--thinking` 时保持原值；写入后输出新的 `roles`。
+
+`config set <key> <value>` 只认派发设置的键（与 `dispatch-settings.json` 字段同名：`timeoutSecs`、`concurrency`、`maxRequests`、`fixRoundLimit`、`swarmLimit`、`consoleRunLimit`、`validationCommand`、`redact`、`writeProjectDispatch`、`acpEnabled`、`ccSwitchPath`、`classificationModel`、`classifyProposals`）；数值与布尔按 JSON 写入，越界按 `load_settings` 的区间夹取并在 stderr 说明，未知键退出 2；写入后输出新的 `dispatch`。字符串值是单个参数，含空格时加引号。
 
 预设别名如下：
 
@@ -188,7 +230,7 @@ run 摘要存放在 `~/.aicross/runs/<run_id>.json`，除节点摘要、在飞�
 | 0 | 请求成功 |
 | 1 | 业务失败、等待超时或 `propose` 响应不是 JSON |
 | 2 | 命令参数、文本文件或编码错误 |
-| 3 | 无法确定引擎目录、run 目录不可写、后台进程无法启动，或 `propose` 找不到运行中的窗口（清单缺失或已过期） |
+| 3 | 无法确定引擎目录、run 目录不可写、后台进程无法启动、资源库（`resources.json`）不可读写，或 `propose` 找不到运行中的窗口（清单缺失或已过期） |
 
 skill 仅在退出码 3 时回退到原有通道。Windows 的 NSIS/MSI 安装包会把安装目录作为独立项加入当前用户 PATH，并在卸载时只删除该项；macOS 与 Linux 安装包不修改 PATH。
 

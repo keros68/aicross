@@ -609,7 +609,8 @@ pub(crate) fn roles_from(root: &Path) -> RoleSettings {
         .unwrap_or_default()
 }
 
-fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), String> {
+/// 写入 roles.json；命令行（TASK-39 的 `config set-role`）与窗口设置页共用。
+pub(crate) fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), String> {
     if settings.version != 1 {
         return Err(format!(
             "角色配置 version 只支持 1，收到 {}",

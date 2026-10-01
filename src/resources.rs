@@ -417,7 +417,7 @@ fn third_party_endpoint(agent: &str) -> bool {
 /// 「原生」的完整判据：原生 agent 且没走第三方端点。
 /// 这条同时是 `verification == "native"` 的不变式——接入页按它决定给不给
 /// 「验证」按钮，引擎按它决定跳不跳过首次验证。
-fn is_native_model(agent: &str) -> bool {
+pub(crate) fn is_native_model(agent: &str) -> bool {
     is_native_agent(agent) && !third_party_endpoint(agent)
 }
 
@@ -654,7 +654,8 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
     result
 }
 
-fn save_store(path: &Path, store: &ResourceStore) -> Result<(), String> {
+/// 写回资源库（原子写）。命令行与测试同用。
+pub(crate) fn save_store(path: &Path, store: &ResourceStore) -> Result<(), String> {
     write_json_atomic(path, store)
 }
 
@@ -2294,12 +2295,83 @@ fn safe_summary(text: &str) -> String {
     value.trim().chars().take(200).collect()
 }
 
+// ── TASK-39：命令行状态映射（`aicross resources` 输出用，纯函数） ──────
+
+/// agent 两态：探测到 → 可用；未探测到 → 未安装。
+pub(crate) const RESOURCE_STATE_AVAILABLE: &str = "可用";
+pub(crate) const RESOURCE_STATE_MISSING: &str = "未安装";
+/// 模型态：第三方按验证结果，pi 另有登录与额度两态。
+pub(crate) const RESOURCE_STATE_UNVERIFIED: &str = "未验证";
+pub(crate) const RESOURCE_STATE_VERIFIED: &str = "已验证";
+pub(crate) const RESOURCE_STATE_FAILED: &str = "验证失败";
+pub(crate) const RESOURCE_STATE_LOGGED_OUT: &str = "未登录";
+pub(crate) const RESOURCE_STATE_QUOTA: &str = "额度用尽";
+
+pub(crate) fn agent_state(detected: bool) -> &'static str {
+    if detected {
+        RESOURCE_STATE_AVAILABLE
+    } else {
+        RESOURCE_STATE_MISSING
+    }
+}
+
+/// agent 状态的下一步说明；可用时为空（无下一步）。
+pub(crate) fn agent_state_note(agent: &ResourceAgent) -> String {
+    if agent.detected {
+        String::new()
+    } else {
+        "安装后运行 aicross resources detect".to_string()
+    }
+}
+
+/// 模型状态与下一步说明。优先级：原生 → 未过期的额度用尽 → pi 未登录 →
+/// 验证结果。`now_millis` 注入当前时间：过期的额度标记按验证结果展示
+/// （读取层的 `clear_expired_quota` 会顺带清掉库里的过期值）。
+pub(crate) fn model_state(model: &ResourceModel, now_millis: i64) -> (&'static str, String) {
+    if is_native_model(&model.agent) {
+        return (RESOURCE_STATE_AVAILABLE, String::new());
+    }
+    let quota_active = model
+        .quota_exhausted_until
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .is_some_and(|moment| moment.timestamp_millis() > now_millis);
+    if quota_active {
+        return (
+            RESOURCE_STATE_QUOTA,
+            format!(
+                "额度恢复时间：{}",
+                model.quota_exhausted_until.as_deref().unwrap_or_default()
+            ),
+        );
+    }
+    if model.agent.trim().eq_ignore_ascii_case("pi") && model.login == ResourceLogin::LoggedOut {
+        return (RESOURCE_STATE_LOGGED_OUT, pi_login_note(&model.provider));
+    }
+    match model.verification.as_str() {
+        VERIFICATION_VERIFIED => (RESOURCE_STATE_VERIFIED, String::new()),
+        VERIFICATION_FAILED => (RESOURCE_STATE_FAILED, String::new()),
+        _ => (RESOURCE_STATE_UNVERIFIED, String::new()),
+    }
+}
+
+/// 未登录时的登录提示。pi 0.86 的 `pi --help` 没有 `auth login` 子命令：
+/// 订阅类 provider 在 pi 会话里用 `/login` 登录，API key 类走环境变量。
+fn pi_login_note(provider: &str) -> String {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        "在 pi 里执行 /login".to_string()
+    } else {
+        format!("在 pi 里执行 /login {provider}")
+    }
+}
+
 // ── Tauri 命令 ────────────────────────────────────────────────────────────
 // 所有写命令都按「持 store_lock() → load → 改 → 原子写」的序列执行，
 // 锁保证并发命令不互相覆盖（审查 2.4）。命令体拆成 *_at(path, …) 自由函数，
 // 方便测试用临时目录钉住行为。
 
-fn get_resources_at(path: &Path) -> Result<ResourceStore, String> {
+pub(crate) fn get_resources_at(path: &Path) -> Result<ResourceStore, String> {
     let _guard = store_lock();
     let mut store = load_or_default(path)?;
     ensure_agents(&mut store);
@@ -2346,7 +2418,7 @@ fn detect_resource_agent_at_with_pi_binary(
     })
 }
 
-fn detect_all_resources_at(
+pub(crate) fn detect_all_resources_at(
     path: &Path,
     cc_switch_path: Option<&str>,
 ) -> Result<ResourceOperation, String> {
@@ -2447,7 +2519,7 @@ fn remove_resource_model_at(path: &Path, request: ResourceModelKey) -> Result<Re
     Ok(store)
 }
 
-fn smoke_resource_model_at(path: &Path, request: ResourceModelKey) -> Result<ResourceStore, String> {
+pub(crate) fn smoke_resource_model_at(path: &Path, request: ResourceModelKey) -> Result<ResourceStore, String> {
     let _guard = store_lock();
     let mut store = load_or_default(path)?;
     smoke_one_in_place(&mut store, &request)?;
@@ -2461,6 +2533,32 @@ fn smoke_resource_model_at(path: &Path, request: ResourceModelKey) -> Result<Res
 fn smoke_agent_models_at(
     path: &Path,
     agent_id: &str,
+    smoke: impl FnMut(&ResourceModel) -> Result<SmokeSuccess, String>,
+) -> Result<ResourceOperation, String> {
+    smoke_agent_models_filtered_at(path, agent_id, |_| true, smoke)
+}
+
+/// TASK-39：命令行按 agent 冒烟只挑第三方模型；原生模型不发请求
+/// （`aicross resources smoke <agent>` 的口径）。
+pub(crate) fn smoke_agent_third_party_at(
+    path: &Path,
+    agent_id: &str,
+) -> Result<ResourceOperation, String> {
+    smoke_agent_models_filtered_at(
+        path,
+        agent_id,
+        |model| !is_native_model(&model.agent),
+        run_smoke,
+    )
+}
+
+/// 冒烟某个 agent 的模型（`filter` 挑条目）；失败汇总进 errors（单条失败不
+/// 中断整批）。每冒烟一条都重新 load → 改 → 写盘，不整批长持旧 store——一次
+/// 冒烟最长 60s，整批持旧数据会把期间其他写方的更新整体抹掉（审查 2.4）。
+fn smoke_agent_models_filtered_at(
+    path: &Path,
+    agent_id: &str,
+    filter: impl Fn(&ResourceModel) -> bool,
     mut smoke: impl FnMut(&ResourceModel) -> Result<SmokeSuccess, String>,
 ) -> Result<ResourceOperation, String> {
     let keys = {
@@ -2475,6 +2573,7 @@ fn smoke_agent_models_at(
                 agent
                     .models
                     .iter()
+                    .filter(|model| filter(model))
                     .map(|model| ResourceModelKey {
                         agent_id: agent_id.to_string(),
                         id: model.id.clone(),
@@ -4464,6 +4563,127 @@ exit 2
         assert_eq!(claude_base_url_from_settings(r#"{"env":{}}"#), None);
         assert_eq!(claude_base_url_from_settings("{}"), None);
         assert_eq!(claude_base_url_from_settings("not json"), None);
+    }
+
+    // ── TASK-39：命令行状态映射 ──────────────────────────────────────
+
+    #[test]
+    fn task39_agent_state_maps_detected_flag() {
+        assert_eq!(agent_state(true), RESOURCE_STATE_AVAILABLE);
+        assert_eq!(agent_state(false), RESOURCE_STATE_MISSING);
+        let mut agent = fixture_agent("kimi", Vec::new());
+        agent.detected = false;
+        assert_eq!(agent_state_note(&agent), "安装后运行 aicross resources detect");
+        agent.detected = true;
+        assert_eq!(agent_state_note(&agent), "");
+    }
+
+    #[test]
+    fn task39_model_state_covers_native_verification_login_and_quota() {
+        let now = 2_000_000_000_000_i64;
+        // 原生：可用，无说明
+        let native = detected_model("sonnet", "claude", "", "Anthropic", "官方订阅", "未知", "读:fixture", "");
+        assert_eq!(model_state(&native, now), (RESOURCE_STATE_AVAILABLE, String::new()));
+        // 第三方三档：已验证 / 验证失败 / 未验证
+        let third = |verification: &str| ResourceModel {
+            agent: "pi".into(),
+            provider: "zai".into(),
+            verification: verification.into(),
+            ..ResourceModel::default()
+        };
+        assert_eq!(model_state(&third(VERIFICATION_VERIFIED), now).0, RESOURCE_STATE_VERIFIED);
+        assert_eq!(model_state(&third(VERIFICATION_FAILED), now).0, RESOURCE_STATE_FAILED);
+        assert_eq!(model_state(&third(VERIFICATION_UNVERIFIED), now).0, RESOURCE_STATE_UNVERIFIED);
+        // 认不得的 verification 值按未验证展示，不让整个清单失效
+        assert_eq!(model_state(&third("legacy"), now).0, RESOURCE_STATE_UNVERIFIED);
+        // pi 未登录：note 给登录提示
+        let logged_out = ResourceModel {
+            login: ResourceLogin::LoggedOut,
+            ..third(VERIFICATION_UNVERIFIED)
+        };
+        let (state, note) = model_state(&logged_out, now);
+        assert_eq!(state, RESOURCE_STATE_LOGGED_OUT);
+        assert_eq!(note, "在 pi 里执行 /login zai");
+        assert_eq!(
+            model_state(
+                &ResourceModel { provider: String::new(), ..logged_out.clone() },
+                now
+            ).1,
+            "在 pi 里执行 /login"
+        );
+        // 额度用尽：未过期显示恢复时间；已过期按验证结果展示
+        let mut quota = third(VERIFICATION_UNVERIFIED);
+        quota.quota_exhausted_until = Some("2099-01-01T00:00:00+08:00".into());
+        let (state, note) = model_state(&quota, now);
+        assert_eq!(state, RESOURCE_STATE_QUOTA);
+        assert_eq!(note, "额度恢复时间：2099-01-01T00:00:00+08:00");
+        quota.quota_exhausted_until = Some("2000-01-01T00:00:00+08:00".into());
+        assert_eq!(model_state(&quota, now).0, RESOURCE_STATE_UNVERIFIED);
+        // 额度未过期优先于未登录
+        let quota_login = ResourceModel {
+            quota_exhausted_until: Some("2099-01-01T00:00:00+08:00".into()),
+            ..logged_out
+        };
+        assert_eq!(model_state(&quota_login, now).0, RESOURCE_STATE_QUOTA);
+    }
+
+    /// TASK-39：命令行按 agent 冒烟只挑第三方模型。claude 走官方端点时是
+    /// 原生（不冒烟）；挂了 ANTHROPIC_BASE_URL 就是第三方（要冒烟）。
+    #[test]
+    fn task39_smoke_agent_third_party_respects_endpoint_kind() {
+        let root = std::env::temp_dir().join(format!("aicross-task39-smoke-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let claude_model = ResourceModel {
+            id: "sonnet".into(),
+            agent: "claude".into(),
+            status: STATUS_PENDING.into(),
+            ..ResourceModel::default()
+        };
+        save_store(
+            &path,
+            &ResourceStore { version: 1, agents: vec![fixture_agent("claude", vec![claude_model])] },
+        )
+        .unwrap();
+
+        set_claude_third_party(false);
+        let calls = std::cell::Cell::new(0u32);
+        let operation = smoke_agent_models_filtered_at(
+            &path,
+            "claude",
+            |model| !is_native_model(&model.agent),
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(SmokeSuccess { identity: "sonnet".into(), meta_marker: None })
+            },
+        )
+        .unwrap();
+        assert!(operation.errors.is_empty(), "{:?}", operation.errors);
+        assert_eq!(calls.get(), 0, "官方端点的 claude 是原生，不冒烟");
+        assert_eq!(
+            find_model(&load(&path).unwrap(), "claude", "", "sonnet").unwrap().status,
+            STATUS_PENDING
+        );
+
+        set_claude_third_party(true);
+        let operation = smoke_agent_models_filtered_at(
+            &path,
+            "claude",
+            |model| !is_native_model(&model.agent),
+            |_| {
+                calls.set(calls.get() + 1);
+                Ok(SmokeSuccess { identity: "claude/sonnet".into(), meta_marker: None })
+            },
+        )
+        .unwrap();
+        assert!(operation.errors.is_empty(), "{:?}", operation.errors);
+        assert_eq!(calls.get(), 1, "第三方端点的 claude 要冒烟");
+        let smoked_store = load(&path).unwrap();
+        let smoked = find_model(&smoked_store, "claude", "", "sonnet").unwrap();
+        assert_eq!(smoked.status, STATUS_CONNECTED);
+        assert_eq!(smoked.verification, VERIFICATION_VERIFIED);
+        set_claude_third_party(false);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
