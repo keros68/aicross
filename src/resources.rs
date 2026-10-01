@@ -34,11 +34,16 @@ const MISSING_MARKER: &str = "未在事实源中";
 const SMOKE_PROMPT: &str = "只回复 OK";
 
 /// 09-15 口径的四态（写进 `ResourceModel::verification`，`aicross resources` 按它显示状态）。
+/// TASK-42 起追加 `timeout`：冒烟超时单独记档，不算验证失败、不拦派发。
 /// 旧的 `status` 字段保留不删：`resources` 输出的详情里还要看「最近冒烟」那一段。
 pub const VERIFICATION_NATIVE: &str = "native";
 pub const VERIFICATION_UNVERIFIED: &str = "unverified";
 pub const VERIFICATION_VERIFIED: &str = "verified";
 pub const VERIFICATION_FAILED: &str = "failed";
+pub const VERIFICATION_TIMEOUT: &str = "timeout";
+
+/// 冒烟单次请求的等待上限（TASK-42）：60 秒对慢端点太短，放宽到 180 秒。
+pub(crate) const SMOKE_TIMEOUT_SECS: u64 = 180;
 
 const PI_LOGIN_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const PI_LOGIN_CHECK_CONCURRENCY: usize = 4;
@@ -128,7 +133,8 @@ pub struct ResourceModel {
     pub thinking: String,
     #[serde(default)]
     pub status: String,
-    /// 09-15 口径：native / unverified / verified / failed。旧库缺这个字段，
+    /// 09-15 口径：native / unverified / verified / failed；TASK-42 起冒烟超时
+    /// 另记 timeout。旧库缺这个字段，
     /// `ensure_verification` 按 agent + 旧 `status` 推断后补上。
     #[serde(default)]
     pub verification: String,
@@ -479,9 +485,12 @@ fn rejudge_stored_smoke_failures(store: &mut ResourceStore) {
                     &model.note,
                     &format!("按已知路由别名重判（{date}）"),
                 );
-            } else if model.verification != VERIFICATION_VERIFIED {
+            } else if model.verification != VERIFICATION_VERIFIED
+                && model.verification != VERIFICATION_TIMEOUT
+            {
                 // 已验证的记录不因为留着旧失败原因被每次加载静默降档
-                // （09-16 复审 GLM 2；当前写路径造不出这个状态，纯消隐患）。
+                // （09-16 复审 GLM 2；当前写路径造不出这个状态，纯消隐患）；
+                // 超时档同理不按失败降档（TASK-42）。
                 model.status = STATUS_FAILED.to_string();
                 model.verification = VERIFICATION_FAILED.to_string();
             }
@@ -626,7 +635,8 @@ pub fn connected(path: &Path) -> Result<Vec<ResourceModel>, String> {
 /// 调用；这个是「本机探测到什么」的语义，节点面板、`@` 弹层和 G1 用它，
 /// 界面自己按 verification 打后缀。
 /// 排序（09-15 起按 verification 而不是旧 status）：原生 / 已验证 → 未验证
-/// → 验证失败，同一档内 agent → provider → id。
+/// → 验证失败（冒烟超时可重试，随未验证同档，TASK-42），同一档内
+/// agent → provider → id。
 pub fn detected(path: &Path) -> Result<Vec<ResourceModel>, String> {
     let mut store = load(path)?;
     clear_expired_quota(&mut store);
@@ -649,7 +659,8 @@ pub fn detected(path: &Path) -> Result<Vec<ResourceModel>, String> {
 fn verification_rank(verification: &str) -> u8 {
     match verification {
         VERIFICATION_NATIVE | VERIFICATION_VERIFIED => 0,
-        VERIFICATION_UNVERIFIED => 1,
+        // 超时可重试，不是坏档：与未验证同档（TASK-42）
+        VERIFICATION_UNVERIFIED | VERIFICATION_TIMEOUT => 1,
         VERIFICATION_FAILED => 2,
         _ => 3,
     }
@@ -1671,10 +1682,15 @@ fn run_smoke_registered(
         &invocation.program,
         &invocation.args,
         invocation.input.as_deref(),
-        Duration::from_secs(60),
+        Duration::from_secs(SMOKE_TIMEOUT_SECS),
         Some(&temp),
         registry_key,
     )?;
+    // 超时先于输出解析拦截（TASK-42）：进程已被终止，解析残余输出只会造出
+    // 看不懂的失败原因。这条错误由 apply_smoke_outcome 记成 timeout 档。
+    if result.timed_out {
+        return Err(smoke_timeout_error());
+    }
     match channels::parse_output(&model.agent, &model.provider, &model.id, &result) {
         Ok(output) => {
             // claude 走第三方端点（进程环境或 ~/.claude/settings.json 的
@@ -1711,8 +1727,19 @@ fn route_alias_marker(model: &ResourceModel, identity: &str) -> Option<String> {
         .map(|(_, req, actual)| format!("路由别名：{req}→{actual}"))
 }
 
+/// 冒烟超时的失败正文（TASK-42）。`apply_smoke_outcome` 按它把 `verification`
+/// 记成 `timeout` 而不是 `failed`——超时不算验证失败，不拦派发。
+fn smoke_timeout_error() -> String {
+    format!("冒烟超时（{SMOKE_TIMEOUT_SECS} 秒）")
+}
+
+fn is_smoke_timeout(error: &str) -> bool {
+    error == smoke_timeout_error()
+}
+
 /// 把一次冒烟结果写进 store：成功 → 已接入 + 真身 + 可选 meta 标记；
-/// 失败 → 冒烟失败 + 脱敏原因。
+/// 失败 → 冒烟失败 + 脱敏原因；超时 → 冒烟失败 + 脱敏原因，但 `verification`
+/// 记 `timeout`（原生模型恒为 native，TASK-42）。
 /// `verification` 跟着结果走，但原生模型恒为 native——原生模型不按冒烟
 /// 结果改档（界面上也不给「验证」按钮），冒烟结果只落在 status 与详情里。
 /// 「原生」按 `is_native_model` 判：claude 挂第三方端点时它是第三方，冒烟
@@ -1751,6 +1778,9 @@ fn apply_smoke_outcome(
             target.status = STATUS_FAILED.to_string();
             target.verification = if native {
                 VERIFICATION_NATIVE
+            } else if is_smoke_timeout(&error) {
+                // 超时单独记档（TASK-42）：派发前检查只拦 failed，timeout 放行
+                VERIFICATION_TIMEOUT
             } else {
                 VERIFICATION_FAILED
             }
@@ -1912,7 +1942,7 @@ fn verify_on_first_use_at(
     smoke: impl FnOnce(&ResourceModel) -> Result<SmokeSuccess, String>,
     cancelled: impl Fn() -> bool,
 ) -> FirstUseVerification {
-    // 读一次拿目标就放锁：一次冒烟最长 60s，整段持锁会把界面的读资源也堵住。
+    // 读一次拿目标就放锁：一次冒烟最长 180 秒，整段持锁会把界面的读资源也堵住。
     let key = {
         let _guard = store_lock();
         let Ok(store) = load_or_default(path) else {
@@ -2134,6 +2164,7 @@ pub(crate) const RESOURCE_STATE_MISSING: &str = "未安装";
 pub(crate) const RESOURCE_STATE_UNVERIFIED: &str = "未验证";
 pub(crate) const RESOURCE_STATE_VERIFIED: &str = "已验证";
 pub(crate) const RESOURCE_STATE_FAILED: &str = "验证失败";
+pub(crate) const RESOURCE_STATE_TIMEOUT: &str = "冒烟超时";
 pub(crate) const RESOURCE_STATE_LOGGED_OUT: &str = "未登录";
 pub(crate) const RESOURCE_STATE_QUOTA: &str = "额度用尽";
 
@@ -2195,6 +2226,15 @@ pub(crate) fn model_state(
     }
     match model.verification.as_str() {
         VERIFICATION_VERIFIED => (RESOURCE_STATE_VERIFIED, String::new()),
+        // 超时不算验证失败（TASK-42）：状态插在「验证结果」一档内，
+        // note 给可复制的重试命令。
+        VERIFICATION_TIMEOUT => (
+            RESOURCE_STATE_TIMEOUT,
+            format!(
+                "可重试 aicross resources smoke {} --model {}；不影响派发",
+                model.agent, model.id
+            ),
+        ),
         VERIFICATION_FAILED => (RESOURCE_STATE_FAILED, String::new()),
         _ => (RESOURCE_STATE_UNVERIFIED, String::new()),
     }
@@ -2318,7 +2358,7 @@ pub(crate) fn smoke_agent_third_party_at(
 
 /// 冒烟某个 agent 的模型（`filter` 挑条目）；失败汇总进 errors（单条失败不
 /// 中断整批）。每冒烟一条都重新 load → 改 → 写盘，不整批长持旧 store——一次
-/// 冒烟最长 60s，整批持旧数据会把期间其他写方的更新整体抹掉（审查 2.4）。
+/// 冒烟最长 180 秒，整批持旧数据会把期间其他写方的更新整体抹掉（审查 2.4）。
 fn smoke_agent_models_filtered_at(
     path: &Path,
     agent_id: &str,
@@ -3341,6 +3381,118 @@ exit 2
         assert_eq!(saved.verification, VERIFICATION_FAILED);
         assert_eq!(saved.status, STATUS_FAILED);
         assert_eq!(saved.smoke_failure, "端点拒绝");
+    }
+
+    // ── TASK-42：冒烟超时单独记档，不拦派发 ──────────────────────────
+
+    /// 超时的冒烟结果记 `timeout`，不与验证失败共用档位；原生模型恒为
+    /// native；普通失败照旧 `failed`（对照）。
+    #[test]
+    fn task42_smoke_timeout_is_recorded_as_timeout_not_failed() {
+        let model = ResourceModel {
+            id: "m".into(),
+            agent: "pi".into(),
+            provider: "p".into(),
+            verification: VERIFICATION_UNVERIFIED.into(),
+            ..ResourceModel::default()
+        };
+        let mut store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("pi", vec![model])],
+        };
+        let key = ResourceModelKey { agent_id: "pi".into(), provider: "p".into(), id: "m".into() };
+
+        apply_smoke_outcome(&mut store, &key, Err(smoke_timeout_error())).unwrap();
+
+        let saved = find_model(&store, "pi", "p", "m").unwrap();
+        assert_eq!(saved.verification, VERIFICATION_TIMEOUT, "超时不应记成验证失败");
+        assert_eq!(saved.status, STATUS_FAILED);
+        assert_eq!(saved.smoke_failure, format!("冒烟超时（{SMOKE_TIMEOUT_SECS} 秒）"));
+
+        // 原生模型的 verification 恒为 native，冒烟超时也不改档
+        let native = ResourceModel {
+            id: "n".into(),
+            agent: "codex".into(),
+            ..ResourceModel::default()
+        };
+        let mut store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("codex", vec![native])],
+        };
+        let key = ResourceModelKey { agent_id: "codex".into(), provider: String::new(), id: "n".into() };
+        apply_smoke_outcome(&mut store, &key, Err(smoke_timeout_error())).unwrap();
+        assert_eq!(find_model(&store, "codex", "", "n").unwrap().verification, VERIFICATION_NATIVE);
+
+        // 对照：普通失败照旧记 failed（task21 已有，这里就近再钉一遍）
+        let model = ResourceModel {
+            id: "m".into(),
+            agent: "pi".into(),
+            provider: "p".into(),
+            verification: VERIFICATION_UNVERIFIED.into(),
+            ..ResourceModel::default()
+        };
+        let mut store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("pi", vec![model])],
+        };
+        let key = ResourceModelKey { agent_id: "pi".into(), provider: "p".into(), id: "m".into() };
+        apply_smoke_outcome(&mut store, &key, Err("端点拒绝".into())).unwrap();
+        assert_eq!(find_model(&store, "pi", "p", "m").unwrap().verification, VERIFICATION_FAILED);
+    }
+
+    /// 冒烟等待上限常量是 180 秒；超时错误正文可被 is_smoke_timeout 认出。
+    #[test]
+    fn task42_smoke_timeout_is_180_seconds() {
+        assert_eq!(SMOKE_TIMEOUT_SECS, 180);
+        assert_eq!(Duration::from_secs(SMOKE_TIMEOUT_SECS), Duration::from_secs(180));
+        assert!(is_smoke_timeout(&smoke_timeout_error()));
+        assert_eq!(smoke_timeout_error(), "冒烟超时（180 秒）");
+        assert!(!is_smoke_timeout("端点拒绝"));
+    }
+
+    /// `resources` 状态映射：timeout → 冒烟超时 + 重试说明；没有 timeout 值的
+    /// 旧数据不受影响（认不得的值仍按未验证展示）。
+    #[test]
+    fn task42_timeout_state_shows_retry_note() {
+        let now = 2_000_000_000_000_i64;
+        let model = ResourceModel {
+            agent: "pi".into(),
+            provider: "zai-coding-cn".into(),
+            id: "glm-5.3".into(),
+            verification: VERIFICATION_TIMEOUT.into(),
+            ..ResourceModel::default()
+        };
+        let (state, note) = model_state(&model, true, now);
+        assert_eq!(state, RESOURCE_STATE_TIMEOUT);
+        assert_eq!(state, "冒烟超时");
+        assert_eq!(
+            note,
+            "可重试 aicross resources smoke pi --model glm-5.3；不影响派发"
+        );
+        let legacy = ResourceModel { verification: "legacy".into(), ..model };
+        assert_eq!(model_state(&legacy, true, now).0, RESOURCE_STATE_UNVERIFIED);
+    }
+
+    /// 旧库加载不动超时档：有失败原因的 timeout 记录不被重判成 failed。
+    #[test]
+    fn task42_timeout_record_survives_reload() {
+        let root = std::env::temp_dir().join(format!("aicross-task42-reload-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[
+                {"id":"pi","name":"pi agent","kind":"内置","detected":true,"version":"0.86.1","models":[
+                    {"id":"glm-5.3","agent":"pi","provider":"zai","status":"冒烟失败","verification":"timeout","smoke_failure":"冒烟超时（180 秒）","resolved_id":"glm-5.3","resolved_source":"alias-table"}
+                ]}
+            ]}"#,
+        )
+        .unwrap();
+        let store = load(&path).expect("store");
+        let saved = find_model(&store, "pi", "zai", "glm-5.3").unwrap();
+        assert_eq!(saved.verification, VERIFICATION_TIMEOUT, "超时档不应被重判成 failed");
+        assert_eq!(saved.smoke_failure, "冒烟超时（180 秒）");
+        let _ = fs::remove_dir_all(root);
     }
 
     /// 复审补漏（09-16 Gemini 3）：路径正好以用户主目录结尾时也要缩成 `~`，

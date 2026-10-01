@@ -1406,3 +1406,70 @@ fn start_dispatch_creates_new_graph_each_time() {
     assert!(load(&first).nodes.contains_key("leftover-1"));
     let _ = fs::remove_dir_all(root);
 }
+
+// ── TASK-42：派发前检查只拦 verification == failed，冒烟超时放行 ─────────
+
+fn task42_plan_with_verification(verification: &str) -> Plan {
+    let settings = EngineSettings::default();
+    let models = vec![ResourceModel {
+        agent: "pi".into(),
+        id: "glm-5.3".into(),
+        provider: "zai".into(),
+        verification: verification.into(),
+        ..ResourceModel::default()
+    }];
+    let targets = vec![Target {
+        agent: "pi".into(),
+        model: "glm-5.3".into(),
+        role: "执行".into(),
+        ..Target::default()
+    }];
+    let presets: Vec<Preset> = Vec::new();
+    let roles = RoleSettings::default();
+    let mut git_dirty_count = move || None;
+    let mut seq = 0usize;
+    let mut ids = move || {
+        seq += 1;
+        format!("00000000-0000-4000-8000-{seq:012}")
+    };
+    let mut clock = move || Utc::now();
+    let mut input = PlanInput {
+        run_id: "r42",
+        project: "D:/p42",
+        text: "任务",
+        preset: None,
+        attachments: &[],
+        targets: &targets,
+        settings: &settings,
+        models: &models,
+        resources_error: None,
+        presets: &presets,
+        roles: &roles,
+        active_runs: 0,
+        existing: None,
+        git_dirty_count: &mut git_dirty_count,
+    };
+    plan_dispatch(&mut input, &mut ids, &mut clock)
+}
+
+/// 冒烟超时（verification == timeout）不是验证失败：派发前检查放行；
+/// verification == failed 照旧拒绝。把检查改回连 timeout 一起拦，这条就红。
+#[test]
+fn plan_dispatch_passes_smoke_timeout_and_still_rejects_failed() {
+    let ready = task42_plan_with_verification(crate::resources::VERIFICATION_TIMEOUT);
+    match ready {
+        Plan::Ready { created, .. } => assert_eq!(created.len(), 1),
+        Plan::Rejected { reason, .. } => panic!("冒烟超时不应拦派发：{reason}"),
+    }
+    let rejected = task42_plan_with_verification(crate::resources::VERIFICATION_FAILED);
+    match rejected {
+        Plan::Rejected { reason, .. } => assert_eq!(reason, "目标验证失败：pi/glm-5.3"),
+        Plan::Ready { .. } => panic!("验证失败应照旧拦下"),
+    }
+    // 对照：未验证本来就放行，超时档与它同路。
+    let unverified = task42_plan_with_verification(crate::resources::VERIFICATION_UNVERIFIED);
+    match unverified {
+        Plan::Ready { .. } => {}
+        Plan::Rejected { reason, .. } => panic!("未验证不应拦派发：{reason}"),
+    }
+}
