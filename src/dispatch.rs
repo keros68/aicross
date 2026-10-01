@@ -766,7 +766,10 @@ pub(crate) fn dispatch_stage_core(
     })
 }
 
-fn dispatch_data_root() -> Result<PathBuf, String> {
+/// TASK-44 R1：`aicross recover` 推算 worktree 路径用（创建处是
+/// `run_one_attempt` 里的 `run_root/<node_id>/wt`，run_root 即本函数下的
+/// `runs/<run_id>`）；只开放调用，逻辑不改。
+pub(crate) fn dispatch_data_root() -> Result<PathBuf, String> {
     #[cfg(test)]
     if let Some(path) = std::env::var_os("AICROSS_TEST_RUN_ROOT") {
         return Ok(PathBuf::from(path));
@@ -1199,7 +1202,78 @@ fn persist_before_snapshot(
         .map(|saved| saved.path)
 }
 
-fn latest_before_dir(project: &Path, node_id: &str) -> Option<PathBuf> {
+/// TASK-44 R1：执行中快照。`.before/` 是执行结束后才落盘的，引擎中途被杀时
+/// 磁盘上没有任何快照，`aicross recover --rollback` 无从恢复。单写者拉起
+/// CLI 之前把内存里的派发前快照存到 `.dispatch/<run>/<node>.inflight/`：
+/// `manifest.json` 记每个文件的相对路径、大小、是否存了内容，`files/` 存有
+/// 内容的文件原文；超过单文件上限的文件只进清单不存内容（与内存快照同一
+/// 取舍）。执行结束由调用方删除该目录，原有的 `.before/` 逻辑不变。
+fn persist_inflight_snapshot(
+    project: &Path,
+    run_id: &str,
+    node_id: &str,
+    snapshot: &DirectorySnapshot,
+) -> Result<PathBuf, String> {
+    let root = project
+        .join(".dispatch")
+        .join(safe_name(run_id))
+        .join(format!("{}.inflight", safe_name(node_id)));
+    if root.exists() && !root.is_dir() {
+        return Err("旧执行中快照不是目录".into());
+    }
+    if root.exists() {
+        fs::remove_dir_all(&root).map_err(|error| format!("清理旧执行中快照失败：{error}"))?;
+    }
+    let written = (|| {
+        fs::create_dir_all(&root).map_err(|error| format!("创建执行中快照失败：{error}"))?;
+        let files_dir = root.join("files");
+        fs::create_dir_all(&files_dir)
+            .map_err(|error| format!("创建执行中快照 files 目录失败：{error}"))?;
+        let mut paths: Vec<&String> = snapshot
+            .iter()
+            .filter(|(_, file)| !file.is_directory)
+            .map(|(path, _)| path)
+            .collect();
+        paths.sort();
+        let mut files = Vec::new();
+        for path in paths {
+            let file = &snapshot[path.as_str()];
+            if let Some(bytes) = file.bytes.as_deref() {
+                let Some(relative) = safe_relative_path(path)
+                else {
+                    return Err(format!("执行中快照路径不安全：{path}"));
+                };
+                let target = files_dir.join(relative);
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|error| format!("创建执行中快照子目录失败：{error}"))?;
+                }
+                fs::write(&target, bytes).map_err(|error| {
+                    format!("写入执行中快照失败 {}：{error}", target.display())
+                })?;
+            }
+            files.push(serde_json::json!({
+                "path": path,
+                "size": file.size,
+                "stored": file.bytes.is_some(),
+            }));
+        }
+        let manifest = serde_json::json!({ "schema": "aicross-inflight/1", "files": files });
+        let bytes = serde_json::to_vec_pretty(&manifest)
+            .map_err(|error| format!("生成执行中快照清单失败：{error}"))?;
+        fs::write(root.join("manifest.json"), bytes)
+            .map_err(|error| format!("写入执行中快照清单失败：{error}"))
+    })();
+    if let Err(error) = written {
+        let _ = fs::remove_dir_all(&root);
+        return Err(error);
+    }
+    Ok(root)
+}
+
+/// TASK-44：`aicross recover` 的核对报告要与回滚认同一个快照目录，引擎按
+/// 同一套规则找它；只开放调用，逻辑不改。
+pub(crate) fn latest_before_dir(project: &Path, node_id: &str) -> Option<PathBuf> {
     let mut matched: Option<(i64, bool, PathBuf, PathBuf)> = None;
     let mut paths = fs::read_dir(project.join(".dispatch")).into_iter().flatten().flatten()
         .map(|entry| entry.path()).collect::<Vec<_>>();
@@ -1229,7 +1303,8 @@ fn latest_before_dir(project: &Path, node_id: &str) -> Option<PathBuf> {
     matched.map(|(_, _, _, before)| before).filter(|path| path.is_dir())
 }
 
-fn rollback_node_changes_core(project: &Path, run_id: &str, node_id: &str) -> Result<RollbackSummary, String> {
+/// TASK-44：开放给引擎的 `aicross recover --rollback` 调用；逻辑不改。
+pub(crate) fn rollback_node_changes_core(project: &Path, run_id: &str, node_id: &str) -> Result<RollbackSummary, String> {
     let fallback = project.join(".dispatch").join(safe_name(run_id)).join(format!("{}.before", safe_name(node_id)));
     let root = latest_before_dir(project, node_id).unwrap_or(fallback);
     if !root.is_dir() {
@@ -2630,6 +2705,28 @@ fn run_one_attempt(
     }
 
     let mut needs_oneshot = error.is_empty();
+    // TASK-44 R1：单写者在拉起 CLI 之前把派发前快照落盘为执行中快照，引擎
+    // 中途被杀时 `aicross recover --rollback` 才有据可回。落盘失败不阻断
+    // 派发，只在 runner_note 记一笔。
+    let inflight_dir = if needs_oneshot && node.write == "单写者" {
+        match before_snapshot.as_ref() {
+            Some(snapshot) => {
+                match persist_inflight_snapshot(project, run_id, &node.node_id, snapshot) {
+                    Ok(path) => Some(path),
+                    Err(persist_error) => {
+                        append_runner_note(
+                            &mut runner_note,
+                            &format!("执行中快照保存失败：{persist_error}，引擎中断后无法自动回滚"),
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
     // interactive 会话不看 ACP 开关：interactive 的授权询问只有 ACP 能接；失败照常回退一次性 CLI。
     let uses_acp = (settings.acp_enabled || node.interactive) && channels::acp::supports(&node.agent, node.interactive);
     if needs_oneshot && !uses_acp && node.previous_runner == "acp" {
@@ -2853,6 +2950,16 @@ fn run_one_attempt(
             Err(snapshot_error) => {
                 status = "error".into();
                 error = snapshot_error;
+            }
+        }
+    }
+    // TASK-44 R1：本次执行已结束（任何结果，含失败、取消、超时），删掉执行中
+    // 快照；此后引擎再被杀，恢复靠刚落盘的 `.before/`。放在 `.before/` 持久
+    // 化之后，两个都缺的窗口最小。
+    if let Some(path) = inflight_dir.as_deref() {
+        if path.exists() {
+            if let Err(remove_error) = fs::remove_dir_all(path) {
+                append_runner_note(&mut runner_note, &format!("执行中快照清理失败：{remove_error}"));
             }
         }
     }
@@ -5525,6 +5632,89 @@ mod tests {
         };
         fs::write(dispatch.join("record.md"), format!("{}\n", serialize_frontmatter(&record).unwrap())).unwrap();
         assert_eq!(latest_before_dir(&root, "node"), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-44 R1：单写者拉起 CLI 前落盘执行中快照，执行结束（本例是成功）
+    /// 后删除。桩命令在执行中记录 `.inflight/` 是否存在。
+    #[test]
+    fn task44_inflight_snapshot_exists_during_execution_and_removed_after() {
+        if channels::resolve_binary("python", None).is_err() {
+            eprintln!("跳过：PATH 中没有 python");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("aicross-task44-inflight-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(project.join("a.txt"), "before").unwrap();
+        let marker = root.join("inflight_seen.txt");
+        let inflight = project.join(".dispatch").join("run").join("node-1.inflight");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(
+            &stub,
+            format!(
+                "import pathlib\npathlib.Path(r'{}').write_text('ran')\npathlib.Path(r'{}').write_text(str(pathlib.Path(r'{}').exists()))\nprint('stub answer')\nprint('input=1 cache_read=0 output=1')\n",
+                project.join("done.txt").display(),
+                marker.display(),
+                inflight.display()
+            ),
+        )
+        .unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = "stub".into();
+        request.visibility = "共享".into();
+        request.write = "单写者".into();
+        let settings = DispatchSettings {
+            cc_switch_path: stub.to_string_lossy().into_owned(),
+            ..DispatchSettings::default()
+        };
+        let result = run_one("run", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        // 执行中快照在拉起 CLI 之前已落盘，执行里看得到。
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "True");
+        // 执行结束后删除，`.before/` 照旧落盘（log_dir 不在项目下时落在
+        // log_dir 里）。
+        assert!(!inflight.exists());
+        assert!(log_dir.join("node-1.before").is_dir());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-44 R1：执行中快照清单存相对路径、大小与是否存了内容；超限未存
+    /// 内容的文件只进清单。
+    #[test]
+    fn task44_inflight_snapshot_manifest_records_size_and_stored_flag() {
+        let root = std::env::temp_dir().join(format!("aicross-task44-manifest-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("a.txt"), "before").unwrap();
+        fs::create_dir_all(project.join("sub")).unwrap();
+        fs::write(project.join("sub").join("b.txt"), "nested").unwrap();
+        let mut snapshot = snapshot_directory(&project).unwrap();
+        // 模拟超过单文件上限：内存快照里有路径、没有内容。
+        if !snapshot.contains_key("big.bin") {
+            snapshot.insert("big.bin".into(), SnapshotFile { size: 100, ..SnapshotFile::default() });
+        }
+        snapshot.get_mut("big.bin").unwrap().bytes = None;
+        let dir = persist_inflight_snapshot(&project, "run", "node-1", &snapshot).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+        let files = manifest["files"].as_array().unwrap();
+        let find = |path: &str| {
+            files
+                .iter()
+                .find(|file| file["path"] == path)
+                .unwrap_or_else(|| panic!("清单里没有 {path}"))
+                .clone()
+        };
+        assert_eq!(find("a.txt"), serde_json::json!({"path": "a.txt", "size": 6, "stored": true}));
+        assert_eq!(find("sub/b.txt"), serde_json::json!({"path": "sub/b.txt", "size": 6, "stored": true}));
+        assert_eq!(find("big.bin")["stored"], false);
+        assert_eq!(find("big.bin")["size"], 100);
+        // 存了内容的文件在 files/ 下原样可读。
+        assert_eq!(fs::read_to_string(dir.join("files").join("a.txt")).unwrap(), "before");
         let _ = fs::remove_dir_all(root);
     }
 

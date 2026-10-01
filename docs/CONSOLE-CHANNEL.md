@@ -1,8 +1,8 @@
 # 控制台通道
 
 本文供 ai-cross skill 的 `channels.md` 维护者使用。aicross 的执行面是命令行：
-派发 `aicross dispatch/status/adopt/cancel`，资源 `aicross resources`，
-配置 `aicross config`，查看 `aicross open`。命令直接使用无窗口引擎与本机文件，
+派发 `aicross dispatch/status/adopt/cancel`，核对 `aicross recover`，
+资源 `aicross resources`，配置 `aicross config`，查看 `aicross open`。命令直接使用无窗口引擎与本机文件，
 不需要 aicross 窗口在跑；窗口只承载首页与查看页（TASK-40 已删除 HTTP 通道与
 `propose` 子命令，G1 在宿主对话里完成）。
 
@@ -59,7 +59,50 @@ kill-on-close Job：引擎进程退出或被杀时随之结束，不留继续消
 派发刚接收、后台进程尚未报到时 pid 为 0：`updated_at` 在 30 秒内视为启动中；
 超过 30 秒仍为 0，或 `updated_at` 比当前时间晚 60 秒以上（时钟回拨），判
 `failed`，原因是「引擎进程未能启动」。进程中途被杀死时 run 判 `failed`、
-原因是「引擎进程已退出」。
+原因是「引擎进程已退出」；之后的核对与恢复见下一节 `aicross recover`。
+
+## 崩溃后核对
+
+后台引擎意外退出后，图上可能留下停在半路的节点（本 run 的节点里图上
+`pending` 的，以及 run 判失败时仍为 `draft` 的），单写者节点可能把项目文件
+改了一半。`aicross recover <run_id>` 做只读核对，stdout 输出 JSON：run 状态
+与原因；每个停在半路的节点给 `node_id`、角色、agent、模型、写权限（只读 /
+单写者 / worktree）。图上不属于这个 run 的节点不进报告。
+
+单写者节点按磁盘上的快照区分状态。有执行中快照（`inflight_dir`）→「执行
+中断」：`changed_files`（`added` / `modified` / `removed`）拿项目现状对比
+清单，超过单文件上限、只记路径没存内容的文件列在 `unrestorable`。没有执行
+中快照但有派发前快照（`before_dir`）→「执行已结束，结果未写回」：
+`changed_files` 相对快照，新增只认快照里 `.created` 的记录，项目里多出来的
+其它文件不算新增。两者都没有时：`draft` 节点「未发出」，不查文件；
+`pending` 节点在 `no_snapshot` 里单列：项目改动回滚不了，需自行核对。
+worktree 节点给 `worktree` 路径，原样保留；图上没有产物时按创建时的固定规则
+推算路径，推算出的路径不存在时 `worktree_missing` 为 true（worktree 不存在）。
+只读节点不查文件，状态按是否已发出记「执行中断」或「未发出」。
+
+只读核对不改项目文件、不改图；读取 run 时若判定引擎进程已退出，会把 run
+状态更新为失败、原因「引擎进程已退出」（与 `aicross status` 相同）。
+
+`aicross recover <run_id> --rollback` 在核对之后恢复项目文件：「执行中断」的
+节点按执行中快照恢复存了内容的文件、删掉新增，没存内容且有变化的文件不动，
+在输出与节点正文里列明（不算失败）；「执行已结束，结果未写回」的节点恢复到
+派发前快照、删掉新建文件；逐节点结果在输出 JSON 的 `nodes[].rollback`。全部
+停在半路的节点在图上标 `failed`，只改状态、正文与失败类型，原 reply 的其余
+字段（产物、worktree 路径等）保留：已回滚的单写者正文「引擎中断，已回滚项目
+改动」（有无法恢复的文件时在正文里列明），只读与 worktree 正文「引擎中断」，
+未发出的正文「引擎中断」，无快照的正文「引擎中断，无派发前快照，项目改动未
+回滚，请自行核对」；经合并写落图。run 摘要同步刷新，状态保持 `failed`，原因
+追加「已核对」，没有停在半路的节点也刷新。某个节点回滚失败时继续处理其余
+节点，该节点正文「引擎中断，回滚失败：<原因>，请自行核对」，最后退出 1 并在
+`failures` 里列出失败项。
+
+退出码：0 成功；1 run 仍在运行（提示等它结束或先 `aicross cancel`）或回滚有
+失败；run 已是 `done` 时退出 0，说明「无需核对」。快照只存普通文件：排除目录
+（.git/node_modules/target/dist…）与链接里的改动不在快照内；超过单文件上限
+的文件只记路径不存内容，这些位置的变化无法自动恢复，会列在 `unrestorable`。
+
+单写者执行期间，项目目录的 `.dispatch/` 下会有 `<node>.inflight/`
+（执行中快照），执行结束即删除；看到它残留说明引擎在执行中途退出。
 
 项目路径按命令行给的原文使用（不做规范化改写）；项目目录不存在时派发前拒绝。
 

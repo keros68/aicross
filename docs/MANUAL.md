@@ -21,6 +21,7 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 | `aicross status <run_id> [--wait] [--timeout 秒]` | 看一次 run 的状态；`--wait` 等到结束 |
 | `aicross adopt <run_id> <node_id>` | 采纳某一路的结果 |
 | `aicross cancel <run_id>` | 叫停一次派发 |
+| `aicross recover <run_id> [--rollback]` | 崩溃后核对；`--rollback` 恢复单写者改动的项目文件 |
 | `aicross open <run_id>` | 打开该 run 的查看页 |
 | `aicross resources [detect \| smoke <agent>]` | 看资源库 / 重新探测 / 冒烟验证 |
 | `aicross config show \| set-role \| set` | 看与改角色、派发设置 |
@@ -34,7 +35,8 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 `docs/CONSOLE-CHANNEL.md`。
 
 派发由后台引擎进程执行。Windows 上引擎退出或被杀时，它启动的各家 CLI 进程随之
-结束；其它平台不保证。
+结束；其它平台不保证。引擎意外退出后用 `aicross recover` 核对，见下文
+「崩溃后核对」。
 
 派发设置存放在 `~/.aicross/dispatch-settings.json`（超时、并发、修正轮上限、
 验证命令、脱敏、派发记录位置等），用 `aicross config show` 看全量，`config set`
@@ -46,6 +48,21 @@ ACP 默认关闭，派发走各家 CLI 自带的续聊。要用 ACP 时执行
 适配器并输出每家结果。安装需要 npm 与对应的 CLI；装不上的，命令退出 1 并说明
 原因，派发对它们回退一次性 CLI。`aicross config show` 的 `acp` 一项显示各家
 适配器是否就绪。
+
+## 崩溃后核对
+
+后台引擎意外退出后，图上可能留下停在半路的节点，单写者节点可能把项目文件改了
+一半。`aicross recover <run_id>` 只读核对：列出这些节点、各自的写权限与状态
+（执行中断 / 执行已结束，结果未写回 / 未发出），单写者节点给出有变化的文件与
+对应快照目录，worktree 节点给 worktree 路径（原样保留，没有产物时按创建规则
+推算）。单写者执行期间，项目目录的 `.dispatch/` 下会有 `<node>.inflight/`
+执行中快照，执行结束即删除；看到它残留说明引擎在执行中途退出。
+
+`aicross recover <run_id> --rollback` 把单写者节点的项目改动恢复到对应快照：
+执行中断的按执行中快照恢复，执行已结束的恢复到派发前快照，并把这些停在半路
+的节点标为失败；没存内容的大文件无法自动恢复，报告与节点正文里列明；没有
+快照的节点不回滚，报告里单列，需要自行核对。run 仍在运行时命令退出 1，等它
+结束或先 `aicross cancel`；run 已是 `done` 时无需核对。
 
 ## 资源接入
 
@@ -147,6 +164,7 @@ Markdown 文件，头部 YAML 记着模型真身、用量、耗时、可见性�
 | 派发结果查看页 | 查看页（命令 `aicross open`） | 本手册、`docs/CONSOLE-CHANNEL.md` |
 | 再派一次 | 重派 | 宿主对话 |
 | 中途停止 | 叫停（命令 `aicross cancel`） | 宿主对话、本手册 |
+| 崩溃后核对与恢复 | 核对 / 回滚（命令 `aicross recover [--rollback]`） | 本手册、`docs/CONSOLE-CHANNEL.md` |
 | 把资源纳入清单 | 接入（动作成对：接入 ↔ 移除） | `aicross resources` |
 | 核对模型真身 | 验证（状态：未验证 / 已验证 / 验证失败 / 冒烟超时 / 原生） | 资源输出、首次派发 |
 | 执行后跑验证命令不通过 | 验证命令未通过（与真身「验证失败」分开） | 查看页状态 |

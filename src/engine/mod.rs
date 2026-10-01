@@ -21,7 +21,7 @@ use crate::orchestration::{
 use crate::resources::ResourceModel;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
@@ -3040,6 +3040,634 @@ pub(crate) fn cancel(root: &Path, run_id: &str) -> Result<EngineRun, String> {
     Ok(run)
 }
 
+/// TASK-44：`aicross recover` 的结果。`report` 写 stdout，`message` 写 stderr，
+/// `exit` 是命令退出码（0 成功 / 1 业务失败：仍在运行或回滚有失败）。
+pub(crate) struct RecoverOutcome {
+    pub exit: i32,
+    pub message: String,
+    pub report: Value,
+}
+
+/// 与 dispatch.rs 的 `safe_name` 同一套规则（run_id 与 node_id 都是字母数字、
+/// `-`、`_`，这里原样保留），快照目录名据此拼出。
+fn recover_safe_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// 快照目录里的文件清单（相对路径 → 字节数）。`.created` / `.skipped` 是快照
+/// 自己的记录文件，不算项目文件。
+fn snapshot_files(before_dir: &Path) -> HashMap<String, u64> {
+    fn walk(dir: &Path, base: &Path, out: &mut HashMap<String, u64>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
+            if metadata.is_dir() {
+                walk(&path, base, out);
+            } else if metadata.is_file() {
+                let relative = path
+                    .strip_prefix(base)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if matches!(relative.as_str(), ".created" | ".skipped") {
+                    continue;
+                }
+                out.insert(relative, metadata.len());
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    walk(before_dir, before_dir, &mut out);
+    out
+}
+
+fn recover_excluded_directory(name: &str) -> bool {
+    // 与 dispatch.rs `excluded_snapshot_directory` 保持同一份清单：快照不含
+    // 这些目录，核对时也不把它们当成新增。
+    matches!(
+        name,
+        ".git"
+            | ".dispatch"
+            | ".aicross-runtime"
+            | ".pytest_cache"
+            | "__pycache__"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | ".venv"
+            | "build"
+            | "coverage"
+            | ".next"
+            | "vendor"
+    )
+}
+
+fn recover_is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+/// 项目目录里的文件清单（相对路径 → 字节数）；排除目录与链接按快照同口径，
+/// 链接与 junction 不走进去。
+fn project_files(project: &Path) -> HashMap<String, u64> {
+    fn walk(dir: &Path, base: &Path, out: &mut HashMap<String, u64>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
+            if recover_is_link(&metadata) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if metadata.is_dir() {
+                if recover_excluded_directory(&name) {
+                    continue;
+                }
+                walk(&path, base, out);
+            } else if metadata.is_file() {
+                let relative = path
+                    .strip_prefix(base)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(relative, metadata.len());
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    walk(project, project, &mut out);
+    out
+}
+
+/// `.created` 里记录的新建文件（跳过 `dir:` 目录行），只认项目里仍然存在的。
+/// `.before` 快照只存改动过的文件，「项目里有、快照里没有」不能算新增。
+fn snapshot_created_files(before_dir: &Path, current: &HashMap<String, u64>) -> Vec<String> {
+    let mut out: Vec<String> = fs::read_to_string(before_dir.join(".created"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("dir:"))
+        .filter(|line| current.contains_key(*line))
+        .map(str::to_string)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// 相对 `.before` 快照有变化的文件：修改、删除，新增只认快照 `.created`
+/// 的记录。大小相同再比内容。
+fn changed_files_against_before_snapshot(
+    project: &Path,
+    before_dir: &Path,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let before = snapshot_files(before_dir);
+    let current = project_files(project);
+    let mut modified = Vec::new();
+    let mut removed = Vec::new();
+    for (path, size) in &before {
+        match current.get(path) {
+            None => removed.push(path.clone()),
+            Some(&now_size) => {
+                let unchanged = now_size == *size
+                    && fs::read(project.join(path)).ok() == fs::read(before_dir.join(path)).ok();
+                if !unchanged {
+                    modified.push(path.clone());
+                }
+            }
+        }
+    }
+    let added = snapshot_created_files(before_dir, &current);
+    modified.sort();
+    removed.sort();
+    (added, modified, removed)
+}
+
+/// 执行中快照清单里的一条文件记录。
+struct RecoverInflightFile {
+    path: String,
+    size: u64,
+    stored: bool,
+}
+
+/// 执行中快照目录：与 `.before` 同一根目录规则，执行结束即删。
+fn inflight_dir_for(project: &Path, run_id: &str, node_id: &str) -> PathBuf {
+    project
+        .join(".dispatch")
+        .join(recover_safe_name(run_id))
+        .join(format!("{}.inflight", recover_safe_name(node_id)))
+}
+
+/// 读执行中快照清单；损坏按 Err 返回（回滚时进 failures）。
+fn read_inflight_manifest(dir: &Path) -> Result<Vec<RecoverInflightFile>, String> {
+    let bytes = fs::read(dir.join("manifest.json"))
+        .map_err(|error| format!("读取执行中快照清单失败：{error}"))?;
+    let value: Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("解析执行中快照清单失败：{error}"))?;
+    let files = value
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "执行中快照清单没有 files".to_string())?;
+    files
+        .iter()
+        .map(|item| {
+            Ok(RecoverInflightFile {
+                path: item
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "执行中快照清单条目没有 path".to_string())?
+                    .to_string(),
+                size: item.get("size").and_then(Value::as_u64).unwrap_or(0),
+                stored: item
+                    .get("stored")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+/// 执行中断的单写者节点：项目当前内容对比执行中快照清单。清单里有、项目里
+/// 没有 → removed；存了内容的比内容、没存内容的比大小，不同 → modified；
+/// 项目里有、清单里没有（同一套排除规则）→ added。
+fn changed_files_against_inflight(
+    project: &Path,
+    dir: &Path,
+    files: &[RecoverInflightFile],
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let current = project_files(project);
+    let mut added = Vec::new();
+    let mut modified = Vec::new();
+    let mut removed = Vec::new();
+    for file in files {
+        match current.get(&file.path) {
+            None => removed.push(file.path.clone()),
+            Some(&now_size) => {
+                let unchanged = if file.stored {
+                    fs::read(project.join(&file.path)).ok()
+                        == fs::read(dir.join("files").join(&file.path)).ok()
+                } else {
+                    now_size == file.size
+                };
+                if !unchanged {
+                    modified.push(file.path.clone());
+                }
+            }
+        }
+    }
+    let manifest: HashSet<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    for path in current.keys() {
+        if !manifest.contains(path.as_str()) {
+            added.push(path.clone());
+        }
+    }
+    added.sort();
+    modified.sort();
+    removed.sort();
+    (added, modified, removed)
+}
+
+/// 执行中断的单写者回滚：恢复存了内容且有变化的文件、删掉新增；没存内容且
+/// 有变化的文件列进 unrestorable（不算失败）。成功后由调用方删除执行中快照
+/// 目录。返回（恢复的文件、删除的新增、无法恢复的文件）。
+fn rollback_inflight_snapshot(
+    project: &Path,
+    dir: &Path,
+    files: &[RecoverInflightFile],
+    changed: (&[String], &[String], &[String]),
+) -> Result<(Vec<String>, Vec<String>, Vec<String>), String> {
+    let (added, modified, removed) = changed;
+    let project_canonical = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
+    let mut changed_set: HashSet<&str> = modified
+        .iter()
+        .map(String::as_str)
+        .chain(removed.iter().map(String::as_str))
+        .collect();
+    let mut restored = Vec::new();
+    let mut unrestorable = Vec::new();
+    for file in files {
+        if !changed_set.remove(file.path.as_str()) {
+            continue;
+        }
+        if !file.stored {
+            unrestorable.push(file.path.clone());
+            continue;
+        }
+        let Ok(bytes) = fs::read(dir.join("files").join(&file.path)) else {
+            unrestorable.push(file.path.clone());
+            continue;
+        };
+        let target = project.join(&file.path);
+        if let Ok(metadata) = fs::symlink_metadata(&target) {
+            if recover_is_link(&metadata) {
+                let removed_link = if metadata.is_dir() {
+                    fs::remove_dir(&target)
+                } else {
+                    fs::remove_file(&target)
+                };
+                if removed_link.is_err() {
+                    unrestorable.push(file.path.clone());
+                    continue;
+                }
+            }
+        }
+        if let Some(parent) = target.parent() {
+            if fs::create_dir_all(parent).is_err()
+                || parent
+                    .canonicalize()
+                    .map_or(true, |value| !value.starts_with(&project_canonical))
+            {
+                unrestorable.push(file.path.clone());
+                continue;
+            }
+        }
+        match fs::write(&target, bytes) {
+            Ok(()) => restored.push(file.path.clone()),
+            Err(_) => unrestorable.push(file.path.clone()),
+        }
+    }
+    let mut removal_errors = Vec::new();
+    for path in added {
+        // added 来自项目遍历，是相对项目目录的安全路径。
+        if let Err(error) = fs::remove_file(project.join(path)) {
+            removal_errors.push(format!("{path}：{error}"));
+        }
+    }
+    if !removal_errors.is_empty() {
+        return Err(format!("删除新增文件失败：{}", removal_errors.join("；")));
+    }
+    restored.sort();
+    unrestorable.sort();
+    Ok((restored, added.to_vec(), unrestorable))
+}
+
+/// TASK-44：崩溃后核对。run 仍在运行时退出 1；`done` 退出 0 无需核对；
+/// 其余（死进程判失败的 run 等）列出停在半路的节点（本 run 的节点里图上
+/// pending 的，以及 run 判失败时仍为 draft 的），按 run 摘要里的节点顺序
+/// 输出。单写者节点按磁盘状态区分：有执行中快照 →「执行中断」；没有但有
+/// `.before` →「执行已结束，结果未写回」；都没有时 draft →「未发出」、
+/// pending → 无派发前快照单列。`--rollback` 时单写者节点恢复项目文件，
+/// 全部停在半路的节点标 `failed` 落图，run 摘要刷新（状态保持，原因追加
+/// 「已核对」）。读 run 失败按 Err 返回，由命令行当业务失败处理。
+pub(crate) fn recover(root: &Path, run_id: &str, rollback: bool) -> Result<RecoverOutcome, String> {
+    let run = read_run(root, run_id)?;
+    let running_message = "run 仍在运行，等它结束或先 aicross cancel".to_string();
+    if run.status == "running" {
+        return Ok(RecoverOutcome {
+            exit: 1,
+            message: running_message,
+            report: json!({ "run_id": run_id, "status": run.status, "rollback": rollback }),
+        });
+    }
+    if run.status == "done" {
+        return Ok(RecoverOutcome {
+            exit: 0,
+            message: "无需核对".into(),
+            report: json!({ "run_id": run_id, "status": run.status, "rollback": rollback }),
+        });
+    }
+    let graph = load_graph_for_run(root, &run)?;
+    let project = PathBuf::from(&run.project);
+    let run_failed = run.status == "failed";
+    let run_node_ids: Vec<String> = run.nodes.iter().map(|n| n.node_id.clone()).collect();
+    // 停在半路：只认本 run 的节点（图上别的 run 的 pending 节点不碰），
+    // 按 run 摘要里的节点顺序输出，不依赖图上的键序。
+    let stuck: Vec<String> = run
+        .nodes
+        .iter()
+        .filter_map(|summary| {
+            let id = summary.node_id.as_str();
+            let node = graph.nodes.get(id)?;
+            let status = node
+                .reply
+                .as_ref()
+                .map(|reply| reply.status.as_str())
+                .unwrap_or("draft");
+            (status == "pending" || (run_failed && status == "draft")).then(|| id.to_string())
+        })
+        .collect();
+    let mut entries: Vec<Value> = Vec::new();
+    let mut no_snapshot: Vec<String> = Vec::new();
+    let mut failures: Vec<Value> = Vec::new();
+    let mut markings: Vec<(String, String)> = Vec::new();
+    for node_id in &stuck {
+        let node = &graph.nodes[node_id];
+        let target = node.target.as_ref();
+        let mut entry = json!({
+            "node_id": node_id,
+            "role": target.map(|t| t.role.clone()).unwrap_or_default(),
+            "agent": target.map(|t| t.agent.clone()).unwrap_or_default(),
+            "model": target.map(|t| t.model.clone()).unwrap_or_default(),
+            "write": target.map(|t| t.write.clone()).unwrap_or_default(),
+        });
+        let write = target.map(|t| t.write.as_str()).unwrap_or("");
+        match write {
+            "单写者" => {
+                let inflight = inflight_dir_for(&project, run_id, node_id);
+                if inflight.is_dir() {
+                    // 有执行中快照：执行中途被杀，按清单对项目现状。
+                    entry["status"] = json!("执行中断");
+                    entry["inflight_dir"] =
+                        Value::String(inflight.to_string_lossy().into_owned());
+                    match read_inflight_manifest(&inflight) {
+                        Err(manifest_error) => {
+                            entry["error"] = Value::String(manifest_error.clone());
+                            if rollback {
+                                failures.push(json!({ "node_id": node_id, "error": manifest_error }));
+                                markings.push((
+                                    node_id.clone(),
+                                    format!("引擎中断，回滚失败：{manifest_error}，请自行核对"),
+                                ));
+                            }
+                        }
+                        Ok(files) => {
+                            let (added, modified, removed) =
+                                changed_files_against_inflight(&project, &inflight, &files);
+                            let mut unrestorable: Vec<String> = files
+                                .iter()
+                                .filter(|file| {
+                                    !file.stored && modified.iter().any(|path| path == &file.path)
+                                })
+                                .map(|file| file.path.clone())
+                                .collect();
+                            unrestorable.sort();
+                            entry["changed_files"] = json!({
+                                "added": added,
+                                "modified": modified,
+                                "removed": removed,
+                            });
+                            entry["unrestorable"] = json!(unrestorable);
+                            if rollback {
+                                match rollback_inflight_snapshot(
+                                    &project,
+                                    &inflight,
+                                    &files,
+                                    (&added, &modified, &removed),
+                                ) {
+                                    Ok((restored, removed_added, unfinished)) => {
+                                        let _ = fs::remove_dir_all(&inflight);
+                                        entry["rollback"] = json!({
+                                            "restored": restored,
+                                            "removed": removed_added,
+                                            "unrestorable": unfinished,
+                                        });
+                                        let text = if unfinished.is_empty() {
+                                            "引擎中断，已回滚项目改动".to_string()
+                                        } else {
+                                            format!(
+                                                "引擎中断，已回滚项目改动；{} 个文件未存执行中快照内容，无法恢复，请自行核对：{}",
+                                                unfinished.len(),
+                                                unfinished.join("、")
+                                            )
+                                        };
+                                        markings.push((node_id.clone(), text));
+                                    }
+                                    Err(error) => {
+                                        failures.push(json!({ "node_id": node_id, "error": error }));
+                                        markings.push((
+                                            node_id.clone(),
+                                            format!("引擎中断，回滚失败：{error}，请自行核对"),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // 与回滚同一套规则找快照：先历史记录，落到本次 run 的固定位置。
+                    let fallback = project
+                        .join(".dispatch")
+                        .join(recover_safe_name(run_id))
+                        .join(format!("{}.before", recover_safe_name(node_id)));
+                    let before_dir = crate::dispatch::latest_before_dir(&project, node_id)
+                        .unwrap_or(fallback);
+                    if before_dir.is_dir() {
+                        // 执行已结束、`.before` 已落盘，只是结果没写回图。
+                        // 新增只认快照里的 `.created` 记录，`.before` 只存
+                        // 改动过的文件，不能把项目里多出来的文件都算新增。
+                        entry["status"] = json!("执行已结束，结果未写回");
+                        let (added, modified, removed) =
+                            changed_files_against_before_snapshot(&project, &before_dir);
+                        entry["before_dir"] =
+                            Value::String(before_dir.to_string_lossy().into_owned());
+                        entry["changed_files"] = json!({
+                            "added": added,
+                            "modified": modified,
+                            "removed": removed,
+                        });
+                        if rollback {
+                            match crate::dispatch::rollback_node_changes_core(&project, run_id, node_id)
+                            {
+                                Ok(summary) => {
+                                    entry["rollback"] = json!({
+                                        "restored": summary.restored,
+                                        "removed": summary.removed,
+                                        "skipped": summary.skipped,
+                                        "note": summary.note,
+                                    });
+                                    markings.push((
+                                        node_id.clone(),
+                                        "引擎中断，已回滚项目改动".into(),
+                                    ));
+                                }
+                                Err(error) => {
+                                    failures.push(json!({ "node_id": node_id, "error": error }));
+                                    markings.push((
+                                        node_id.clone(),
+                                        format!("引擎中断，回滚失败：{error}，请自行核对"),
+                                    ));
+                                }
+                            }
+                        }
+                    } else if node.reply.is_none() {
+                        // draft：从未发出，不查文件。
+                        entry["status"] = json!("未发出");
+                        if rollback {
+                            markings.push((node_id.clone(), "引擎中断".into()));
+                        }
+                    } else {
+                        // pending 且没有任何快照：不回滚，单列。
+                        entry["status"] = json!("无派发前快照");
+                        no_snapshot.push(node_id.clone());
+                        if rollback {
+                            markings.push((
+                                node_id.clone(),
+                                "引擎中断，无派发前快照，项目改动未回滚，请自行核对".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            "worktree" => {
+                let mut worktree = node
+                    .reply
+                    .as_ref()
+                    .and_then(|reply| reply.artifacts.as_ref())
+                    .and_then(|artifacts| artifacts.worktree.clone())
+                    .unwrap_or_default();
+                if worktree.is_empty() {
+                    // 图上没有产物：按 dispatch.rs 创建 worktree 的固定规则推算
+                    // 路径（run_one_attempt 用 run_root/<node_id>/wt，run_root
+                    // 即引擎数据目录下的 runs/<run_id>）。
+                    worktree = crate::dispatch::dispatch_data_root()
+                        .map(|data_root| {
+                            data_root
+                                .join("runs")
+                                .join(run_id)
+                                .join(node_id)
+                                .join("wt")
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                        .unwrap_or_default();
+                }
+                entry["worktree"] = Value::String(worktree.clone());
+                // 中途被杀的 worktree 可能还没建出来：路径不存在时写明。
+                if worktree.is_empty() || !Path::new(&worktree).is_dir() {
+                    entry["worktree_missing"] = json!(true);
+                }
+                if rollback {
+                    markings.push((node_id.clone(), "引擎中断".into()));
+                }
+            }
+            _ => {
+                entry["status"] =
+                    json!(if node.reply.is_none() { "未发出" } else { "执行中断" });
+                if rollback {
+                    markings.push((node_id.clone(), "引擎中断".into()));
+                }
+            }
+        }
+        entries.push(entry);
+    }
+
+    let mut message = if stuck.is_empty() {
+        "没有停在半路的节点".to_string()
+    } else {
+        format!("发现 {} 个停在半路的节点", stuck.len())
+    };
+    let mut report = json!({
+        "run_id": run_id,
+        "status": run.status,
+        "reason": run.reason,
+        "rollback": rollback,
+        "nodes": entries,
+        "no_snapshot": no_snapshot,
+    });
+    let mut exit = 0;
+    let mut updated_graph = None;
+    if rollback {
+        if !markings.is_empty() {
+            let mut next = graph.clone();
+            for (node_id, text) in &markings {
+                if let Some(node) = next.nodes.get_mut(node_id) {
+                    // 只改状态、正文与失败类型，保留原 reply 的其余字段
+                    // （产物、worktree 路径等）。
+                    let reply = node.reply.get_or_insert_with(Reply::default);
+                    reply.status = "failed".into();
+                    reply.text = text.clone();
+                    reply.error_kind = Some("error".into());
+                }
+            }
+            next.updated_at = now();
+            merge_save_graph(root, Some(&graph), &next)?;
+            updated_graph = Some(next);
+        }
+        // 没有停在半路的节点也刷新 run 摘要并追加「已核对」，避免反复执行
+        // 时重复追加。
+        let mut updated = run.clone();
+        updated.nodes = node_summary(
+            updated_graph.as_ref().unwrap_or(&graph),
+            run_node_ids,
+        );
+        if !updated.reason.contains("已核对") {
+            updated.reason = if updated.reason.is_empty() {
+                "已核对".into()
+            } else {
+                format!("{}；已核对", updated.reason)
+            };
+        }
+        updated.updated_at = now();
+        write_run(root, &updated)?;
+        report["reason"] = Value::String(updated.reason.clone());
+        if !failures.is_empty() {
+            report["failures"] = Value::Array(failures.clone());
+            let ids = failures
+                .iter()
+                .map(|item| {
+                    item["node_id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("、");
+            message = format!("回滚失败：{ids}");
+            exit = 1;
+        } else {
+            message = format!("{message}；已核对");
+        }
+    }
+    Ok(RecoverOutcome { exit, message, report })
+}
+
 #[cfg(test)]
 mod golden;
 
@@ -3092,5 +3720,547 @@ mod accept_criteria_run_file {
         let stored = run_json(second);
         assert!(!stored.contains("accept_criteria"), "{stored}");
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+/// TASK-44：`aicross recover` 崩溃后核对。全部用临时目录，不起真进程：
+/// 死进程用 pid u32::MAX，存活进程用当前进程自己的 pid。
+#[cfg(test)]
+mod recover_cmd {
+    use super::*;
+
+    struct RecoverFixture {
+        root: PathBuf,
+        project: PathBuf,
+        run_id: String,
+        exec_node: String,
+        wt_node: String,
+        ro_node: String,
+        draft_node: String,
+        ns_node: String,
+        foreign_node: String,
+        worktree: PathBuf,
+    }
+
+    /// 图上六个节点：pending 的单写者（有 `.before`）、pending 的 worktree、
+    /// pending 的只读、无 reply（draft）的单写者、pending 但无任何快照的
+    /// 单写者，以及不属于本 run 的 pending 单写者（在图上，不在 run 摘要
+    /// 里）。run 摘要的节点顺序与图插入序不同，输出顺序按 run 摘要。
+    fn fixture(name: &str) -> RecoverFixture {
+        let root = std::env::temp_dir().join(format!("aicross-recover-{name}-{}", Uuid::new_v4()));
+        let project = std::env::temp_dir().join(format!("aicross-recover-p-{name}-{}", Uuid::new_v4()));
+        let worktree = std::env::temp_dir().join(format!("aicross-recover-wt-{name}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join("wt.txt"), "worktree").unwrap();
+        let exec_node = format!("exec-{}", Uuid::new_v4());
+        let wt_node = format!("wt-{}", Uuid::new_v4());
+        let ro_node = format!("ro-{}", Uuid::new_v4());
+        let draft_node = format!("draft-{}", Uuid::new_v4());
+        let ns_node = format!("ns-{}", Uuid::new_v4());
+        let foreign_node = format!("foreign-{}", Uuid::new_v4());
+        let target = |write: &str| Target {
+            agent: "codex".into(),
+            model: "exec".into(),
+            role: "执行".into(),
+            thinking: "中".into(),
+            visibility: "共享".into(),
+            write: write.into(),
+            ..Target::default()
+        };
+        let mut graph = new_graph(
+            project.to_string_lossy().as_ref(),
+            "g1".into(),
+            "root".into(),
+            now(),
+        );
+        for (id, write) in [
+            (&exec_node, "单写者"),
+            (&wt_node, "worktree"),
+            (&ro_node, "只读"),
+            (&draft_node, "单写者"),
+            (&ns_node, "单写者"),
+            (&foreign_node, "单写者"),
+        ] {
+            let mut reply = Some(Reply {
+                status: "pending".into(),
+                ..Reply::default()
+            });
+            if id == &draft_node {
+                // draft 节点：没轮到就中断，图上没有 reply。
+                reply = None;
+            }
+            if id == &wt_node {
+                reply = Some(Reply {
+                    status: "pending".into(),
+                    artifacts: Some(ReplyArtifacts {
+                        worktree: Some(worktree.to_string_lossy().into_owned()),
+                        ..ReplyArtifacts::default()
+                    }),
+                    ..Reply::default()
+                });
+            }
+            graph.nodes.insert(
+                id.clone(),
+                GraphNode {
+                    id: id.clone(),
+                    kind: "turn".into(),
+                    parents: vec!["root".into()],
+                    target: Some(target(write)),
+                    reply,
+                    created_at: now(),
+                    ..GraphNode::default()
+                },
+            );
+        }
+        orchestration::save_graph_in(&root, &graph).unwrap();
+        // exec 的派发前快照：a.txt 原文与后来被删的 gone.txt；.created 记录
+        // exec 新建的 created.txt。foreign 也有自己的快照。项目当前状态：
+        // a.txt 改了一半、created.txt 新建、gone.txt 被删、half.txt 是无快照
+        // 节点改的、fb.txt 是 foreign 节点改的。
+        let before = project
+            .join(".dispatch")
+            .join("run")
+            .join(format!("{exec_node}.before"));
+        fs::create_dir_all(&before).unwrap();
+        fs::write(before.join("a.txt"), "before").unwrap();
+        fs::write(before.join("gone.txt"), "gone").unwrap();
+        fs::write(before.join(".created"), "created.txt").unwrap();
+        let foreign_before = project
+            .join(".dispatch")
+            .join("run")
+            .join(format!("{foreign_node}.before"));
+        fs::create_dir_all(&foreign_before).unwrap();
+        fs::write(foreign_before.join("fb.txt"), "orig").unwrap();
+        fs::write(project.join("a.txt"), "after").unwrap();
+        fs::write(project.join("created.txt"), "new").unwrap();
+        fs::write(project.join("half.txt"), "half").unwrap();
+        fs::write(project.join("fb.txt"), "changed").unwrap();
+        RecoverFixture {
+            root,
+            project,
+            run_id: "run".into(),
+            exec_node,
+            wt_node,
+            ro_node,
+            draft_node,
+            ns_node,
+            foreign_node,
+            worktree,
+        }
+    }
+
+    /// run 摘要顺序与图插入序相反，钉住「输出按 run 摘要顺序」。
+    fn write_run_file(fixture: &RecoverFixture, status: &str, pid: u32) {
+        let graph = orchestration::load_graph_in(&fixture.root, "g1")
+            .unwrap()
+            .unwrap();
+        let ids = [
+            fixture.ns_node.clone(),
+            fixture.draft_node.clone(),
+            fixture.ro_node.clone(),
+            fixture.wt_node.clone(),
+            fixture.exec_node.clone(),
+        ];
+        let run = EngineRun {
+            run_id: fixture.run_id.clone(),
+            graph_id: "g1".into(),
+            project: fixture.project.to_string_lossy().into_owned(),
+            status: status.into(),
+            nodes: node_summary(&graph, ids),
+            started_at: now(),
+            updated_at: now(),
+            pid,
+            ..EngineRun::default()
+        };
+        write_run(&fixture.root, &run).unwrap();
+    }
+
+    fn node_reply<'a>(graph: &'a Graph, id: &str) -> &'a Reply {
+        graph.nodes[id].reply.as_ref().unwrap()
+    }
+
+    fn entry_by_id<'a>(report: &'a Value, id: &str) -> &'a Value {
+        report["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["node_id"].as_str() == Some(id))
+            .unwrap_or_else(|| panic!("报告里没有节点 {id}"))
+    }
+
+    fn cleanup(f: &RecoverFixture) {
+        let _ = fs::remove_dir_all(&f.root);
+        let _ = fs::remove_dir_all(&f.project);
+        let _ = fs::remove_dir_all(&f.worktree);
+    }
+
+    #[test]
+    fn read_only_check_lists_stuck_nodes_and_changed_files() {
+        let f = fixture("ro");
+        write_run_file(&f, "running", u32::MAX);
+        let outcome = recover(&f.root, &f.run_id, false).unwrap();
+        assert_eq!(outcome.exit, 0);
+        assert_eq!(outcome.report["status"], "failed");
+        assert_eq!(outcome.report["reason"], "引擎进程已退出");
+        // 输出顺序按 run 摘要里的节点顺序，不依赖图上的键序。
+        let ids: Vec<&str> = outcome.report["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["node_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                f.ns_node.as_str(),
+                f.draft_node.as_str(),
+                f.ro_node.as_str(),
+                f.wt_node.as_str(),
+                f.exec_node.as_str(),
+            ]
+        );
+        // 不属于本 run 的 pending 节点不进报告。
+        assert!(!ids.contains(&f.foreign_node.as_str()));
+        // exec：执行已结束、结果未写回。新增只认快照 .created 的记录，
+        // 别的节点写的 half.txt 不算 exec 的新增。
+        let exec = entry_by_id(&outcome.report, &f.exec_node);
+        assert_eq!(exec["status"], "执行已结束，结果未写回");
+        assert_eq!(exec["changed_files"]["added"], json!(["created.txt"]));
+        assert_eq!(exec["changed_files"]["modified"], json!(["a.txt"]));
+        assert_eq!(exec["changed_files"]["removed"], json!(["gone.txt"]));
+        assert!(exec["before_dir"]
+            .as_str()
+            .unwrap()
+            .replace('\\', "/")
+            .ends_with(".before"));
+        // draft：从未发出，不查文件。
+        let draft = entry_by_id(&outcome.report, &f.draft_node);
+        assert_eq!(draft["status"], "未发出");
+        assert!(draft.get("changed_files").is_none());
+        assert!(draft.get("before_dir").is_none());
+        // 无快照的 pending 单写者单列。
+        assert_eq!(outcome.report["no_snapshot"], json!([f.ns_node]));
+        assert_eq!(entry_by_id(&outcome.report, &f.ns_node)["status"], "无派发前快照");
+        // 只读节点也带状态：已发出（有 reply）记「执行中断」。
+        assert_eq!(entry_by_id(&outcome.report, &f.ro_node)["status"], "执行中断");
+        assert_eq!(entry_by_id(&outcome.report, &f.wt_node)["write"], "worktree");
+        assert_eq!(
+            entry_by_id(&outcome.report, &f.wt_node)["worktree"],
+            f.worktree.to_string_lossy().as_ref()
+        );
+        // 只读核对不改图，也不动项目文件。
+        let graph = orchestration::load_graph_in(&f.root, "g1").unwrap().unwrap();
+        assert_eq!(node_reply(&graph, &f.exec_node).status, "pending");
+        assert_eq!(fs::read_to_string(f.project.join("a.txt")).unwrap(), "after");
+        cleanup(&f);
+    }
+
+    #[test]
+    fn rollback_restores_files_marks_nodes_and_refreshes_run() {
+        let f = fixture("rb");
+        write_run_file(&f, "running", u32::MAX);
+        let outcome = recover(&f.root, &f.run_id, true).unwrap();
+        assert_eq!(outcome.exit, 0);
+        // 单写者节点：文件恢复到快照、新建文件被删、被删文件找回。
+        assert_eq!(fs::read_to_string(f.project.join("a.txt")).unwrap(), "before");
+        assert!(!f.project.join("created.txt").exists());
+        assert_eq!(fs::read_to_string(f.project.join("gone.txt")).unwrap(), "gone");
+        // 无快照的单写者节点：不回滚，文件原样保留。
+        assert_eq!(fs::read_to_string(f.project.join("half.txt")).unwrap(), "half");
+        // worktree 与 worktree 里的文件原样保留。
+        assert_eq!(fs::read_to_string(f.worktree.join("wt.txt")).unwrap(), "worktree");
+        // 图上全部停在半路的节点标 failed，正文按写权限与磁盘状态区分。
+        let graph = orchestration::load_graph_in(&f.root, "g1").unwrap().unwrap();
+        assert_eq!(node_reply(&graph, &f.exec_node).status, "failed");
+        assert_eq!(
+            node_reply(&graph, &f.exec_node).text,
+            "引擎中断，已回滚项目改动"
+        );
+        assert_eq!(node_reply(&graph, &f.wt_node).text, "引擎中断");
+        assert_eq!(node_reply(&graph, &f.ro_node).text, "引擎中断");
+        assert_eq!(node_reply(&graph, &f.draft_node).text, "引擎中断");
+        assert_eq!(
+            node_reply(&graph, &f.ns_node).text,
+            "引擎中断，无派发前快照，项目改动未回滚，请自行核对"
+        );
+        // 标 failed 只改状态、正文与失败类型：worktree 路径等原 reply 字段保留。
+        assert_eq!(
+            node_reply(&graph, &f.wt_node)
+                .artifacts
+                .as_ref()
+                .and_then(|artifacts| artifacts.worktree.clone())
+                .unwrap_or_default(),
+            f.worktree.to_string_lossy().as_ref()
+        );
+        // 不属于本 run 的 pending 节点不碰：状态不变，文件不动。
+        assert_eq!(node_reply(&graph, &f.foreign_node).status, "pending");
+        assert_eq!(fs::read_to_string(f.project.join("fb.txt")).unwrap(), "changed");
+        // run 摘要刷新：状态保持 failed，原因追加「已核对」，节点摘要重算。
+        let stored = read_run(&f.root, &f.run_id).unwrap();
+        assert_eq!(stored.status, "failed");
+        assert_eq!(stored.reason, "引擎进程已退出；已核对");
+        let summary_status = |id: &str| {
+            stored
+                .nodes
+                .iter()
+                .find(|node| node.node_id == id)
+                .unwrap()
+                .status
+                .clone()
+        };
+        assert_eq!(summary_status(&f.exec_node), "failed");
+        assert_eq!(summary_status(&f.draft_node), "failed");
+        cleanup(&f);
+    }
+
+    #[test]
+    fn still_running_run_exits_1_without_checking() {
+        let f = fixture("live");
+        write_run_file(&f, "running", std::process::id());
+        let outcome = recover(&f.root, &f.run_id, false).unwrap();
+        assert_eq!(outcome.exit, 1);
+        assert!(outcome.message.contains("仍在运行"), "{}", outcome.message);
+        // 未核对：图与项目文件都不动。
+        let graph = orchestration::load_graph_in(&f.root, "g1").unwrap().unwrap();
+        assert_eq!(node_reply(&graph, &f.exec_node).status, "pending");
+        assert_eq!(fs::read_to_string(f.project.join("a.txt")).unwrap(), "after");
+        cleanup(&f);
+    }
+
+    #[test]
+    fn done_run_needs_no_recover() {
+        let f = fixture("done");
+        write_run_file(&f, "done", 0);
+        let outcome = recover(&f.root, &f.run_id, true).unwrap();
+        assert_eq!(outcome.exit, 0);
+        assert_eq!(outcome.message, "无需核对");
+        cleanup(&f);
+    }
+
+    #[test]
+    fn missing_run_is_an_error() {
+        let f = fixture("gone");
+        assert!(recover(&f.root, "no-such-run", false).is_err());
+        cleanup(&f);
+    }
+
+    /// 单节点夹具：图上一个 pending 的单写者节点，run 判死进程，项目与执行
+    /// 中快照都已备好。派发前（快照里）有 a.txt、gone.txt、extra.txt 与
+    /// 超限未存内容的 big.bin；中断时 a.txt 改、gone.txt 删、big.bin 改、
+    /// new.txt 新建、extra.txt 原样。
+    struct InflightFixture {
+        root: PathBuf,
+        project: PathBuf,
+        node: String,
+        inflight: PathBuf,
+    }
+
+    fn inflight_fixture(name: &str, manifest: Option<&str>) -> InflightFixture {
+        let root = std::env::temp_dir().join(format!("aicross-inflight-{name}-{}", Uuid::new_v4()));
+        let project = std::env::temp_dir().join(format!("aicross-inflight-p-{name}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&project).unwrap();
+        let node = format!("exec-{}", Uuid::new_v4());
+        let mut graph = new_graph(
+            project.to_string_lossy().as_ref(),
+            "g1".into(),
+            "root".into(),
+            now(),
+        );
+        graph.nodes.insert(
+            node.clone(),
+            GraphNode {
+                id: node.clone(),
+                kind: "turn".into(),
+                parents: vec!["root".into()],
+                target: Some(Target {
+                    agent: "codex".into(),
+                    model: "exec".into(),
+                    role: "执行".into(),
+                    thinking: "中".into(),
+                    visibility: "共享".into(),
+                    write: "单写者".into(),
+                    ..Target::default()
+                }),
+                reply: Some(Reply {
+                    status: "pending".into(),
+                    ..Reply::default()
+                }),
+                created_at: now(),
+                ..GraphNode::default()
+            },
+        );
+        orchestration::save_graph_in(&root, &graph).unwrap();
+        let inflight = project
+            .join(".dispatch")
+            .join("run")
+            .join(format!("{node}.inflight"));
+        let files = inflight.join("files");
+        fs::create_dir_all(&files).unwrap();
+        let manifest = manifest.unwrap_or(
+            r#"{"schema":"aicross-inflight/1","files":[
+                {"path":"a.txt","size":7,"stored":true},
+                {"path":"gone.txt","size":5,"stored":true},
+                {"path":"extra.txt","size":3,"stored":true},
+                {"path":"big.bin","size":100,"stored":false}]}"#,
+        );
+        fs::write(inflight.join("manifest.json"), manifest).unwrap();
+        fs::write(files.join("a.txt"), "before2").unwrap();
+        fs::write(files.join("gone.txt"), "gone2").unwrap();
+        fs::write(files.join("extra.txt"), "old").unwrap();
+        fs::write(project.join("a.txt"), "during").unwrap();
+        fs::write(project.join("extra.txt"), "old").unwrap();
+        fs::write(project.join("big.bin"), "smaller").unwrap();
+        fs::write(project.join("new.txt"), "new").unwrap();
+        let run = EngineRun {
+            run_id: "run".into(),
+            graph_id: "g1".into(),
+            project: project.to_string_lossy().into_owned(),
+            status: "running".into(),
+            nodes: node_summary(&graph, [node.clone()]),
+            started_at: now(),
+            updated_at: now(),
+            pid: u32::MAX,
+            ..EngineRun::default()
+        };
+        write_run(&root, &run).unwrap();
+        InflightFixture { root, project, node, inflight }
+    }
+
+    fn inflight_cleanup(f: &InflightFixture) {
+        let _ = fs::remove_dir_all(&f.root);
+        let _ = fs::remove_dir_all(&f.project);
+    }
+
+    #[test]
+    fn inflight_interruption_is_reported_and_rolled_back() {
+        let f = inflight_fixture("rb", None);
+        // 只读核对：状态「执行中断」，变化文件按清单对比，超限未存的列进无法恢复。
+        let outcome = recover(&f.root, "run", false).unwrap();
+        assert_eq!(outcome.exit, 0);
+        let entry = entry_by_id(&outcome.report, &f.node);
+        assert_eq!(entry["status"], "执行中断");
+        assert_eq!(entry["changed_files"]["added"], json!(["new.txt"]));
+        assert_eq!(entry["changed_files"]["modified"], json!(["a.txt", "big.bin"]));
+        assert_eq!(entry["changed_files"]["removed"], json!(["gone.txt"]));
+        assert_eq!(entry["unrestorable"], json!(["big.bin"]));
+        assert!(entry["inflight_dir"]
+            .as_str()
+            .unwrap()
+            .replace('\\', "/")
+            .ends_with(".inflight"));
+
+        // 回滚：存了内容的恢复、新增删除、超限未存的不动并列明。
+        let outcome = recover(&f.root, "run", true).unwrap();
+        assert_eq!(outcome.exit, 0);
+        assert_eq!(fs::read_to_string(f.project.join("a.txt")).unwrap(), "before2");
+        assert_eq!(fs::read_to_string(f.project.join("gone.txt")).unwrap(), "gone2");
+        assert_eq!(fs::read_to_string(f.project.join("extra.txt")).unwrap(), "old");
+        assert!(!f.project.join("new.txt").exists());
+        assert_eq!(fs::read_to_string(f.project.join("big.bin")).unwrap(), "smaller");
+        // 完成后执行中快照目录删除。
+        assert!(!f.inflight.exists());
+        let entry = entry_by_id(&outcome.report, &f.node);
+        assert_eq!(entry["rollback"]["restored"], json!(["a.txt", "gone.txt"]));
+        assert_eq!(entry["rollback"]["removed"], json!(["new.txt"]));
+        assert_eq!(entry["rollback"]["unrestorable"], json!(["big.bin"]));
+        // 正文写明无法恢复的文件；无法恢复不算回滚失败。
+        let graph = orchestration::load_graph_in(&f.root, "g1").unwrap().unwrap();
+        let reply = node_reply(&graph, &f.node);
+        assert_eq!(reply.status, "failed");
+        assert!(reply.text.contains("无法恢复"), "{}", reply.text);
+        assert!(reply.text.contains("big.bin"), "{}", reply.text);
+        let stored = read_run(&f.root, "run").unwrap();
+        assert_eq!(stored.reason, "引擎进程已退出；已核对");
+        inflight_cleanup(&f);
+    }
+
+    #[test]
+    fn corrupt_inflight_manifest_fails_rollback_and_reports() {
+        let f = inflight_fixture("corrupt", Some("不是 JSON"));
+        // 只读核对：报清单损坏，不退出非零。
+        let outcome = recover(&f.root, "run", false).unwrap();
+        assert_eq!(outcome.exit, 0);
+        assert!(entry_by_id(&outcome.report, &f.node)["error"]
+            .as_str()
+            .unwrap()
+            .contains("执行中快照清单"));
+        // 回滚：进 failures，退出 1，正文写明回滚失败。
+        let outcome = recover(&f.root, "run", true).unwrap();
+        assert_eq!(outcome.exit, 1);
+        assert_eq!(outcome.message.contains("回滚失败"), true, "{}", outcome.message);
+        let failures = outcome.report["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["node_id"], f.node.as_str());
+        let graph = orchestration::load_graph_in(&f.root, "g1").unwrap().unwrap();
+        let reply = node_reply(&graph, &f.node);
+        assert_eq!(reply.status, "failed");
+        assert!(
+            reply.text.starts_with("引擎中断，回滚失败："),
+            "{}",
+            reply.text
+        );
+        assert!(reply.text.ends_with("，请自行核对"), "{}", reply.text);
+        // 快照目录还在：没回滚就不能删证据。
+        assert!(f.inflight.exists());
+        inflight_cleanup(&f);
+    }
+
+    #[test]
+    fn worktree_without_artifacts_gets_inferred_path() {
+        let f = fixture("wt-infer");
+        // 清掉图上 wt 节点的产物，模拟产物没写回就被杀。
+        let mut graph = orchestration::load_graph_in(&f.root, "g1").unwrap().unwrap();
+        let node = graph.nodes.get_mut(&f.wt_node).unwrap();
+        node.reply = Some(Reply {
+            status: "pending".into(),
+            ..Reply::default()
+        });
+        orchestration::save_graph_in(&f.root, &graph).unwrap();
+        write_run_file(&f, "running", u32::MAX);
+        // dispatch.rs 建 worktree 用引擎数据目录下的 runs/<run>/<node>/wt。
+        let inferred = std::env::temp_dir()
+            .join(format!("aicross-test-runtime-{}", std::process::id()))
+            .join("runs")
+            .join(&f.run_id)
+            .join(&f.wt_node)
+            .join("wt");
+        let outcome = recover(&f.root, &f.run_id, false).unwrap();
+        let entry = entry_by_id(&outcome.report, &f.wt_node);
+        assert_eq!(entry["worktree"], inferred.to_string_lossy().as_ref());
+        assert_eq!(entry["worktree_missing"], true);
+        // 路径存在时不再标「worktree 不存在」。
+        fs::create_dir_all(&inferred).unwrap();
+        fs::write(inferred.join("wt.txt"), "worktree").unwrap();
+        let outcome = recover(&f.root, &f.run_id, false).unwrap();
+        let entry = entry_by_id(&outcome.report, &f.wt_node);
+        assert_eq!(entry["worktree"], inferred.to_string_lossy().as_ref());
+        assert!(entry.get("worktree_missing").is_none());
+        cleanup(&f);
+    }
+
+    #[test]
+    fn rollback_without_stuck_nodes_still_appends_reason() {
+        let f = fixture("no-stuck");
+        // 全部本 run 节点改成终态：没有停在半路的节点（foreign 不在 run 里，
+        // 本来就不算）。
+        let mut graph = orchestration::load_graph_in(&f.root, "g1").unwrap().unwrap();
+        for id in [&f.exec_node, &f.wt_node, &f.ro_node, &f.draft_node, &f.ns_node] {
+            let node = graph.nodes.get_mut(id).unwrap();
+            let reply = node.reply.get_or_insert_with(Reply::default);
+            reply.status = "done".into();
+        }
+        orchestration::save_graph_in(&f.root, &graph).unwrap();
+        write_run_file(&f, "running", u32::MAX);
+        let outcome = recover(&f.root, &f.run_id, true).unwrap();
+        assert_eq!(outcome.exit, 0);
+        assert_eq!(outcome.report["reason"], "引擎进程已退出；已核对");
+        let stored = read_run(&f.root, &f.run_id).unwrap();
+        assert_eq!(stored.reason, "引擎进程已退出；已核对");
+        // 节点没被标 failed，正文不变。
+        let graph = orchestration::load_graph_in(&f.root, "g1").unwrap().unwrap();
+        assert_eq!(node_reply(&graph, &f.exec_node).status, "done");
+        assert_eq!(node_reply(&graph, &f.foreign_node).status, "pending");
+        cleanup(&f);
     }
 }

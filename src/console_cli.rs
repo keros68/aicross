@@ -16,7 +16,7 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
     let command = args.get(1).map(String::as_str);
     if !matches!(
         command,
-        Some("dispatch" | "status" | "adopt" | "cancel" | "propose" | "resources" | "config" | "__run")
+        Some("dispatch" | "status" | "adopt" | "cancel" | "recover" | "propose" | "resources" | "config" | "__run")
     ) {
         return None;
     }
@@ -81,6 +81,7 @@ fn run_at_with(
         }
         Some("resources") => return run_resources(root, args, ops, stdout, stderr),
         Some("config") => return run_config(root, args, &AcpOps::production(), stdout, stderr),
+        Some("recover") => return run_recover(root, args, stdout, stderr),
         _ => {}
     }
     let request = match build_request(args) {
@@ -707,6 +708,35 @@ fn run_config_set(
         }
     }
     0
+}
+
+// ── TASK-44：recover 子命令 ────────────────────────────────────────
+
+/// aicross recover <run_id> [--rollback]：崩溃后核对。参数错退出 2；读 run、
+/// 落图失败与仍在运行、回滚有失败退出 1；核对完成退出 0。
+fn run_recover(root: &Path, args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+    let Some(run_id) = positional(args, 2) else {
+        let _ = writeln!(stderr, "缺少 run_id");
+        return 2;
+    };
+    for arg in args.iter().skip(3) {
+        if arg != "--rollback" {
+            let _ = writeln!(stderr, "不认识的参数：{arg}");
+            return 2;
+        }
+    }
+    let rollback = args.iter().any(|arg| arg == "--rollback");
+    return match crate::engine::recover(root, &run_id, rollback) {
+        Ok(outcome) => {
+            let _ = writeln!(stdout, "{}", serde_json::to_string(&outcome.report).unwrap_or_else(|_| "{}".into()));
+            let _ = writeln!(stderr, "{}", outcome.message);
+            outcome.exit
+        }
+        Err(message) => {
+            let _ = writeln!(stderr, "{message}");
+            1
+        }
+    };
 }
 
 // ── resources / config 的输出与参数工具 ──────────────────────────────
@@ -1985,6 +2015,96 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
         assert_eq!(parsed["acp"][0]["state"], "已就绪");
         assert_eq!(parsed["acp"][1]["state"], "未安装");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // ── TASK-44：recover 子命令的参数检查与退出码 ──────────────────────
+
+    fn recover_args(extra: &[&str]) -> Vec<String> {
+        let mut args = vec!["aicross".to_string(), "recover".to_string()];
+        args.extend(extra.iter().map(|arg| arg.to_string()));
+        args
+    }
+
+    /// 直接把 run 文件写在临时引擎根下，不经过引擎内部函数。
+    fn recover_cli_run(root: &Path, run_id: &str, status: &str, pid: u32) {
+        let run = crate::engine::EngineRun {
+            run_id: run_id.into(),
+            status: status.into(),
+            pid,
+            ..crate::engine::EngineRun::default()
+        };
+        fs::create_dir_all(root.join("runs")).unwrap();
+        fs::write(
+            root.join("runs").join(format!("{run_id}.json")),
+            serde_json::to_vec(&run).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn recover_requires_run_id_and_rejects_unknown_args() {
+        let root = fixture_root("recover-args");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(run_at(&recover_args(&[]), &root, &mut stdout, &mut stderr), 2);
+        assert!(stdout.is_empty());
+        assert!(String::from_utf8(stderr).unwrap().contains("缺少 run_id"));
+        // 以 -- 开头的首个参数不当 run_id：aicross recover --rollback 按缺
+        // run_id 处理。
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run_at(&recover_args(&["--rollback"]), &root, &mut stdout, &mut stderr),
+            2
+        );
+        assert!(stdout.is_empty());
+        assert!(String::from_utf8(stderr).unwrap().contains("缺少 run_id"));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run_at(&recover_args(&["r1", "--wat"]), &root, &mut stdout, &mut stderr),
+            2
+        );
+        assert!(String::from_utf8(stderr).unwrap().contains("不认识的参数"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recover_missing_run_exits_1() {
+        let root = fixture_root("recover-missing");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(run_at(&recover_args(&["no-such-run"]), &root, &mut stdout, &mut stderr), 1);
+        assert!(stdout.is_empty());
+        assert!(String::from_utf8(stderr).unwrap().contains("读取 run 失败"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recover_running_run_exits_1_with_hint() {
+        let root = fixture_root("recover-running");
+        recover_cli_run(&root, "r1", "running", std::process::id());
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(run_at(&recover_args(&["r1"]), &root, &mut stdout, &mut stderr), 1);
+        assert!(String::from_utf8(stderr).unwrap().contains("仍在运行"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recover_done_run_exits_0_with_no_need_note() {
+        let root = fixture_root("recover-done");
+        recover_cli_run(&root, "r1", "done", 0);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run_at(&recover_args(&["r1", "--rollback"]), &root, &mut stdout, &mut stderr),
+            0
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&String::from_utf8(stdout).unwrap()).unwrap();
+        assert_eq!(parsed["status"], "done");
+        assert!(String::from_utf8(stderr).unwrap().contains("无需核对"));
         let _ = fs::remove_dir_all(root);
     }
 }
