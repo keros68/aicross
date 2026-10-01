@@ -739,6 +739,8 @@ export interface RunView {
   /** 推断出的模式名；派发前被拒、没建节点时为空串。 */
   presetName: string;
   graphTitle: string;
+  /** 本次派发的任务名（原始需求第一行）。 */
+  taskTitle: string;
   status: 'running' | 'done' | 'failed' | 'rejected';
   reason: string;
   startedAt: string;

@@ -57,6 +57,7 @@ function view(overrides: Partial<RunView> = {}): RunView {
     project: 'D:/p',
     presetName: '经济模式',
     graphTitle: '给解析器加测试',
+    taskTitle: '',
     status: 'done',
     reason: '',
     startedAt: '2026-10-01T08:00:00.000Z',
@@ -99,6 +100,8 @@ describe('run viewer data assembly (TASK-37)', () => {
     expect(cardTitle(swarm, view())).toBe('执行 · 改解析器');
     const plain = node({ role: '执行', swarmTitle: '' });
     expect(cardTitle(plain, view())).toBe('执行 · 给解析器加测试');
+    // 同项目的派发共用一张图：本次派发的原始需求优先于图标题。
+    expect(cardTitle(plain, view({ taskTitle: '阅读 calc.py' }))).toBe('执行 · 阅读 calc.py');
     const bare = node({ role: '执行', swarmTitle: '' });
     expect(cardTitle(bare, view({ graphTitle: '' }))).toBe('执行 · claude/sonnet');
     // 图标题与 agent/model 都没有时用占位，不落成「角色 · /」。

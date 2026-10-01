@@ -40,11 +40,13 @@ export function stageColumnCount(count: number): number {
   return Math.max(1, Math.min(3, count));
 }
 
-/** 卡片主标题「角色 · 任务」：任务名依次取蜂群条目标题、图标题，都没有才
- * 退回 agent/model。 */
-export function cardTitle(node: RunViewNode, view: Pick<RunView, 'graphTitle'>): string {
+/** 卡片主标题「角色 · 任务」：任务名依次取蜂群条目标题、本次派发的原始需求、
+ * 图标题，都没有才退回 agent/model。同项目的派发共用一张图，图标题只是该项目
+ * 第一次派发的任务，所以排在原始需求之后。 */
+export function cardTitle(node: RunViewNode, view: Pick<RunView, 'graphTitle' | 'taskTitle'>): string {
   const role = node.role.trim() || '未命名角色';
   const task = node.swarmTitle.trim()
+    || view.taskTitle.trim()
     || view.graphTitle.trim()
     || (node.agent.trim() && node.model.trim() ? `${node.agent}/${node.model}` : '未指定模型');
   return `${role} · ${task}`;

@@ -192,6 +192,9 @@ pub struct RunView {
     /// 用户自建为「自定义模式 · 名称」）；为空或找不到时「自定义模式」。
     pub preset_name: String,
     pub graph_title: String,
+    /// 本次派发的任务名：run 文件里原始需求的第一行（同项目的派发共用一张图，
+    /// 图标题只是该项目第一次派发的任务）。
+    pub task_title: String,
     pub status: String,
     pub reason: String,
     pub started_at: String,
@@ -330,6 +333,8 @@ pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
             }
         })
         .collect();
+    let run_node_ids: std::collections::HashSet<String> =
+        run.nodes.iter().map(|n| n.node_id.clone()).collect();
     Ok(RunView {
         run_id: run.run_id.clone(),
         graph_id: run.graph_id.clone(),
@@ -339,11 +344,17 @@ pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
             .as_ref()
             .map(|g| g.title.clone())
             .unwrap_or_default(),
+        task_title: task_title(&run.original_request),
         status: run.status.clone(),
         reason: run.reason.clone(),
         started_at: run.started_at.clone(),
         updated_at: run.updated_at.clone(),
-        leftover: run.leftover.clone(),
+        // 同项目的派发共用一张图，run 摘要里的遗留会带上别的 run 的；这里只取
+        // 来源节点属于本 run 的遗留节点。读不到图时退回 run 摘要。
+        leftover: match graph.as_ref() {
+            Some(g) => run_leftover(g, &run_node_ids),
+            None => run.leftover.clone(),
+        },
         nodes,
     })
 }
@@ -365,6 +376,31 @@ pub fn adopt_view(root: &Path, run_id: &str, node_id: &str) -> Result<RunView, S
 #[tauri::command]
 pub fn adopt_run_node(run_id: String, node_id: String) -> Result<RunView, String> {
     adopt_view(&crate::paths::aicross_root()?, &run_id, &node_id)
+}
+
+/// 原始需求的第一行非空文本，最多 40 个字符（超出加「…」）。
+fn task_title(original_request: &str) -> String {
+    let line = original_request
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let mut out: String = line.chars().take(40).collect();
+    if line.chars().count() > 40 {
+        out.push('…');
+    }
+    out
+}
+
+/// 只取来源节点属于本 run 的遗留节点的条目，按图上节点顺序。
+fn run_leftover(graph: &orchestration::Graph, run_node_ids: &std::collections::HashSet<String>) -> Vec<String> {
+    graph
+        .nodes
+        .values()
+        .filter_map(|n| n.leftover.as_ref())
+        .filter(|l| run_node_ids.contains(&l.source_node_id))
+        .flat_map(|l| l.items.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -578,6 +614,29 @@ mod tests {
             fallback_to: Some("pi/glm".into()),
             ..Reply::default()
         });
+        // 遗留：一条来自本 run 的验收，一条来自别的 run（同项目共用一张图）。
+        graph.nodes.insert(
+            "lo-mine".into(),
+            GraphNode {
+                id: "lo-mine".into(),
+                leftover: Some(crate::orchestration::Leftover {
+                    source_node_id: "n-accept".into(),
+                    items: vec!["一条未闭合".into()],
+                }),
+                ..GraphNode::default()
+            },
+        );
+        graph.nodes.insert(
+            "lo-other".into(),
+            GraphNode {
+                id: "lo-other".into(),
+                leftover: Some(crate::orchestration::Leftover {
+                    source_node_id: "other-run-accept".into(),
+                    items: vec!["别的 run 的遗留".into()],
+                }),
+                ..GraphNode::default()
+            },
+        );
         orchestration::save_graph_in(&root, &graph).unwrap();
         let run = EngineRun {
             run_id: "r1".into(),
@@ -590,7 +649,7 @@ mod tests {
                 run_node("n-accept", "验收"),
                 run_node("n-verify", "验证"),
             ],
-            leftover: vec!["一条未闭合".into()],
+            leftover: vec!["一条未闭合".into(), "别的 run 的遗留".into()],
             started_at: "2026-10-01T08:00:00.000Z".into(),
             updated_at: "2026-10-01T08:01:00.000Z".into(),
             ..EngineRun::default()
@@ -797,5 +856,36 @@ mod tests {
         let error = open_run_exists(&root, &long_id).unwrap_err();
         assert!(error.contains("读取 run 失败"), "{error}");
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn task_title_takes_first_nonempty_line_of_this_runs_request() {
+        assert_eq!(task_title("\n  阅读 calc.py，说明 add 做什么\n只读"), "阅读 calc.py，说明 add 做什么");
+        let long = "一".repeat(45);
+        assert_eq!(task_title(&long), format!("{}…", "一".repeat(40)));
+        assert_eq!(task_title(""), "");
+    }
+
+    #[test]
+    fn leftover_is_scoped_to_this_runs_nodes() {
+        use crate::orchestration::{GraphNode, Leftover};
+        let mut graph = Graph::default();
+        graph.nodes.insert(
+            "lo-old".into(),
+            GraphNode {
+                id: "lo-old".into(),
+                leftover: Some(Leftover { source_node_id: "old-accept".into(), items: vec!["别的 run 的遗留".into()] }),
+                ..GraphNode::default()
+            },
+        );
+        graph.nodes.insert(
+            "lo-mine".into(),
+            GraphNode {
+                id: "lo-mine".into(),
+                leftover: Some(Leftover { source_node_id: "my-accept".into(), items: vec!["本 run 的遗留".into()] }),
+                ..GraphNode::default()
+            },
+        );
+        let ids: std::collections::HashSet<String> = ["my-accept".to_string()].into_iter().collect();
+        assert_eq!(run_leftover(&graph, &ids), vec!["本 run 的遗留".to_string()]);
     }
 }

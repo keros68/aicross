@@ -304,3 +304,14 @@ test result: ok. 562 passed; 0 failed; 12 ignored; 0 measured; 0 filtered out; f
    main 里清除，不会传给应用内终端；若用户手工把它设进系统环境，`open`
    会退化为在当前进程起窗（阻塞至窗口关闭），属可接受的降级。
 4. **热启动转发仍只在发布包生效**（单实例插件的既有 `#[cfg]`，未动）。
+
+## R2 编排者追加（10-01，真机核后）
+
+发布构建（`tauri build --no-bundle`，内嵌前端）窗口真机核：冷启动 `open` 0 秒返回并直接进查看页；窗口已开时 `open` 另一个 run 切页；运行中自动刷新到终态；采纳后卡片显示「已采纳」、图落盘、run 文件字节不变；关窗重开采纳仍在；真身不误报（Codex 显示「未报告」）；标题栏未被遮挡、焦点落「关闭」。
+
+真机核发现并修复两处（同项目的派发共用一张图导致）：
+
+- **卡片标题写成该项目第一次派发的任务**：`RunView` 追加 `task_title`（run 文件 `original_request` 的第一行非空文本，最多 40 字），`cardTitle` 的任务名顺序改为蜂群条目标题 → 本次原始需求 → 图标题 → agent/model。测试：`run_view::tests::task_title_takes_first_nonempty_line_of_this_runs_request`、前端 `cardTitle` 新增断言。
+- **遗留带上别的 run 的**：`RunView.leftover` 改为只取来源节点属于本 run 的遗留节点（读不到图时退回 run 摘要）。测试：`run_view::tests::leftover_is_scoped_to_this_runs_nodes`，`load_run_view_done_maps_reply_fields` 改为图上同时放本 run 与别的 run 的遗留；去掉过滤时两条测试变红。引擎侧 run 摘要的遗留汇总记入积压 103，待「每次派发是否新建图」裁决。
+
+验证：`cargo check --all-targets` 零 warning；`cargo check --release` 零 warning；`cargo test` 564 passed；vitest 744 passed；`npm run build` 通过。
