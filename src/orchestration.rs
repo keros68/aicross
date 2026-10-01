@@ -609,7 +609,23 @@ pub(crate) fn roles_from(root: &Path) -> RoleSettings {
         .unwrap_or_default()
 }
 
-fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), String> {
+/// fix-39-r1 R1-2：命令行的严格读取。`roles_from` 对损坏或版本不认的文件
+/// 静默回默认值，`config set-role` 改一个角色后整份写回会把其余角色丢掉；
+/// 这里文件存在但解析失败或 version != 1 时返回 Err 让调用方拒写（参照
+/// `save_premises_in` / `save_commander_in` 遇损坏拒写的做法）。文件缺失与
+/// `roles_from` 一致回默认值。
+pub(crate) fn roles_from_strict(root: &Path) -> Result<RoleSettings, String> {
+    let Ok(text) = fs::read_to_string(roles_path(root)) else {
+        return Ok(RoleSettings::default());
+    };
+    match serde_json::from_str::<RoleSettings>(&text) {
+        Ok(roles) if roles.version == 1 => Ok(roles),
+        _ => Err("roles.json 无法解析".to_string()),
+    }
+}
+
+/// 写入 roles.json；命令行（TASK-39 的 `config set-role`）与窗口设置页共用。
+pub(crate) fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), String> {
     if settings.version != 1 {
         return Err(format!(
             "角色配置 version 只支持 1，收到 {}",
