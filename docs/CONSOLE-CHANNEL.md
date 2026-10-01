@@ -104,6 +104,7 @@ skill 仅在退出码 3 时回退到直接调各家 CLI。
 ## 留痕与摘要
 
 派发记录写在 `<项目>/.dispatch/`（一次调用一个 Markdown 文件，`STATE.md` 记
-未跑完的那一轮）；run 摘要在 `~/.aicross/runs/<run_id>.json`；图在
+未跑完的那一轮；引擎仍会写入，当前没有命令读取）；run 摘要在
+`~/.aicross/runs/<run_id>.json`；图在
 `~/.aicross/graphs/`；派发设置在 `~/.aicross/dispatch-settings.json`。命令把
 JSON 写到 stdout，把一行说明写到 stderr。

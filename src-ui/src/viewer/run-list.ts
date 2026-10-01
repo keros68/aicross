@@ -1,28 +1,9 @@
 // TASK-40 首页「最近的派发」的页面组装纯函数。数据契约（RunListItem）在
 // ../tauri.ts（镜像 Rust src/run_view.rs 的 RunListItem）；这里只做展示前的
-// 纯变换，Home.tsx 不掺逻辑，测试全部落在这层。
+// 纯变换，Home.tsx 不掺逻辑，测试全部落在这层。run 级状态词与状态胶囊在
+// ./run-view（fix-40-r1 R1-11），这里只引不复制。
 
 import type { RunListItem } from '../tauri';
-
-/** 状态词：运行中给胶囊，失败与已拒绝给警示胶囊，已完成用纯文字。 */
-export function runStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    running: '运行中',
-    done: '已完成',
-    failed: '失败',
-    rejected: '已拒绝',
-  };
-  return labels[status] ?? status;
-}
-
-export type HomeStatusTone = 'plain' | 'pill' | 'pill-alert';
-
-/** 异常与运行中状态才给胶囊（视觉纪律）：已完成用纯文字。 */
-export function runStatusTone(status: string): HomeStatusTone {
-  if (status === 'running') return 'pill';
-  if (status === 'failed' || status === 'rejected') return 'pill-alert';
-  return 'plain';
-}
 
 /** 开始时间的本地展示（精确到分钟）；解析不出来原样返回。 */
 export function formatStartedAt(iso: string): string {

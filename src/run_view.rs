@@ -224,12 +224,12 @@ pub fn open_run_exists(root: &Path, run_id: &str) -> Result<bool, String> {
 /// 模式名：按 preset_id 从预设清单取显示名（R1-4）。内置预设用自己的名字；
 /// 用户自建为「自定义模式 · 名称」（名称空白时只留「自定义模式」）；
 /// id 为空（旧 run 文件、targets 直给）或清单里找不到时「自定义模式」。
-fn preset_display_name(root: &Path, preset_id: &str) -> String {
+/// 清单由调用方读一次传入（fix-40-r1 R1-10：列表页不逐条重读）。
+fn preset_display_name(presets: &orchestration::PresetFile, preset_id: &str) -> String {
     if preset_id.is_empty() {
         return "自定义模式".into();
     }
-    let presets = &orchestration::raw_presets_from(root).presets;
-    let Some(preset) = presets.iter().find(|p| p.id == preset_id) else {
+    let Some(preset) = presets.presets.iter().find(|p| p.id == preset_id) else {
         return "自定义模式".into();
     };
     if preset.builtin {
@@ -246,6 +246,7 @@ fn preset_display_name(root: &Path, preset_id: &str) -> String {
 /// run 摘要照常返回，正文与产物缺席。
 pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
     let run = crate::engine::read_run(root, run_id)?;
+    let presets = orchestration::raw_presets_from(root);
     let graph = if run.graph_id.is_empty() {
         None
     } else {
@@ -337,7 +338,7 @@ pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
         run_id: run.run_id.clone(),
         graph_id: run.graph_id.clone(),
         project: run.project.clone(),
-        preset_name: preset_display_name(root, &run.preset_id),
+        preset_name: preset_display_name(&presets, &run.preset_id),
         graph_title: graph
             .as_ref()
             .map(|g| g.title.clone())
@@ -397,11 +398,16 @@ const LIST_RUNS_LIMIT: usize = 50;
 /// 读 run 目录里的 run 摘要，按 `updated_at` 倒序取最近 50 条。与引擎
 /// `active_runs` 同一口径：只认 `.json` 且文件名不以 `.` 开头；解析失败的
 /// 文件跳过，不让一张坏文件拽垮整个列表。
+///
+/// 读盘量（fix-40-r1 R1-10）：先按文件修改时间粗排，只完整解析最近 50 个
+/// 附近的文件（与第 50 名 mtime 并列的一并解析，避免同刻度写入把新文件
+/// 挤出窗口）；预设清单整页只读一次。状态用引擎的只读死进程判定
+/// （`display_status`），与查看页同一口径。
 pub fn list_runs_at(root: &Path) -> Vec<RunListItem> {
     let Ok(entries) = std::fs::read_dir(root.join("runs")) else {
         return Vec::new();
     };
-    let mut items: Vec<(String, crate::engine::EngineRun)> = entries
+    let mut candidates: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
@@ -411,7 +417,25 @@ pub fn list_runs_at(root: &Path) -> Vec<RunListItem> {
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| !n.starts_with('.'))
         })
-        .filter_map(|path| {
+        .map(|path| {
+            let modified = path
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            (modified, path)
+        })
+        .collect();
+    // mtime 取不到的落在最后；这里的排序只是粗排，选出候选后仍按
+    // updated_at 精排。
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    // 与第 50 名 mtime 并列的候选一并解析：文件系统时间戳有粒度，同刻度
+    // 写入的新文件不能凭粗排挤掉。
+    let boundary = (candidates.len() > LIST_RUNS_LIMIT)
+        .then(|| candidates.get(LIST_RUNS_LIMIT - 1)).flatten().map(|(t, _)| *t);
+    let mut items: Vec<(String, crate::engine::EngineRun)> = candidates
+        .into_iter()
+        .take_while(|(t, _)| boundary.is_none_or(|b| *t >= b))
+        .filter_map(|(_, path)| {
             let bytes = std::fs::read(&path).ok()?;
             let run = serde_json::from_slice::<crate::engine::EngineRun>(&bytes).ok()?;
             Some((path, run))
@@ -430,14 +454,15 @@ pub fn list_runs_at(root: &Path) -> Vec<RunListItem> {
         .collect();
     // updated_at 是 ISO 字符串，字典序即时间序；倒序取最近的。
     items.sort_by(|a, b| b.1.updated_at.cmp(&a.1.updated_at));
+    items.truncate(LIST_RUNS_LIMIT);
+    let presets = orchestration::raw_presets_from(root);
     items
         .into_iter()
-        .take(LIST_RUNS_LIMIT)
         .map(|(run_id, run)| RunListItem {
-            preset_name: preset_display_name(root, &run.preset_id),
+            preset_name: preset_display_name(&presets, &run.preset_id),
             task_title: task_title(&run.original_request),
             run_id,
-            status: run.status,
+            status: crate::engine::display_status(&run).to_string(),
             started_at: run.started_at,
         })
         .collect()
@@ -821,12 +846,13 @@ mod tests {
     #[test]
     fn preset_name_comes_from_preset_id() {
         let root = temp("preset");
+        let presets = orchestration::raw_presets_from(&root);
         // 内置预设用自己的名字。
-        assert_eq!(preset_display_name(&root, "builtin-economy"), "经济模式");
-        assert_eq!(preset_display_name(&root, "builtin-blind"), "盲审模式");
+        assert_eq!(preset_display_name(&presets, "builtin-economy"), "经济模式");
+        assert_eq!(preset_display_name(&presets, "builtin-blind"), "盲审模式");
         // id 为空（targets 直给、旧 run 文件）与清单里找不到的 id 都退「自定义模式」。
-        assert_eq!(preset_display_name(&root, ""), "自定义模式");
-        assert_eq!(preset_display_name(&root, "builtin-gone"), "自定义模式");
+        assert_eq!(preset_display_name(&presets, ""), "自定义模式");
+        assert_eq!(preset_display_name(&presets, "builtin-gone"), "自定义模式");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -864,8 +890,8 @@ mod tests {
             serde_json::to_string_pretty(&file).unwrap(),
         )
         .unwrap();
-        assert_eq!(preset_display_name(&root, "u1"), "自定义模式 · 预发回归");
-        assert_eq!(preset_display_name(&root, "u2"), "自定义模式");
+        assert_eq!(preset_display_name(&orchestration::raw_presets_from(&root), "u1"), "自定义模式 · 预发回归");
+        assert_eq!(preset_display_name(&orchestration::raw_presets_from(&root), "u2"), "自定义模式");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1055,6 +1081,23 @@ mod tests {
     fn list_runs_on_missing_dir_is_empty() {
         let root = temp("list-runs-empty");
         assert!(list_runs_at(&root).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_runs_marks_dead_process_running_as_failed() {
+        // fix-40-r1 R1-3：running 但 pid 已死 → 首页与查看页同口径显示失败，
+        // 不把死 run 当成还在跑（pid 取值同引擎 dead_pid_becomes_failed）。
+        let root = temp("list-runs-dead");
+        let mut run = run_summary("run-dead", "2026-10-01T08:00:00Z");
+        run.status = "running".into();
+        run.pid = u32::MAX;
+        let runs = root.join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(runs.join("run-dead.json"), serde_json::to_vec(&run).unwrap()).unwrap();
+        let items = list_runs_at(&root);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].status, "failed");
         let _ = std::fs::remove_dir_all(root);
     }
 }

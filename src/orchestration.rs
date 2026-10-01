@@ -464,7 +464,7 @@ pub(crate) fn roles_from_strict(root: &Path) -> Result<RoleSettings, String> {
     }
 }
 
-/// 写入 roles.json；命令行（TASK-39 的 `config set-role`）与窗口设置页共用。
+/// 写入 roles.json；命令行（TASK-39 的 `config set-role`）与引擎读同一份。
 pub(crate) fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), String> {
     if settings.version != 1 {
         return Err(format!(
@@ -535,9 +535,9 @@ fn validate_graph_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 注意用的是 `detected` 不是 `connected`：节点面板与 `@` 弹层要看到本机探测到的
-/// 全部模型（本机 pi 一家三个 provider 就有 31 条），未冒烟的由前端按 status 打后缀。
-/// 左栏资源 tab 与预设角色默认值仍走 `connected`（可派发清单语义），不受影响。
+/// 注意用的是 `detected` 不是 `connected`：节点面板与派发前检查要看到本机探测到的
+/// 全部模型（本机 pi 一家三个 provider 就有 31 条），未冒烟的由 `aicross resources`
+/// 输出按状态标注。预设角色默认值仍走 `connected`（可派发清单语义），不受影响。
 pub(crate) fn dispatchable_from(root: &Path) -> DispatchableModels {
     let path = resources_path(root);
     match detected_resources(&path) {

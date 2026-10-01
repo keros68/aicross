@@ -33,8 +33,8 @@ const STATUS_FAILED: &str = "冒烟失败";
 const MISSING_MARKER: &str = "未在事实源中";
 const SMOKE_PROMPT: &str = "只回复 OK";
 
-/// 09-15 口径的四态（写进 `ResourceModel::verification`，前端按它显示状态点）。
-/// 旧的 `status` 字段保留不删：接入页的详情里还要看「最近冒烟」那一段。
+/// 09-15 口径的四态（写进 `ResourceModel::verification`，`aicross resources` 按它显示状态）。
+/// 旧的 `status` 字段保留不删：`resources` 输出的详情里还要看「最近冒烟」那一段。
 pub const VERIFICATION_NATIVE: &str = "native";
 pub const VERIFICATION_UNVERIFIED: &str = "unverified";
 pub const VERIFICATION_VERIFIED: &str = "verified";
@@ -350,8 +350,8 @@ fn third_party_endpoint(agent: &str) -> bool {
 }
 
 /// 「原生」的完整判据：原生 agent 且没走第三方端点。
-/// 这条同时是 `verification == "native"` 的不变式——接入页按它决定给不给
-/// 「验证」按钮，引擎按它决定跳不跳过首次验证。
+/// 这条同时是 `verification == "native"` 的不变式——引擎按它决定跳不跳过首次验证，
+/// `aicross resources` 按它标注原生模型不冒烟。
 pub(crate) fn is_native_model(agent: &str) -> bool {
     is_native_agent(agent) && !third_party_endpoint(agent)
 }
@@ -608,8 +608,8 @@ fn store_mutex() -> &'static Mutex<()> {
 }
 
 /// 旧口径的「已接入」清单（status == 已接入）。cc-switch 一律排除。
-// 08b 起派发清单改列全部探测到的模型（`detected`），左栏资源 tab 走 `get_resources`
-// 直接拿整库；`connected` 只留作「已接入」语义的查询入口，暂无生产调用。
+// 08b 起派发清单改列全部探测到的模型（`detected`）；`aicross resources` 走
+// `get_resources` 直接拿整库；`connected` 只留作「已接入」语义的查询入口，暂无生产调用。
 #[allow(dead_code)]
 pub fn connected(path: &Path) -> Result<Vec<ResourceModel>, String> {
     Ok(load(path)?
@@ -1632,7 +1632,7 @@ fn claude_base_url_from_settings(contents: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// 手动冒烟：不进进程注册表（接入页有自己的 busy 态，没有叫停入口）。
+/// 手动冒烟：不进进程注册表（冒烟是一发短请求，无需叫停入口）。
 fn run_smoke(model: &ResourceModel) -> Result<SmokeSuccess, String> {
     run_smoke_registered(model, None)
 }
@@ -1790,7 +1790,7 @@ pub enum FirstUseVerification {
 /// 第三方端点首次派发前的自动验证（09-15 定案）。只有 `verification ==
 /// "unverified"` 才动手，判据与写回完全复用手动冒烟那一套。
 ///
-/// 失败的不自动重试：这一条派发按失败返回，用户到接入页手动重验。
+/// 失败的不自动重试：这一条派发按失败返回，用户可用 `aicross resources smoke` 手动重验。
 /// 资源库里没这一条时返回 `NotInStore` 放行——自动验证是加固，不该把「还没
 /// 接入过资源」的用户挡在派发之外，但留痕里要说清没验。
 ///
@@ -2261,6 +2261,39 @@ pub(crate) fn detect_all_resources_at(
     })
 }
 
+/// 单 agent 探测（fix-40-r1 R1-4 恢复测试用，同名函数原随 Tauri 命令下线）：
+/// 只探测指定 agent，pi 二进制可注入，不真探测本机其它 CLI。生产走
+/// `detect_all_resources_at`。登录探测仍先于 store 锁——探测一次最长
+/// 几十秒，不能把其他写方挡在锁外。
+#[cfg(test)]
+fn detect_resource_agent_at_with_pi_binary(
+    path: &Path,
+    agent_id: &str,
+    cc_switch_path: Option<&str>,
+    pi_binary: Option<PathBuf>,
+) -> Result<ResourceOperation, String> {
+    let prepared_pi = (agent_id == "pi").then(|| prepare_pi_detection(pi_binary));
+    let _guard = store_lock();
+    let mut store = load_or_default(path)?;
+    ensure_agents(&mut store);
+    let mut errors = Vec::new();
+    if let Some(prepared) = prepared_pi {
+        apply_prepared_pi_detection(&mut store, prepared, &mut errors);
+    } else {
+        detect_into(&mut store, agent_id, &mut errors);
+    }
+    let (cc_switch_hints, hint_error) = detect_cc_switch_hints(cc_switch_path);
+    if let Some(error) = hint_error {
+        errors.push(error);
+    }
+    save_store(path, &store)?;
+    Ok(ResourceOperation {
+        store,
+        errors,
+        cc_switch_hints,
+    })
+}
+
 pub(crate) fn smoke_resource_model_at(path: &Path, request: ResourceModelKey) -> Result<ResourceStore, String> {
     let _guard = store_lock();
     let mut store = load_or_default(path)?;
@@ -2374,6 +2407,159 @@ mod tests {
             fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("make fake pi executable");
         }
         script
+    }
+
+    /// fix-40-r1 R1-4 恢复（原 task17_pi_detect_list_auth_merge_persists_without_auth_payload，
+    /// 改用可注入 pi 路径的全量探测入口）：探测合并后登录态落盘，但凭据本体不进资源库。
+    #[test]
+    fn task17_pi_detect_list_auth_merge_persists_without_auth_payload() {
+        let root = std::env::temp_dir().join(format!("aicross-pi-detect-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        #[cfg(windows)]
+        let body = r#"@echo off
+if /I "%~1"=="--version" goto version
+if /I "%~1"=="--list-models" goto list
+if /I "%~1"=="auth" goto auth
+exit /b 2
+:version
+echo pi test
+exit /b 0
+:list
+echo ready model-a
+exit /b 0
+:auth
+echo {"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"}}
+exit /b 0
+"#;
+        #[cfg(not(windows))]
+        let body = r#"#!/bin/sh
+if [ "$1" = --version ]; then printf '%s\n' 'pi test'; exit 0; fi
+if [ "$1" = --list-models ]; then printf '%s\n' 'ready model-a'; exit 0; fi
+if [ "$1" = auth ]; then printf '%s\n' '{"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"}}'; exit 0; fi
+exit 2
+"#;
+        let script = write_fake_pi(&root, body);
+        let path = root.join("resources.json");
+        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, Some(script)).unwrap();
+        assert!(operation.errors.is_empty(), "{:?}", operation.errors);
+        let persisted = load(&path).unwrap();
+        let model = find_model(&persisted, "pi", "ready", "model-a").expect("detected model");
+        assert_eq!(model.login, ResourceLogin::LoggedIn);
+        assert!(!model.login_checked_at.is_empty());
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("do-not-read"));
+        assert!(!raw.contains("credentials"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-40-r1 R1-4 恢复（原 task17_missing_pi_detection_clears_stale_login）：
+    /// pi 缺席时探测照常写回，残留的旧登录态清成未知。
+    #[test]
+    fn task17_missing_pi_detection_clears_stale_login() {
+        let root = std::env::temp_dir().join(format!("aicross-pi-stale-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let model = ResourceModel {
+            id: "m".into(), agent: "pi".into(), provider: "p".into(),
+            login: ResourceLogin::LoggedIn, ..Default::default()
+        };
+        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![model])] }).unwrap();
+        let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, None).unwrap();
+        let pi = operation.store.agents.iter().find(|agent| agent.id == "pi").unwrap();
+        assert!(!pi.detected);
+        assert_eq!(pi.models[0].login, ResourceLogin::Unknown);
+        assert!(!pi.models[0].login_checked_at.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-40-r1 R1-4 恢复（原 task17_pi_login_probe_runs_before_store_lock）：
+    /// pi 登录探测在取资源库锁之前跑，不把其他写方挡在锁外。
+    #[test]
+    fn task17_pi_login_probe_runs_before_store_lock() {
+        let root = std::env::temp_dir().join(format!("aicross-pi-lock-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("auth-started");
+        #[cfg(windows)]
+        let body = r#"@echo off
+if /I "%~1"=="--version" goto version
+if /I "%~1"=="--list-models" goto list
+if /I "%~1"=="auth" goto auth
+exit /b 2
+:version
+echo pi test
+exit /b 0
+:list
+echo p model-a
+exit /b 0
+:auth
+type nul > "%~dp0auth-started"
+ping -n 3 127.0.0.1 > nul
+echo {"status":"ready","provider":"p"}
+exit /b 0
+"#;
+        #[cfg(not(windows))]
+        let body = r#"#!/bin/sh
+if [ "$1" = --version ]; then printf '%s\n' 'pi test'; exit 0; fi
+if [ "$1" = --list-models ]; then printf '%s\n' 'p model-a'; exit 0; fi
+if [ "$1" = auth ]; then : > "$(dirname "$0")/auth-started"; sleep 1; printf '%s\n' '{"status":"ready","provider":"p"}'; exit 0; fi
+exit 2
+"#;
+        let script = write_fake_pi(&root, body);
+        let path = root.join("resources.json");
+        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        let thread_path = path.clone();
+        let handle = std::thread::spawn(move || {
+            detect_resource_agent_at_with_pi_binary(&thread_path, "pi", None, Some(script))
+        });
+        for _ in 0..200 {
+            if marker.is_file() { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(marker.is_file(), "fake pi auth check did not start");
+        let mut available = false;
+        for _ in 0..20 {
+            if let Ok(guard) = store_mutex().try_lock() {
+                drop(guard);
+                available = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(available, "pi auth check must not hold the resource store lock");
+        handle.join().unwrap().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-40-r1 R1-4 恢复（原 task14_fallback_order_roundtrips_and_quota_expiry_is_cleared
+    /// 中仍测保留代码的部分）：已过期的额度标记在读时清掉并写回，恢复时间标记可写入。
+    /// 原测试里 fallback 清单轮转与 update_model 的断言随那些函数一并删除。
+    #[test]
+    fn task14_quota_expiry_is_cleared_and_marks_roundtrip() {
+        let root = std::env::temp_dir().join(format!("aicross-quota-store-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let mut primary = fixture_model("main");
+        primary.agent = "pi".into();
+        primary.provider = "p0".into();
+        primary.quota_exhausted_until = Some("2000-01-01T00:00:00+08:00".into());
+        let store = ResourceStore {
+            version: 1,
+            agents: vec![fixture_agent("pi", vec![primary])],
+        };
+        save_store(&path, &store).unwrap();
+
+        // 已过期的额度标记：读资源库时清掉并写回。
+        let visible = get_resources_at(&path).unwrap();
+        let main = find_model(&visible, "pi", "p0", "main").unwrap();
+        assert!(main.quota_exhausted_until.is_none());
+
+        // 未过期的恢复时间标记：原样保留，可写入。
+        mark_quota_exhausted_at(&path, "pi", "p0", "main", Some("2099-01-01T00:00:00+08:00")).unwrap();
+        assert_eq!(find_model(&load(&path).unwrap(), "pi", "p0", "main").unwrap().quota_exhausted_until.as_deref(), Some("2099-01-01T00:00:00+08:00"));
+        let visible = get_resources_at(&path).unwrap();
+        assert_eq!(find_model(&visible, "pi", "p0", "main").unwrap().quota_exhausted_until.as_deref(), Some("2099-01-01T00:00:00+08:00"));
+        let _ = fs::remove_dir_all(root);
     }
 
     /// 本机 claude 2.1.270 `--help` 里 `--model` 那一段的原样（含换行续排，
@@ -3662,7 +3848,7 @@ mod tests {
             "zai",
             "glm-4.7",
             move |_| {
-                // 冒烟期间条目被删（用户在接入页移除 / 库被换掉）：写回会落空。
+                // 冒烟期间条目被删（资源库被改写 / 换掉）：写回会落空。
                 fs::remove_file(&removed).unwrap();
                 Ok(SmokeSuccess { identity: "zai/glm-4.7".into(), meta_marker: None })
             },

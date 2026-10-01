@@ -1,8 +1,7 @@
 /* aicross — 窗口外壳（TASK-40 最小形态：标题栏 + 首页 + 查看页） */
 
-/* 字体：界面用 IBM Plex Sans（Web 字体由 index.html 引入的本地 woff2 或
-   系统安装提供），中文回退到各系统自带字体；等宽用 IBM Plex Mono，
-   回退 Cascadia / 系统等宽。不再单独打包 Inter / Lora。 */
+/* 字体：界面用 IBM Plex Sans（随系统安装提供），中文回退到各系统自带字体；
+   等宽用 IBM Plex Mono，回退 Cascadia / 系统等宽。安装包不再带字体文件。 */
 
 /* ─── Base Reset ─────────────────────────────────────── */
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; cursor: default !important; }

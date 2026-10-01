@@ -160,6 +160,9 @@ impl ProcessActivity {
         }
     }
 
+    /// 用量快照（耗时 / 空闲 / 工具调用计数）。进度事件管道随窗口界面下线
+    /// （fix-40-r1 R1-9），当前只有测试读取。
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn snapshot(&self) -> (u64, u64, u64, u64, String) {
         let now = Instant::now();
         let idle = self.last_output.lock().map(|last| now.duration_since(*last)).unwrap_or_default();

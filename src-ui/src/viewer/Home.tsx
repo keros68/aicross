@@ -4,13 +4,8 @@
 
 import { useEffect, useState } from 'react';
 import { commands, type RunListItem } from '../tauri';
-import {
-  formatStartedAt,
-  homeEmptyText,
-  runListItemText,
-  runStatusLabel,
-  runStatusTone,
-} from './run-list';
+import { runStatusLabel, runStatusTone } from './run-view';
+import { formatStartedAt, homeEmptyText, runListItemText } from './run-list';
 import './Home.css';
 
 interface Props {
@@ -38,12 +33,20 @@ export function Home({ onOpenRun }: Props) {
         });
     };
     load();
-    // 派发在宿主里发生，窗口开着时每 5 秒刷一次；终态 run 不变，代价是
-    // 一次目录读取。
-    const timer = window.setInterval(load, 5000);
+    // 派发在宿主里发生，窗口可见时每 5 秒刷一次；不可见（最小化、被系统
+    // 判定遮蔽）时暂停，恢复可见立即刷一次（fix-40-r1 R1-10）。终态 run
+    // 不变，代价是一次目录读取。
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') load();
+    }, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') load();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
 

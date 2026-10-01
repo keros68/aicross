@@ -15,7 +15,7 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
     let command = args.get(1).map(String::as_str);
     if !matches!(
         command,
-        Some("dispatch" | "status" | "adopt" | "cancel" | "resources" | "config" | "__run")
+        Some("dispatch" | "status" | "adopt" | "cancel" | "propose" | "resources" | "config" | "__run")
     ) {
         return None;
     }
@@ -72,6 +72,12 @@ fn run_at_with(
         };
     }
     match args.get(1).map(String::as_str) {
+        // TASK-40 R1-6：propose 随窗口 HTTP 通道删除；识别成已删除命令给提示，
+        // 不落进「启动窗口」的默认分支。
+        Some("propose") => {
+            let _ = writeln!(stderr, "propose 已删除，建议在宿主对话里给出");
+            return 2;
+        }
         Some("resources") => return run_resources(root, args, ops, stdout, stderr),
         Some("config") => return run_config(root, args, stdout, stderr),
         _ => {}
@@ -135,8 +141,8 @@ fn run_status(root: &Path, args: &[String], timeout: Duration, stdout: &mut dyn 
 
 // ── TASK-39：resources / config 子命令 ────────────────────────────────
 
-/// resources 子命令的进程边界：生产走 resources.rs 的现成函数（与接入页同一
-/// 套），测试注入假实现，不在单测里真探测、真发模型请求。
+/// resources 子命令的进程边界：生产走 resources.rs 的现成函数（与 `aicross resources`
+/// 输出同一套），测试注入假实现，不在单测里真探测、真发模型请求。
 struct ResourcesOps {
     read_resources: Box<dyn Fn(&Path) -> Result<ResourceStore, String>>,
     detect_all: Box<dyn Fn(&Path, Option<&str>) -> Result<ResourceOperation, String>>,
@@ -184,7 +190,7 @@ fn run_resources(
                 let _ = writeln!(stderr, "{message}");
                 return 2;
             }
-            // cc-switch 发现提示的路径与接入页同源：派发设置里的 ccSwitchPath。
+            // cc-switch 发现提示的路径取派发设置里的 ccSwitchPath（与 MANUAL 同一口径）。
             let cc_switch = crate::engine::load_settings(root).cc_switch_path;
             let cc_switch = (!cc_switch.trim().is_empty()).then_some(cc_switch);
             let operation = match (ops.detect_all)(&store_file(root), cc_switch.as_deref()) {
@@ -828,6 +834,23 @@ fn positional(args: &[String], index: usize) -> Option<String> {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    #[test]
+    fn propose_is_recognized_as_removed_and_exits_2() {
+        // TASK-40 R1-6：propose 随窗口 HTTP 通道删除；不再拉起窗口，
+        // stderr 给去向提示，退出码 2（参数错同档）。
+        let root = std::env::temp_dir().join(format!("aicross-cli-propose-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let args = vec!["aicross".into(), "propose".into(), "给个方案".into()];
+        assert_eq!(run_at(&args, &root, &mut stdout, &mut stderr), 2);
+        assert!(stdout.is_empty());
+        let message = String::from_utf8(stderr).unwrap();
+        assert!(message.contains("propose 已删除"), "{message}");
+        assert!(message.contains("宿主对话"), "{message}");
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn missing_run_is_a_business_failure() {

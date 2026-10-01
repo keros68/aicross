@@ -1,9 +1,9 @@
 //! ACP 适配器自备（09-18 用户要求「别让用户自己去搞额外的配置」）。
 //!
 //! claude-agent-acp / codex-acp 各带一份原生 CLI，装好后分别约 270 MB / 400 MB，塞不进安装包。
-//! 做法：本机装了对应 CLI、又找不到适配器时，应用在后台用 npm 装进自己的私有目录
-//! `~/.aicross/acp`（不碰全局 npm），版本钉死。装好之前控制台照常可用——派发自动回退一次性 CLI，
-//! 只是没有 `/` 补全与权限卡片。没有 Node.js（npm）的机器同样回退，并在界面说明原因。
+//! 做法：本机装了对应 CLI、又找不到适配器时，命令行拉起会话的后台用 npm 装进
+//! 私有目录 `~/.aicross/acp`（不碰全局 npm），版本钉死。装好之前派发照常可用——
+//! 自动的回退一次性 CLI。没有 Node.js（npm）的机器同样回退，原因写在节点错误里。
 
 use crate::process::run_process;
 use std::collections::HashMap;
@@ -116,7 +116,7 @@ pub(crate) fn install_args(packages: &[String], prefix: &Path) -> Vec<String> {
     args
 }
 
-/// 用户看得懂的一句话：为什么这一家暂时没有 `/` 命令与权限卡片。
+/// 适配器缺席时进节点错误的一句话：为什么这一轮回退一次性 CLI。
 pub fn unavailable_reason(agent: &str) -> String {
     let name = match agent {
         "claude" => "Claude Code",
@@ -124,15 +124,15 @@ pub fn unavailable_reason(agent: &str) -> String {
         other => other,
     };
     match state(agent) {
-        SetupState::Installing => format!("正在后台准备 {name} 的命令与权限支持（首次需下载几百 MB，约几分钟）；聊天照常可用"),
-        SetupState::NoNode => format!("未检测到 Node.js，{name} 的 / 命令与权限卡片不可用；聊天照常可用。安装 Node.js 后重启本应用即自动启用"),
-        SetupState::Failed(detail) => format!("{name} 的命令与权限支持安装失败：{detail}；聊天照常可用，重启本应用会再试"),
-        _ => format!("{name} 的命令与权限支持尚未就绪；聊天照常可用"),
+        SetupState::Installing => format!("正在后台准备 {name} 的 ACP 适配器（首次需下载几百 MB，约几分钟）；本轮回退一次性 CLI"),
+        SetupState::NoNode => format!("未检测到 Node.js，{name} 的 ACP 适配器不可用；本轮回退一次性 CLI"),
+        SetupState::Failed(detail) => format!("{name} 的 ACP 适配器安装失败：{detail}；本轮回退一次性 CLI"),
+        _ => format!("{name} 的 ACP 适配器尚未就绪；本轮回退一次性 CLI"),
     }
 }
 
 /// 缺哪家装哪家（只装本机有对应 CLI 的），一次 npm 调用装完；同一时间只跑一个安装。
-/// 非阻塞：立即返回，结果经 `acp-setup` 事件推给界面。
+/// 非阻塞：立即返回，装完前拉起适配器的调用按回退处理（见 `unavailable_reason`）。
 pub fn ensure_installed() {
     let missing = ADAPTERS
         .iter()
@@ -243,11 +243,15 @@ mod tests {
     }
 
     #[test]
-    fn reasons_are_plain_and_say_chat_still_works() {
+    fn reasons_are_plain_and_say_the_turn_falls_back() {
         for state in [SetupState::Installing, SetupState::NoNode, SetupState::Failed("网络错误".into())] {
             set_state("codex", state);
             let reason = unavailable_reason("codex");
-            assert!(reason.contains("Codex") && reason.contains("聊天照常可用"), "{reason}");
+            assert!(reason.contains("Codex") && reason.contains("回退一次性 CLI"), "{reason}");
+            // 不再提旧界面的概念（TASK-40 R1-7）。
+            assert!(!reason.contains("聊天"));
+            assert!(!reason.contains("权限卡片"));
+            assert!(!reason.contains("重启"));
         }
         set_state("codex", SetupState::Idle);
     }

@@ -1,10 +1,10 @@
 //! 逐夹具金标准重放测试（fixtures/engine-golden/*.json）。
 //!
-//! 夹具是 TypeScript 参照实现（`runConsoleDispatch`，见
-//! `src-ui/src/__tests__/engine-golden.test.ts`）的录制；本模块把 input 段
-//! 驱动给 Rust 引擎（`plan_dispatch` + `run_pipeline` + 记录型 PipelineSink），
-//! 产出按 UUID / 时间戳首现序归一化后与夹具逐字段比较。夹具是契约，
-//! 不一致时改 Rust，不改夹具。
+//! 夹具录自 TypeScript 参照实现（`runConsoleDispatch`）。前端生成器
+//! 已随 TASK-40 删除，原文见 git 历史与 `fixtures/engine-golden/README.md`；
+//! 本模块把 input 段驱动给 Rust 引擎（`plan_dispatch` + `run_pipeline` +
+//! 记录型 PipelineSink），产出按 UUID / 时间戳首现序归一化后与夹具逐字段
+//! 比较。夹具是契约，不一致时改 Rust，不改夹具。
 
 use super::*;
 use serde_json::{json, Map, Value};

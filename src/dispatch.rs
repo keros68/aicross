@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -134,7 +133,8 @@ pub struct DispatchNodeRequest {
     /// TASK-13：修正轮执行节点在验证通过后自动做红绿核对。
     #[serde(default)]
     pub fix_round: bool,
-    /// 控制台单线聊天：claude / codex 也走 ACP，非读非写的权限请求交给界面卡片裁决。
+    /// interactive 会话（宿主对话里派发的单线会话）：claude / codex 也走 ACP，
+    /// 非读非写的权限请求按 R1-2 当场拒绝（见 channels::acp）。
     #[serde(default)]
     pub interactive: bool,
 }
@@ -291,24 +291,6 @@ struct DispatchStateHeader {
     stage: u32,
     unfinished: bool,
     active_node_ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DispatchProgress {
-    run_id: String,
-    node_id: String,
-    status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    elapsed_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    idle_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    repeated_tool_calls: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_tool: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -536,8 +518,8 @@ fn registered_worktrees(project: &Path, cancel_key: &str) -> Result<HashSet<Path
         .collect())
 }
 
-/// TASK-16：界面与控制台通道共用的派发入口。
-#[tauri::command]
+/// TASK-16：引擎的节点叫停入口（旧 Tauri 命令包装已随窗口界面下线，
+/// fix-40-r1 R1-9：不再注册的 `#[tauri::command]` 标注一并删掉）。
 pub fn cancel_dispatch_node(run_id: String, node_id: String) -> bool {
     let key = registry_key(&run_id, &node_id);
     mark_cancelled(&key);
@@ -570,7 +552,6 @@ fn node_agents(node: &DispatchNodeRequest) -> Vec<String> {
 
 pub(crate) fn dispatch_stage_core(
     mut request: DispatchStageRequest,
-    app: Option<AppHandle>,
 ) -> Result<DispatchStageResult, String> {
     if request.nodes.is_empty() {
         return Err("当前阶段没有可派发节点".into());
@@ -668,9 +649,6 @@ pub(crate) fn dispatch_stage_core(
         &status,
         &[],
     )?;
-    for node in &request.nodes {
-        emit_progress(&app, &request.run_id, &node.node_id, "排队");
-    }
     let mut queued: VecDeque<DispatchNodeRequest> = request.nodes.clone().into();
     let mut active_agents = HashSet::new();
     let mut active = 0_usize;
@@ -693,7 +671,6 @@ pub(crate) fn dispatch_stage_core(
                 }) {
                     if status.get(&node.node_id).map(String::as_str) != Some("等待写锁") {
                         status.insert(node.node_id.clone(), "等待写锁".into());
-                        emit_progress(&app, &request.run_id, &node.node_id, "等待写锁");
                     }
                 }
             }
@@ -709,7 +686,6 @@ pub(crate) fn dispatch_stage_core(
             }
             active += 1;
             status.insert(node.node_id.clone(), "运行中".into());
-            emit_progress(&app, &request.run_id, &node.node_id, "运行中");
             write_state(
                 &state_file,
                 &request.run_id,
@@ -725,21 +701,9 @@ pub(crate) fn dispatch_stage_core(
             let project = project.clone();
             let run_root = run_root.clone();
             let log_dir = log_dir.clone();
-            let app = app.clone();
             thread::spawn(move || {
-                let node_id = node.node_id.clone();
                 let activity = ProcessActivity::new();
-                let (stop_tx, stop_rx) = mpsc::channel();
-                let heartbeat_app = app.clone();
-                let heartbeat_run = run_id.clone();
-                let heartbeat_node = node_id.clone();
-                let heartbeat_activity = activity.clone();
-                let heartbeat = thread::spawn(move || heartbeat_loop(stop_rx, Duration::from_secs(15), || {
-                    emit_running_progress(&heartbeat_app, &heartbeat_run, &heartbeat_node, &heartbeat_activity);
-                }));
                 let result = run_one_with_activity(&run_id, &project, &run_root, &log_dir, &settings, node, activity);
-                let _ = stop_tx.send(());
-                let _ = heartbeat.join();
                 let _ = tx.send((agents, single_writer, result));
             });
         }
@@ -765,12 +729,6 @@ pub(crate) fn dispatch_stage_core(
             _ => "失败",
         };
         status.insert(result.node_id.clone(), ui_status.into());
-        emit_progress(&app, &request.run_id, &result.node_id, ui_status);
-        if result.resources_changed {
-            if let Some(app) = &app {
-                let _ = app.emit("aicross:resources-changed", ());
-            }
-        }
         results.push(result);
         write_state(
             &state_file,
@@ -2491,7 +2449,8 @@ fn run_one_attempt(
     let isolation = channels::isolation_for(&node.agent, blind).to_string();
     let timeout = Duration::from_secs(settings.timeout_secs.clamp(1, 3600));
     // 09-15 口径：第三方端点的模型第一次被派发到时，先真发一个短请求核对真身，
-    // 结果记进资源库。失败即本节点失败、不自动重试（用户到接入页手动重验）；
+    // 结果记进资源库。失败即本节点失败、不自动重试（用户可用 `aicross resources smoke`
+    // 手动重验）；
     // 原生 CLI（官方端点的 claude / codex / kimi）与验过 / 验失败过的直接跳过。
     //
     // 修正轮 R1：整段移到取项目写锁、建 worktree、回滚、快照、备料之前——
@@ -2661,7 +2620,7 @@ fn run_one_attempt(
     }
 
     let mut needs_oneshot = error.is_empty();
-    // 控制台单线聊天（interactive）不看 ACP 开关：slash 命令与权限卡片只有 ACP 能给；失败照常回退一次性 CLI。
+    // interactive 会话不看 ACP 开关：interactive 的授权询问只有 ACP 能接；失败照常回退一次性 CLI。
     let uses_acp = (settings.acp_enabled || node.interactive) && channels::acp::supports(&node.agent, node.interactive);
     if needs_oneshot && !uses_acp && node.previous_runner == "acp" {
         (oneshot_session, oneshot_outbound) = reset_acp_fallback(&prompt);
@@ -3849,7 +3808,7 @@ fn strip_ansi(text: &str) -> String {
 
 fn project_path(value: &str) -> Result<PathBuf, String> {
     if value.trim().is_empty() {
-        return Err("请先在左栏「工作区」选择项目目录".into());
+        return Err("项目目录不能为空".into());
     }
     let path = PathBuf::from(value);
     if !path.is_dir() {
@@ -4057,52 +4016,6 @@ pub(crate) fn node_is_cancelled(run_id: &str, node_id: &str) -> bool {
     is_cancelled(&registry_key(run_id, node_id))
 }
 
-fn emit_progress(app: &Option<AppHandle>, run_id: &str, node_id: &str, status: &str) {
-    if let Some(app) = app {
-        let _ = app.emit(
-            "dispatch-progress",
-            DispatchProgress {
-                run_id: run_id.into(),
-                node_id: node_id.into(),
-                status: status.into(),
-                elapsed_ms: None,
-                idle_ms: None,
-                tool_calls: None,
-                repeated_tool_calls: None,
-                last_tool: None,
-            },
-        );
-    }
-}
-
-fn emit_running_progress(app: &Option<AppHandle>, run_id: &str, node_id: &str, activity: &ProcessActivity) {
-    if let Some(app) = app {
-        let _ = app.emit("dispatch-progress", running_progress(run_id, node_id, activity));
-    }
-}
-
-fn heartbeat_loop<F>(stop_rx: mpsc::Receiver<()>, interval: Duration, mut emit: F)
-where
-    F: FnMut(),
-{
-    loop {
-        match stop_rx.recv_timeout(interval) {
-            Err(mpsc::RecvTimeoutError::Timeout) => emit(),
-            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-}
-
-fn running_progress(run_id: &str, node_id: &str, activity: &ProcessActivity) -> DispatchProgress {
-    let (elapsed_ms, idle_ms, tool_calls, repeated_tool_calls, last_tool) = activity.snapshot();
-    let last_tool = safe_trace(&last_tool).chars().take(120).collect();
-    DispatchProgress {
-        run_id: run_id.into(), node_id: node_id.into(), status: "running".into(),
-        elapsed_ms: Some(elapsed_ms), idle_ms: Some(idle_ms), tool_calls: Some(tool_calls),
-        repeated_tool_calls: Some(repeated_tool_calls), last_tool: Some(last_tool),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4127,10 +4040,40 @@ mod tests {
         let mut split = node(Vec::new());
         split.role = "拆分".into();
         split.write = "worktree".into();
-        let result = dispatch_stage_core(stage_request(root.to_string_lossy().into_owned(), vec![split]), None).unwrap();
+        let result = dispatch_stage_core(stage_request(root.to_string_lossy().into_owned(), vec![split])).unwrap();
         assert_eq!(result.results[0].status, "error");
         assert!(result.results[0].error.contains("拆分") && result.results[0].error.contains("只读"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-40-r1 R1-4 恢复（原 r3_8，preview 已随窗口界面下线，只留派发半边）：
+    /// 空项目目录在派发前拒绝，不写任何盘。
+    #[test]
+    fn r3_8_empty_project_dir_is_rejected_without_writes() {
+        let before = fs::read_dir(std::env::current_dir().unwrap()).unwrap().count();
+        let request = stage_request(String::new(), vec![node(Vec::new())]);
+        let error = dispatch_stage_core(request).unwrap_err();
+        assert!(error.contains("项目目录"), "{error}");
+        let after = fs::read_dir(std::env::current_dir().unwrap()).unwrap().count();
+        assert_eq!(after, before);
+    }
+
+    /// fix-40-r1 R1-4 恢复（原 r3_16；后半段 inspect / abandon STATE 随窗口对账
+    /// 命令下线，只留 worktree 节点的验证提示半边）。
+    #[test]
+    fn r3_16_worktree_node_without_validation_keeps_the_hint() {
+        let mut worktree = node(Vec::new());
+        worktree.role = "执行".into();
+        worktree.write = "worktree".into();
+        assert!(successful_validation_output(&worktree, true).unwrap().contains("未跑验证命令"));
+    }
+
+    /// fix-40-r1 R1-4 恢复（原 task07_dispatch_and_reconcile_results_preserve_cache_read_usage，
+    /// 对账半边随 STATE 命令下线）：cache_read 用 camelCase 序列化，不丢字段。
+    #[test]
+    fn task07_dispatch_result_preserves_cache_read_usage() {
+        let dispatch = DispatchNodeResult { cache_read: 42, ..DispatchNodeResult::default() };
+        assert_eq!(serde_json::to_value(&dispatch).unwrap()["cacheRead"], 42);
     }
 
     #[derive(Debug, Default, PartialEq)]
@@ -4276,7 +4219,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let mut empty = node(Vec::new());
         empty.agent.clear();
-        let result = dispatch_stage_core(stage_request(root.to_string_lossy().into_owned(), vec![empty]), None).unwrap();
+        let result = dispatch_stage_core(stage_request(root.to_string_lossy().into_owned(), vec![empty])).unwrap();
         assert_eq!(result.results[0].status, "error");
         assert!(result.results[0].error.contains("未指定"));
         assert!(fs::read_dir(&root).unwrap().next().is_none());
@@ -4377,7 +4320,7 @@ mod tests {
         let mut invalid = node(Vec::new());
         invalid.node_id = "invalid-review".into();
         invalid.write = "worktree".into();
-        let result = dispatch_stage_core(stage_request(root.to_string_lossy().into_owned(), vec![invalid]), None).unwrap();
+        let result = dispatch_stage_core(stage_request(root.to_string_lossy().into_owned(), vec![invalid])).unwrap();
         assert_eq!(result.results.len(), 1);
         assert_eq!(result.results[0].node_id, "invalid-review");
         assert_eq!(result.results[0].status, "error");
@@ -4530,108 +4473,6 @@ mod tests {
         let path = root.join("record.md");
         fs::write(&path, "---\nschema: aicross-dispatch/999\nnode: legacy\n---\n\n## 回复正文\n\nok\n").unwrap();
         assert!(parse_record_file(&path).unwrap_err().contains("不支持的派发记录 schema"));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn task07_running_progress_serializes_heartbeat_contract_fields() {
-        let activity = ProcessActivity::new();
-        activity.record_tool_call("Read file");
-        activity.record_tool_call("Read file");
-        activity.record_tool_call("Read file");
-        let (elapsed_ms, idle_ms, tool_calls, repeated_tool_calls, last_tool) = activity.snapshot();
-        let value = serde_json::to_value(DispatchProgress {
-            run_id: "run".into(), node_id: "node".into(), status: "running".into(),
-            elapsed_ms: Some(elapsed_ms), idle_ms: Some(idle_ms), tool_calls: Some(tool_calls),
-            repeated_tool_calls: Some(repeated_tool_calls), last_tool: Some(last_tool),
-        }).unwrap();
-        assert_eq!(value["status"], "running");
-        assert_eq!((value["toolCalls"].as_u64(), value["repeatedToolCalls"].as_u64()), (Some(3), Some(3)));
-        assert_eq!(value["lastTool"], "Read file");
-        assert!(value.get("elapsedMs").is_some() && value.get("idleMs").is_some());
-    }
-
-    #[test]
-    fn r1_heartbeat_normal_stop_emits_once_then_exits() {
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let (emit_tx, emit_rx) = mpsc::channel();
-        let heartbeat = thread::spawn(move || heartbeat_loop(stop_rx, Duration::from_millis(10), || {
-            emit_tx.send(()).unwrap();
-        }));
-        emit_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        stop_tx.send(()).unwrap();
-        heartbeat.join().unwrap();
-        assert!(emit_rx.recv_timeout(Duration::from_millis(30)).is_err());
-    }
-
-    #[test]
-    fn r1_heartbeat_disconnected_stop_channel_exits_without_more_emits() {
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let (emit_tx, emit_rx) = mpsc::channel();
-        let heartbeat = thread::spawn(move || heartbeat_loop(stop_rx, Duration::from_millis(10), || {
-            emit_tx.send(()).unwrap();
-        }));
-        emit_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        drop(stop_tx);
-        heartbeat.join().unwrap();
-        assert!(emit_rx.recv_timeout(Duration::from_millis(30)).is_err());
-    }
-
-    #[test]
-    fn r1_terminal_progress_after_heartbeat_stop_has_no_running_fields_or_late_emit() {
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let (emit_tx, emit_rx) = mpsc::channel();
-        let heartbeat = thread::spawn(move || heartbeat_loop(stop_rx, Duration::from_millis(10), || {
-            emit_tx.send(running_progress("run", "node", &ProcessActivity::new())).unwrap();
-        }));
-        emit_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        stop_tx.send(()).unwrap();
-        heartbeat.join().unwrap();
-        let terminal = DispatchProgress {
-            run_id: "run".into(), node_id: "node".into(), status: "完成".into(),
-            elapsed_ms: None, idle_ms: None, tool_calls: None,
-            repeated_tool_calls: None, last_tool: None,
-        };
-        let value = serde_json::to_value(terminal).unwrap();
-        assert!(value.get("elapsedMs").is_none() && value.get("lastTool").is_none());
-        assert!(emit_rx.recv_timeout(Duration::from_millis(30)).is_err());
-    }
-
-    #[test]
-    fn r1_running_progress_redacts_authorization_bearer_title() {
-        let activity = ProcessActivity::new();
-        activity.record_tool_call("Authorization: Bearer secret-token");
-        let value = serde_json::to_value(running_progress("run", "node", &activity)).unwrap();
-        assert!(!value["lastTool"].as_str().unwrap().contains("secret-token"));
-        assert!(value["lastTool"].as_str().unwrap().contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn r1_running_progress_truncates_last_tool_to_120_characters() {
-        let activity = ProcessActivity::new();
-        activity.record_tool_call(&"工".repeat(121));
-        let value = serde_json::to_value(running_progress("run", "node", &activity)).unwrap();
-        assert_eq!(value["lastTool"].as_str().unwrap().chars().count(), 120);
-    }
-
-    #[test]
-    fn task07_fake_acp_three_same_updates_plus_permission_reach_running_event_payload() {
-        let _pool_guard = channels::acp::test_pool_guard();
-        if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
-        let root = std::env::temp_dir().join(format!("aicross-task07-acp-progress-{}", Uuid::new_v4()));
-        let project = root.join("project");
-        let log_dir = root.join("logs");
-        fs::create_dir_all(&project).unwrap();
-        fs::create_dir_all(&log_dir).unwrap();
-        let (request, mut settings, _) = acp_run_one_fixture(&root, &["--repeat-tool-calls"]);
-        settings.timeout_secs = 10;
-        let activity = ProcessActivity::new();
-        let result = run_one_with_activity("run", &project, &root.join("runs"), &log_dir, &settings, request, activity.clone());
-        assert_eq!(result.status, "ok", "{}", result.error);
-        let event = serde_json::to_value(running_progress("run", "node-1", &activity)).unwrap();
-        assert_eq!(event["repeatedToolCalls"], 4);
-        assert_eq!(event["toolCalls"], 4);
-        assert_eq!(event["lastTool"], "Read file");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4946,6 +4787,8 @@ mod tests {
         request.interactive = true;
         settings.acp_enabled = false;
         settings.timeout_secs = 10;
+        // TASK-40 R1-2 之后生产没有回答方；打开挂起应答路径钉住协议形状。
+        let _answer_channel = channels::acp::TestAnswerChannelGuard::enable();
         let answer = thread::spawn(|| channels::acp::test_answer_pending("console-chat-card:node-1#", Some("once")));
         let result = run_one("console-chat-card", &project, &root.join("runs"), &log_dir, &settings, request);
         answer.join().unwrap();
@@ -5541,13 +5384,13 @@ mod tests {
         let _reset = Reset("same-run");
         let mut request = stage_request(root.to_string_lossy().into_owned(), vec![node(Vec::new())]);
         request.run_id = "same-run".into();
-        let error = dispatch_stage_core(request.clone(), None).unwrap_err();
+        let error = dispatch_stage_core(request.clone()).unwrap_err();
         assert!(error.contains("该 run 已在进行"));
         drop(_reset);
         request.project_dir = root.join("missing").to_string_lossy().into_owned();
-        let released = dispatch_stage_core(request.clone(), None).unwrap_err();
+        let released = dispatch_stage_core(request.clone()).unwrap_err();
         assert!(!released.contains("该 run 已在进行"));
-        let released_again = dispatch_stage_core(request, None).unwrap_err();
+        let released_again = dispatch_stage_core(request).unwrap_err();
         assert!(!released_again.contains("该 run 已在进行"), "提前返回也应由 guard 释放 run_id");
         let _ = fs::remove_dir_all(root);
     }
@@ -5572,7 +5415,7 @@ mod tests {
         success.run_id.clone_from(&success_id);
         success.settings.write_project_dispatch = false;
         success.settings.cc_switch_path = stub.to_string_lossy().into_owned();
-        let result = dispatch_stage_core(success, None).unwrap();
+        let result = dispatch_stage_core(success).unwrap();
         assert_eq!(result.run_id, success_id);
         assert_eq!(result.results[0].status, "ok", "{}", result.results[0].error);
         assert!(!runtime.join("runs").join(&result.run_id).exists());
@@ -5584,7 +5427,7 @@ mod tests {
         let mut failed = stage_request(project.to_string_lossy().into_owned(), vec![node(Vec::new())]);
         failed.run_id.clone_from(&failed_id);
         failed.settings.write_project_dispatch = false;
-        assert!(dispatch_stage_core(failed, None).is_err());
+        assert!(dispatch_stage_core(failed).is_err());
         assert!(!failed_root.exists());
         let _ = fs::remove_dir_all(root);
     }
@@ -5608,7 +5451,7 @@ mod tests {
             let mut request = stage_request(project.to_string_lossy().into_owned(), vec![request_node]);
             request.run_id.clone_from(id);
             request.settings.write_project_dispatch = false;
-            std::thread::spawn(move || dispatch_stage_core(request, None))
+            std::thread::spawn(move || dispatch_stage_core(request))
         }).collect::<Vec<_>>();
         for worker in workers {
             worker.join().unwrap().unwrap();
@@ -6034,9 +5877,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![execute],
                 settings: settings.clone(),
-            },
-            None,
-        )
+            })
         .unwrap();
         let artifacts = execute_result.results[0]
             .artifacts
@@ -6063,9 +5904,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![review],
                 settings,
-            },
-            None,
-        )
+            })
         .unwrap();
         let item = &review_result.results[0];
         assert_eq!(item.status, "ok", "{}", item.error);
@@ -6137,9 +5976,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![execute],
                 settings: settings.clone(),
-            },
-            None,
-        )
+            })
         .unwrap();
         let artifacts = execute_result.results[0]
             .artifacts
@@ -6166,9 +6003,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![review],
                 settings,
-            },
-            None,
-        )
+            })
         .unwrap();
         let item = &review_result.results[0];
         assert_eq!(item.status, "ok", "{}", item.error);
@@ -7452,9 +7287,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![a, b],
                 settings,
-            },
-            None,
-        )
+            })
         .unwrap();
         assert_eq!(result.results.len(), 2);
         let time_of = |node_id: &str, key: &str| {
@@ -7548,7 +7381,6 @@ mod tests {
         arb.write = "单写者".into();
         let rejected = dispatch_stage_core(
             stage_request(project.to_string_lossy().into_owned(), vec![arb]),
-            None,
         )
         .unwrap();
         assert_eq!(rejected.results[0].status, "error");
@@ -7566,7 +7398,6 @@ mod tests {
         ok.write = "只读".into();
         let passed = dispatch_stage_core(
             stage_request(project.to_string_lossy().into_owned(), vec![ok]),
-            None,
         )
         .unwrap();
         assert_eq!(passed.results[0].status, "error");
@@ -7730,9 +7561,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: original,
                 settings: live_settings(3),
-            },
-            None,
-        )
+            })
         .unwrap();
         println!("BLIND_RUN={} STATE={}", result.run_id, result.state_file);
         for item in &result.results {
@@ -7777,9 +7606,7 @@ mod tests {
                         "",
                     )],
                     settings: live_settings(1),
-                },
-                None,
-            )
+                })
             .unwrap();
             let item = &fallback.results[0];
             println!(
@@ -7820,9 +7647,7 @@ mod tests {
                     "",
                 )],
                 settings: live_settings(1),
-            },
-            None,
-        )
+            })
         .unwrap();
         let first_item = &first.results[0];
         if !enforce_live_success && first_item.status != "ok" {
@@ -7860,9 +7685,7 @@ mod tests {
                     &first_item.session_id,
                 )],
                 settings: live_settings(1),
-            },
-            None,
-        )
+            })
         .unwrap();
         let second_item = &second.results[0];
         println!(
@@ -7918,9 +7741,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![plan],
                 settings: live_settings(1),
-            },
-            None,
-        )
+            })
         .unwrap();
         let plan_item = &plan_result.results[0];
         assert_eq!(plan_item.status, "ok", "{}", plan_item.error);
@@ -7941,9 +7762,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![execute],
                 settings: execute_settings,
-            },
-            None,
-        )
+            })
         .unwrap();
         let execute_item = &execute_result.results[0];
         assert_eq!(execute_item.status, "ok", "{}", execute_item.error);
@@ -7972,9 +7791,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![accept],
                 settings: live_settings(1),
-            },
-            None,
-        )
+            })
         .unwrap();
         let accept_item = &accept_result.results[0];
         assert_eq!(accept_item.status, "ok", "{}", accept_item.error);
@@ -8039,9 +7856,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![request],
                 settings,
-            },
-            None,
-        )
+            })
         .unwrap();
         assert_eq!(
             result.results[0].status, "ok",
@@ -8078,9 +7893,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![first, second],
                 settings: live_settings(2),
-            },
-            None,
-        )
+            })
         .unwrap();
         println!("ARENA_RUN={} STATE={}", arena.run_id, arena.state_file);
         for item in &arena.results {
@@ -8142,9 +7955,7 @@ mod tests {
                 project_dir: project.to_string_lossy().into_owned(),
                 nodes: vec![arb],
                 settings: live_settings(1),
-            },
-            None,
-        )
+            })
         .unwrap();
         let arb = &arbitration.results[0];
         println!("ARBITRATION status={} record={} isolation={}", arb.status, arb.dispatch_file, arb.isolation);

@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { runStatusLabel, runStatusTone } from '../run-view';
 import {
   formatStartedAt,
   homeEmptyText,
   runListItemText,
-  runStatusLabel,
-  runStatusTone,
 } from '../run-list';
 import type { RunListItem } from '../../tauri';
 

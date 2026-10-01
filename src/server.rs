@@ -201,7 +201,7 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
         })
         .build(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("Error while building tauri application: {}", e))?
-        .run(|_app_handle, event| {
+        .run(|app_handle, event| {
             // ── macOS: restore the hidden main window on Dock click ──────
             // Pairs with the CloseRequested handler in `.on_window_event`:
             // Cmd+W hides the main window rather than quitting, so on
@@ -217,6 +217,11 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
                     let _ = w.set_focus();
                 }
             }
+
+            // 非 macOS 分支不用这个句柄；参数名保持 `app_handle`，因为
+            // 上面的 Reopen 分支只在 macOS 编译（fix-40-r1 R1-1）。
+            #[cfg(not(target_os = "macos"))]
+            let _ = &app_handle;
 
             // ACP 池里可能还挂着引擎拉起的适配器子进程，退出时全部终止，
             // 不留孤儿进程。

@@ -22,7 +22,7 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 | `aicross adopt <run_id> <node_id>` | 采纳某一路的结果 |
 | `aicross cancel <run_id>` | 叫停一次派发 |
 | `aicross open <run_id>` | 打开该 run 的查看页 |
-| `aicross resources [detect \| smoke]` | 看资源库 / 重新探测 / 冒烟验证 |
+| `aicross resources [detect \| smoke <agent>]` | 看资源库 / 重新探测 / 冒烟验证 |
 | `aicross config show \| set-role \| set` | 看与改角色、派发设置 |
 
 `--preset` 认 `shared` / `economy` / `blind`（共享 / 经济 / 盲审），也可以直接
@@ -45,7 +45,7 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 - **第三方**（pi 的各 provider、cc-switch 端点、挂了 `ANTHROPIC_BASE_URL` 的
   claude）：记「未验证」。第一次派发前引擎发一个短请求、比对响应体里的模型
   真身，通过记「已验证」，不通过记「验证失败」并把这次派发按失败返回，不自动
-  重试。也可以 `aicross resources smoke` 提前验证。
+  重试。也可以 `aicross resources smoke <agent>` 提前验证某一家。
 
 claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，真身记在
 `resolved_id`。额度用尽的模型标「额度用尽」并写恢复时间；有备选时按备选顺序
@@ -76,7 +76,7 @@ claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，真身记在
 
 直接启动窗口（不带 `open`）显示首页：最近 50 条派发，按更新时间倒序，每条给
 模式名、任务名、状态和开始时间。点一条进入查看页；没有任何派发时提示从宿主
-派发或运行 `aicross dispatch`。列表每 5 秒刷新一次。
+派发或运行 `aicross dispatch`。窗口可见时列表每 5 秒刷新一次，不可见时暂停。
 
 ## 查看页
 
@@ -105,7 +105,8 @@ claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，真身记在
 
 每次派发在项目目录下写一份派发记录：`<项目>/.dispatch/`，一次调用一个
 Markdown 文件，头部 YAML 记着模型真身、用量、耗时、可见性；`STATE.md` 记未
-跑完的那一轮。目录自带内容为 `*` 的 `.gitignore`，默认不进版本库。不想写进
+跑完的那一轮；引擎仍会写入，当前没有命令读取。目录自带内容为 `*` 的
+`.gitignore`，默认不进版本库。不想写进
 项目，用 `aicross config set writeProjectDispatch false` 改写到
 `~/.aicross/runs/`。
 
@@ -116,7 +117,7 @@ Markdown 文件，头部 YAML 记着模型真身、用量、耗时、可见性�
 `Authorization: Bearer`、password / token / api_key 等赋值、AWS `AKIA…` 访问
 密钥和三种数据库连接串；别的形态（裸写的 `sk-…`、`https://用户:令牌@主机`）
 认不出来，会原样发出去。规则以 `src/dispatch.rs` 的 `redaction_patterns()`
-为准；脱敏计数为 0 不等于材料干净。
+为准。
 
 ## 术语表
 
@@ -140,7 +141,6 @@ Markdown 文件，头部 YAML 记着模型真身、用量、耗时、可见性�
 | 修正轮自动回退并恢复改动后核对测试 | 红绿核对（结果：测试已钉住 / 测试未钉住） | 查看页卡片 |
 | 修正轮到顶后未闭合的条目 | 遗留 | 查看页页头 |
 | 派盲审前附上的验证命令输出 | VALIDATION.txt | 盲目录、派发记录 |
-| 崩溃后按记录恢复节点状态 | 核对（状态：待核对） | 宿主对话 |
 | 上游结果未进入验收的节点 | 已跳过 | 查看页卡片 |
 | 模型限额已触发 | 额度用尽 | 资源输出、查看页卡片 |
 | 模型额度重新可用的时间 | 恢复时间 | 资源输出、查看页卡片 |

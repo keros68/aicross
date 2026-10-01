@@ -287,6 +287,16 @@ fn run_is_active(run: &EngineRun) -> bool {
     process_alive(run.pid, &run.pid_started_at)
 }
 
+/// 只读的展示判定（fix-40-r1 R1-3）：与 `read_run` 的死进程改写同一套
+/// 口径（启动窗口 + pid 复用核对），但不写盘。首页列表用它让「进程已死
+/// 的 running」显示为失败，与查看页一致。
+pub(crate) fn display_status(run: &EngineRun) -> &str {
+    if run.status == "running" && !run_is_active(run) {
+        return "failed";
+    }
+    &run.status
+}
+
 pub(crate) fn read_run(root: &Path, run_id: &str) -> Result<EngineRun, String> {
     if !valid_id(run_id) {
         return Err("run_id 无效".into());
@@ -2854,7 +2864,7 @@ impl PipelineSink for FileSink<'_> {
         write_run(self.root, self.run)
     }
     fn dispatch(&mut self, request: &DispatchStageRequest) -> Result<DispatchStageResult, String> {
-        dispatch::dispatch_stage_core(request.clone(), None)
+        dispatch::dispatch_stage_core(request.clone())
     }
     fn note_in_flight(&mut self, ids: &[String]) {
         if let Ok(mut active) = self.active.lock() {

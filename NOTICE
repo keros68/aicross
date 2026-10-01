@@ -6,9 +6,10 @@ UPSTREAM CODEBASE
 ================================================================================
 
 aicross is a fork of Coffee CLI (https://github.com/edison7009/Coffee-CLI)
-by edison7009. The desktop shell, terminal handling, workspace, session and
-change-tracking code in this repository originate from Coffee CLI and remain
-the copyright of their original authors.
+by edison7009. The desktop shell (frameless window, custom titlebar and
+single-instance forwarding) in this repository originates from Coffee CLI
+and remains the copyright of its original authors. The upstream terminal,
+workspace, session and change-tracking features are not part of this fork.
 
 Per the Coffee CLI trademark policy (TRADEMARKS.md, §4 Option B), this fork
 is rebranded: the product name and icon are changed, and the Coffee CLI
@@ -21,17 +22,6 @@ or later (AGPL-3.0-or-later), the same license as the upstream project.
 Code original to aicross — the multi-vendor resource inventory, fact-source
 detection, model smoke verification and dispatch orchestration — is
 copyright the aicross contributors and likewise AGPL-3.0-or-later.
-
---------------------------------------------------------------------------------
-UPSTREAM TOOL ICONS REUSED BY AICROSS
---------------------------------------------------------------------------------
-
-  - Agent tool icons are reused from the forked Coffee CLI codebase.
-      Files:   src-ui/public/icons/tools/claude.svg
-               src-ui/public/icons/tools/codex.svg
-               src-ui/src/icons-inline/kimicode.png
-               src-ui/src/icons-inline/pi.svg
-      These files remain covered by the upstream notice and license below.
 
 ================================================================================
 UPSTREAM NOTICE (Coffee CLI) — reproduced unchanged
@@ -88,26 +78,6 @@ and, where applicable, as common-law trademarks. See TRADEMARKS.md for the
 brand and naming policy.
 
 ================================================================================
-THIRD-PARTY ASSETS (ICONS / ARTWORK)
-================================================================================
-
-  - Coffee CLI app icon (icons/icon.png and animated brand variant)
-      Source:  line-md icon set, "coffee-filled-loop"
-               https://github.com/cyberalien/line-md
-      Author:  Vjacheslav Trushkin (cyberalien)
-      License: Apache-2.0
-      Use:     The icon is used unmodified (or with minor color/size
-               adjustment) as the Coffee CLI application icon and brand
-               glyph. No trademark rights are claimed in the icon itself
-               — see TRADEMARKS.md for the scope of brand rights claimed.
-
-  - File-icon themes under src-ui/public/icons/themes/
-      Six upstream icon sets (material, vscode-icons, catppuccin-mocha,
-      devicon/Phosphor, fluent, symbols) are used under their MIT licenses.
-      Per-theme attribution is documented in:
-          src-ui/public/icons/themes/LICENSES.md
-
-================================================================================
 THIRD-PARTY TRADEMARKS (NOMINATIVE FAIR USE)
 ================================================================================
 
@@ -142,9 +112,6 @@ and notices are preserved in their respective source trees. A non-exhaustive
 list of major upstream projects:
 
   - Tauri (MIT / Apache-2.0)         https://tauri.app
-  - portable-pty (MIT)               https://github.com/wez/wezterm
-  - xterm.js (MIT)                   https://xtermjs.org
-  - rmcp (MIT)                       https://github.com/modelcontextprotocol/rust-sdk
   - Rust crates listed in Cargo.toml — see each crate's own license
 
 Each component remains under its own license. The AGPL-3.0 license that

@@ -5,7 +5,11 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock, TryLockError};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
+#[cfg(test)]
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -41,9 +45,52 @@ pub struct PermissionOption {
     pub kind: String,
 }
 
+/// 挂起的权限请求（TASK-40 R1-2 起只有测试用）：登记后等回答方送选项。
+#[cfg(test)]
 fn pending_permissions() -> &'static Mutex<HashMap<String, mpsc::Sender<Option<String>>>> {
     static PENDING: OnceLock<Mutex<HashMap<String, mpsc::Sender<Option<String>>>>> = OnceLock::new();
     PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 仅测试：旧「登记挂起、等回答」的协议路径开关。生产没有回答方
+/// （权限卡片随窗口界面下线），需要授权的请求一律当场拒绝；想验证
+/// 应答协议形状的测试先打开它。与 `test_pool_guard` 成对用，避免并行
+/// 测试误入这条路。
+#[cfg(test)]
+static TEST_ANSWER_CHANNEL: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+fn test_answer_channel_enabled() -> bool {
+    TEST_ANSWER_CHANNEL.load(Ordering::SeqCst)
+}
+
+/// 仅测试：打开 / 关闭挂起应答路径。走 `TestAnswerChannelGuard` 自动复位。
+#[cfg(test)]
+fn test_set_answer_channel(enabled: bool) {
+    TEST_ANSWER_CHANNEL.store(enabled, Ordering::SeqCst);
+}
+
+/// 测试作用域内打开挂起应答路径，drop 时自动还原；断言失败也不会留下开关。
+/// 供本模块与 dispatch 的 interactive 测试用（fix-40-r1 R1-2）。
+#[cfg(test)]
+pub(crate) struct TestAnswerChannelGuard {
+    previous: bool,
+}
+
+#[cfg(test)]
+impl TestAnswerChannelGuard {
+    pub(crate) fn enable() -> Self {
+        let previous = test_answer_channel_enabled();
+        test_set_answer_channel(true);
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestAnswerChannelGuard {
+    fn drop(&mut self) {
+        test_set_answer_channel(self.previous);
+    }
 }
 
 fn command_cache() -> &'static Mutex<HashMap<String, Vec<AcpCommand>>> {
@@ -99,7 +146,8 @@ struct AcpClient {
     cwd: String,
     /// 归一化后的 agent（kimi / claude / codex）；配置项取值按它分支。
     agent: String,
-    /// 本轮是控制台单线聊天时为 `Some(dispatch_key)`：非读非写的权限请求交给界面裁决。
+    /// 本轮是 interactive 会话（宿主对话里派发的单线会话）时为
+    /// `Some(dispatch_key)`：非读非写的权限请求走授权询问路径。
     interactive: Option<String>,
 }
 
@@ -129,7 +177,7 @@ fn pool() -> &'static Mutex<HashMap<String, Arc<ClientSlot>>> {
     static POOL: OnceLock<Mutex<HashMap<String, Arc<ClientSlot>>>> = OnceLock::new();
     POOL.get_or_init(|| Mutex::new(HashMap::new()))
 }
-/// kimi 在流水线与控制台都走 ACP；claude / codex 只在控制台单线聊天（interactive）走 ACP——
+/// kimi 在流水线与 interactive 会话都走 ACP；claude / codex 只在 interactive 会话走 ACP——
 /// 流水线里的盲节点仍用一次性 CLI（claude 盲审 `--tools ""` 无工具，ACP 适配器做不到）。
 pub fn supports(agent: &str, interactive: bool) -> bool {
     match super::normalize_agent(agent) {
@@ -414,7 +462,7 @@ impl AcpClient {
             return Err(AcpError::new(AcpErrorKind::Turn, "ACP 未返回回复正文"));
         }
         let text = strip_adapter_notices(&text);
-        // 控制台单线聊天只展示回答本身：原文完整留在 raw_stdout（留痕），流水线节点不做这一步
+        // interactive 会话只展示回答本身：原文完整留在 raw_stdout（记录），流水线节点不做这一步
         // （审查者的 PASS / NEEDS_FIX 可能是单独一条短消息，不能丢）。
         let text = if self.interactive.is_some() {
             console_reply(&raw, &session_id).unwrap_or(text)
@@ -548,9 +596,43 @@ impl AcpClient {
         }
     }
 
-    /// 把权限请求登记为挂起，阻塞到引擎取消或超时；两者按拒绝回。无窗口形态
-    /// 下没有权限卡片可答，这条路径只在 interactive 会话里出现（kimi 单线）。
+    /// 权限请求的处理（TASK-40 R1-2）：窗口界面下线后没有回答方，执行命令、
+    /// 写文件、MCP 调用这类需要授权的请求当场按拒绝回复，不登记挂起、不等到
+    /// 本轮 deadline；读类请求在此之前已按只读策略自动放行。测试可用
+    /// `TestAnswerChannelGuard` 打开旧的挂起应答路径，钉住协议形状。
     fn ask_user_permission(
+        &mut self,
+        message: &Value,
+        dispatch_key: &str,
+        deadline: Instant,
+        cancel_key: &str,
+    ) -> Result<(), AcpError> {
+        #[cfg(test)]
+        if test_answer_channel_enabled() {
+            return self.ask_user_permission_awaiting_answer(message, dispatch_key, deadline, cancel_key);
+        }
+        let _ = (dispatch_key, deadline, cancel_key);
+        self.reject_permission_request(message)
+    }
+
+    /// 按拒绝回一条权限应答：有 reject_once 选项就选它，否则 outcome=cancelled。
+    fn reject_permission_request(&mut self, message: &Value) -> Result<(), AcpError> {
+        let selected = permission_options(message)
+            .into_iter()
+            .find(|option| option.kind == "reject_once")
+            .map(|option| option.option_id);
+        let result = selected
+            .map(|id| json!({"outcome":{"outcome":"selected","optionId":id}}))
+            .unwrap_or_else(|| json!({"outcome":{"outcome":"cancelled"}}));
+        self.process
+            .send_json_line(&json!({"jsonrpc":"2.0","id":message["id"],"result":result}))
+            .map_err(|e| AcpError::new(AcpErrorKind::Process, e))
+    }
+
+    /// 旧的挂起应答路径（仅测试）：登记挂起后阻塞到引擎取消或超时；两者按
+    /// 拒绝回。生产路径不再进入（见 `ask_user_permission`）。
+    #[cfg(test)]
+    fn ask_user_permission_awaiting_answer(
         &mut self,
         message: &Value,
         dispatch_key: &str,
@@ -920,7 +1002,7 @@ fn option_values(option: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 写文件类请求：控制台单线聊天是只读的，这类请求不上卡片、直接拒。kind 缺失（kimi）时按 title 认。
+/// 写文件类请求：interactive 会话按只读对待，这类请求直接拒。kind 缺失（kimi）时按 title 认。
 fn is_edit_request(message: &Value) -> bool {
     let kind = message.pointer("/params/toolCall/kind").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
     if !kind.is_empty() {
@@ -1644,28 +1726,32 @@ mod tests {
         assert_eq!(permission_options(&duplicated).iter().map(|o| o.option_id.as_str()).collect::<Vec<_>>(), ["a1", "r1"]);
     }
     #[test]
-    fn interactive_turn_hands_execute_permission_to_the_user_and_honours_the_answer() {
+    fn interactive_execute_permission_is_rejected_immediately_without_waiting() {
+        // TASK-40 R1-2：无窗口形态没有回答方，需要授权的请求（执行命令、
+        // 写文件、MCP 调用）当场按拒绝回，不登记挂起、不等本轮 deadline；
+        // 读类请求仍走自动放行（见
+        // `interactive_turn_still_auto_answers_reads_and_blind_turns_never_ask`）。
+        let _pool_guard = test_pool_guard();
         let cwd = std::env::current_dir().unwrap();
         let Some(mut client) = fake_client() else { return };
-        client.interactive = Some("card-run:allow".into());
-        let answer = thread::spawn(|| test_answer_pending("card-run:allow#", Some("once")));
-        let allowed = client
-            .prompt("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
-            .unwrap();
-        answer.join().unwrap();
-        // 用户点「允许一次」→ 选 allow_once；卡片从不给 allow_always。
-        assert_eq!(allowed.channel.text, "turn-1:once");
-        client.interactive = Some("card-run:reject".into());
-        let answer = thread::spawn(|| test_answer_pending("card-run:reject#", None));
+        client.interactive = Some("card-run:immediate".into());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let started = Instant::now();
         let rejected = client
-            .prompt("fake-model", Some(&allowed.channel.session_id), "second", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
+            .prompt("fake-model", None, "execute", &cwd, deadline, "中", false, false, "")
             .unwrap();
-        answer.join().unwrap();
-        assert_eq!(rejected.channel.text, "turn-2:no");
+        let elapsed = started.elapsed();
+        // 走挂起路径会等满 deadline；当场拒绝应远小于它。
+        assert!(elapsed < Duration::from_secs(2), "拒绝耗时 {elapsed:?}，疑似在等回答方");
+        assert_eq!(rejected.channel.text, "turn-1:no");
         assert!(pending_permissions().lock().unwrap().keys().all(|key| !key.starts_with("card-run:")));
     }
     #[test]
     fn late_permission_from_another_session_is_auto_answered_not_carded() {
+        // 另一会话的执行类请求按只读策略拒掉；本会话这条走挂起应答路径
+        // （仅测试打开，见 TASK-40 R1-2），钉住「回答 → 选中项」的协议形状。
+        let _pool_guard = test_pool_guard();
+        let _answer_channel = TestAnswerChannelGuard::enable();
         let cwd = std::env::current_dir().unwrap();
         let Some(mut client) = fake_client_with(&["--other-session-permission"]) else { return };
         client.interactive = Some("card-other".into());
@@ -1674,7 +1760,6 @@ mod tests {
             .prompt("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
             .unwrap();
         answer.join().unwrap();
-        // 另一会话的执行类请求按只读策略拒掉；只有本会话那条上了卡片、被「允许一次」。
         assert_eq!(result.channel.text, "turn-1:once:other-no");
         assert!(pending_permissions().lock().unwrap().keys().all(|key| !key.starts_with("card-other")));
     }
@@ -1687,7 +1772,7 @@ mod tests {
             .prompt("fake-model", None, "read", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "")
             .unwrap();
         assert_eq!(read.channel.text, "turn-1:once");
-        // 盲节点即使带了 interactive 也不弹卡片，按旧策略拒绝执行类。
+        // 盲节点即使带了 interactive 也不询问授权，按只读策略拒绝执行类。
         let blind = client
             .prompt("fake-model", None, "execute", &cwd, Instant::now() + Duration::from_secs(5), "中", false, true, "")
             .unwrap();
