@@ -21,6 +21,10 @@ pub struct AppState {
     /// warm-start requests skip this slot and arrive as `launch-request`
     /// events from the single-instance callback instead (see launch.rs).
     pub pending_launch: Mutex<Option<crate::launch::LaunchRequest>>,
+    /// TASK-37 查看器：`aicross open <run_id>` 冷启动时随 argv 带进来的 run
+    /// id，前端挂载后用 `take_pending_open` 取一次；热启动走单实例回调的
+    /// `open-run-request` 事件，不经这里。
+    pub pending_open: Mutex<Option<String>>,
 }
 
 
@@ -127,6 +131,13 @@ fn install_hooks() {
 #[tauri::command]
 fn take_pending_launch(state: State<'_, AppState>) -> Option<crate::launch::LaunchRequest> {
     state.pending_launch.lock().ok()?.take()
+}
+
+/// TASK-37：取走冷启动携带的查看页请求（`aicross open <run_id>` 的 run id），
+/// 同样只取一次；热启动经 `open-run-request` 事件。
+#[tauri::command]
+fn take_pending_open(state: State<'_, AppState>) -> Option<String> {
+    state.pending_open.lock().ok()?.take()
 }
 
 #[tauri::command]
@@ -3844,7 +3855,10 @@ pub fn set_tool_config(
     crate::tool_config::set(&tool, entry).map_err(|e| e.to_string())
 }
 
-pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow::Result<()> {
+pub fn start_ui(
+    pending_launch: Option<crate::launch::LaunchRequest>,
+    pending_open: Option<String>,
+) -> anyhow::Result<()> {
     // Create shared session BEFORE the builder so we can clone it for the exit handler
     let terminal_session = terminal::SharedSession::default();
 
@@ -3864,7 +3878,11 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
     // share the bundle identifier, and the lock would silently redirect the
     // dev launch to the production process and exit.
     #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+    // 热启动 open 事件的递增序号（fix-37-r1 R1-9）：前端拿它区分「同一个
+    // run 再次 open」并触发重取。
+    let open_request_seq = std::sync::atomic::AtomicU32::new(0);
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
         use tauri::Manager;
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.unminimize();
@@ -3879,6 +3897,27 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             use tauri::Emitter;
             let _ = app.emit("launch-request", req);
         }
+        // `aicross open <run_id>` 同一条转发路：重解析后发 `open-run-request`，
+        // 已开窗口切到该 run 的查看页（参数与存在性已在第二个进程里校验过）。
+        // 事件带递增序号（R1-9）；emit 要求载荷 Clone——这段只在发布构建编译
+        // （R1-1：开发构建不编它，漏了 derive 会 `cargo check` 过、--release 失败）。
+        let open_seq = open_request_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if let crate::run_view::OpenParse::Valid(run_id) = crate::run_view::parse_open_args(&args) {
+            use tauri::Emitter;
+            #[derive(Clone, serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct OpenRunRequest<'a> {
+                run_id: &'a str,
+                seq: u32,
+            }
+            let _ = app.emit(
+                "open-run-request",
+                OpenRunRequest {
+                    run_id: &run_id,
+                    seq: open_seq,
+                },
+            );
+        }
     }));
 
     builder
@@ -3890,6 +3929,7 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             hook_port: std::sync::atomic::AtomicU16::new(0),
             fs_watcher: Mutex::new(None),
             pending_launch: Mutex::new(pending_launch),
+            pending_open: Mutex::new(pending_open),
         })
         .invoke_handler(tauri::generate_handler![
             crate::fonts::list_system_fonts,
@@ -3917,6 +3957,9 @@ pub fn start_ui(pending_launch: Option<crate::launch::LaunchRequest>) -> anyhow:
             crate::tools::list_tools,
             install_hooks,
             take_pending_launch,
+            take_pending_open,
+            crate::run_view::load_run_view,
+            crate::run_view::adopt_run_node,
             start_fs_watcher,
             stop_fs_watcher,
             save_clipboard_image,

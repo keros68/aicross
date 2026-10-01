@@ -155,13 +155,13 @@ fn run_status(root: &Path, args: &[String], timeout: Duration, stdout: &mut dyn 
 }
 
 #[cfg(windows)]
-fn attach_parent_console() {
+pub(crate) fn attach_parent_console() {
     use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
     unsafe { let _ = AttachConsole(ATTACH_PARENT_PROCESS); }
 }
 
 #[cfg(not(windows))]
-fn attach_parent_console() {}
+pub(crate) fn attach_parent_console() {}
 
 struct CliRequest {
     method: String,

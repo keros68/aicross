@@ -184,6 +184,10 @@ pub struct EngineRun {
     /// 本次派发的原始需求文本，建图时写入，后台直接读，不从图上反推。
     #[serde(default)]
     pub original_request: String,
+    /// 本次派发所用预设的 id（如 builtin-economy）；按 targets 直给时为
+    /// 空串（fix-37-r1 R1-4）。旧 run 文件没有该字段，按空处理。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preset_id: String,
     pub updated_at: String,
 }
 
@@ -464,8 +468,9 @@ pub(crate) fn new_graph(project: &str, id: String, root_id: String, time: String
 }
 
 /// 到根的最长路径深度（TS `layout.ts` 的 `depthMap`）：父节点最大深度 + 1，
-/// 根为 0；环路防御按 0，悬空 parents 跳过。
-fn depth_map(graph: &Graph) -> HashMap<String, u32> {
+/// 根为 0；环路防御按 0，悬空 parents 跳过。查看器（run_view.rs）按它给
+/// 节点分阶段。
+pub(crate) fn depth_map(graph: &Graph) -> HashMap<String, u32> {
     fn depth(
         graph: &Graph,
         id: &str,
@@ -2588,6 +2593,16 @@ fn start_dispatch_with(
     let run_id = Uuid::new_v4().to_string();
     let started = now();
     let settings = load_settings(root);
+    // fix-37-r1 R1-4：run 文件记本次所用预设的 id，查看器据此取模式名，
+    // 不再按角色序列推断；targets 直给时为空串，预设缺省按默认经济模式记。
+    let preset_id = if input.targets.is_empty() {
+        input
+            .preset
+            .clone()
+            .unwrap_or_else(|| "builtin-economy".into())
+    } else {
+        String::new()
+    };
     let reject = |reason: String, graph_id: String| -> Result<Value, StartError> {
         let run = EngineRun {
             run_id: run_id.clone(),
@@ -2597,6 +2612,7 @@ fn start_dispatch_with(
             started_at: started.clone(),
             updated_at: now(),
             reason: reason.clone(),
+            preset_id: preset_id.clone(),
             ..EngineRun::default()
         };
         write_run(root, &run).map_err(StartError::Unavailable)?;
@@ -2662,6 +2678,7 @@ fn start_dispatch_with(
         original_request: original,
         pid: 0,
         updated_at: now(),
+        preset_id,
         ..EngineRun::default()
     };
     // R1-6：spawn 前写一次（pid 为 0），之后父进程不再整写 run 文件。

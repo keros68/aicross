@@ -201,6 +201,13 @@ export const commands = {
   takePendingLaunch: () =>
     invoke<{ tool: string; cwd?: string } | null>('take_pending_launch'),
 
+  // TASK-37 查看器：冷启动时 `aicross open <run_id>` 随 argv 带进来的 run id，
+  // 挂载后取一次；热启动走 'open-run-request' 事件。
+  takePendingOpen: () => invoke<string | null>('take_pending_open'),
+  loadRunView: (runId: string) => invoke<RunView>('load_run_view', { runId }),
+  adoptRunNode: (runId: string, nodeId: string) =>
+    invoke<RunView>('adopt_run_node', { runId, nodeId }),
+
   /** Probed availability of optional shells (pwsh / Git Bash / wsl on
    *  Windows; zsh/bash/fish/sh on Unix). Fed to the SettingsModal shell
    *  picker so it only shows shells the user actually has. Inbox shells
@@ -686,6 +693,61 @@ export interface ConsoleRunUpdate {
   leftover: string[];
   in_flight_node_ids: string[];
   reason: string;
+}
+
+// ── TASK-37 查看器（镜像 src/run_view.rs 的 RunView / RunViewNode，
+//    camelCase）──
+export interface RunViewArtifacts {
+  worktree: string;
+  diff: string;
+  changedFileCount: number;
+}
+
+export interface RunViewNode {
+  nodeId: string;
+  stage: number;
+  role: string;
+  agent: string;
+  provider: string;
+  /** 请求的模型 id。 */
+  model: string;
+  /** 图上 reply 的状态词：draft / pending / done / failed / quota_exhausted。 */
+  status: string;
+  errorKind: string;
+  adopted: boolean;
+  hasResult: boolean;
+  text: string;
+  skippedReason: string;
+  /** 实际回答的模型；空串表示未报告。 */
+  modelReported: string;
+  tokensIn: number | null;
+  tokensOut: number | null;
+  tokensCache: number | null;
+  ms: number | null;
+  fallbackFrom: string;
+  fallbackTo: string;
+  quotaResetsAt: string;
+  /** 蜂群件标题（节点正文首行）；非蜂群件为空串。 */
+  swarmTitle: string;
+  artifacts: RunViewArtifacts | null;
+}
+
+export interface RunView {
+  runId: string;
+  graphId: string;
+  project: string;
+  /** 推断出的模式名；派发前被拒、没建节点时为空串。 */
+  presetName: string;
+  graphTitle: string;
+  /** 本次派发的任务名（原始需求第一行）。 */
+  taskTitle: string;
+  status: 'running' | 'done' | 'failed' | 'rejected';
+  reason: string;
+  startedAt: string;
+  updatedAt: string;
+  leftover: string[];
+  /** 按 run 摘要里的节点顺序。 */
+  nodes: RunViewNode[];
 }
 
 export interface ConsoleDispatchEvent {

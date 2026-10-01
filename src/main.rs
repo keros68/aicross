@@ -17,6 +17,7 @@ mod orchestration;
 mod paths;
 mod process;
 mod resources;
+mod run_view;
 mod server;
 mod shell_probe;
 mod skills;
@@ -191,6 +192,59 @@ fn main() -> Result<()> {
     // starts as usual, but the request rides along and the frontend drains
     // it on mount (see launch.rs for the cold/warm delivery paths).
     let pending_launch = launch::parse_launch_args(&args);
+    // `aicross open <run_id>` 同样不短路：校验参数与 run 存在性后照常起窗口，
+    // 请求随 AppState::pending_open 走；窗口已开时由单实例插件转发（server.rs）。
+    // 打开动作只读，不派发、不改文件。退出码：0 已打开 / 2 参数错 /
+    // 3 窗口起不来（引擎根不可用、其它读取错误同按 3）；只有 run 文件
+    // 不存在按 1 找不到 run（fix-37-r1 R1-7）。
+    let pending_open = match run_view::parse_open_args(&args) {
+        run_view::OpenParse::NotOpen => None,
+        run_view::OpenParse::Invalid(message) => {
+            console_cli::attach_parent_console();
+            eprintln!("{message}");
+            std::process::exit(2);
+        }
+        run_view::OpenParse::Valid(run_id) => match paths::aicross_root() {
+            Ok(root) => match run_view::open_run_exists(&root, &run_id) {
+                Ok(true) => Some(run_id),
+                Ok(false) => {
+                    console_cli::attach_parent_console();
+                    eprintln!("找不到 run：{run_id}");
+                    std::process::exit(1);
+                }
+                Err(message) => {
+                    console_cli::attach_parent_console();
+                    eprintln!("{message}");
+                    std::process::exit(3);
+                }
+            },
+            Err(_) => {
+                console_cli::attach_parent_console();
+                eprintln!("引擎不可用");
+                std::process::exit(3);
+            }
+        },
+    };
+    // R1-5（fix-37-r1）：宿主里调 `aicross open` 不能挂到窗口关闭——冷启动
+    // 以分离方式另起窗口进程（argv 仍是 `open <run_id>`，被拉起的进程照常走
+    // pending_open），自己立即退出 0；拉起失败按退出码 3。OPEN_WINDOW_ENV
+    // 区分拉起方与被拉起方，避免无限接力。
+    if let Some(run_id) = &pending_open {
+        if std::env::var_os(run_view::OPEN_WINDOW_ENV).is_none() {
+            match run_view::spawn_open_window(run_id) {
+                Ok(()) => std::process::exit(0),
+                Err(message) => {
+                    console_cli::attach_parent_console();
+                    eprintln!("{message}");
+                    std::process::exit(3);
+                }
+            }
+        } else {
+            // 被拉起的窗口进程：清掉标记，不往下传（从应用内终端再调 open
+            // 仍走拉起路，不会变成阻塞的进程内起窗）。
+            std::env::remove_var(run_view::OPEN_WINDOW_ENV);
+        }
+    }
     if let Some(sub) = args.get(1) {
         match sub.as_str() {
             // Forward-compatible: unknown subcommands fall through
@@ -202,7 +256,20 @@ fn main() -> Result<()> {
 
     // Default: launch the GUI. Each tab picks its own CWD at
     // launch time — no initial directory needed.
-    server::start_ui(pending_launch)
+    // 冷启动 `aicross open` 起不来窗口时退出 3；其余路径保持原行为
+    // （走到这里的 open 只剩被拉起的窗口进程）。
+    let open_requested = pending_open.is_some();
+    match server::start_ui(pending_launch, pending_open) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if open_requested {
+                console_cli::attach_parent_console();
+                eprintln!("窗口启动失败：{error}");
+                std::process::exit(3);
+            }
+            Err(error)
+        }
+    }
 }
 
 /// Query the installed WebKit2GTK 4.1 minor version via dlopen +

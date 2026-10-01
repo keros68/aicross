@@ -1,0 +1,324 @@
+/* TASK-37 查看器。视觉纪律（PRODUCT.md）：1px 边框和背景差分块，不用阴影；
+   容器 8px、列表行 4px、胶囊全圆；厂商色只做色点；间距取 4 的倍数；
+   模型 ID、路径、数字用 IBM Plex Mono，数字 tabular-nums；
+   字号只用 12 / 13 / 14 / 15 / 16 / 18 六级。 */
+
+.run-viewer {
+  position: fixed;
+  /* R1-6：让出 40px 自绘标题栏（.titlebar 高度，见 global.css），缩放边
+     条由 html.run-viewer-open 抬到本层之上；位于对话图结果屏
+     （.dispatch-overlay，12000）之上。 */
+  top: 40px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 12500;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-app);
+  color: var(--text-1);
+}
+
+/* R1-6：查看页打开期间窗口缩放边条抬到查看页之上，边条仍可拖拽。 */
+html.run-viewer-open .resize-edges {
+  z-index: 13000;
+}
+
+.run-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.run-viewer-head-main {
+  min-width: 0;
+}
+
+.run-viewer-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.run-viewer-preset {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.run-viewer-status {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* R1-11：异常状态用胶囊，去掉 --blue。运行中给中性胶囊；失败与拒绝沿用
+   节点状态胶囊的警示样式。 */
+.run-viewer-status-running {
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+
+.run-viewer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.run-viewer-mono {
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-viewer-head button,
+.run-viewer-card-actions button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.run-viewer-head button:hover,
+.run-viewer-card-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.run-viewer-card-actions button:disabled {
+  opacity: 0.45;
+}
+
+.run-viewer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 24px 32px;
+}
+
+.run-viewer-section-title {
+  margin: 16px 0 8px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.run-viewer-stage:first-child .run-viewer-section-title {
+  margin-top: 0;
+}
+
+.run-viewer-reason {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.run-viewer-leftover {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.run-viewer-leftover ol {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.run-viewer-cards {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.run-viewer-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.run-viewer-card.adopted {
+  border-color: var(--accent);
+}
+
+.run-viewer-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.run-viewer-vendor-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: var(--radius-pill);
+}
+
+.run-viewer-card-titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.run-viewer-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.run-viewer-card-subtitle {
+  margin-top: 2px;
+  color: var(--text-3);
+  font: 12px var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+
+.run-viewer-pill {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.run-viewer-pill.alert {
+  border: 1px solid var(--red);
+  color: var(--red);
+}
+
+.run-viewer-card-facts {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.run-viewer-card-facts > div {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.run-viewer-card-facts dt {
+  flex: 0 0 56px;
+  color: var(--text-3);
+}
+
+.run-viewer-card-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.run-viewer-mismatch {
+  margin-left: 8px;
+  color: var(--red);
+}
+
+.run-viewer-card-note {
+  margin-top: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.run-viewer-card-text {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  max-height: 320px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.run-viewer-artifacts {
+  margin-top: 12px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.run-viewer-artifacts summary {
+  cursor: pointer;
+}
+
+.run-viewer-artifacts pre {
+  max-height: 240px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-app);
+  white-space: pre-wrap;
+  font: 12px var(--font-mono, monospace);
+}
+
+.run-viewer-worktree {
+  margin-top: 8px;
+  font: 12px var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+
+.run-viewer-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* R1-2：已采纳的卡没有可点动作，只显示状态词。 */
+.run-viewer-adopted {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.run-viewer-error {
+  margin-top: 12px;
+  color: var(--red);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.run-viewer-missing {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.run-viewer-missing-text {
+  font-size: 15px;
+}
+
+.run-viewer-missing-id {
+  color: var(--text-3);
+  font: 12px var(--font-mono, monospace);
+}
