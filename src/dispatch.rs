@@ -232,6 +232,7 @@ pub struct DispatchNodeResult {
     pub redacted: usize,
     pub isolation: String,
     pub runner: String,
+    #[serde(default)]
     pub runner_note: String,
     pub workdir: String,
     pub dispatch_file: String,
@@ -5343,6 +5344,13 @@ fn safe_name(value: &str) -> String {
 
 fn registry_key(run_id: &str, node_id: &str) -> String {
     format!("{run_id}:{node_id}")
+}
+
+/// 引擎取消 watcher 用：某 run 的某节点是否已被 `cancel_dispatch_node` 标记。
+/// 目前只有引擎测试读取（生产侧的取消生效在子进程清理路径里）。
+#[allow(dead_code)]
+pub(crate) fn node_is_cancelled(run_id: &str, node_id: &str) -> bool {
+    is_cancelled(&registry_key(run_id, node_id))
 }
 
 fn emit_progress(app: &Option<AppHandle>, run_id: &str, node_id: &str, status: &str) {

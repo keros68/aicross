@@ -9,8 +9,8 @@
 //!   不落盘，由 `list_presets` 每次合并。
 //! - `graphs/<id>.json`：一图一文件，原子写。
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -31,8 +31,10 @@ pub struct Graph {
     pub title: String,
     #[serde(default)]
     pub root: String,
+    /// 节点表用 IndexMap 保持插入序，对齐前端 JS 对象的键序语义：
+    /// 找等待中的验收、复用遗留节点、latest_leaf 同深平局都按插入序取第一个。
     #[serde(default)]
-    pub nodes: HashMap<String, GraphNode>,
+    pub nodes: IndexMap<String, GraphNode>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -745,6 +747,15 @@ pub(crate) fn dispatchable_from(root: &Path) -> DispatchableModels {
 /// 内置三个预设 + presets.json 里的用户预设；文件不存在、解析失败或
 /// version != 1 时拒绝该文件、只返回内置（与 graphs 的版本校验对齐）。
 pub(crate) fn presets_from(root: &Path) -> PresetFile {
+    let mut file = raw_presets_from(root);
+    fill_role_defaults(&mut file.presets, &roles_from(root));
+    file
+}
+
+/// 与 `presets_from` 同一份清单但不填角色默认。引擎的建图盖章走
+/// TS `runConsoleDispatch` 口径：预设原样取出，角色默认由引擎自己在
+/// `apply_role_defaults` 里套，避免填两遍。
+pub(crate) fn raw_presets_from(root: &Path) -> PresetFile {
     let mut presets = builtin_presets();
     let path = presets_path(root);
     if let Ok(contents) = fs::read_to_string(&path) {
@@ -754,7 +765,6 @@ pub(crate) fn presets_from(root: &Path) -> PresetFile {
             }
         }
     }
-    fill_role_defaults(&mut presets, &roles_from(root));
     PresetFile {
         version: 1,
         presets,
@@ -1010,7 +1020,7 @@ mod tests {
             created_at: "2026-09-13T10:02:00Z".into(),
             source: String::new(),
         };
-        let nodes: HashMap<String, GraphNode> = [root, turn, accept]
+        let nodes: IndexMap<String, GraphNode> = [root, turn, accept]
             .into_iter()
             .map(|n| (n.id.clone(), n))
             .collect();

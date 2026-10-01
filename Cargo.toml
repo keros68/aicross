@@ -44,7 +44,12 @@ tauri-plugin-clipboard-manager = "2"
 
 # Utilities
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: 金标准重放依赖 JSON 对象的插入序（与 JS 对象语义对齐）。
+# 之前只靠 schemars 传递开启，这里显式钉住。
+serde_json = { version = "1", features = ["preserve_order"] }
+# Graph.nodes 用 IndexMap 保持插入序，与前端 JS 对象的键序语义一致
+# （修正轮验收查找、遗留节点复用、latest_leaf 平局都按插入序）。
+indexmap = { version = "2", features = ["serde"] }
 serde_yaml = "0.9"
 # TOML parsing for the kimi resource fact source (~/.kimi-code/config.toml [models])
 toml = "0.9"

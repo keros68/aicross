@@ -14,19 +14,33 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
         return None;
     }
     attach_parent_console();
-    let root = match crate::paths::aicross_root() {
-        Ok(root) => root,
+    let root = crate::paths::aicross_root();
+    Some(dispatch_root(args, root, &mut std::io::stdout(), &mut std::io::stderr()))
+}
+
+/// 引擎根目录不可确定（例如没有用户目录）时所有子命令一律退出码 3。
+fn dispatch_root(
+    args: &[String],
+    root: Result<std::path::PathBuf, String>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> i32 {
+    match root {
+        Ok(root) => run_at(args, &root, stdout, stderr),
         Err(_) => {
-            eprintln!("引擎不可用");
-            return Some(3);
+            let _ = writeln!(stderr, "引擎不可用");
+            3
         }
-    };
-    Some(run_at(args, &root, &mut std::io::stdout(), &mut std::io::stderr()))
+    }
 }
 
 fn run_at(args: &[String], root: &Path, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
     if args.get(1).map(String::as_str) == Some("__run") {
         let Some(run_id) = args.get(2) else { return 2 };
+        if !crate::engine::valid_id(run_id) {
+            let _ = writeln!(stderr, "run_id 无效");
+            return 2;
+        }
         return match crate::engine::run_background(root, run_id) {
             Ok(()) => 0,
             Err(message) => { let _ = writeln!(stderr, "{message}"); 1 }
@@ -425,5 +439,42 @@ mod tests {
             "--reason".into(), "第一行\n第二行".into(), "--text-file".into(), "D:/prompt.txt".into(),
         ];
         assert!(matches!(build_request(&args), Err(error) if error == "--reason 只能是一句话"));
+    }
+
+    #[test]
+    fn run_subcommand_validates_run_id() {
+        let root = std::env::temp_dir().join(format!("aicross-cli-run-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(run_at(&["aicross".into(), "__run".into()], &root, &mut stdout, &mut stderr), 2);
+        assert_eq!(run_at(&["aicross".into(), "__run".into(), "bad/id".into()], &root, &mut stdout, &mut stderr), 2);
+        assert!(String::from_utf8(stderr).unwrap().contains("run_id 无效"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn exit_code_3_comes_from_engine_root_or_missing_or_stale_manifest() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        // 来源一：引擎根目录不可确定。
+        let status_args = vec!["aicross".into(), "status".into(), "run-1".into()];
+        assert_eq!(dispatch_root(&status_args, Err("没有用户目录".into()), &mut stdout, &mut stderr), 3);
+        // 来源二：控制台未运行（清单缺失）。
+        let root = std::env::temp_dir().join(format!("aicross-cli-exit3-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let text_path = root.join("prompt.txt");
+        fs::write(&text_path, "正文").unwrap();
+        let propose_args = vec![
+            "aicross".into(), "propose".into(), "--project".into(), "D:/p".into(),
+            "--text-file".into(), text_path.to_string_lossy().into(),
+        ];
+        assert_eq!(run_at(&propose_args, &root, &mut stdout, &mut stderr), 3);
+        // 来源三：清单已过期（pid 已死，清单被清掉后报未运行）。
+        let manifest_path = root.join(crate::console_api::manifest_filename());
+        fs::write(&manifest_path, serde_json::to_vec(&ConsoleManifest { version: 1, endpoint: "http://127.0.0.1:43123".into(), token: "a".repeat(64), pid: u32::MAX, started_at: String::new() }).unwrap()).unwrap();
+        assert_eq!(run_at(&propose_args, &root, &mut stdout, &mut stderr), 3);
+        assert!(!manifest_path.exists());
+        let _ = fs::remove_dir_all(root);
     }
 }
