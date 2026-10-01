@@ -77,7 +77,7 @@
 
 ## R1（2026-10-01，修正轮第二阶段：Rust 侧全部内容）
 
-改动文件：`Cargo.toml`（加 indexmap 2 + serde）、`Cargo.lock`、`src/orchestration.rs`（`Graph.nodes` 改 `IndexMap` 保持插入序、新增 `raw_presets_from` 不套角色默认、删 `stamp`）、`src/dispatch.rs`（`DispatchNodeResult.runner_note` 补 `serde(default)`、`dispatch_stage_core` 成功后清理取消注册表）、`src/console_cli.rs`（`__run` 入口校验 run_id、退出码 3 来源收口、新增两条测试）、`src/engine/mod.rs`（整体重写为纯函数 + 注入式推进）、新增 `src/engine/golden.rs` 与 `src/engine/tests.rs`、`docs/CONSOLE-CHANNEL.md`。
+改动文件：`Cargo.toml`（加 indexmap 2 + serde）、`Cargo.lock`、`src/orchestration.rs`（`Graph.nodes` 改 `IndexMap` 保持插入序、新增 `raw_presets_from` 不套角色默认）、`src/dispatch.rs`（`DispatchNodeResult.runner_note` 补 `serde(default)`）、`src/console_cli.rs`（`__run` 入口校验 run_id、退出码 3 来源收口、新增两条测试）、`src/engine/mod.rs`（整体重写为纯函数 + 注入式推进）、新增 `src/engine/golden.rs` 与 `src/engine/tests.rs`、`docs/CONSOLE-CHANNEL.md`。
 
 ### 逐条
 
@@ -140,4 +140,50 @@
 
 - 真机核仍归编排者（真实派发、运行中取消、杀进程、窗口对账）。
 - `EngineRun` 与 `ConsoleRun` 两份同构类型的合并进积压，不在本轮。
+- 未 commit，未 push。
+
+## R2（2026-10-01，修正轮 R2）
+
+改动文件：`Cargo.toml`、`src/engine/mod.rs`、`src/engine/tests.rs`、`src/console_cli.rs`、`docs/CONSOLE-CHANNEL.md`、`tasks/REPORT-36.md`。未改 `fixtures/engine-golden/` 与 `src-ui/`。金标准夹具仍为 31 个，重放全绿。
+
+### 逐条
+
+- **R2-1**：`normalized` 的 `strip_prefix_ci` 改用 `value.get(..prefix.len())` 按字符边界取前缀，切点落在多字节字符中间时不匹配（不再按字节切片 panic）。测试：`engine::tests::normalized_handles_multibyte_paths`（`D:\项目`、`D:\项`、`\\?\D:\论文\数据`、`\\?\UNC\服务器\共享\目录` 各一例，结果与 TS `normalizedPath` 口径一致）、`engine::tests::plan_dispatch_works_with_chinese_project_graph_in_dir`（图目录里有中文路径的图时，另一项目的 `plan_dispatch` 照常 Ready）。
+- **R2-2**：新增 `merge_save_graph`（照 TS `mergeConsoleCommit`）：每次落图前从磁盘读回该图最新版本，只用本 run 上次提交以来改动或新增的节点覆盖，其余节点以磁盘为准，`root` 取本 run 值。`FileSink` 持有 `committed` 基准（生产落图全部走合并写），`adopt` 与失败收尾的落图同走这一份。测试：`engine::tests::merging_commits_keep_both_runs_nodes_and_results`（两个 run 交替提交，双方节点与结果都保留）、`engine::tests::adopt_during_run_survives_later_commits`（run 进行中 adopt 后，后台提交别的节点不抹掉采纳标记）。
+- **R2-3**：`adopt` 只改图（合并写），不再整写 run 文件；返回值按磁盘 run 与刚改好的图现算 `nodes`。测试：`engine::tests::adopt_keeps_run_file_untouched`（adopt 前后 run 文件字节相同，图上 adopted 已落盘）。
+- **R2-4**：`run_background` 读到 run 后先查 `status`，不是 `running` 直接退出、不写 pid、不派发。测试：`engine::tests::run_background_ignores_non_running_run`（run 与图文件字节不变）。
+- **R2-5**：`run_if_subcommand` 只对面向用户的子命令调用 `attach_parent_console()`，`__run` 跳过；判断抽成纯函数。测试：`console_cli::tests::run_subcommand_skips_parent_console_attach`。
+- **R2-6**：推进中途失败的收尾改为 `finish_failed_run`：只把本 run（run 摘要里记录的节点 id）仍 pending 的补失败，同图上别的 run 的节点不动，run 摘要 `nodes` 按收尾后的图重算；`drive_pipeline` 并入 `run_background_with`，sink 工厂可注入（生产传 FileSink）。测试：`engine::tests::pipeline_commit_failure_only_fails_this_runs_nodes`（注入提交即返回错误的 `FailingCommitSink`：本 run 的 n1 补 failed/error、他 run 的 n2 仍 pending，run 落 failed 且摘要重算为 n1）。
+- **R2-7**：生产依赖恢复 `serde_json = "1"`，`preserve_order` 挪到 `[dev-dependencies]`；`Graph.nodes` 的 IndexMap 保留。验证：`cargo tree -e features,normal -i serde_json` 不再出现 preserve_order，dev 树里仍开启；金标准测试照常通过；`Cargo.lock` 无变化。改正了 Cargo.toml 里「之前只靠 schemars 传递开启」的不实注释（Cargo.lock 证实是本轮首次开启）。
+- **R2-8**：取消检查点重排——登记在飞（`note_in_flight`）之后再查一次取消，命中则本阶段不起（节点保持 draft）；判定取消改到结果写回图之后，已返回的结果保留，未返回的节点由收尾统一标「派发已取消」。测试：`engine::tests::cancel_right_after_registration_skips_dispatch_and_keeps_draft`、`engine::tests::cancel_after_results_writes_them_back_and_marks_rest_cancelled`（部分返回：返回的写回 done、未返回的标 cancelled）、改写后的 `engine::tests::cancelled_pipeline_marks_in_flight_failed_and_ends_run_failed`（整批无返回时在飞标取消）。
+- **R2-9**：`upstream_artifacts` 第一轮改为 `order_by_dfs(graph, allowed)` 只在允许集内 DFS（不在允许集的节点连同子树剪枝），`context_order` 用同一实现；兜底仍按允许集顺序。测试：`engine::tests::upstream_artifacts_first_pass_dfs_stays_inside_allowed_set`（指定上游 `[b, a]` 的产物顺序为 b、a，不是全祖先 DFS 序）。
+- **R2-10**：`within_startup_window` 对 `updated_at` 晚于当前时间 60 秒以上（时钟回拨）同样按过期。测试：`engine::tests::pid_zero_far_future_updated_at_is_expired`（+120 秒判「引擎进程未能启动」，+5 秒仍算启动中）。
+- **R2-11**：`spawn_detached`（Windows）拼命令行处加注释：实参只有 `__run` 与已过 `valid_id` 校验的 run id，朴素引号包裹即可；以后传用户可控文本必须先补引用转义。
+- **R2-12**：补退出码 3 另两种来源的测试：`engine::tests::start_dispatch_reports_unavailable_when_runs_dir_not_writable`（runs 被同名文件占住）、`engine::tests::start_dispatch_reports_unavailable_when_spawn_fails`（`start_dispatch_with` 注入失败 spawn，run 落 failed 不留假 running）、`console_cli::tests::dispatch_exit_3_when_runs_dir_not_writable`（`run_at` 全链路退出码 3）。
+- 文档：`docs/CONSOLE-CHANNEL.md` 补启动窗口对时钟回拨的口径（晚 60 秒以上判过期）、后台进程读到非 running 直接退出、多个命令行后台 run 交替提交同一张图按节点合并、采纳标记不被后台提交抹掉；窗口与命令行同时写同一张图仍无并发保护。
+
+### 回改验证（会变红的证据）
+
+- R2-1 回改（恢复 `value[..prefix.len()]` 字节切片）：`normalized_handles_multibyte_paths`、`plan_dispatch_works_with_chinese_project_graph_in_dir` 均 panic 于 `end byte index 8 is not a char boundary; it is inside '目'`。已恢复。
+- R2-2 回改（`FileSink::save_graph` 改回 `save_graph_in` 整图写）：`merging_commits_keep_both_runs_nodes_and_results` 红于「另一个 run 的节点不能被抹掉」，`adopt_during_run_survives_later_commits` 红于「采纳标记不能被后台提交抹掉」。已恢复。
+
+### 报告勘误（R1 节）
+
+- 删去「`dispatch_stage_core` 成功后清理取消注册表」：`clear_cancelled` 在基线的同一位置已存在（before:3527 → after:3528）。
+- 删去「删 `stamp`」：基线 `orchestration.rs` 本无 `fn stamp`。
+- 第三处「preserve_order 之前已由 schemars 传递开启」不在报告里而在 Cargo.toml 注释，已在 R2-7 改正。
+
+### 验证（本阶段实际输出）
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `cargo check --all-targets` | 退出码 0；零 warning |
+| `cargo test` | 退出码 0；546 passed，0 failed，12 ignored |
+| `cd src-ui && npx vitest run --configLoader native --pool threads` | 退出码 0；50 files passed，729 tests passed |
+| `cd src-ui && npm run build` | 退出码 0；仅有既有的 500 kB chunk 提醒 |
+
+### 未做（本阶段）
+
+- 真机核仍归编排者（真实派发、运行中取消、杀进程、窗口对账）。
+- 金标准输入时间按原始先后重建、检查顺序再补钉、管道捕获 `dispatch` 输出提前返回的端到端测试：按 fix-36-r2 留在积压。
 - 未 commit，未 push。

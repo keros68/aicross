@@ -10,12 +10,22 @@ use std::time::{Duration, Instant};
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
-    if !matches!(args.get(1).map(String::as_str), Some("dispatch" | "propose" | "status" | "adopt" | "cancel" | "__run")) {
+    let command = args.get(1).map(String::as_str);
+    if !matches!(command, Some("dispatch" | "propose" | "status" | "adopt" | "cancel" | "__run")) {
         return None;
     }
-    attach_parent_console();
+    // R2-5：面向用户的子命令把输出挂回宿主终端；后台引擎（__run）是独立进程，
+    // 不挂接，宿主终端关闭时不被波及。
+    if attaches_parent_console(command) {
+        attach_parent_console();
+    }
     let root = crate::paths::aicross_root();
     Some(dispatch_root(args, root, &mut std::io::stdout(), &mut std::io::stderr()))
+}
+
+/// 是否挂接父进程控制台：面向用户的子命令要，后台 `__run` 不要。
+fn attaches_parent_console(command: Option<&str>) -> bool {
+    command.is_some_and(|command| command != "__run")
 }
 
 /// 引擎根目录不可确定（例如没有用户目录）时所有子命令一律退出码 3。
@@ -450,6 +460,35 @@ mod tests {
         assert_eq!(run_at(&["aicross".into(), "__run".into()], &root, &mut stdout, &mut stderr), 2);
         assert_eq!(run_at(&["aicross".into(), "__run".into(), "bad/id".into()], &root, &mut stdout, &mut stderr), 2);
         assert!(String::from_utf8(stderr).unwrap().contains("run_id 无效"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_subcommand_skips_parent_console_attach() {
+        // R2-5：面向用户的子命令要挂回宿主终端，后台 __run 不要。
+        for command in ["dispatch", "propose", "status", "adopt", "cancel"] {
+            assert!(attaches_parent_console(Some(command)), "{command} 应挂接父控制台");
+        }
+        assert!(!attaches_parent_console(Some("__run")));
+        assert!(!attaches_parent_console(None));
+    }
+
+    #[test]
+    fn dispatch_exit_3_when_runs_dir_not_writable() {
+        // R2-12：退出码 3 的「run 目录不可写」来源。
+        let root = std::env::temp_dir().join(format!("aicross-cli-runs-dir-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("runs"), "blocked").unwrap();
+        let text_path = root.join("prompt.txt");
+        fs::write(&text_path, "正文").unwrap();
+        let args = vec![
+            "aicross".into(), "dispatch".into(), "--project".into(), root.to_string_lossy().into(),
+            "--text-file".into(), text_path.to_string_lossy().into(),
+        ];
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(run_at(&args, &root, &mut stdout, &mut stderr), 3);
+        assert!(String::from_utf8(stderr).unwrap().contains("创建 run 目录失败"));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -263,10 +263,13 @@ fn parse_time(value: &str) -> Option<DateTime<Utc>> {
 }
 
 /// pid 为 0 的 run 是否还在启动宽限内（updated_at 距现在不超过 30 秒）。
-/// updated_at 解析不出来按已过期处理。
+/// updated_at 解析不出来按已过期处理；比当前时间晚 60 秒以上（系统时钟回拨）
+/// 同样按过期处理，否则死 run 会一直占着在飞名额（R2-10）。
 fn within_startup_window(updated_at: &str) -> bool {
-    parse_time(updated_at)
-        .is_some_and(|t| (Utc::now() - t) <= chrono::Duration::seconds(STARTUP_WINDOW_SECS))
+    parse_time(updated_at).is_some_and(|t| {
+        let delta = (Utc::now() - t).num_seconds();
+        (-60..=STARTUP_WINDOW_SECS).contains(&delta)
+    })
 }
 
 /// 运行中判定：pid 为 0 看启动窗口，否则看进程存活（Windows 带创建时间核对）。
@@ -781,12 +784,9 @@ fn children_of<'a>(graph: &'a Graph, node_id: &str) -> Vec<&'a GraphNode> {
         .collect()
 }
 
-/// 上下文顺序（TS `orderByDfs` + 自身附加在末尾）：从根 DFS 只保留 keep 里的
-/// 节点，多父去重；自身最后。
-fn context_order(graph: &Graph, node_id: &str) -> Vec<String> {
-    let keep: HashSet<String> = ancestors(graph, node_id);
-    let mut out = vec![];
-    let mut seen = HashSet::new();
+/// TS `orderByDfs`：从根深度优先遍历，只保留 keep 里的节点；不在 keep 里的
+/// 节点直接剪枝（子树不从它走），多父去重按首达。
+fn order_by_dfs(graph: &Graph, keep: &HashSet<String>) -> Vec<String> {
     fn visit(
         graph: &Graph,
         id: &str,
@@ -794,17 +794,27 @@ fn context_order(graph: &Graph, node_id: &str) -> Vec<String> {
         seen: &mut HashSet<String>,
         out: &mut Vec<String>,
     ) {
-        if !keep.contains(id) || !seen.insert(id.into()) {
+        if !keep.contains(id) || !seen.insert(id.to_string()) {
             return;
         }
-        out.push(id.into());
+        out.push(id.to_string());
         for child in children_of(graph, id) {
             visit(graph, &child.id, keep, seen, out);
         }
     }
+    let mut out = vec![];
+    let mut seen = HashSet::new();
     if graph.nodes.contains_key(&graph.root) {
-        visit(graph, &graph.root, &keep, &mut seen, &mut out);
+        visit(graph, &graph.root, keep, &mut seen, &mut out);
     }
+    out
+}
+
+/// 上下文顺序（TS `orderByDfs` + 自身附加在末尾）：祖先闭包内的 DFS 序，
+/// 自身最后。
+fn context_order(graph: &Graph, node_id: &str) -> Vec<String> {
+    let keep = ancestors(graph, node_id);
+    let mut out = order_by_dfs(graph, &keep);
     out.retain(|id| id != node_id);
     out.push(node_id.into());
     out
@@ -965,8 +975,9 @@ fn current_message(message: &Message) -> String {
     blocks.join("\n\n")
 }
 
-/// TS `upstreamArtifactsOf`：先按根 DFS 序收集允许集里的产物，再把允许集里
-/// 没贡献过产物的节点补上（悬空父兜底）；同一节点的产物只进一次。
+/// TS `upstreamArtifactsOf`：第一轮只在允许集内 DFS（照 `orderByDfs(graph,
+/// allowed)`，不在允许集的节点连同子树剪枝）；再把允许集里没贡献过产物的
+/// 节点按允许集顺序兑底（悬空父这类从根走不到的情况）；同一节点的产物只进一次。
 fn upstream_artifacts(graph: &Graph, node_id: &str) -> Vec<DispatchArtifacts> {
     let convert = |a: &ReplyArtifacts| DispatchArtifacts {
         source_node_id: a.source_node_id.clone().unwrap_or_default(),
@@ -1000,13 +1011,12 @@ fn upstream_artifacts(graph: &Graph, node_id: &str) -> Vec<DispatchArtifacts> {
             .unwrap_or_default(),
         _ => ancestor_closure(graph, node_id),
     };
-    let allowed_set: HashSet<&str> = allowed.iter().map(String::as_str).collect();
+    let allowed_set: HashSet<String> = allowed.iter().cloned().collect();
     let mut contributed: HashSet<String> = HashSet::new();
     let mut out = vec![];
-    for id in context_order(graph, node_id) {
-        if !allowed_set.contains(id.as_str()) {
-            continue;
-        }
+    // 第一轮只在允许集内 DFS（TS `orderByDfs(graph, allowed)`）：不在允许集里的
+    // 节点连同子树剪掉，允许集里从根走不到的节点由后面的兑底按允许集顺序补。
+    for id in order_by_dfs(graph, &allowed_set) {
         if let Some(artifacts) = graph
             .nodes
             .get(&id)
@@ -1858,11 +1868,16 @@ fn reduce_step(
 // ── 派发前检查（plan_dispatch） ────────────────────────────────────────────
 
 /// TS `normalizedPath` 逐条：`\\?\UNC/` → `//`、剥 `\\?\`、`\` → `/`、
-/// 去尾部 `/`、小写。
+/// 去尾部 `/`、小写。前缀剥除按字符边界取子串：路径开头含多字节字符时
+/// 算不匹配，而不是按字节切片 panic（R2-1，`pick_project_graph` 会对图目录里
+/// 每张图都过这一步）。
 fn normalized(value: &str) -> String {
     fn strip_prefix_ci<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
-        (value.len() >= prefix.len() && value[..prefix.len()].eq_ignore_ascii_case(prefix))
-            .then(|| &value[prefix.len()..])
+        // get(..n) 在切点不是字符边界时返回 None；前缀本身是 ASCII，长度即字节数。
+        value
+            .get(..prefix.len())
+            .filter(|head| head.eq_ignore_ascii_case(prefix))
+            .map(|_| &value[prefix.len()..])
     }
     let stripped = if let Some(rest) = strip_prefix_ci(value, r"\\?\UNC\") {
         format!("//{rest}")
@@ -2353,6 +2368,12 @@ pub(crate) fn run_pipeline(
         // preview 点：把上一阶段积攒的 commit 更新补发出去。
         drain!();
         sink.note_in_flight(&stage_ids);
+        // R2-8：登记在飞之后再查一次取消，标记恰好在循环开头检查与登记之间
+        // 落下时不再把这一阶段整段跑完；节点仍是 draft，收尾不补失败桩。
+        if is_cancelled() {
+            error = CANCELLED_TEXT.into();
+            break;
+        }
         for id in &stage_ids {
             push_unique(&mut all_run_ids, id);
         }
@@ -2405,10 +2426,6 @@ pub(crate) fn run_pipeline(
             }
         };
         sink.note_in_flight(&[]);
-        if is_cancelled() {
-            error = CANCELLED_TEXT.into();
-            break;
-        }
         let mut batch: Vec<String> = output.results.iter().map(|r| r.node_id.clone()).collect();
         batch.sort();
         batch.dedup();
@@ -2436,6 +2453,12 @@ pub(crate) fn run_pipeline(
         in_flight = vec![];
         graph = apply_results(&graph, &output.results);
         commit!();
+        // R2-8：判定取消时本阶段已返回的结果已写回图；没返回结果的节点保持
+        // pending，由收尾统一标「派发已取消」。
+        if is_cancelled() {
+            error = CANCELLED_TEXT.into();
+            break;
+        }
         let (next, keep_going, changed, new_ids) = reduce_step(
             &graph,
             &output.results,
@@ -2492,7 +2515,7 @@ pub(crate) fn run_pipeline(
 
 // ── 生产边界：start_dispatch / run_background / adopt / cancel ─────────────
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct DispatchInput {
     pub project: String,
     pub text: String,
@@ -2536,6 +2559,15 @@ fn active_runs(root: &Path) -> usize {
 }
 
 pub(crate) fn start_dispatch(root: &Path, input: DispatchInput) -> Result<Value, StartError> {
+    start_dispatch_with(root, input, spawn_detached)
+}
+
+/// spawn 单独注入是为了测试退出码 3 的「后台进程起不来」来源（R2-12）。
+fn start_dispatch_with(
+    root: &Path,
+    input: DispatchInput,
+    spawn: impl FnOnce(&Path, &[String]) -> Result<u32, String>,
+) -> Result<Value, StartError> {
     fs::create_dir_all(runs_dir(root))
         .map_err(|e| StartError::Unavailable(format!("创建 run 目录失败：{e}")))?;
     let run_id = Uuid::new_v4().to_string();
@@ -2624,7 +2656,7 @@ pub(crate) fn start_dispatch(root: &Path, input: DispatchInput) -> Result<Value,
         fail_run_before_spawn(root, &run, &message);
         StartError::Unavailable(message.clone())
     })?;
-    spawn_detached(&exe, &["__run".to_string(), run_id.clone()])
+    spawn(&exe, &["__run".to_string(), run_id.clone()])
         .map(|_| {
             serde_json::json!({"run_id":run_id,"accepted":true,"graph_id":graph.id,"node_ids":created})
         })
@@ -2659,6 +2691,9 @@ fn spawn_detached(exe: &Path, args: &[String]) -> Result<u32, String> {
         PROCESS_INFORMATION, STARTUPINFOW,
     };
     let application: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
+    // R2-11：参数目前只有 `__run` 与已过 valid_id 校验的 run id（字母、数字、
+    // -、_），不含引号或空白，朴素 `"{}"` 包裹即可；以后往这里传用户可控文本
+    // 必须先补引用转义。
     let quoted = std::iter::once(format!("\"{}\"", exe.display()))
         .chain(args.iter().map(|a| format!("\"{a}\"")))
         .collect::<Vec<_>>()
@@ -2724,15 +2759,61 @@ pub(crate) fn watch_cancel(
     })
 }
 
+/// R2-2（TS `mergeConsoleCommit`）：落图前先从磁盘读回该图的最新版本，只用
+/// 「本 run 上次提交以来改动过或新增的节点」覆盖它，其余节点以磁盘为准；
+/// `root`（默认列末端）取本 run 的值。同图上别的 run 与 adopt 的改动因此不会
+/// 被整图回写抹掉。返回合并后实际落盘的图，作为本 run 下次提交的基准。
+fn merge_save_graph(
+    root: &Path,
+    committed: Option<&Graph>,
+    next: &Graph,
+) -> Result<Graph, String> {
+    let latest: Graph = match orchestration::load_graph_in(root, &next.id) {
+        Ok(Some(latest)) => latest,
+        // 磁盘上没有（TS：store 里没有就以上次提交的图为准；首笔提交即 next）。
+        Ok(None) => committed.cloned().unwrap_or_else(|| next.clone()),
+        Err(error) => return Err(error),
+    };
+    let changed: Vec<String> = next
+        .nodes
+        .keys()
+        .filter(|id| {
+            committed.is_none_or(|prev| prev.nodes.get(*id) != next.nodes.get(*id))
+        })
+        .cloned()
+        .collect();
+    let mut nodes = latest.nodes.clone();
+    for id in &changed {
+        if let Some(node) = next.nodes.get(id) {
+            nodes.insert(id.clone(), node.clone());
+        }
+    }
+    let merged = Graph {
+        root: next.root.clone(),
+        nodes,
+        project: next.project.clone(),
+        source: next.source.clone(),
+        updated_at: next.updated_at.clone(),
+        ..latest
+    };
+    orchestration::save_graph_in(root, &merged)?;
+    Ok(merged)
+}
+
 struct FileSink<'a> {
     root: &'a Path,
     run: &'a mut EngineRun,
     active: Arc<Mutex<Vec<String>>>,
+    /// 本 run 上一次提交的图（R2-2 合并写的基准；None 表示首笔提交，
+    /// 全部节点都算改动）。
+    committed: Option<Graph>,
 }
 
 impl PipelineSink for FileSink<'_> {
     fn save_graph(&mut self, graph: &Graph) -> Result<(), String> {
-        orchestration::save_graph_in(self.root, graph)
+        let merged = merge_save_graph(self.root, self.committed.as_ref(), graph)?;
+        self.committed = Some(merged);
+        Ok(())
     }
     fn update(&mut self, update: &RunUpdate) -> Result<(), String> {
         self.run.status = update.status.clone();
@@ -2754,6 +2835,27 @@ impl PipelineSink for FileSink<'_> {
 }
 
 pub(crate) fn run_background(root: &Path, run_id: &str) -> Result<(), String> {
+    run_background_with(root, run_id, |root, run, active| {
+        Box::new(FileSink {
+            root,
+            run,
+            active,
+            committed: None,
+        })
+    })
+}
+
+/// sink 工厂单独注入是为了测试（R2-6）：验证推进中途落图失败时收尾只动
+/// 本 run 的节点。
+fn run_background_with(
+    root: &Path,
+    run_id: &str,
+    make_sink: impl for<'r> FnOnce(
+        &'r Path,
+        &'r mut EngineRun,
+        Arc<Mutex<Vec<String>>>,
+    ) -> Box<dyn PipelineSink + 'r>,
+) -> Result<(), String> {
     if !valid_id(run_id) {
         return Err("run_id 无效".into());
     }
@@ -2761,54 +2863,28 @@ pub(crate) fn run_background(root: &Path, run_id: &str) -> Result<(), String> {
         &fs::read(run_path(root, run_id)).map_err(|e| format!("读取 run 失败：{e}"))?,
     )
     .map_err(|e| format!("解析 run 失败：{e}"))?;
+    // R2-4：run 已被判失败（如启动窗口超时改写为 failed）时不复活：不写 pid、
+    // 不派发、run 文件不动。
+    if run.status != "running" {
+        return Ok(());
+    }
     run.pid = std::process::id();
     run.pid_started_at = own_process_started_at();
     run.updated_at = now();
     write_run(root, &run)?;
-    let result = drive_pipeline(root, run_id, &mut run);
-    if let Err(error) = &result {
-        // R1-8：推进中途读写失败——把在飞（仍 pending）的节点补失败、run 落
-        // failed 与原始错误文案，再原样上报。
-        if let Ok(Some(mut graph)) = orchestration::load_graph_in(root, &run.graph_id) {
-            let mut touched = false;
-            for node in graph.nodes.values_mut() {
-                if node.reply.as_ref().is_some_and(|r| r.status == "pending") {
-                    node.reply = Some(Reply {
-                        status: "failed".into(),
-                        text: error.clone(),
-                        error_kind: Some("error".into()),
-                        ..Reply::default()
-                    });
-                    touched = true;
-                }
-            }
-            if touched {
-                graph.updated_at = now();
-                let _ = orchestration::save_graph_in(root, &graph);
-            }
-        }
-        run.status = "failed".into();
-        run.reason = error.clone();
-        run.in_flight_node_ids = vec![];
-        run.updated_at = now();
-        let _ = write_run(root, &run);
-    }
-    result
-}
-
-fn drive_pipeline(root: &Path, run_id: &str, run: &mut EngineRun) -> Result<(), String> {
-    let graph = load_graph_for_run(root, run)?;
+    let graph = load_graph_for_run(root, &run)?;
     let settings = load_settings(root);
     let resources = orchestration::dispatchable_from(root);
     if let Some(error) = resources.error {
         run.status = "failed".into();
         run.reason = format!("读取资源失败：{error}");
         run.updated_at = now();
-        return write_run(root, run);
+        return write_run(root, &run);
     }
     let created: Vec<String> = run.nodes.iter().map(|n| n.node_id.clone()).collect();
     // R1-28：原始需求文本从 run 文件读，不从图上反推。
     let original = run.original_request.clone();
+    let project = run.project.clone();
     let active = Arc::new(Mutex::new(Vec::<String>::new()));
     let cancelled = Arc::new(AtomicBool::new(false));
     let watcher = watch_cancel(
@@ -2819,14 +2895,9 @@ fn drive_pipeline(root: &Path, run_id: &str, run: &mut EngineRun) -> Result<(), 
     );
     let flag = Arc::clone(&cancelled);
     let result = {
-        let mut sink = FileSink {
-            root,
-            run,
-            active,
-        };
+        let mut sink = make_sink(root, &mut run, Arc::clone(&active));
         let mut ids = || Uuid::new_v4().to_string();
         let mut clock = Utc::now;
-        let project = sink.run.project.clone();
         run_pipeline(
             run_id,
             &project,
@@ -2835,7 +2906,7 @@ fn drive_pipeline(root: &Path, run_id: &str, run: &mut EngineRun) -> Result<(), 
             &created,
             &resources.models,
             &original,
-            &mut sink,
+            &mut *sink,
             &mut ids,
             &mut clock,
             &move || flag.load(Ordering::SeqCst),
@@ -2845,32 +2916,66 @@ fn drive_pipeline(root: &Path, run_id: &str, run: &mut EngineRun) -> Result<(), 
     cancelled.store(true, Ordering::SeqCst);
     let _ = watcher.join();
     let _ = fs::remove_file(cancel_path(root, run_id));
+    if let Err(error) = &result {
+        finish_failed_run(root, &mut run, error);
+    }
     result
+}
+
+/// R1-8 收尾（R2-6 修正）：推进中途读写失败——只把本 run（run 摘要里记录的
+/// 节点）仍 pending 的补失败，同图上别的 run 的节点不动；run 摘要的 nodes 按
+/// 收尾后的图重算，再连同失败原因落盘。
+fn finish_failed_run(root: &Path, run: &mut EngineRun, error: &str) {
+    let owned: Vec<String> = run.nodes.iter().map(|n| n.node_id.clone()).collect();
+    if let Ok(Some(disk)) = orchestration::load_graph_in(root, &run.graph_id) {
+        let mut next = disk.clone();
+        let mut touched = false;
+        for id in &owned {
+            if let Some(node) = next.nodes.get_mut(id) {
+                if node.reply.as_ref().is_some_and(|r| r.status == "pending") {
+                    node.reply = Some(Reply {
+                        status: "failed".into(),
+                        text: error.into(),
+                        error_kind: Some("error".into()),
+                        ..Reply::default()
+                    });
+                    touched = true;
+                }
+            }
+        }
+        if touched {
+            next.updated_at = now();
+            let _ = merge_save_graph(root, Some(&disk), &next);
+        }
+        run.nodes = node_summary(&next, owned);
+    }
+    run.status = "failed".into();
+    run.reason = error.into();
+    run.in_flight_node_ids = vec![];
+    run.updated_at = now();
+    let _ = write_run(root, run);
 }
 
 pub(crate) fn adopt(root: &Path, run_id: &str, node_id: &str) -> Result<EngineRun, String> {
     let mut run = read_run(root, run_id)?;
-    let mut graph = load_graph_for_run(root, &run)?;
-    let Some(node) = graph.nodes.get_mut(node_id) else {
-        return Err("找不到节点".to_string());
+    let disk = load_graph_for_run(root, &run)?;
+    let Some(node) = disk.nodes.get(node_id) else {
+        return Err("找不到节点".into());
     };
     // R1-6：没有结果的节点按 TS `setReplyAdopted` 口径不改图、正常返回。
     if node.reply.is_none() {
         return Ok(run);
     }
-    if let Some(reply) = node.reply.as_mut() {
+    let mut next = disk.clone();
+    if let Some(reply) = next.nodes.get_mut(node_id).and_then(|n| n.reply.as_mut()) {
         reply.adopted = Some(true);
     }
-    graph.updated_at = now();
-    orchestration::save_graph_in(root, &graph)?;
-    let ids = run
-        .nodes
-        .iter()
-        .map(|n| n.node_id.clone())
-        .collect::<Vec<_>>();
-    run.nodes = node_summary(&graph, ids);
-    run.updated_at = now();
-    write_run(root, &run)?;
+    next.updated_at = now();
+    // R2-3：只改图（合并写），不整写 run 文件；返回值按刚改好的图现算摘要，
+    // 免得把已落盘的终态写回 running。
+    merge_save_graph(root, Some(&disk), &next)?;
+    let ids: Vec<String> = run.nodes.iter().map(|n| n.node_id.clone()).collect();
+    run.nodes = node_summary(&next, ids);
     Ok(run)
 }
 

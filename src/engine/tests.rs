@@ -599,13 +599,14 @@ fn cancelled_pipeline_marks_in_flight_failed_and_ends_run_failed() {
     let settings = EngineSettings::default();
     let mut sink = StubSink {
         updates: vec![],
-        results: vec![sample_result("n1", "完成")],
+        results: vec![],
     };
     let calls = std::cell::Cell::new(0usize);
+    // 检查点：循环顶（1）、登记在飞后（2）、结果写回图后（3）。本阶段没返回
+    // 任何结果，在飞节点由收尾统一标「派发已取消」。
     let is_cancelled = || {
-        // 第一次在循环顶（放行），第二次在 dispatch 返回后（命中取消）。
         calls.set(calls.get() + 1);
-        calls.get() >= 2
+        calls.get() >= 3
     };
     let mut ids = || Uuid::new_v4().to_string();
     let mut clock = Utc::now;
@@ -628,9 +629,527 @@ fn cancelled_pipeline_marks_in_flight_failed_and_ends_run_failed() {
     let reply = node.reply.as_ref().unwrap();
     assert_eq!(reply.status, "failed");
     assert_eq!(reply.error_kind.as_deref(), Some("cancelled"));
+    assert_eq!(reply.text, CANCELLED_TEXT);
     let terminal = sink.updates.last().unwrap();
     assert_eq!(terminal.status, "failed");
     assert_eq!(terminal.reason, CANCELLED_TEXT);
+}
+
+#[test]
+fn cancel_after_results_writes_them_back_and_marks_rest_cancelled() {
+    // R2-8：判定取消时，本阶段已返回的结果先写回图，没返回的才标「派发已取消」。
+    let mut graph = new_graph("D:/p", "g".into(), "root".into(), now());
+    graph.nodes.insert("n1".into(), turn("n1", &["root"], "执行", &now()));
+    graph.nodes.insert("n2".into(), turn("n2", &["root"], "执行", &now()));
+    let settings = EngineSettings::default();
+    let mut sink = StubSink {
+        updates: vec![],
+        // 只返回 n1 的结果，n2 仍在飞。
+        results: vec![sample_result("n1", "完成")],
+    };
+    let calls = std::cell::Cell::new(0usize);
+    let is_cancelled = || {
+        calls.set(calls.get() + 1);
+        calls.get() >= 3
+    };
+    let mut ids = || Uuid::new_v4().to_string();
+    let mut clock = Utc::now;
+    let outcome = run_pipeline(
+        "run-c",
+        "D:/p",
+        &settings,
+        graph,
+        &["n1".to_string(), "n2".to_string()],
+        &[],
+        "原始需求",
+        &mut sink,
+        &mut ids,
+        &mut clock,
+        &is_cancelled,
+    )
+    .expect("取消不是错误");
+    assert_eq!(outcome.error, CANCELLED_TEXT);
+    let n1 = outcome.graph.nodes["n1"].reply.as_ref().unwrap();
+    assert_eq!(n1.status, "done", "已返回的结果必须写回图");
+    assert_eq!(n1.text, "完成");
+    let n2 = outcome.graph.nodes["n2"].reply.as_ref().unwrap();
+    assert_eq!(n2.status, "failed");
+    assert_eq!(n2.error_kind.as_deref(), Some("cancelled"));
+    assert_eq!(n2.text, CANCELLED_TEXT);
+    let terminal = sink.updates.last().unwrap();
+    assert_eq!(terminal.status, "failed");
+    assert_eq!(terminal.reason, CANCELLED_TEXT);
+}
+
+#[test]
+fn cancel_right_after_registration_skips_dispatch_and_keeps_draft() {
+    // R2-8：取消标记落在循环顶检查与登记在飞之间时，不再把这一阶段跑完。
+    let mut graph = new_graph("D:/p", "g".into(), "root".into(), now());
+    graph.nodes.insert("n1".into(), turn("n1", &["root"], "执行", &now()));
+    let settings = EngineSettings::default();
+    let mut sink = StubSink {
+        updates: vec![],
+        results: vec![sample_result("n1", "完成")],
+    };
+    let calls = std::cell::Cell::new(0usize);
+    let is_cancelled = || {
+        calls.set(calls.get() + 1);
+        calls.get() >= 2
+    };
+    let mut ids = || Uuid::new_v4().to_string();
+    let mut clock = Utc::now;
+    let outcome = run_pipeline(
+        "run-c",
+        "D:/p",
+        &settings,
+        graph,
+        &["n1".to_string()],
+        &[],
+        "原始需求",
+        &mut sink,
+        &mut ids,
+        &mut clock,
+        &is_cancelled,
+    )
+    .expect("取消不是错误");
+    assert_eq!(outcome.error, CANCELLED_TEXT);
+    assert_eq!(
+        outcome.graph.nodes["n1"].reply.as_ref().unwrap().status,
+        "draft",
+        "未派出就取消的节点保持 draft"
+    );
+    assert_eq!(sink.updates.last().unwrap().status, "failed");
+}
+
+// ── R2-1：含多字节字符的项目路径不 panic ──────────────────────────
+
+#[test]
+fn normalized_handles_multibyte_paths() {
+    // 旧实现按字节切片 value[..8]，这些路径会切在字符中间而 panic。
+    assert_eq!(normalized(r"D:\项目"), "d:/项目");
+    assert_eq!(normalized(r"D:\项"), "d:/项");
+    assert_eq!(normalized(r"\\?\D:\论文\数据"), "d:/论文/数据");
+    assert_eq!(normalized(r"\\?\UNC\服务器\共享\目录"), "//服务器/共享/目录");
+    // 与 TS normalizedPath 口径一致：只剥真正的前缀，剥不到就按原值归一。
+    assert_eq!(normalized(r"项\目"), "项/目");
+}
+
+#[test]
+fn plan_dispatch_works_with_chinese_project_graph_in_dir() {
+    let root = temp("cn-graph-dir");
+    let dir = root.join("graphs");
+    fs::create_dir_all(&dir).unwrap();
+    // 图目录里已有一张中文路径的图：pick_project_graph 对每张图都做路径归一，
+    // 不能因此 panic。
+    let chinese = new_graph(r"D:\项目", "g-cn".into(), "root".into(), now());
+    orchestration::save_graph_in(&root, &chinese).unwrap();
+    assert_eq!(latest_project_graph(&root, r"D:\项目").map(|g| g.id), Some("g-cn".into()));
+    // 对另一个项目的 plan_dispatch 照常工作。
+    let existing = latest_project_graph(&root, r"D:\别的");
+    assert!(existing.is_none());
+    let models = vec![ResourceModel {
+        agent: "codex".into(),
+        id: "exec".into(),
+        ..ResourceModel::default()
+    }];
+    let presets = orchestration::builtin_presets();
+    let roles = RoleSettings::default();
+    let settings = EngineSettings::default();
+    let targets = vec![Target {
+        agent: "codex".into(),
+        model: "exec".into(),
+        role: "执行".into(),
+        thinking: "中".into(),
+        visibility: "共享".into(),
+        write: "只读".into(),
+        ..Target::default()
+    }];
+    let mut git_dirty_count = || None;
+    let mut plan_input = PlanInput {
+        run_id: "r1",
+        project: r"D:\别的",
+        text: "实现任务",
+        preset: None,
+        attachments: &[],
+        targets: &targets,
+        settings: &settings,
+        models: &models,
+        resources_error: None,
+        presets: &presets,
+        roles: &roles,
+        active_runs: 0,
+        existing,
+        git_dirty_count: &mut git_dirty_count,
+    };
+    let mut seq = 0usize;
+    let mut ids = move || {
+        seq += 1;
+        format!("gen-{seq}")
+    };
+    let mut clock = || Utc::now();
+    match plan_dispatch(&mut plan_input, &mut ids, &mut clock) {
+        Plan::Ready { created, .. } => assert!(!created.is_empty()),
+        Plan::Rejected { reason, .. } => panic!("plan_dispatch 不应拒绝：{reason}"),
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+// ── R2-2：合并写：并发 run 与 adopt 的改动不被整图回写抹掉 ──────────
+
+fn file_sink<'a>(root: &'a Path, run: &'a mut EngineRun) -> FileSink<'a> {
+    FileSink {
+        root,
+        run,
+        active: Arc::new(Mutex::new(Vec::new())),
+        committed: None,
+    }
+}
+
+#[test]
+fn merging_commits_keep_both_runs_nodes_and_results() {
+    let root = temp("merge-two-runs");
+    let base = new_graph("D:/p", "g1".into(), "root".into(), now());
+    orchestration::save_graph_in(&root, &base).unwrap();
+    let mut run_a = EngineRun { run_id: "a".into(), graph_id: "g1".into(), ..EngineRun::default() };
+    let mut run_b = EngineRun { run_id: "b".into(), graph_id: "g1".into(), ..EngineRun::default() };
+    let mut sink_a = file_sink(&root, &mut run_a);
+    let mut sink_b = file_sink(&root, &mut run_b);
+
+    // 两个 run 交替提交同一张图：各自新增自己的节点。
+    let mut ga = base.clone();
+    ga.nodes.insert("a1".into(), turn("a1", &["root"], "执行", &now()));
+    sink_a.save_graph(&ga).unwrap();
+    let mut gb = base.clone();
+    gb.nodes.insert("b1".into(), turn("b1", &["root"], "执行", &now()));
+    sink_b.save_graph(&gb).unwrap();
+
+    // a 再提交：a1 出结果；b1 不在本 run 的改动集里，不能被抹掉。
+    let mut ga2 = ga.clone();
+    ga2.nodes.get_mut("a1").unwrap().reply = Some(Reply {
+        status: "done".into(),
+        text: "a 结果".into(),
+        ..Reply::default()
+    });
+    ga2.updated_at = now();
+    sink_a.save_graph(&ga2).unwrap();
+    let disk = orchestration::load_graph_in(&root, "g1").unwrap().unwrap();
+    assert_eq!(disk.nodes["a1"].reply.as_ref().unwrap().text, "a 结果");
+    assert!(disk.nodes.contains_key("b1"), "另一个 run 的节点不能被抹掉");
+
+    // b 再提交自己的结果，a 的结果也保留。
+    let mut gb2 = gb.clone();
+    gb2.nodes.get_mut("b1").unwrap().reply = Some(Reply {
+        status: "done".into(),
+        text: "b 结果".into(),
+        ..Reply::default()
+    });
+    gb2.updated_at = now();
+    sink_b.save_graph(&gb2).unwrap();
+    let disk = orchestration::load_graph_in(&root, "g1").unwrap().unwrap();
+    assert_eq!(disk.nodes["a1"].reply.as_ref().unwrap().text, "a 结果");
+    assert_eq!(disk.nodes["b1"].reply.as_ref().unwrap().text, "b 结果");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn adopt_during_run_survives_later_commits() {
+    let root = temp("merge-adopt");
+    let mut graph = new_graph("D:/p", "g1".into(), "root".into(), now());
+    let mut n1 = turn("n1", &["root"], "执行", &now());
+    n1.reply = Some(Reply { status: "done".into(), text: "回答".into(), ..Reply::default() });
+    graph.nodes.insert("n1".into(), n1);
+    graph.nodes.insert("n2".into(), turn("n2", &["root"], "执行", &now()));
+    orchestration::save_graph_in(&root, &graph).unwrap();
+    let run = EngineRun {
+        run_id: "r1".into(),
+        graph_id: "g1".into(),
+        project: "D:/p".into(),
+        status: "running".into(),
+        nodes: node_summary(&graph, vec!["n1".into(), "n2".into()]),
+        ..EngineRun::default()
+    };
+    write_run(&root, &run).unwrap();
+
+    // run 进场首次提交（此时 n1 尚未被采纳）。
+    let mut run_sink = EngineRun { ..run };
+    let mut sink = file_sink(&root, &mut run_sink);
+    sink.save_graph(&graph).unwrap();
+    // run 进行中用户采纳了 n1。
+    adopt(&root, "r1", "n1").unwrap();
+    assert_eq!(
+        orchestration::load_graph_in(&root, "g1").unwrap().unwrap().nodes["n1"]
+            .reply
+            .as_ref()
+            .unwrap()
+            .adopted,
+        Some(true)
+    );
+
+    // 后台随后提交 n2 的结果：它自己的内存快照里 n1 没有采纳标记，合并写
+    // 只覆盖 n2，不能把 n1 的采纳抹掉。
+    let mut next = graph.clone();
+    next.nodes.get_mut("n2").unwrap().reply = Some(Reply {
+        status: "done".into(),
+        text: "n2 结果".into(),
+        ..Reply::default()
+    });
+    next.updated_at = now();
+    sink.save_graph(&next).unwrap();
+
+    let disk = orchestration::load_graph_in(&root, "g1").unwrap().unwrap();
+    assert_eq!(disk.nodes["n1"].reply.as_ref().unwrap().adopted, Some(true), "采纳标记不能被后台提交抹掉");
+    assert_eq!(disk.nodes["n2"].reply.as_ref().unwrap().text, "n2 结果");
+    let _ = fs::remove_dir_all(root);
+}
+
+// ── R2-3：adopt 不写 run 文件 ─────────────────────────────────
+
+#[test]
+fn adopt_keeps_run_file_untouched() {
+    let root = temp("adopt-run-file");
+    let mut graph = new_graph("D:/p", "g1".into(), "root".into(), now());
+    let mut n1 = turn("n1", &["root"], "执行", &now());
+    n1.reply = Some(Reply { status: "done".into(), text: "回答".into(), ..Reply::default() });
+    graph.nodes.insert("n1".into(), n1);
+    orchestration::save_graph_in(&root, &graph).unwrap();
+    let run = EngineRun {
+        run_id: "r1".into(),
+        graph_id: "g1".into(),
+        project: "D:/p".into(),
+        status: "done".into(),
+        nodes: node_summary(&graph, vec!["n1".into()]),
+        ..EngineRun::default()
+    };
+    write_run(&root, &run).unwrap();
+    let before = fs::read(run_path(&root, "r1")).unwrap();
+    adopt(&root, "r1", "n1").unwrap();
+    assert_eq!(fs::read(run_path(&root, "r1")).unwrap(), before, "adopt 不改写 run 文件");
+    // 图上的采纳标记已经落盘。
+    assert_eq!(
+        orchestration::load_graph_in(&root, "g1").unwrap().unwrap().nodes["n1"]
+            .reply
+            .as_ref()
+            .unwrap()
+            .adopted,
+        Some(true)
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+// ── R2-4：后台进程不复活已判失败的 run ──────────────────────
+
+#[test]
+fn run_background_ignores_non_running_run() {
+    let root = temp("bg-failed");
+    let mut graph = new_graph("D:/p", "g1".into(), "root".into(), now());
+    graph.nodes.insert("n1".into(), turn("n1", &["root"], "执行", &now()));
+    orchestration::save_graph_in(&root, &graph).unwrap();
+    let run = EngineRun {
+        run_id: "r1".into(),
+        graph_id: "g1".into(),
+        project: "D:/p".into(),
+        status: "failed".into(),
+        reason: "引擎进程未能启动".into(),
+        nodes: node_summary(&graph, vec!["n1".into()]),
+        ..EngineRun::default()
+    };
+    write_run(&root, &run).unwrap();
+    let run_before = fs::read(run_path(&root, "r1")).unwrap();
+    let graph_before = fs::read(root.join("graphs").join("g1.json")).unwrap();
+    run_background(&root, "r1").expect("不派发直接成功返回");
+    assert_eq!(fs::read(run_path(&root, "r1")).unwrap(), run_before, "run 文件不能被改写");
+    assert_eq!(fs::read(root.join("graphs").join("g1.json")).unwrap(), graph_before, "图不能被动");
+    let _ = fs::remove_dir_all(root);
+}
+
+// ── R2-6：推进中途失败的收尾只动本 run 的节点 ───────────────────
+
+struct FailingCommitSink;
+
+impl PipelineSink for FailingCommitSink {
+    fn save_graph(&mut self, _graph: &Graph) -> Result<(), String> {
+        Err("写入图失败：模拟磁盘满".into())
+    }
+    fn update(&mut self, _update: &RunUpdate) -> Result<(), String> {
+        Ok(())
+    }
+    fn dispatch(&mut self, _request: &DispatchStageRequest) -> Result<DispatchStageResult, String> {
+        panic!("提交失败后不应再派发")
+    }
+}
+
+#[test]
+fn pipeline_commit_failure_only_fails_this_runs_nodes() {
+    let root = temp("commit-fail");
+    // 图上：本 run 的 n1 pending、另一个 run 的 n2 pending。
+    let mut graph = new_graph("D:/p", "g1".into(), "root".into(), now());
+    let mut n1 = turn("n1", &["root"], "执行", &now());
+    n1.reply = Some(Reply { status: "pending".into(), ..Reply::default() });
+    let mut n2 = turn("n2", &["root"], "执行", &now());
+    n2.reply = Some(Reply { status: "pending".into(), ..Reply::default() });
+    graph.nodes.insert("n1".into(), n1);
+    graph.nodes.insert("n2".into(), n2);
+    orchestration::save_graph_in(&root, &graph).unwrap();
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"codex","models":[{"id":"exec","agent":"codex"}]}]}"#,
+    )
+    .unwrap();
+    let run = EngineRun {
+        run_id: "r1".into(),
+        graph_id: "g1".into(),
+        project: "D:/p".into(),
+        status: "running".into(),
+        nodes: node_summary(&graph, vec!["n1".into()]),
+        ..EngineRun::default()
+    };
+    write_run(&root, &run).unwrap();
+
+    let result = run_background_with(&root, "r1", |_, _, _| Box::new(FailingCommitSink));
+    let error = result.expect_err("首次提交就失败");
+    assert!(error.contains("写入图失败"));
+
+    let disk = orchestration::load_graph_in(&root, "g1").unwrap().unwrap();
+    let n1 = disk.nodes["n1"].reply.as_ref().unwrap();
+    assert_eq!(n1.status, "failed");
+    assert_eq!(n1.error_kind.as_deref(), Some("error"));
+    let n2 = disk.nodes["n2"].reply.as_ref().unwrap();
+    assert_eq!(n2.status, "pending", "别的 run 的 pending 节点不能被误标失败");
+
+    let finished = read_run(&root, "r1").unwrap();
+    assert_eq!(finished.status, "failed");
+    assert!(finished.reason.contains("写入图失败"));
+    assert_eq!(finished.nodes.len(), 1);
+    assert_eq!(finished.nodes[0].node_id, "n1");
+    assert_eq!(finished.nodes[0].status, "failed");
+    let _ = fs::remove_dir_all(root);
+}
+
+// ── R2-9：upstream_artifacts 第一轮只在允许集内 DFS ─────────────────
+
+#[test]
+fn upstream_artifacts_first_pass_dfs_stays_inside_allowed_set() {
+    let mut graph = new_graph("D:/p", "g".into(), "root".into(), now());
+    let artifact = |summary: &str| {
+        Some(ReplyArtifacts {
+            stdout_summary: summary.into(),
+            ..ReplyArtifacts::default()
+        })
+    };
+    let mut a = turn("a", &["root"], "执行", &now());
+    a.reply = Some(Reply {
+        status: "done".into(),
+        text: "a 回答".into(),
+        artifacts: artifact("a 产物"),
+        ..Reply::default()
+    });
+    let mut b = turn("b", &["root"], "执行", &now());
+    b.reply = Some(Reply {
+        status: "done".into(),
+        text: "b 回答".into(),
+        artifacts: artifact("b 产物"),
+        ..Reply::default()
+    });
+    graph.nodes.insert("a".into(), a);
+    graph.nodes.insert("b".into(), b);
+    // 指定上游按 [b, a] 给：root 不在允许集里，整棵剪枝，两路产物都由兑底
+    // 按允许集顺序补——不是全祖先 DFS 序（a、b）。
+    let mut m = turn("m", &["a", "b"], "验收", &now());
+    let t = m.target.as_mut().unwrap();
+    t.visibility = "指定上游".into();
+    t.upstreams = Some(vec!["b".into(), "a".into()]);
+    graph.nodes.insert("m".into(), m);
+    let artifacts = upstream_artifacts(&graph, "m");
+    let summaries: Vec<_> = artifacts.iter().map(|a| a.stdout_summary.as_str()).collect();
+    assert_eq!(summaries, vec!["b 产物", "a 产物"]);
+}
+
+// ── R2-10：启动窗口对远未来时间戳也过期 ──────────────────────
+
+#[test]
+fn pid_zero_far_future_updated_at_is_expired() {
+    let root = temp("pid0-future");
+    let far = EngineRun {
+        run_id: "far".into(),
+        status: "running".into(),
+        pid: 0,
+        updated_at: rfc3339(Utc::now() + chrono::Duration::seconds(120)),
+        ..EngineRun::default()
+    };
+    write_run(&root, &far).unwrap();
+    let got = read_run(&root, "far").unwrap();
+    assert_eq!(got.status, "failed");
+    assert_eq!(got.reason, "引擎进程未能启动");
+    // 小幅未来（时钟微偏）仍算启动中。
+    let near = EngineRun {
+        run_id: "near".into(),
+        status: "running".into(),
+        pid: 0,
+        updated_at: rfc3339(Utc::now() + chrono::Duration::seconds(5)),
+        ..EngineRun::default()
+    };
+    write_run(&root, &near).unwrap();
+    assert_eq!(read_run(&root, "near").unwrap().status, "running");
+    let _ = fs::remove_dir_all(root);
+}
+
+// ── R2-12：退出码 3 的另两种来源 ────────────────────────────
+
+#[test]
+fn start_dispatch_reports_unavailable_when_runs_dir_not_writable() {
+    let root = temp("exit3-runs-dir");
+    // runs 被同名文件占住，创建目录失败。
+    fs::write(root.join("runs"), "blocked").unwrap();
+    let input = DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "实现任务".into(),
+        ..DispatchInput::default()
+    };
+    match start_dispatch(&root, input) {
+        Err(StartError::Unavailable(message)) => assert!(message.contains("创建 run 目录失败")),
+        other => panic!("应报引擎不可用：{other:?}"),
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn start_dispatch_reports_unavailable_when_spawn_fails() {
+    let root = temp("exit3-spawn");
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"codex","models":[{"id":"exec","agent":"codex"}]}]}"#,
+    )
+    .unwrap();
+    let input = DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "实现任务".into(),
+        targets: vec![Target {
+            agent: "codex".into(),
+            model: "exec".into(),
+            role: "执行".into(),
+            thinking: "中".into(),
+            visibility: "共享".into(),
+            write: "只读".into(),
+            ..Target::default()
+        }],
+        ..DispatchInput::default()
+    };
+    let result = start_dispatch_with(&root, input, |_, _| Err("启动后台引擎失败：模拟".into()));
+    match result {
+        Err(StartError::Unavailable(message)) => assert!(message.contains("启动后台引擎失败")),
+        other => panic!("应报引擎不可用：{other:?}"),
+    }
+    // spawn 失败时 run 落 failed，不留假 running。
+    let dir = runs_dir(&root);
+    let mut seen = 0;
+    for entry in fs::read_dir(&dir).unwrap().flatten() {
+        let run: EngineRun = serde_json::from_slice(&fs::read(entry.path()).unwrap()).unwrap();
+        assert_eq!(run.status, "failed");
+        assert!(run.reason.contains("启动后台引擎失败"));
+        seen += 1;
+    }
+    assert_eq!(seen, 1);
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
