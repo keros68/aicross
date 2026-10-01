@@ -73,6 +73,14 @@ pub fn classify_quota(
             .captures(stderr_or_body)
             .and_then(|capture| capture.get(1))
             .and_then(|value| value.as_str().parse::<u16>().ok())
+            .or_else(|| {
+                // 部分端点（如智谱 coding plan 经 pi）把状态码直接放在行首：`429: {...}`。
+                static LEADING: OnceLock<Regex> = OnceLock::new();
+                LEADING
+                    .get_or_init(|| Regex::new(r"(?m)^[ \t]*429[ \t]*:").expect("leading quota status regex"))
+                    .is_match(stderr_or_body)
+                    .then_some(429)
+            })
     };
     let status = http_status.or(embedded_status);
     let balance = lower.contains("insufficient balance");
@@ -89,7 +97,7 @@ pub fn classify_quota(
     let chinese_limit = {
         static CHINESE: OnceLock<Regex> = OnceLock::new();
         CHINESE
-            .get_or_init(|| Regex::new(r"(?m)(?:[^。！？\r\n]*(?:额度|限额|配额)[^。！？\r\n]*(?:用尽|不足|已达|超出|耗尽)|[^。！？\r\n]*(?:用尽|不足|已达|超出|耗尽)[^。！？\r\n]*(?:额度|限额|配额))").expect("Chinese quota marker regex"))
+            .get_or_init(|| Regex::new(r"(?m)(?:[^。！？\r\n]*(?:额度|限额|配额)[^。！？\r\n]*(?:用尽|不足|已达|超出|耗尽)|[^。！？\r\n]*(?:用尽|不足|已达|超出|耗尽)[^。！？\r\n]*(?:额度|限额|配额)|(?:已达|达到)[^。！？\r\n]{0,12}(?:使用|用量|调用)上限|(?:额度|限额|配额)[^。！？\r\n]*将[^。！？\r\n]*重置)").expect("Chinese quota marker regex"))
             .is_match(stderr_or_body)
     };
     let text_limit = ["session limit", "usage limit"]
@@ -154,6 +162,14 @@ fn parse_quota_reset(text: &str) -> Option<String> {
             reset = Local.from_local_datetime(&(today + ChronoDuration::days(1)).and_time(time)).earliest()?;
         }
         return Some(reset.to_rfc3339());
+    }
+    static LOCAL_DATETIME: OnceLock<Regex> = OnceLock::new();
+    if let Some(capture) = LOCAL_DATETIME
+        .get_or_init(|| Regex::new(r"将(?:在|于)\s*(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\s*重置").expect("quota local datetime regex"))
+        .captures(text)
+    {
+        let naive = chrono::NaiveDateTime::parse_from_str(&capture.get(1)?.as_str().replace('T', " "), "%Y-%m-%d %H:%M:%S").ok()?;
+        return Some(Local.from_local_datetime(&naive).earliest()?.to_rfc3339());
     }
     static ISO: OnceLock<Regex> = OnceLock::new();
     if let Some(value) = ISO
@@ -1065,6 +1081,48 @@ mod tests {
         assert_eq!((reset.hour(), reset.minute()), (13, 30));
         let expected_days = if (now.hour(), now.minute(), now.second()) >= (13, 30, 0) { 1 } else { 0 };
         assert_eq!(reset.date_naive(), now.date_naive() + ChronoDuration::days(expected_days));
+    }
+
+    #[test]
+    fn task41_zhipu_coding_plan_usage_cap_is_quota_hit_with_local_reset_time() {
+        let body = r#"429: {"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2026-10-01 13:30:41 重置。"}"#;
+        let expected = Local
+            .from_local_datetime(&chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap().and_hms_opt(13, 30, 41).unwrap())
+            .earliest()
+            .unwrap();
+        // dispatch 把 stderr 与错误文本按行拼接，`429:` 落在第二行行首也要认出。
+        for text in [body.to_string(), format!("pi exited\n{body}")] {
+            let hit = classify_quota(&text, Some(1), None).unwrap_or_else(|| panic!("未认出：{text}"));
+            assert_eq!(hit.reason, "rate_limit", "{text}");
+            let reset = DateTime::parse_from_rfc3339(hit.resets_at.as_deref().unwrap()).unwrap();
+            assert_eq!(reset.timestamp(), expected.timestamp());
+            assert_eq!(reset.with_timezone(&Local).naive_local(), expected.naive_local());
+        }
+
+        // 没有状态码时，中文表述单独也足以判为额度用尽。
+        let cap = classify_quota("已达到 5 小时的使用上限。", Some(1), None).unwrap();
+        assert_eq!(cap.reason, "quota");
+        let reset_only = classify_quota("您的限额将在 2026-10-01 13:30:41 重置。", Some(1), None).unwrap();
+        assert_eq!(reset_only.reason, "quota");
+        assert_eq!(DateTime::parse_from_rfc3339(reset_only.resets_at.as_deref().unwrap()).unwrap().timestamp(), expected.timestamp());
+    }
+
+    #[test]
+    fn task41_quota_classifier_rejects_cap_word_bare_1429_and_unrelated_reset() {
+        for text in [
+            "上限参数必须为正整数",
+            "使用上限为 100 次，可在配置中修改",
+            "1429: unknown error",
+            "error at src/lib.rs:1429: unexpected token",
+            "line 429: syntax error",
+            "worker returned 429: records",
+            "已达到最大重试次数上限，请检查网络后重试",
+            "请重置密码后再试",
+            "密码将在 2026-10-01 13:30:41 重置",
+            "连接将在 2026-10-01 13:30:41 重置。",
+        ] {
+            assert!(classify_quota(text, Some(1), None).is_none(), "误判：{text}");
+        }
     }
     use std::time::Duration;
 
