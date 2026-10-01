@@ -2214,7 +2214,9 @@ pub(crate) struct RunUpdate {
 }
 
 pub(crate) trait PipelineSink {
-    fn save_graph(&mut self, graph: &Graph) -> Result<(), String>;
+    /// 落图。返回 `Some(合并后的图)` 时，推进循环改用它继续（同 TS `commit`
+    /// 返回合并结果、`state.graph` 随之更新）；不做合并的 sink 返回 `None`。
+    fn save_graph(&mut self, graph: &Graph) -> Result<Option<Graph>, String>;
     fn update(&mut self, update: &RunUpdate) -> Result<(), String>;
     fn dispatch(&mut self, request: &DispatchStageRequest) -> Result<DispatchStageResult, String>;
     /// 在飞节点集合变化时通知（生产用来让取消 watcher 知道该取消谁）。
@@ -2284,12 +2286,6 @@ pub(crate) fn run_pipeline(
     for id in created {
         push_unique(&mut all_run_ids, id);
     }
-    let skip: HashSet<String> = graph
-        .nodes
-        .values()
-        .filter(|n| n.target.is_some() && !all_run_ids.contains(&n.id))
-        .map(|n| n.id.clone())
-        .collect();
     let mut scope: HashSet<String> = all_run_ids.iter().cloned().collect();
     let mut queued = 0usize;
     let mut collected = 0usize;
@@ -2316,14 +2312,18 @@ pub(crate) fn run_pipeline(
     macro_rules! commit {
         () => {
             graph.updated_at = rfc3339(clock());
-            sink.save_graph(&graph)?;
+            if let Some(merged) = sink.save_graph(&graph)? {
+                graph = merged;
+            }
             queued += 1;
         };
     }
 
     // runConsoleDispatch 423-426：进流水线前的落图与初始摘要。
     graph.updated_at = rfc3339(clock());
-    sink.save_graph(&graph)?;
+    if let Some(merged) = sink.save_graph(&graph)? {
+        graph = merged;
+    }
     sink.update(&make_update(
         run_id,
         &graph,
@@ -2341,7 +2341,9 @@ pub(crate) fn run_pipeline(
         }
         let stage_ids: Vec<String> = dispatchable_ids(&graph)
             .into_iter()
-            .filter(|id| !skip.contains(id))
+            // 只派本 run 的节点（新建的与修正轮生成的）。单 run 时与 TS 的 skip
+            // 口径等价；合并写带进来的别的 run 的待派节点不会被本 run 派出。
+            .filter(|id| scope.contains(id))
             .collect();
         if stage_ids.is_empty() {
             break;
@@ -2493,7 +2495,9 @@ pub(crate) fn run_pipeline(
         }
     }
     // 收尾：先落图（排空积攒的 commit 更新），再发终态摘要。
-    sink.save_graph(&graph)?;
+    if let Some(merged) = sink.save_graph(&graph)? {
+        graph = merged;
+    }
     drain!();
     let summary = make_update(
         run_id,
@@ -2809,11 +2813,29 @@ struct FileSink<'a> {
     committed: Option<Graph>,
 }
 
+impl<'a> FileSink<'a> {
+    /// `baseline` 是后台进程读到的图：首笔提交只覆盖相对它改动过的节点（同 TS
+    /// `let committed = graph`），读图之后别的 run 写进去的结果不会被旧值盖回。
+    fn new(
+        root: &'a Path,
+        run: &'a mut EngineRun,
+        active: Arc<Mutex<Vec<String>>>,
+        baseline: Graph,
+    ) -> Self {
+        FileSink {
+            root,
+            run,
+            active,
+            committed: Some(baseline),
+        }
+    }
+}
+
 impl PipelineSink for FileSink<'_> {
-    fn save_graph(&mut self, graph: &Graph) -> Result<(), String> {
+    fn save_graph(&mut self, graph: &Graph) -> Result<Option<Graph>, String> {
         let merged = merge_save_graph(self.root, self.committed.as_ref(), graph)?;
-        self.committed = Some(merged);
-        Ok(())
+        self.committed = Some(merged.clone());
+        Ok(Some(merged))
     }
     fn update(&mut self, update: &RunUpdate) -> Result<(), String> {
         self.run.status = update.status.clone();
@@ -2835,13 +2857,8 @@ impl PipelineSink for FileSink<'_> {
 }
 
 pub(crate) fn run_background(root: &Path, run_id: &str) -> Result<(), String> {
-    run_background_with(root, run_id, |root, run, active| {
-        Box::new(FileSink {
-            root,
-            run,
-            active,
-            committed: None,
-        })
+    run_background_with(root, run_id, |root, run, active, baseline| {
+        Box::new(FileSink::new(root, run, active, baseline.clone()))
     })
 }
 
@@ -2854,6 +2871,7 @@ fn run_background_with(
         &'r Path,
         &'r mut EngineRun,
         Arc<Mutex<Vec<String>>>,
+        &Graph,
     ) -> Box<dyn PipelineSink + 'r>,
 ) -> Result<(), String> {
     if !valid_id(run_id) {
@@ -2895,7 +2913,7 @@ fn run_background_with(
     );
     let flag = Arc::clone(&cancelled);
     let result = {
-        let mut sink = make_sink(root, &mut run, Arc::clone(&active));
+        let mut sink = make_sink(root, &mut run, Arc::clone(&active), &graph);
         let mut ids = || Uuid::new_v4().to_string();
         let mut clock = Utc::now;
         run_pipeline(

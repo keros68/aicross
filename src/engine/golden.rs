@@ -264,9 +264,9 @@ impl RecordingSink<'_> {
 }
 
 impl PipelineSink for RecordingSink<'_> {
-    fn save_graph(&mut self, graph: &Graph) -> Result<(), String> {
+    fn save_graph(&mut self, graph: &Graph) -> Result<Option<Graph>, String> {
         self.last_saved = Some(graph.clone());
-        Ok(())
+        Ok(None)
     }
 
     fn update(&mut self, update: &RunUpdate) -> Result<(), String> {
@@ -500,7 +500,10 @@ fn first_diff(expected: &Value, actual: &Value, path: String) -> Option<String> 
     match (expected, actual) {
         (Value::Object(a), Value::Object(b)) => {
             for (k, v) in a {
-                if let Some(found) = first_diff(v, &b[k], format!("{path}.{k}")) {
+                let Some(other) = b.get(k) else {
+                    return Some(format!("{path}.{k}：实际没有，夹具 = {v}"));
+                };
+                if let Some(found) = first_diff(v, other, format!("{path}.{k}")) {
                     return Some(found);
                 }
             }

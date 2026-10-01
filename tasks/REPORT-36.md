@@ -187,3 +187,15 @@
 - 真机核仍归编排者（真实派发、运行中取消、杀进程、窗口对账）。
 - 金标准输入时间按原始先后重建、检查顺序再补钉、管道捕获 `dispatch` 输出提前返回的端到端测试：按 fix-36-r2 留在积压。
 - 未 commit，未 push。
+
+## R2 编排者追加（10-01）
+
+复核 R2 时发现 `merge_save_graph` 的两处与 TS `mergeConsoleCommit` 不一致，并补了测试：
+
+- **首笔提交的对照基准**：`FileSink` 原先以「无基准」起步，首笔提交把本进程读到的整张图都算作改动写回，读图之后别的 run 写进去的结果会被旧值盖回。改为 `FileSink::new(.., baseline)`，以后台进程读到的图为基准（同 TS `let committed = graph`）。测试：`engine::tests::file_sink_first_commit_keeps_results_written_after_load`。
+- **推进循环改用合并后的图**：`PipelineSink::save_graph` 改为返回 `Option<Graph>`，`FileSink` 返回合并结果，`run_pipeline` 在每次落图后改用它继续（同 TS `state.graph = deps.commit(...)`）；原先循环继续用自己那份旧图，下一次提交会把别的 run 的节点改回旧状态。
+- **只派本 run 的节点**：合并后的图会带进别的 run 的待派节点，选取改为只在本 run 的节点集（新建的与修正轮生成的）里挑；单 run 时与原 skip 口径等价，31 个金标准照常通过。测试：`engine::tests::pipeline_continues_from_merged_graph_and_never_dispatches_other_runs_nodes`。
+- 回改验证：首笔基准改回无基准、循环不改用合并结果、去掉本 run 节点过滤，三种回改分别使上述两条测试之一变红。
+- 金标准测试的 `first_diff` 在实际结果缺少夹具里的键时会 panic、报不出差异，改为报「实际没有」。
+
+验证：`cargo check --all-targets` 零 warning；`cargo test` 548 passed / 0 failed / 12 ignored；vitest 729 passed；`npm run build` 通过。

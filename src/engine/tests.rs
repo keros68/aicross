@@ -576,8 +576,8 @@ struct StubSink {
 }
 
 impl PipelineSink for StubSink {
-    fn save_graph(&mut self, _graph: &Graph) -> Result<(), String> {
-        Ok(())
+    fn save_graph(&mut self, _graph: &Graph) -> Result<Option<Graph>, String> {
+        Ok(None)
     }
     fn update(&mut self, update: &RunUpdate) -> Result<(), String> {
         self.updates.push(update.clone());
@@ -967,7 +967,7 @@ fn run_background_ignores_non_running_run() {
 struct FailingCommitSink;
 
 impl PipelineSink for FailingCommitSink {
-    fn save_graph(&mut self, _graph: &Graph) -> Result<(), String> {
+    fn save_graph(&mut self, _graph: &Graph) -> Result<Option<Graph>, String> {
         Err("写入图失败：模拟磁盘满".into())
     }
     fn update(&mut self, _update: &RunUpdate) -> Result<(), String> {
@@ -1005,7 +1005,7 @@ fn pipeline_commit_failure_only_fails_this_runs_nodes() {
     };
     write_run(&root, &run).unwrap();
 
-    let result = run_background_with(&root, "r1", |_, _, _| Box::new(FailingCommitSink));
+    let result = run_background_with(&root, "r1", |_, _, _, _| Box::new(FailingCommitSink));
     let error = result.expect_err("首次提交就失败");
     assert!(error.contains("写入图失败"));
 
@@ -1181,4 +1181,105 @@ fn cancelled_before_first_dispatch_leaves_draft_untouched() {
     // 没派出去过的 draft 节点不补失败桩。
     assert_eq!(outcome.graph.nodes["n1"].reply.as_ref().unwrap().status, "draft");
     assert_eq!(sink.updates.last().unwrap().status, "failed");
+}
+
+#[test]
+fn file_sink_first_commit_keeps_results_written_after_load() {
+    // A 的后台进程读图时 b1（另一个 run 的节点）还是 draft；之后那个 run 把
+    // b1 写成 done。A 的首笔提交只能覆盖它自己改过的节点，不能把 b1 盖回 draft。
+    let root = temp("merge-baseline");
+    let mut base = new_graph("D:/p", "g1".into(), "root".into(), now());
+    base.nodes.insert("b1".into(), turn("b1", &["root"], "执行", &now()));
+    orchestration::save_graph_in(&root, &base).unwrap();
+
+    let mut by_b = base.clone();
+    by_b.nodes.get_mut("b1").unwrap().reply = Some(Reply {
+        status: "done".into(),
+        text: "b 结果".into(),
+        ..Reply::default()
+    });
+    orchestration::save_graph_in(&root, &by_b).unwrap();
+
+    let mut run_a = EngineRun { run_id: "a".into(), graph_id: "g1".into(), ..EngineRun::default() };
+    let mut sink_a = FileSink::new(&root, &mut run_a, Arc::new(Mutex::new(Vec::new())), base.clone());
+    let mut ga = base.clone();
+    ga.nodes.insert("a1".into(), turn("a1", &["root"], "执行", &now()));
+    let merged = sink_a.save_graph(&ga).unwrap().expect("FileSink 返回合并后的图");
+
+    let disk = orchestration::load_graph_in(&root, "g1").unwrap().unwrap();
+    assert_eq!(disk.nodes["b1"].reply.as_ref().unwrap().status, "done", "别的 run 写入的结果不能被旧值盖回");
+    assert!(disk.nodes.contains_key("a1"));
+    assert_eq!(merged.nodes["b1"].reply.as_ref().unwrap().status, "done");
+    let _ = fs::remove_dir_all(root);
+}
+
+struct MergingSink {
+    saves: usize,
+    dispatched: Vec<String>,
+}
+
+impl PipelineSink for MergingSink {
+    fn save_graph(&mut self, graph: &Graph) -> Result<Option<Graph>, String> {
+        self.saves += 1;
+        // 模拟合并写：第 2 次落图（循环里第一次提交）时，磁盘上另一个 run 新建了
+        // 待派节点 x1。之后的落图原样返回：推进循环若没在那一刻改用合并后的
+        // 图，x1 就会丢。
+        let mut merged = graph.clone();
+        if self.saves == 2 {
+            merged
+                .nodes
+                .insert("x1".to_string(), turn("x1", &["root"], "执行", "2026-10-01T00:00:00.000Z"));
+        }
+        Ok(Some(merged))
+    }
+    fn update(&mut self, _update: &RunUpdate) -> Result<(), String> {
+        Ok(())
+    }
+    fn dispatch(&mut self, request: &DispatchStageRequest) -> Result<DispatchStageResult, String> {
+        let results = request
+            .nodes
+            .iter()
+            .map(|n| {
+                self.dispatched.push(n.node_id.clone());
+                DispatchNodeResult {
+                    node_id: n.node_id.clone(),
+                    stage: n.stage,
+                    status: "ok".into(),
+                    text: "完成".into(),
+                    ..DispatchNodeResult::default()
+                }
+            })
+            .collect();
+        Ok(DispatchStageResult {
+            run_id: request.run_id.clone(),
+            results,
+            state_file: String::new(),
+        })
+    }
+}
+
+#[test]
+fn pipeline_continues_from_merged_graph_and_never_dispatches_other_runs_nodes() {
+    let mut graph = new_graph("D:/p", "g".into(), "root".into(), now());
+    graph.nodes.insert("n1".into(), turn("n1", &["root"], "执行", &now()));
+    let mut sink = MergingSink { saves: 0, dispatched: vec![] };
+    let mut ids = || Uuid::new_v4().to_string();
+    let mut clock = Utc::now;
+    let outcome = run_pipeline(
+        "run-m",
+        "D:/p",
+        &EngineSettings::default(),
+        graph,
+        &["n1".to_string()],
+        &[],
+        "原始需求",
+        &mut sink,
+        &mut ids,
+        &mut clock,
+        &|| false,
+    )
+    .expect("推进成功");
+    assert_eq!(sink.dispatched, vec!["n1".to_string()], "只派本 run 的节点");
+    assert!(outcome.graph.nodes.contains_key("x1"), "推进循环应改用合并后的图继续");
+    assert_eq!(outcome.graph.nodes["x1"].reply.as_ref().unwrap().status, "draft");
 }
