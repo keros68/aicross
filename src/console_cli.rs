@@ -367,6 +367,12 @@ fn run_resources_smoke(
                 let _ = writeln!(stderr, "--provider 需要 --model");
                 return 2;
             }
+            // R1-7：agent 下一个模型都没有时不发请求，退出 0。
+            if agent.models.is_empty() {
+                output_resources(&store, Some(&agent_id), stdout);
+                let _ = writeln!(stderr, "该 agent 下没有模型");
+                return 0;
+            }
             let operation = match (ops.smoke_agent_third_party)(&store_file(root), &agent_id) {
                 Ok(operation) => operation,
                 Err(message) => {
@@ -442,8 +448,16 @@ fn run_config(root: &Path, args: &[String], stdout: &mut dyn Write, stderr: &mut
                 let _ = writeln!(stderr, "{message}");
                 return 2;
             }
+            // R1-2：roles.json 损坏时 stdout 仍输出默认值，stderr 提示一行。
+            let roles = match crate::orchestration::roles_from_strict(root) {
+                Ok(roles) => roles,
+                Err(_) => {
+                    let _ = writeln!(stderr, "roles.json 无法解析，已按默认值显示");
+                    crate::orchestration::roles_from(root)
+                }
+            };
             let value = json!({
-                "roles": crate::orchestration::roles_from(root),
+                "roles": roles,
                 "dispatch": crate::engine::load_settings(root),
             });
             let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
@@ -486,11 +500,11 @@ fn run_config_set_role(
         return 2;
     }
     let Some(agent_arg) = option_value(args, "--agent") else {
-        let _ = writeln!(stderr, "缺少 --agent 或其值");
+        let _ = writeln!(stderr, "缺少 --agent");
         return 2;
     };
     let Some(model_arg) = option_value(args, "--model") else {
-        let _ = writeln!(stderr, "缺少 --model 或其值");
+        let _ = writeln!(stderr, "缺少 --model");
         return 2;
     };
     let provider_arg = option_value(args, "--provider");
@@ -549,7 +563,18 @@ fn run_config_set_role(
             return 2;
         }
     };
-    let mut roles = crate::orchestration::roles_from(root);
+    // R1-2：roles_from 对损坏文件静默回默认值，整份写回会丢其余角色；
+    // 严格读取遇损坏拒写。
+    let mut roles = match crate::orchestration::roles_from_strict(root) {
+        Ok(roles) => roles,
+        Err(_) => {
+            let _ = writeln!(
+                stderr,
+                "roles.json 无法解析，为避免覆盖已停止；请先修复或删除该文件"
+            );
+            return 1;
+        }
+    };
     let profile = match role.as_str() {
         "planning" => &mut roles.planning,
         "execution" => &mut roles.execution,
@@ -603,7 +628,9 @@ fn run_config_set(
         let _ = writeln!(stderr, "缺少键");
         return 2;
     };
-    let Some(value) = positional(args, 4) else {
+    // R1-5：值按原样取第 4 个参数，允许负数与以 `-` 开头的文本（负数按
+    // 夹取规则夹到下限），不再把 `-` 开头当成选项前缀。
+    let Some(value) = args.get(4).cloned() else {
         let _ = writeln!(stderr, "缺少值");
         return 2;
     };
@@ -627,8 +654,14 @@ fn run_config_set(
                 return 2;
             }
             let clamped_value = clamp_setting_value(&key, number);
-            if clamped_value.as_f64() != Some(number) {
-                clamped = Some(format!("{key} 越界，已写入 {}", clamped_value));
+            // 区间端点从引擎夹取结果反推（极小/极大各探一次），不另抄一份
+            // 常量；越界与取整分开提示（R1-6），越界优先。
+            let low = clamp_setting_value(&key, f64::MIN).as_f64().unwrap_or(f64::MIN);
+            let high = clamp_setting_value(&key, f64::MAX).as_f64().unwrap_or(f64::MAX);
+            if number < low || number > high {
+                clamped = Some(format!("{key} 越界，已夹到 {}", clamped_value));
+            } else if clamped_value.as_f64() != Some(number) {
+                clamped = Some(format!("{key} 已取整为 {}", clamped_value));
             }
             clamped_value
         }
@@ -693,11 +726,12 @@ fn output_resources(store: &ResourceStore, only_agent: Option<&str>, stdout: &mu
 }
 
 fn agent_entry(agent: &ResourceAgent, now_millis: i64) -> Value {
+    let detected = agent.detected;
     let models: Vec<Value> = agent
         .models
         .iter()
         .map(|model| {
-            let (state, note) = resources::model_state(model, now_millis);
+            let (state, note) = resources::model_state(model, detected, now_millis);
             json!({
                 "id": model.id,
                 "agent": model.agent,
@@ -746,16 +780,20 @@ fn extra_arg_error(args: &[String], from: usize) -> Option<String> {
     args.get(from).map(|arg| format!("不认识的参数：{arg}"))
 }
 
-/// 只认 allowed 里的带值选项；出现位置参数或未知选项时报参数错。
-/// 选项缺值由后续的取值环节报「缺少 …或其值」。
+/// 只认 allowed 里的带值选项；出现位置参数、未知选项或选项缺值时报参数错。
+/// 带值选项写了但后面没有值（到末尾，或下一个参数以 `-` 开头）时报
+/// 「缺少 <选项> 的值」（fix-39-r1 R1-1：否则 `smoke pi --model` 漏写模型名
+/// 会静默改成对该 agent 全部第三方模型批量冒烟，真实消耗额度）。
 fn unknown_option_error(args: &[String], from: usize, allowed: &[&str]) -> Option<String> {
     let mut index = from;
     while index < args.len() {
         let arg = args[index].as_str();
-        if arg.starts_with('-') && allowed.contains(&arg) {
-            index += 2;
-        } else {
+        if !arg.starts_with('-') || !allowed.contains(&arg) {
             return Some(format!("不认识的参数：{arg}"));
+        }
+        match args.get(index + 1) {
+            Some(value) if !value.starts_with('-') => index += 2,
+            _ => return Some(format!("缺少 {arg} 的值")),
         }
     }
     None
@@ -1150,7 +1188,9 @@ mod tests {
                     {"id":"glm-4.7","agent":"pi","provider":"bigmodel","status":"待冒烟","verification":"unverified","login":"logged_out","resolved_id":"glm-4.7","resolved_source":"alias-table"},
                     {"id":"quota","agent":"pi","provider":"zai","status":"待冒烟","verification":"unverified","quota_exhausted_until":"2099-01-01T00:00:00+08:00","resolved_id":"quota","resolved_source":"alias-table"}
                 ]},
-                {"id":"kimi","name":"Kimi Code","kind":"内置","detected":false,"version":"未检测","models":[]}
+                {"id":"kimi","name":"Kimi Code","kind":"内置","detected":false,"version":"未检测","models":[
+                    {"id":"k2","agent":"kimi","provider":"","status":"待冒烟","resolved_id":"k2","resolved_source":"alias-table"}
+                ]}
             ]}"#,
         )
         .unwrap();
@@ -1200,6 +1240,10 @@ mod tests {
         assert_eq!(kimi["state"], "未安装");
         assert_eq!(kimi["note"], "安装后运行 aicross resources detect");
         assert_eq!(kimi["version"], "未检测");
+        // R1-4：agent 未安装时它下面的模型状态跟随 agent，note 与 agent 一致
+        assert_eq!(kimi["models"].as_array().unwrap().len(), 1);
+        assert_eq!(kimi["models"][0]["state"], "未安装");
+        assert_eq!(kimi["models"][0]["note"], "安装后运行 aicross resources detect");
         let pi = parsed["agents"].as_array().unwrap().iter()
             .find(|agent| agent["id"] == "pi").unwrap();
         assert_eq!(pi["state"], "可用");
@@ -1211,7 +1255,10 @@ mod tests {
         assert_eq!(state("zai", "bad"), "验证失败");
         assert_eq!(state("bigmodel", "glm-4.7"), "未登录");
         let logged = model_state_in(&stdout, "pi", "bigmodel", "glm-4.7");
-        assert_eq!(logged["note"], "在 pi 里执行 /login bigmodel");
+        assert_eq!(
+            logged["note"],
+            "在 pi 里执行 /login bigmodel；登录后运行 aicross resources detect 刷新"
+        );
         let quota = model_state_in(&stdout, "pi", "zai", "quota");
         assert_eq!(quota["state"], "额度用尽");
         assert_eq!(quota["note"], "额度恢复时间：2099-01-01T00:00:00+08:00");
@@ -1590,7 +1637,7 @@ mod tests {
         let (code, stdout, stderr) =
             run_with(&root, &["aicross", "config", "set", "timeoutSecs", "9999"], &ResourcesOps::production());
         assert_eq!(code, 0, "{stderr}");
-        assert!(stderr.contains("timeoutSecs 越界，已写入 3600"), "{stderr}");
+        assert!(stderr.contains("timeoutSecs 越界，已夹到 3600"), "{stderr}");
         let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
         assert_eq!(parsed["timeoutSecs"], 3600);
         let saved: serde_json::Value =
@@ -1704,6 +1751,134 @@ mod tests {
             3
         );
         assert_eq!(fs::read_to_string(root.join("resources.json")).unwrap(), "{ 损坏");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // ── fix-39-r1 修正轮 ──────────────────────────────────────────
+
+    /// R1-1：带值选项写了却没给值，一律退出 2；不调冒烟、不写盘。
+    #[test]
+    fn task39_r1_missing_option_value_exits_2_without_side_effects() {
+        let root = fixture_root("r1-missing-value");
+        write_fixture_store(&root);
+        let store_before = fs::read(root.join("resources.json")).unwrap();
+        let roles_before = r#"{"version":1,"planning":{"agent":""}}"#;
+        fs::write(root.join("roles.json"), roles_before).unwrap();
+        let ops = ResourcesOps {
+            smoke_one: Box::new(|_, _| panic!("缺值时不该调单条冒烟")),
+            smoke_agent_third_party: Box::new(|_, _| panic!("缺值时不该调批量冒烟")),
+            ..ResourcesOps::production()
+        };
+        for (args, expect) in [
+            (vec!["aicross", "resources", "smoke", "pi", "--model"], "缺少 --model 的值"),
+            (
+                vec!["aicross", "resources", "smoke", "pi", "--model", "glm", "--provider"],
+                "缺少 --provider 的值",
+            ),
+            (
+                vec![
+                    "aicross", "config", "set-role", "execution", "--agent", "codex",
+                    "--model", "x", "--thinking",
+                ],
+                "缺少 --thinking 的值",
+            ),
+        ] {
+            let (code, stdout, stderr) = run_with(&root, &args, &ops);
+            assert_eq!(code, 2, "{args:?} → {stderr}");
+            assert!(stdout.is_empty(), "{args:?} → {stdout}");
+            assert!(stderr.contains(expect), "{args:?} → {stderr}");
+        }
+        assert_eq!(fs::read(root.join("resources.json")).unwrap(), store_before);
+        assert_eq!(fs::read_to_string(root.join("roles.json")).unwrap(), roles_before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// R1-2：`set-role` 遇损坏或版本不认的 roles.json 拒写（退出 1，字节
+    /// 不变）；`config show` 同样情况 stdout 输出默认值、stderr 提示一行。
+    #[test]
+    fn task39_r1_set_role_refuses_broken_roles_and_show_hints() {
+        for (tag, contents) in [("broken", "{ 损坏"), ("version", r#"{"version":2,"execution":{"agent":"pi"}}"#)] {
+            let root = fixture_root(&format!("r1-roles-{tag}"));
+            write_fixture_store(&root);
+            fs::write(root.join("roles.json"), contents).unwrap();
+            let (code, stdout, stderr) = run_with(
+                &root,
+                &["aicross", "config", "set-role", "execution", "--agent", "pi", "--model", "glm-5.3"],
+                &ResourcesOps::production(),
+            );
+            assert_eq!(code, 1, "{tag} → {stderr}");
+            assert!(stdout.is_empty(), "{tag} → {stdout}");
+            assert!(
+                stderr.contains("roles.json 无法解析，为避免覆盖已停止；请先修复或删除该文件"),
+                "{tag} → {stderr}"
+            );
+            assert_eq!(fs::read_to_string(root.join("roles.json")).unwrap(), contents);
+
+            let (code, stdout, stderr) =
+                run_with(&root, &["aicross", "config", "show"], &ResourcesOps::production());
+            assert_eq!(code, 0, "{tag} → {stderr}");
+            let parsed: serde_json::Value =
+                serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+            assert_eq!(parsed["roles"]["version"], 1);
+            assert_eq!(parsed["roles"]["execution"]["agent"], "");
+            assert!(stderr.contains("roles.json 无法解析，已按默认值显示"), "{tag} → {stderr}");
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    /// R1-5 / R1-6：值按原样取第 4 个参数（负数夹到下限，`-` 开头的文本按
+    /// 原样写入）；小数取整与越界夹取分开提示。
+    #[test]
+    fn task39_r1_config_set_takes_leading_dash_value_and_reports_rounding() {
+        let root = fixture_root("r1-set-dash");
+        let (code, _, stderr) =
+            run_with(&root, &["aicross", "config", "set", "timeoutSecs", "-5"], &ResourcesOps::production());
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.contains("timeoutSecs 越界，已夹到 1"), "{stderr}");
+
+        let (code, _, stderr) = run_with(
+            &root,
+            &["aicross", "config", "set", "validationCommand", "--strict"],
+            &ResourcesOps::production(),
+        );
+        assert_eq!(code, 0, "{stderr}");
+
+        let (code, _, stderr) =
+            run_with(&root, &["aicross", "config", "set", "concurrency", "2.5"], &ResourcesOps::production());
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.contains("concurrency 已取整为 2"), "{stderr}");
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join("dispatch-settings.json")).unwrap()).unwrap();
+        assert_eq!(saved["timeoutSecs"], 1);
+        assert_eq!(saved["validationCommand"], "--strict");
+        assert_eq!(saved["concurrency"], 2);
+        // 写入后再读一致
+        let (code, stdout, _) =
+            run_with(&root, &["aicross", "config", "show"], &ResourcesOps::production());
+        assert_eq!(code, 0);
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["dispatch"]["timeoutSecs"], 1);
+        assert_eq!(parsed["dispatch"]["concurrency"], 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// R1-7：批量冒烟时 agent 下没有任何模型，提示并退出 0，不发请求。
+    #[test]
+    fn task39_r1_smoke_agent_without_models_exits_zero() {
+        let root = fixture_root("r1-smoke-empty");
+        write_fixture_store(&root);
+        let ops = ResourcesOps {
+            smoke_agent_third_party: Box::new(|_, _| panic!("没有模型时不该调冒烟")),
+            ..ResourcesOps::production()
+        };
+        // codex 由读取层补齐，下面一个模型都没有
+        let (code, stdout, stderr) = run_with(&root, &["aicross", "resources", "smoke", "codex"], &ops);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.contains("该 agent 下没有模型"), "{stderr}");
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["id"], "codex");
+        assert_eq!(parsed["state"], "未安装");
         let _ = fs::remove_dir_all(root);
     }
 }

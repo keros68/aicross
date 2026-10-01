@@ -165,7 +165,7 @@ aicross config set timeoutSecs 900
 
 `resources` 只读资源库（`~/.aicross/resources.json`，含旧数据迁移与重判），不探测、不发模型请求。`resources detect` 重新探测全部 agent（含 pi provider 登录检查）并写回资源库；cc-switch 发现提示的路径取派发设置里的 `ccSwitchPath`。单个 agent 探不到或事实源读取失败时逐行写 stderr，退出码仍为 0。`resources smoke <agent>` 对该 agent 的第三方模型各发一次短请求并核对真身；`--model` 只冒烟这一个，`--provider` 在同名模型挂多个 provider 时指定端点；原生模型不冒烟，stderr 提示「原生模型无需冒烟」并退出 0。冒烟失败退出 1，stderr 给脱敏后的原因。
 
-`resources` 与 `detect` 输出全部 agent，`smoke` 输出该 agent 的条目：
+`resources` 与 `detect` 输出全部 agent，`smoke` 输出该 agent 的条目；agent 下没有任何模型时提示「该 agent 下没有模型」，退出 0：
 
 ```json
 {
@@ -184,13 +184,13 @@ aicross config set timeoutSecs 900
 }
 ```
 
-agent 的 `state` 为 `可用`（已探测到）或 `未安装`（未探测到），未安装时 `note` 为「安装后运行 aicross resources detect」。模型的 `state`：原生模型 `可用`；第三方按验证结果为 `未验证` / `已验证` / `验证失败`；pi provider 未登录为 `未登录`，`note` 给登录提示（pi 0.86 起是在 pi 会话里执行 `/login <provider>`，`pi --help` 里没有独立的 login 子命令）；额度恢复时间未过为 `额度用尽`，`note` 写恢复时间。
+agent 的 `state` 为 `可用`（已探测到）或 `未安装`（未探测到），未安装时 `note` 为「安装后运行 aicross resources detect」，它下面的模型同为 `未安装`，`note` 与 agent 一致。模型的 `state`：原生模型 `可用`；第三方按验证结果为 `未验证` / `已验证` / `验证失败`；pi provider 未登录为 `未登录`，`note` 给登录提示并附「登录后运行 aicross resources detect 刷新」（pi 0.86 起是在 pi 会话里执行 `/login <provider>`，`pi --help` 里没有独立的 login 子命令）；额度恢复时间未过为 `额度用尽`，`note` 写恢复时间。同一模型命中多条时按优先级取先命中的一条：未安装 → 额度用尽 → 原生可用 → 未登录 → 验证结果。
 
 `config show` 输出 `{ "roles": …, "dispatch": … }`：`roles` 是 `~/.aicross/roles.json` 的内容，`dispatch` 是 `~/.aicross/dispatch-settings.json` 按 `load_settings` 口径（含默认值与夹取）的全部字段。
 
-`config set-role <planning|execution|acceptance> --agent <a> --model <m> [--provider <p>] [--tier <t>] [--thinking <关|低|中|高>]` 把角色指到资源库里的模型；目标不在资源库时退出 2，stderr 列出该 agent 下可选的模型；省略 `--tier` / `--thinking` 时保持原值；写入后输出新的 `roles`。
+`config set-role <planning|execution|acceptance> --agent <a> --model <m> [--provider <p>] [--tier <t>] [--thinking <关|低|中|高>]` 把角色指到资源库里的模型；目标不在资源库时退出 2，stderr 列出该 agent 下可选的模型；省略 `--tier` / `--thinking` 时保持原值；`roles.json` 存在但无法解析或版本不是 1 时退出 1，不写盘；写入后输出新的 `roles`。带值选项写了但没给值时退出 2。
 
-`config set <key> <value>` 只认派发设置的键（与 `dispatch-settings.json` 字段同名：`timeoutSecs`、`concurrency`、`maxRequests`、`fixRoundLimit`、`swarmLimit`、`consoleRunLimit`、`validationCommand`、`redact`、`writeProjectDispatch`、`acpEnabled`、`ccSwitchPath`、`classificationModel`、`classifyProposals`）；数值与布尔按 JSON 写入，越界按 `load_settings` 的区间夹取并在 stderr 说明，未知键退出 2；写入后输出新的 `dispatch`。字符串值是单个参数，含空格时加引号。
+`config set <key> <value>` 只认派发设置的键（与 `dispatch-settings.json` 字段同名：`timeoutSecs`、`concurrency`、`maxRequests`、`fixRoundLimit`、`swarmLimit`、`consoleRunLimit`、`validationCommand`、`redact`、`writeProjectDispatch`、`acpEnabled`、`ccSwitchPath`、`classificationModel`、`classifyProposals`）；数值与布尔按 JSON 写入，值允许负数与以 `-` 开头的文本（负数按夹取规则夹到区间下限）；越界夹取与小数取整在 stderr 分开说明（「越界，已夹到 N」与「已取整为 N」），未知键退出 2；文件存在但解析失败时退出 1，不覆盖；写入后输出新的 `dispatch`。字符串值是单个参数，含空格时加引号。
 
 预设别名如下：
 

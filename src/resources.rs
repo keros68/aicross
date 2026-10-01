@@ -2320,16 +2320,28 @@ pub(crate) fn agent_state_note(agent: &ResourceAgent) -> String {
     if agent.detected {
         String::new()
     } else {
-        "安装后运行 aicross resources detect".to_string()
+        install_note().to_string()
     }
 }
 
-/// 模型状态与下一步说明。优先级：原生 → 未过期的额度用尽 → pi 未登录 →
-/// 验证结果。`now_millis` 注入当前时间：过期的额度标记按验证结果展示
+/// 未安装时的下一步说明；agent 与它下面模型的 note 用同一句。
+fn install_note() -> &'static str {
+    "安装后运行 aicross resources detect"
+}
+
+/// 模型状态与下一步说明。优先级：agent 未安装 → 未过期的额度用尽 → 原生 →
+/// pi 未登录 → 验证结果。agent 未探测到时它下面的模型一并无从使用，状态
+/// 跟随 agent（fix-39-r1 R1-4）；原生模型也可能挂额度标记，引擎派发前拒掉
+/// 额度未恢复的目标时分原生与否，额度因此先于原生判（R1-3）。
+/// `now_millis` 注入当前时间：过期的额度标记按验证结果展示
 /// （读取层的 `clear_expired_quota` 会顺带清掉库里的过期值）。
-pub(crate) fn model_state(model: &ResourceModel, now_millis: i64) -> (&'static str, String) {
-    if is_native_model(&model.agent) {
-        return (RESOURCE_STATE_AVAILABLE, String::new());
+pub(crate) fn model_state(
+    model: &ResourceModel,
+    agent_available: bool,
+    now_millis: i64,
+) -> (&'static str, String) {
+    if !agent_available {
+        return (RESOURCE_STATE_MISSING, install_note().to_string());
     }
     let quota_active = model
         .quota_exhausted_until
@@ -2345,6 +2357,9 @@ pub(crate) fn model_state(model: &ResourceModel, now_millis: i64) -> (&'static s
             ),
         );
     }
+    if is_native_model(&model.agent) {
+        return (RESOURCE_STATE_AVAILABLE, String::new());
+    }
     if model.agent.trim().eq_ignore_ascii_case("pi") && model.login == ResourceLogin::LoggedOut {
         return (RESOURCE_STATE_LOGGED_OUT, pi_login_note(&model.provider));
     }
@@ -2356,14 +2371,16 @@ pub(crate) fn model_state(model: &ResourceModel, now_millis: i64) -> (&'static s
 }
 
 /// 未登录时的登录提示。pi 0.86 的 `pi --help` 没有 `auth login` 子命令：
-/// 订阅类 provider 在 pi 会话里用 `/login` 登录，API key 类走环境变量。
+/// 订阅类 provider 在 pi 会话里用 `/login` 登录，API key 类走环境变量；
+/// 登录后要重新探测才会刷新登录态（fix-39-r1 R1-8）。
 fn pi_login_note(provider: &str) -> String {
     let provider = provider.trim();
-    if provider.is_empty() {
+    let login = if provider.is_empty() {
         "在 pi 里执行 /login".to_string()
     } else {
         format!("在 pi 里执行 /login {provider}")
-    }
+    };
+    format!("{login}；登录后运行 aicross resources detect 刷新")
 }
 
 // ── Tauri 命令 ────────────────────────────────────────────────────────────
@@ -4581,9 +4598,19 @@ exit 2
     #[test]
     fn task39_model_state_covers_native_verification_login_and_quota() {
         let now = 2_000_000_000_000_i64;
+        // agent 未安装（R1-4）：状态跟随 agent，note 与 agent 一致
+        let undetected = ResourceModel {
+            id: "k2".into(),
+            agent: "kimi".into(),
+            ..ResourceModel::default()
+        };
+        assert_eq!(
+            model_state(&undetected, false, now),
+            (RESOURCE_STATE_MISSING, "安装后运行 aicross resources detect".to_string())
+        );
         // 原生：可用，无说明
         let native = detected_model("sonnet", "claude", "", "Anthropic", "官方订阅", "未知", "读:fixture", "");
-        assert_eq!(model_state(&native, now), (RESOURCE_STATE_AVAILABLE, String::new()));
+        assert_eq!(model_state(&native, true, now), (RESOURCE_STATE_AVAILABLE, String::new()));
         // 第三方三档：已验证 / 验证失败 / 未验证
         let third = |verification: &str| ResourceModel {
             agent: "pi".into(),
@@ -4591,40 +4618,48 @@ exit 2
             verification: verification.into(),
             ..ResourceModel::default()
         };
-        assert_eq!(model_state(&third(VERIFICATION_VERIFIED), now).0, RESOURCE_STATE_VERIFIED);
-        assert_eq!(model_state(&third(VERIFICATION_FAILED), now).0, RESOURCE_STATE_FAILED);
-        assert_eq!(model_state(&third(VERIFICATION_UNVERIFIED), now).0, RESOURCE_STATE_UNVERIFIED);
+        assert_eq!(model_state(&third(VERIFICATION_VERIFIED), true, now).0, RESOURCE_STATE_VERIFIED);
+        assert_eq!(model_state(&third(VERIFICATION_FAILED), true, now).0, RESOURCE_STATE_FAILED);
+        assert_eq!(model_state(&third(VERIFICATION_UNVERIFIED), true, now).0, RESOURCE_STATE_UNVERIFIED);
         // 认不得的 verification 值按未验证展示，不让整个清单失效
-        assert_eq!(model_state(&third("legacy"), now).0, RESOURCE_STATE_UNVERIFIED);
-        // pi 未登录：note 给登录提示
+        assert_eq!(model_state(&third("legacy"), true, now).0, RESOURCE_STATE_UNVERIFIED);
+        // pi 未登录：note 给登录提示与刷新提示（R1-8）
         let logged_out = ResourceModel {
             login: ResourceLogin::LoggedOut,
             ..third(VERIFICATION_UNVERIFIED)
         };
-        let (state, note) = model_state(&logged_out, now);
+        let (state, note) = model_state(&logged_out, true, now);
         assert_eq!(state, RESOURCE_STATE_LOGGED_OUT);
-        assert_eq!(note, "在 pi 里执行 /login zai");
+        assert_eq!(note, "在 pi 里执行 /login zai；登录后运行 aicross resources detect 刷新");
         assert_eq!(
             model_state(
                 &ResourceModel { provider: String::new(), ..logged_out.clone() },
+                true,
                 now
             ).1,
-            "在 pi 里执行 /login"
+            "在 pi 里执行 /login；登录后运行 aicross resources detect 刷新"
         );
-        // 额度用尽：未过期显示恢复时间；已过期按验证结果展示
+        // 额度用尽：未过期显示恢复时间；已过期按验证结果展示。
+        // 原生模型也挂额度标记，额度先于原生判（R1-3，与引擎拒源口径一致）。
         let mut quota = third(VERIFICATION_UNVERIFIED);
         quota.quota_exhausted_until = Some("2099-01-01T00:00:00+08:00".into());
-        let (state, note) = model_state(&quota, now);
+        let (state, note) = model_state(&quota, true, now);
         assert_eq!(state, RESOURCE_STATE_QUOTA);
         assert_eq!(note, "额度恢复时间：2099-01-01T00:00:00+08:00");
         quota.quota_exhausted_until = Some("2000-01-01T00:00:00+08:00".into());
-        assert_eq!(model_state(&quota, now).0, RESOURCE_STATE_UNVERIFIED);
-        // 额度未过期优先于未登录
+        assert_eq!(model_state(&quota, true, now).0, RESOURCE_STATE_UNVERIFIED);
+        let mut native_quota = detected_model("sonnet", "claude", "", "Anthropic", "官方订阅", "未知", "读:fixture", "");
+        native_quota.quota_exhausted_until = Some("2099-01-01T00:00:00+08:00".into());
+        assert_eq!(model_state(&native_quota, true, now).0, RESOURCE_STATE_QUOTA);
+        native_quota.quota_exhausted_until = Some("2000-01-01T00:00:00+08:00".into());
+        assert_eq!(model_state(&native_quota, true, now).0, RESOURCE_STATE_AVAILABLE);
+        // 额度未过期优先于未登录；agent 未安装优先于额度（状态跟随 agent）
         let quota_login = ResourceModel {
             quota_exhausted_until: Some("2099-01-01T00:00:00+08:00".into()),
             ..logged_out
         };
-        assert_eq!(model_state(&quota_login, now).0, RESOURCE_STATE_QUOTA);
+        assert_eq!(model_state(&quota_login, true, now).0, RESOURCE_STATE_QUOTA);
+        assert_eq!(model_state(&quota_login, false, now).0, RESOURCE_STATE_MISSING);
     }
 
     /// TASK-39：命令行按 agent 冒烟只挑第三方模型。claude 走官方端点时是

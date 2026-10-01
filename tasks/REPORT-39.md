@@ -150,3 +150,28 @@ stderr: 缺少 agent（退出 2）
   「缺少值」：沿用既有 CLI 的取值规则，未为此新增解析。
 - 窗口设置页（浏览器本地存储）与 `dispatch-settings.json` 仍不同步：维持文档
   既有说明，本期不动窗口侧。
+
+## R1（10-01，GLM 修改 + 编排者补验证与本节）
+
+GLM 按 `tasks/fix-39-r1.md` 完成了全部改动后，在「重跑三条验证命令」那一步中途结束，未写本节；以下由编排者核对代码、补跑验证后写入。
+
+### 逐条
+
+- **R1-1 带值选项缺值退出 2**：`unknown_option_error`（`src/console_cli.rs` 约 787 行）对认识的选项检查下一个参数，缺失或以 `-` 开头即报「缺少 <选项> 的值」。测试 `task39_r1_missing_option_value_exits_2_without_side_effects`。真机：`aicross resources smoke pi --model` 退出 2、提示「缺少 --model 的值」，资源库文件字节不变。
+- **R1-2 `set-role` 遇损坏 `roles.json` 拒写**：新增 `orchestration::roles_from_strict`，`set-role` 改用它，解析失败或版本不是 1 时退出 1 并提示，不写盘；`config show` 在 stderr 提示一行。测试 `task39_r1_set_role_refuses_broken_roles_and_show_hints`（损坏与版本不符两例）。
+- **R1-3 额度先于原生**：`resources::model_state` 先判 agent 是否可用，再判未过期额度，再判原生。测试 `task39_model_state_covers_native_verification_login_and_quota` 补原生 + 额度两例。
+- **R1-4 未安装 agent 的模型**：`model_state` 增加 `agent_available` 参数，agent 未安装时模型显示「未安装」、note 与 agent 一致。
+- **R1-5 / R1-6 `config set` 取值与提示**：第 4 个参数按原样取，允许负数与以 `-` 开头的文本；取整与越界分开提示（「已取整为 N」）。测试 `task39_r1_config_set_takes_leading_dash_value_and_reports_rounding`。
+- **R1-7 空 agent 批量冒烟**：提示「该 agent 下没有模型」，退出 0。测试 `task39_r1_smoke_agent_without_models_exits_zero`。
+- **R1-8 未登录 note**：末尾补「登录后运行 aicross resources detect 刷新」。
+- **R1-9 文档**：`docs/CONSOLE-CHANNEL.md` 补损坏文件的退出码与状态优先级。
+
+### 回退验证（编排者）
+
+分别把 R1-1、R1-2、R1-3 的修复临时改回，对应测试 `task39_r1_missing_option_value_exits_2_without_side_effects`、`task39_r1_set_role_refuses_broken_roles_and_show_hints`、`task39_model_state_covers_native_verification_login_and_quota` 各自变红；恢复后全部通过。
+
+### 验证（编排者）
+
+- `cargo check --all-targets`：零 warning。
+- `cargo check --release`：零 warning。
+- `cargo test`：584 passed，0 failed，12 ignored。
