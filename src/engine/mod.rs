@@ -1885,8 +1885,9 @@ fn reduce_step(
 
 /// TS `normalizedPath` 逐条：`\\?\UNC/` → `//`、剥 `\\?\`、`\` → `/`、
 /// 去尾部 `/`、小写。前缀剥除按字符边界取子串：路径开头含多字节字符时
-/// 算不匹配，而不是按字节切片 panic（R2-1，`pick_project_graph` 会对图目录里
-/// 每张图都过这一步）。
+/// 算不匹配，而不是按字节切片 panic（R2-1）。派发总是新建图，只有金标准
+/// 重放按项目挑夹具里的已有图时用到。
+#[cfg(test)]
 fn normalized(value: &str) -> String {
     fn strip_prefix_ci<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
         // get(..n) 在切点不是字符边界时返回 None；前缀本身是 ASCII，长度即字节数。
@@ -1906,29 +1907,6 @@ fn normalized(value: &str) -> String {
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_lowercase()
-}
-
-/// TS `selectConsoleGraph` 的无窗口半边：同项目（归一化路径）的图里取
-/// updated_at 最新的一张。
-fn pick_project_graph(graphs: Vec<Graph>, project: &str) -> Option<Graph> {
-    let wanted = normalized(project);
-    let mut graphs: Vec<Graph> = graphs
-        .into_iter()
-        .filter(|g| normalized(&g.project) == wanted)
-        .collect();
-    graphs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    graphs.into_iter().next()
-}
-
-fn latest_project_graph(root: &Path, project: &str) -> Option<Graph> {
-    let dir = root.join("graphs");
-    let graphs: Vec<Graph> = fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .filter_map(|e| fs::read(e.path()).ok())
-        .filter_map(|b| serde_json::from_slice(&b).ok())
-        .collect();
-    pick_project_graph(graphs, project)
 }
 
 /// TS `validateNode` 的拦截半边：只产「只能只读」/「盲节点只能只读」/「未接入」。
@@ -2627,7 +2605,6 @@ fn start_dispatch_with(
     let resources = orchestration::dispatchable_from(root);
     let presets = orchestration::raw_presets_from(root);
     let roles = orchestration::roles_from(root);
-    let existing = latest_project_graph(root, &input.project);
     let project = input.project.clone();
     let mut git_dirty_count = move || {
         match crate::git::git_changes(project.clone()) {
@@ -2654,7 +2631,9 @@ fn start_dispatch_with(
         presets: &presets.presets,
         roles: &roles,
         active_runs: active_runs(root),
-        existing,
+        // 每次派发新建一张图，派发之间不共享上下文；追问同一件事时由调用方
+        // 把前情写进任务文本。
+        existing: None,
         git_dirty_count: &mut git_dirty_count,
     };
     let plan = plan_dispatch(&mut plan_input, &mut ids, &mut clock);

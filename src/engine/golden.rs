@@ -324,6 +324,19 @@ impl PipelineSink for RecordingSink<'_> {
 
 // ── 场景驱动 ──────────────────────────────────────────────────────────────
 
+/// TS `selectConsoleGraph` 的无窗口半边：同项目（归一化路径）的图里取
+/// updated_at 最新的一张。夹具录制自续写同项目图的窗口口径，`aicross
+/// dispatch` 本身总是新建图。
+fn pick_project_graph(graphs: Vec<Graph>, project: &str) -> Option<Graph> {
+    let wanted = normalized(project);
+    let mut graphs: Vec<Graph> = graphs
+        .into_iter()
+        .filter(|g| normalized(&g.project) == wanted)
+        .collect();
+    graphs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    graphs.into_iter().next()
+}
+
 fn run_fixture(fixture: &Value) -> Value {
     let input = denormalize_input(fixture);
     let event = &input["event"];

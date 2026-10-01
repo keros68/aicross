@@ -734,66 +734,6 @@ fn normalized_handles_multibyte_paths() {
     assert_eq!(normalized(r"项\目"), "项/目");
 }
 
-#[test]
-fn plan_dispatch_works_with_chinese_project_graph_in_dir() {
-    let root = temp("cn-graph-dir");
-    let dir = root.join("graphs");
-    fs::create_dir_all(&dir).unwrap();
-    // 图目录里已有一张中文路径的图：pick_project_graph 对每张图都做路径归一，
-    // 不能因此 panic。
-    let chinese = new_graph(r"D:\项目", "g-cn".into(), "root".into(), now());
-    orchestration::save_graph_in(&root, &chinese).unwrap();
-    assert_eq!(latest_project_graph(&root, r"D:\项目").map(|g| g.id), Some("g-cn".into()));
-    // 对另一个项目的 plan_dispatch 照常工作。
-    let existing = latest_project_graph(&root, r"D:\别的");
-    assert!(existing.is_none());
-    let models = vec![ResourceModel {
-        agent: "codex".into(),
-        id: "exec".into(),
-        ..ResourceModel::default()
-    }];
-    let presets = orchestration::builtin_presets();
-    let roles = RoleSettings::default();
-    let settings = EngineSettings::default();
-    let targets = vec![Target {
-        agent: "codex".into(),
-        model: "exec".into(),
-        role: "执行".into(),
-        thinking: "中".into(),
-        visibility: "共享".into(),
-        write: "只读".into(),
-        ..Target::default()
-    }];
-    let mut git_dirty_count = || None;
-    let mut plan_input = PlanInput {
-        run_id: "r1",
-        project: r"D:\别的",
-        text: "实现任务",
-        preset: None,
-        attachments: &[],
-        targets: &targets,
-        settings: &settings,
-        models: &models,
-        resources_error: None,
-        presets: &presets,
-        roles: &roles,
-        active_runs: 0,
-        existing,
-        git_dirty_count: &mut git_dirty_count,
-    };
-    let mut seq = 0usize;
-    let mut ids = move || {
-        seq += 1;
-        format!("gen-{seq}")
-    };
-    let mut clock = || Utc::now();
-    match plan_dispatch(&mut plan_input, &mut ids, &mut clock) {
-        Plan::Ready { created, .. } => assert!(!created.is_empty()),
-        Plan::Rejected { reason, .. } => panic!("plan_dispatch 不应拒绝：{reason}"),
-    }
-    let _ = fs::remove_dir_all(root);
-}
-
 // ── R2-2：合并写：并发 run 与 adopt 的改动不被整图回写抹掉 ──────────
 
 fn file_sink<'a>(root: &'a Path, run: &'a mut EngineRun) -> FileSink<'a> {
@@ -1387,5 +1327,82 @@ fn start_dispatch_records_preset_id_in_run_file() {
     )
     .unwrap();
     assert_eq!(run.preset_id, "builtin-economy");
+    let _ = fs::remove_dir_all(root);
+}
+
+// ── TASK-38：每次派发新建一张图 ──────────────────────────────
+
+#[test]
+fn start_dispatch_creates_new_graph_each_time() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    let root = temp("graph-per-dispatch");
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"codex","models":[{"id":"exec","agent":"codex"}]}]}"#,
+    )
+    .unwrap();
+    let input = |text: &str| DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: text.into(),
+        targets: vec![Target {
+            agent: "codex".into(),
+            model: "exec".into(),
+            role: "执行".into(),
+            thinking: "中".into(),
+            visibility: "共享".into(),
+            write: "只读".into(),
+            ..Target::default()
+        }],
+        ..DispatchInput::default()
+    };
+    let load = |result: &Value| {
+        orchestration::load_graph_in(&root, result["graph_id"].as_str().unwrap())
+            .unwrap()
+            .expect("图已落盘")
+    };
+
+    let first = start_dispatch_with(&root, input("第一次任务"), spawn_ok).expect("派发成功");
+    assert_eq!(first["accepted"].as_bool(), Some(true));
+    // 第一张图上留一条遗留，模拟第一次 run 验收后产出的未闭合项。
+    let mut graph1 = load(&first);
+    let source = first["node_ids"][0].as_str().unwrap().to_string();
+    graph1.nodes.insert(
+        "leftover-1".into(),
+        GraphNode {
+            id: "leftover-1".into(),
+            kind: "turn".into(),
+            parents: vec![source.clone()],
+            leftover: Some(Leftover {
+                source_node_id: source,
+                items: vec!["第一次的遗留".into()],
+            }),
+            created_at: now(),
+            ..GraphNode::default()
+        },
+    );
+    graph1.updated_at = now();
+    orchestration::save_graph_in(&root, &graph1).unwrap();
+    assert_eq!(leftover_lines(&graph1), vec!["第一次的遗留".to_string()]);
+
+    let second = start_dispatch_with(&root, input("第二次任务"), spawn_ok).expect("派发成功");
+    assert_eq!(second["accepted"].as_bool(), Some(true));
+    let graph2 = load(&second);
+    assert_ne!(graph2.id, graph1.id, "第二次派发应新建一张图");
+    for id in graph1.nodes.keys() {
+        assert!(!graph2.nodes.contains_key(id), "第二张图不应含第一次的节点 {id}");
+    }
+    assert!(graph2.nodes.values().all(|n| !n.user.text.contains("第一次任务")));
+    // 第二次 run 的摘要遗留取自它自己的图，不含第一次的。
+    assert!(leftover_lines(&graph2).is_empty());
+    let run2: EngineRun = serde_json::from_slice(
+        &fs::read(runs_dir(&root).join(format!("{}.json", second["run_id"].as_str().unwrap()))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(run2.graph_id, graph2.id);
+    assert!(run2.leftover.is_empty());
+    // 第一张图原样保留。
+    assert!(load(&first).nodes.contains_key("leftover-1"));
     let _ = fs::remove_dir_all(root);
 }
