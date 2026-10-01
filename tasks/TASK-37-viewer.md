@@ -59,4 +59,4 @@ cd src-ui && npm run build
 
 ## 编排者真机核（实现者不做）
 
-用 `aicross dispatch` 真派一次经济模式（窗口关闭）→ `aicross open <run_id>` 冷启动打开 → 运行中看到逐阶段刷新 → 结束后采纳一路 → 宿主里 `aicross status` 读到采纳结果；窗口已开时再 `open` 另一个 run，确认切到新页。
+用 `aicross dispatch` 真派一次经济模式（窗口关闭）→ `aicross open <run_id>` 冷启动打开 → 运行中看到逐阶段刷新 → 结束后采纳一路 → 关掉窗口再 `open` 同一个 run，仍显示已采纳；窗口已开时再 `open` 另一个 run，确认切到新页。
