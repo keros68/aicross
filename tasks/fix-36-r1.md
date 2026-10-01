@@ -77,6 +77,11 @@ run 文件追加 `pid_started_at`（后台进程自己的创建时间）。存�
 - **`src/dispatch.rs` 的测试稳定性调整**：两家都判为合理，保留。
 - **`EngineRun` 与 `ConsoleRun` 两份同构类型**：维护性问题，进积压，不在本轮。
 
+## 进度与第二阶段说明
+
+- **已完成（`1e49125`）**：R1-1 的前端部分。`src-ui/src/__tests__/engine-golden.test.ts` 用假 io/context 驱动 `runConsoleDispatch`，`fixtures/engine-golden/` 现有 31 个夹具。**夹具与该测试文件就是契约**：字段结构以它们为准，不要改它们来迁就 Rust；确需改夹具（例如发现 TS 侧生成逻辑有误），先在报告里说明理由。夹具里请求的 `fixRound` 是按 `isFixRoundExecution` 补写的有意偏离（R1-2）。
+- **第二阶段（本次）**：Rust 侧全部内容——R1-1 的 Rust 部分（建图与检查拆成纯函数、推进循环改注入式、逐夹具重放）、R1-2 至 R1-29、R1-30 文档。现有 Rust 测试 `typescript_golden_fixture_drives_rust_pure_functions` 按旧夹具写的，当前为红，用逐夹具重放的新测试替换它。
+
 ## 验证
 
 同任务书第 7 节四条命令全绿；另外逐夹具的 Rust 测试须能在「把 R1-2 或 R1-3 的修复临时改回去」时变红（编排者会抽查）。
