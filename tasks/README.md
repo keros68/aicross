@@ -13,12 +13,11 @@ TASK-00 至 TASK-35 均已合并 main（最后一期 TASK-35，09-21 `dcaf39c`�
 **一期的步骤**
 
 1. **任务书** `tasks/TASK-NN-*.md`：契约（字段、命令签名、wire 大小写）只追加；范围、禁区、验证命令、换行规则、「不 commit 不 push」写死；需要窗口核的项列成清单。写文件用 Write/Edit 工具，不用 shell heredoc（heredoc 会把 `\\` 折成 `\`，09-15 两次把 Windows 路径写坏）。任务书先提交到 main，再从 main 开分支给实现者。
-2. **派实现**（各自的 git worktree，一个树一个写者）。**实现者顺序：kimi → GLM → Claude 子代理 → codex**（用户 09-30：codex 的 sol 模型近期质量差，只作兜底）：
-   - kimi：5 小时额度窗口；无 stdin，prompt 走 argv 一句话（指向任务书路径）；`-p` 下工具默认自动执行，不能与 `-y`/`--auto` 同用。
-   - GLM：经 pi 的 `zai-coding-cn` provider（`glm-5.3`），在工作树目录跑，prompt 走 stdin：`pi --provider zai-coding-cn --model glm-5.3 -p --mode json --tools read,write,edit,bash,grep,find,ls --no-extensions --no-session < prompt.txt > out.jsonl`。09-30 冒烟通过（小仓里修 bug + 建测试 + 跑通，19 秒）。必须带 `--no-extensions`：不带时用户级扩展 `advanced-footer.ts` 在收尾崩溃，活干完了退出码却是 1。这条通道的事件里没有 `responseModel`，只有请求回显的 `model`，真身核对不了，报告里标「真身未核对」。
-   - Claude 子代理（Agent 工具，general-purpose）：适合前端 + 设计 skill；会撞会话额度，撞了按「限额即换家」交给下一家，让它先 `git status / git diff` 通读再续。
-   - codex（兜底）：`codex exec -m gpt-5.6-sol -s workspace-write --json - < prompt.txt`，在工作树目录跑；完成判据是 jsonl 里出现行首 `{"type":"turn.completed"`（松匹配 `"type":"error"` 出过假阳性）。
-   - 审查者必须与实现者不同厂商：GLM 实现时，第 4 步的 GLM 盲审换成 kimi 或 Claude。
+2. **派实现**（各自的 git worktree，一个树一个写者）。**默认实现者：GLM-5.3-Flash**（用户 10-01：不派 kimi；codex 的 sol 模型只兜底）：
+   - GLM-5.3-Flash：经 pi 的 `zai-coding-cn` provider，在工作树目录跑，prompt 走 stdin：`pi --provider zai-coding-cn --model glm-5.3-flash -p --mode json --tools read,write,edit,bash,grep,find,ls --no-extensions --no-session < prompt.txt > out.jsonl`。必须带 `--no-extensions`：不带时用户级扩展 `advanced-footer.ts` 在收尾崩溃，活干完了退出码却是 1。这条通道的事件里没有 `responseModel`，只有请求回显的 `model`，真身核对不了，报告里标「真身未核对」。用 run_in_background 起，不要在前台命令里用 `&` 后台化（会收不到完成通知）。GLM 偶尔在收尾的验证步骤中途结束：先看工作树与最后一条消息，改动齐全就由编排者补跑验证与报告，不必整轮重派。智谱有 5 小时额度上限，撞了报 429「已达到 5 小时的使用上限」。
+   - Claude 子代理（Agent 工具，general-purpose）：GLM 不可用时的第一替补，也适合小而独立的任务；子代理不能创建报告文件，报告全文由它写在回复里、编排者落盘。
+   - codex（兜底）：`codex exec -m gpt-5.6-sol -s workspace-write --json - < prompt.txt`，在工作树目录跑；完成判据是 jsonl 里出现行首 `{"type":"turn.completed"`。
+   - 审查者必须与实现者不同厂商：GLM 实现时，第 4 步的盲审用 Claude 子代理 + Antigravity，kimi 只作审查兜底。
    - 排期先看文件重叠：两期会改同一批文件的串行，不并行。
 3. **独立复跑**（不信报告）：`cargo check --all-targets` 零 warning、`cargo test`、`cd src-ui && npx vitest run --configLoader native --pool threads`、`cd src-ui && npm run build`；再用 python 数每个改动文件的 CRLF/LF 与 HEAD 比对（`server.rs` CRLF，其它 Rust LF，`src-ui/src/tauri.ts` 混合）。复跑与盲审同时起，不串行。
 4. **盲审**（两家、只读、不带主线程判断；提示词写到 scratchpad 的 task 文件，只描述契约与关注点）：
