@@ -5,12 +5,23 @@
 
 .run-viewer {
   position: fixed;
-  inset: 0;
-  z-index: 11000;
+  /* R1-6：让出 40px 自绘标题栏（.titlebar 高度，见 global.css），缩放边
+     条由 html.run-viewer-open 抬到本层之上；位于对话图结果屏
+     （.dispatch-overlay，12000）之上。 */
+  top: 40px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 12500;
   display: flex;
   flex-direction: column;
   background: var(--bg-app);
   color: var(--text-1);
+}
+
+/* R1-6：查看页打开期间窗口缩放边条抬到查看页之上，边条仍可拖拽。 */
+html.run-viewer-open .resize-edges {
+  z-index: 13000;
 }
 
 .run-viewer-head {
@@ -39,10 +50,15 @@
 
 .run-viewer-status {
   font-size: 13px;
+  color: var(--text-2);
 }
 
-.run-viewer-status-running { color: var(--blue); }
-.run-viewer-status-failed, .run-viewer-status-rejected { color: var(--red); }
+/* R1-11：异常状态用胶囊，去掉 --blue。运行中给中性胶囊；失败与拒绝沿用
+   节点状态胶囊的警示样式。 */
+.run-viewer-status-running {
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
 
 .run-viewer-meta {
   display: flex;
@@ -268,6 +284,12 @@
   align-items: center;
   gap: 8px;
   margin-top: 12px;
+}
+
+/* R1-2：已采纳的卡没有可点动作，只显示状态词。 */
+.run-viewer-adopted {
+  color: var(--text-3);
+  font-size: 12px;
 }
 
 .run-viewer-error {

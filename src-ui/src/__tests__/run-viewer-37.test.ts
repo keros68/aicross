@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   acceptanceVerdict,
   acceptanceVerdictLabel,
+  adoptAction,
   canAdopt,
   cardSubtitle,
   cardTitle,
@@ -16,6 +17,7 @@ import {
   quotaResetText,
   reportedModelLabel,
   runElapsedMs,
+  runStatusTone,
   stageColumnCount,
 } from '../viewer/run-view';
 import type { RunView, RunViewNode } from '../tauri';
@@ -99,8 +101,9 @@ describe('run viewer data assembly (TASK-37)', () => {
     expect(cardTitle(plain, view())).toBe('执行 · 给解析器加测试');
     const bare = node({ role: '执行', swarmTitle: '' });
     expect(cardTitle(bare, view({ graphTitle: '' }))).toBe('执行 · claude/sonnet');
-    // 图标题与 agent/model 都没有时给占位，不落成「角色 · /」。
-    expect(cardTitle(bare, view({ graphTitle: '' })) === '执行 · claude/sonnet').toBe(true);
+    // 图标题与 agent/model 都没有时用占位，不落成「角色 · /」。
+    expect(cardTitle(node({ role: '执行', swarmTitle: '', agent: '', model: '' }), view({ graphTitle: '' })))
+      .toBe('执行 · 未指定模型');
     expect(cardSubtitle(node({ agent: 'kimi', provider: 'kimi', model: 'k3' }))).toBe('Kimi Code/kimi/k3');
     expect(cardSubtitle(node({ agent: '', model: '' }))).toBe('未指定模型');
   });
@@ -134,18 +137,21 @@ describe('run viewer data assembly (TASK-37)', () => {
     expect(reportedModelLabel(node({ agent: 'claude', fallbackFrom: 'claude/sonnet', fallbackTo: 'kimi/k3' }))).toBe('kimi 不报真身');
   });
 
-  it('flags identity mismatch against the effective requested model', () => {
-    expect(identityMismatch(node({ model: 'sonnet', modelReported: 'claude-sonnet-4-6' }))).toBe(true);
-    expect(identityMismatch(node({ model: 'claude-sonnet-4-6', modelReported: 'claude-sonnet-4-6' }))).toBe(false);
-    // 没有真身不比。
-    expect(identityMismatch(node({ modelReported: '' }))).toBe(false);
-    // 切过备选：与备选的模型比。
+  it('flags identity mismatch only when the engine judged it', () => {
+    // R1-3：前端不做字符串比较，只在引擎判定的 errorKind 上标「真身不符」。
+    expect(identityMismatch(node({ status: 'failed', errorKind: 'identity_mismatch' }))).toBe(true);
+    expect(identityMismatch(node({ status: 'done', errorKind: '' }))).toBe(false);
+    // 请求写别名、真身带 provider 前缀：正常结果不算不符。
+    expect(identityMismatch(node({ model: 'sonnet', modelReported: 'claude-sonnet-4-6' }))).toBe(false);
+    // 切过备选也不比备选模型名（模型名本身可含 /）。
     expect(identityMismatch(node({
       model: 'sonnet',
       modelReported: 'glm-5.3',
       fallbackFrom: 'claude/sonnet',
       fallbackTo: 'pi/glm-5.3',
     }))).toBe(false);
+    // 没有真身同样不比。
+    expect(identityMismatch(node({ modelReported: '', errorKind: '' }))).toBe(false);
   });
 
   it('shows quota reset time only for quota states', () => {
@@ -186,6 +192,25 @@ describe('run viewer data assembly (TASK-37)', () => {
     expect(canAdopt(node({ hasResult: true, status: 'pending' }))).toBe(false);
     expect(canAdopt(node({ hasResult: true, status: 'draft' }))).toBe(false);
     expect(canAdopt(node({ hasResult: false, status: 'done' }))).toBe(false);
+  });
+
+  it('adopt action has no cancel: adopted cards show a settled label and are not clickable', () => {
+    // R1-2：引擎 adopt 只写采纳标记，第一版不做取消。
+    expect(adoptAction(node({ hasResult: true, status: 'done', adopted: false })))
+      .toEqual({ label: '采纳', clickable: true });
+    expect(adoptAction(node({ hasResult: true, status: 'quota_exhausted', adopted: true })))
+      .toEqual({ label: '已采纳', clickable: false });
+    // 没有结果或未落定：没有采纳动作。
+    expect(adoptAction(node({ hasResult: false, status: 'done' }))).toBeNull();
+    expect(adoptAction(node({ hasResult: true, status: 'pending' }))).toBeNull();
+  });
+
+  it('tones run statuses: pills for running and failures, plain text for done', () => {
+    // R1-11：运行中、失败、已拒绝用胶囊，已完成用纯文字。
+    expect(runStatusTone('running')).toBe('pill');
+    expect(runStatusTone('failed')).toBe('pill-alert');
+    expect(runStatusTone('rejected')).toBe('pill-alert');
+    expect(runStatusTone('done')).toBe('plain');
   });
 
   it('stops polling once the run reaches a terminal state', () => {

@@ -4,7 +4,7 @@
 //
 // 复用的现成纯函数：graph/dispatch.ts 的 parseAcceptance（验收结论）、
 // resources/agent-display.ts 的 agentModelDisplay（次标题）、
-// ConsoleRunDetail.tsx 的 compactRunNumber（token 数缩写）。
+// components/center/ConsoleRunDetail.tsx 的 compactRunNumber（token 数缩写）。
 
 import { parseAcceptance } from '../graph/dispatch';
 import { agentModelDisplay } from '../resources/agent-display';
@@ -84,13 +84,11 @@ export function reportedModelLabel(node: RunViewNode): string {
   return agent === 'kimi' ? 'kimi 不报真身' : '未报告';
 }
 
-/** 真身与请求不一致：有真身才比；切过备选时按备选的模型比。 */
+/** 真身不符的标记只认引擎判定（errorKind === 'identity_mismatch'，
+ * fix-37-r1 R1-3）；前端不做字符串比较——claude 请求常写别名、pi 的真身
+ * 带 provider 前缀，比较必然误报。实际模型原样显示。 */
 export function identityMismatch(node: RunViewNode): boolean {
-  if (node.modelReported === '') return false;
-  const requested = node.fallbackFrom !== ''
-    ? (node.fallbackTo.split('/')[1] ?? node.model)
-    : node.model;
-  return node.modelReported !== requested;
+  return node.errorKind === 'identity_mismatch';
 }
 
 /** 额度用尽的恢复时间；不是额度态或没记时间为空串。 */
@@ -106,9 +104,21 @@ export function fallbackText(node: RunViewNode): string {
     : '';
 }
 
-/** 有结果的卡才给「采纳 / 取消采纳」：图上有 reply 且已到终态。 */
+/** 有结果的卡才有采纳动作的判据：图上有 reply 且已到终态。 */
 export function canAdopt(node: RunViewNode): boolean {
   return node.hasResult && node.status !== 'draft' && node.status !== 'pending';
+}
+
+/** 采纳动作（fix-37-r1 R1-2）：第一版不做取消——引擎 adopt 只写采纳标记。
+ * 已采纳的卡显示「已采纳」不可点；未采纳且结果落定的卡显示「采纳」；
+ * 没有结果返回 null。 */
+export type AdoptAction = { label: string; clickable: boolean } | null;
+
+export function adoptAction(node: RunViewNode): AdoptAction {
+  if (!canAdopt(node)) return null;
+  return node.adopted
+    ? { label: '已采纳', clickable: false }
+    : { label: '采纳', clickable: true };
 }
 
 export type AcceptanceVerdict = 'PASS' | 'NEEDS_FIX' | 'UNKNOWN' | null;
@@ -135,6 +145,14 @@ export function runStatusLabel(status: string): string {
     rejected: '已拒绝',
   };
   return labels[status] ?? status;
+}
+
+/** run 状态的展示（fix-37-r1 R1-11 视觉纪律）：运行中、失败、已拒绝这类要
+ * 快速扫到的异常状态用胶囊（失败与拒绝带警示色）；已完成用纯文字。 */
+export function runStatusTone(status: string): 'plain' | 'pill' | 'pill-alert' {
+  if (status === 'running') return 'pill';
+  if (status === 'failed' || status === 'rejected') return 'pill-alert';
+  return 'plain';
 }
 
 /** 总耗时：运行中按当前时刻，终态按最后更新时刻；时间解析不出来返回 null。 */

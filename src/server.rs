@@ -3878,7 +3878,11 @@ pub fn start_ui(
     // share the bundle identifier, and the lock would silently redirect the
     // dev launch to the production process and exit.
     #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+    // 热启动 open 事件的递增序号（fix-37-r1 R1-9）：前端拿它区分「同一个
+    // run 再次 open」并触发重取。
+    let open_request_seq = std::sync::atomic::AtomicU32::new(0);
+    #[cfg(not(debug_assertions))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
         use tauri::Manager;
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.unminimize();
@@ -3895,14 +3899,24 @@ pub fn start_ui(
         }
         // `aicross open <run_id>` 同一条转发路：重解析后发 `open-run-request`，
         // 已开窗口切到该 run 的查看页（参数与存在性已在第二个进程里校验过）。
+        // 事件带递增序号（R1-9）；emit 要求载荷 Clone——这段只在发布构建编译
+        // （R1-1：开发构建不编它，漏了 derive 会 `cargo check` 过、--release 失败）。
+        let open_seq = open_request_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         if let crate::run_view::OpenParse::Valid(run_id) = crate::run_view::parse_open_args(&args) {
             use tauri::Emitter;
-            #[derive(serde::Serialize)]
+            #[derive(Clone, serde::Serialize)]
             #[serde(rename_all = "camelCase")]
             struct OpenRunRequest<'a> {
                 run_id: &'a str,
+                seq: u32,
             }
-            let _ = app.emit("open-run-request", OpenRunRequest { run_id: &run_id });
+            let _ = app.emit(
+                "open-run-request",
+                OpenRunRequest {
+                    run_id: &run_id,
+                    seq: open_seq,
+                },
+            );
         }
     }));
 

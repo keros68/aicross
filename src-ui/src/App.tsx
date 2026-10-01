@@ -109,24 +109,30 @@ export function App() {
 
   // TASK-37 查看器：冷启动取 argv 里随 `aicross open <run_id>` 带进来的
   // 请求（取一次），热启动听单实例插件转发的 open-run-request 事件；两种
-  // 来路都只切页面，不派发、不改文件。
-  const [viewerRunId, setViewerRunId] = useState<string | null>(null);
+  // 来路都只切页面，不派发、不改文件。fix-37-r1：热启动事件带递增序号
+  // （R1-9），同一个 run 再次 open 也要刷新；挂载点按 runId 换 key（R1-8），
+  // 避免新旧 run 的轮询与采纳互相串合。
+  const [viewerRequest, setViewerRequest] = useState<{ runId: string; seq: number } | null>(null);
 
   useEffect(() => {
     if (!isTauri) return;
     commands.takePendingOpen()
-      .then((runId) => { if (runId) setViewerRunId(runId); })
+      .then((runId) => { if (runId) setViewerRequest({ runId, seq: 0 }); })
       .catch(() => {});
+    // R1-10：卸载可能早于异步注册完成——disposed 标志在注销完成时补拉销。
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     (async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        unlisten = await listen<{ runId: string }>('open-run-request', (event) => {
-          setViewerRunId(event.payload.runId);
+        const fn = await listen<{ runId: string; seq: number }>('open-run-request', (event) => {
+          setViewerRequest({ runId: event.payload.runId, seq: event.payload.seq });
         });
+        if (disposed) fn();
+        else unlisten = fn;
       } catch { /* event bridge unavailable (e.g. browser dev) — ignore */ }
     })();
-    return () => { unlisten?.(); };
+    return () => { disposed = true; unlisten?.(); };
   }, []);
 
   const leftPanel = useSlidingPanel(state.leftPanelHidden);
@@ -344,9 +350,16 @@ export function App() {
           for our `decorations: false` borderless window. */}
       <ResizeEdges />
 
-      {/* TASK-37 查看器：盖在整个工作区上的一次 run 一页，Esc 或「关闭」退出。 */}
-      {viewerRunId !== null && (
-        <RunViewer runId={viewerRunId} onClose={() => setViewerRunId(null)} />
+      {/* TASK-37 查看器：盖在工作区上的一次 run 一页，Esc 或「关闭」退出。
+          key 按 runId 换实例，换 run 不沿用旧状态；同 run 的热启动重开靠
+          refreshSeq 触发重取。 */}
+      {viewerRequest !== null && (
+        <RunViewer
+          key={viewerRequest.runId}
+          runId={viewerRequest.runId}
+          refreshSeq={viewerRequest.seq}
+          onClose={() => setViewerRequest(null)}
+        />
       )}
     </>
   );

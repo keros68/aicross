@@ -1305,3 +1305,87 @@ fn exited_process_is_not_alive_even_while_a_handle_is_open() {
     assert!(process_alive(std::process::id(), &own_process_started_at()), "本进程应判为存活");
     drop(child);
 }
+
+// ── fix-37-r1 R1-4：run 文件记本次预设 id ──────────────────────
+
+#[test]
+fn start_dispatch_records_preset_id_in_run_file() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    fn target() -> Target {
+        Target {
+            agent: "codex".into(),
+            model: "exec".into(),
+            role: "执行".into(),
+            thinking: "中".into(),
+            visibility: "共享".into(),
+            write: "只读".into(),
+            ..Target::default()
+        }
+    }
+
+    // 指定用户预设 → 记该 id。
+    let root = temp("preset-id-user");
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"codex","models":[{"id":"exec","agent":"codex"}]}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("presets.json"),
+        r#"{"version":1,"presets":[{"id":"u1","name":"预发回归","builtin":false,"stages":[{"nodes":[{"role":"执行","agent":"codex","model":"exec","thinking":"中","visibility":"共享","write":"只读"}]}]}]}"#,
+    )
+    .unwrap();
+    let input = DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "实现任务".into(),
+        preset: Some("u1".into()),
+        ..DispatchInput::default()
+    };
+    let result = start_dispatch_with(&root, input, spawn_ok).expect("派发成功");
+    let run: EngineRun = serde_json::from_slice(
+        &fs::read(runs_dir(&root).join(format!("{}.json", result["run_id"].as_str().unwrap()))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(run.preset_id, "u1");
+    let _ = fs::remove_dir_all(root);
+
+    // targets 直给 → 空串。
+    let root = temp("preset-id-targets");
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"codex","models":[{"id":"exec","agent":"codex"}]}]}"#,
+    )
+    .unwrap();
+    let input = DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "实现任务".into(),
+        targets: vec![target()],
+        ..DispatchInput::default()
+    };
+    let result = start_dispatch_with(&root, input, spawn_ok).expect("派发成功");
+    let run: EngineRun = serde_json::from_slice(
+        &fs::read(runs_dir(&root).join(format!("{}.json", result["run_id"].as_str().unwrap()))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(run.preset_id, "");
+    let _ = fs::remove_dir_all(root);
+
+    // 预设缺省 → 按默认经济模式记；被拒的 run 同样带上（拒绝发生在选预设
+    // 之前，这里用缺 resources.json 的拒绝路验证）。
+    let root = temp("preset-id-default");
+    let input = DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "实现任务".into(),
+        ..DispatchInput::default()
+    };
+    let result = start_dispatch_with(&root, input, spawn_ok).expect("被拒也返回 JSON");
+    assert_eq!(result["accepted"].as_bool(), Some(false));
+    let run: EngineRun = serde_json::from_slice(
+        &fs::read(runs_dir(&root).join(format!("{}.json", result["run_id"].as_str().unwrap()))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(run.preset_id, "builtin-economy");
+    let _ = fs::remove_dir_all(root);
+}

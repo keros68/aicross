@@ -148,7 +148,7 @@ aicross open <run_id>
 
 `--timeout` 单位为秒，默认 600。`--text-file` 接受 UTF-8，可带 UTF-8 BOM；其它编码返回参数错误。`dispatch` 与 `propose` 均不接受 `--text` 或 `--text=...`；`propose` 的 `--reason` 只能是一句话。`open` 只接受一个 run id，不带选项。
 
-`open` 打开该 run 的查看页：窗口没开时启动窗口并直接进入该页，窗口已开时切到该页；打开动作只读，不派发、不改文件。退出码：0 已打开 / 1 找不到 run / 2 参数错 / 3 窗口起不来。查看页的数据由窗口进程读 run 文件与图文件（同 `status` 的口径，含死进程判定），与命令行其余子命令的退出码含义不同。
+`open` 打开该 run 的查看页：窗口没开时另起窗口进程并直接进入该页，命令随即返回，不等窗口关闭；窗口已开时切到该页。打开动作只读，不派发、不改文件。退出码：0 已打开 / 2 参数错 / 3 窗口起不来或 run 文件读取失败；只有 run 文件不存在按 1（找不到 run）。查看页的数据由窗口进程读 run 文件与图文件（同 `status` 的口径，含死进程判定），与命令行其余子命令的退出码含义不同。
 
 预设别名如下：
 
@@ -171,7 +171,7 @@ ai-cross skill 收到已确认的派发请求后，把当前请求写入 UTF-8 �
 { "run_id": "…", "accepted": true, "graph_id": "…", "node_ids": ["…"] }
 ```
 
-run 摘要存放在 `~/.aicross/runs/<run_id>.json`，除节点摘要、在飞节点、遗留项和结束状态外，还记录本次派发的原始需求文本（`original_request`）、后台进程 pid 与进程创建时间（`pid_started_at`）。后台引擎逐阶段更新；取消标记存放在同目录的 `<run_id>.cancel`，处理完成后删除。`cancel` 只写取消标记，不改写 run 文件；run 已不在 `running` 时取消静默成功（退出 0，打印当前 run）。
+run 摘要存放在 `~/.aicross/runs/<run_id>.json`，除节点摘要、在飞节点、遗留项和结束状态外，还记录本次派发的原始需求文本（`original_request`）、所用预设 id（`preset_id`，按 `targets` 直给时为空，旧 run 文件没有该字段）、后台进程 pid 与进程创建时间（`pid_started_at`）。后台引擎逐阶段更新；取消标记存放在同目录的 `<run_id>.cancel`，处理完成后删除。`cancel` 只写取消标记，不改写 run 文件；run 已不在 `running` 时取消静默成功（退出 0，打印当前 run）。
 
 存活判定：run 为 `running` 且 pid 非 0 时，Windows 核对进程存在且创建时间与 `pid_started_at` 一致（防止 pid 复用误判）；macOS 与 Linux 只核对进程存在，不做创建时间比对。派发刚接收、后台进程尚未报到时 pid 为 0：`updated_at` 在 30 秒内视为启动中，不判死、计入在飞；超过 30 秒仍为 0，或 `updated_at` 比当前时间晚 60 秒以上（时钟回拨），则判 `failed`，原因是「引擎进程未能启动」。进程中途被杀死时 run 判 `failed`、原因是「引擎进程已退出」；此时图上可能留下 `pending` 状态的节点，打开窗口后可核对处理。后台进程读到 run 已不在 `running` 时直接退出，不写 pid、不派发。
 

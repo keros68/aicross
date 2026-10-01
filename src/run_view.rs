@@ -8,8 +8,10 @@
 //!
 //! 数据只从 TASK-36 的产出读：`~/.aicross/runs/<run_id>.json`（经
 //! `engine::read_run`，会顺带完成死进程判定）加 `~/.aicross/graphs/` 里该
-//! run 的图。页头要的模式名 run 文件里没有，按 run 摘要里的角色序列对预设
-//! 清单做前缀匹配推断（`infer_preset_name`），推不出来显示「自定义模式」。
+//! run 的图。页头的模式名取 run 文件里的 `preset_id`（R1-4），按预设清单
+//! 取显示名；旧 run 文件没有该字段，按空处理、显示「自定义模式」。
+//! 冷启动的 `aicross open` 以分离方式另起窗口进程后立即退出（R1-5），
+//! 拉起与被拉起靠 `OPEN_WINDOW_ENV` 区分，不无限接力。
 
 use crate::orchestration;
 use serde::Serialize;
@@ -49,6 +51,91 @@ pub fn parse_open_args(args: &[String]) -> OpenParse {
         return OpenParse::Invalid("run_id 无效".into());
     }
     OpenParse::Valid(run_id.to_string())
+}
+
+// ── 冷启动的窗口拉起（R1-5） ─────────────────────────────────────
+
+/// 区分「宿主里调起的 `aicross open`」与「它拉起的窗口进程」的环境变量：
+/// 拉起前置位，被拉起的进程凭它不再拉起下一个，避免无限接力。
+pub const OPEN_WINDOW_ENV: &str = "AICROSS_OPEN_WINDOW";
+
+/// 被拉起的窗口进程收到的 argv：`open <run_id>`，照常走 `pending_open`。
+pub fn open_window_args(run_id: &str) -> Vec<String> {
+    vec!["open".into(), run_id.into()]
+}
+
+/// 注入 spawn 的拉起入口（测试用）：置位环境变量后交给 spawn。
+/// main 里单线程调用，改进程环境没有并发风险。
+pub fn spawn_open_window_with(
+    exe: &Path,
+    run_id: &str,
+    spawn: impl FnOnce(&Path, &[String]) -> Result<(), String>,
+) -> Result<(), String> {
+    std::env::set_var(OPEN_WINDOW_ENV, "1");
+    spawn(exe, &open_window_args(run_id))
+}
+
+/// 冷启动 `aicross open`：分离拉起窗口进程（不继承句柄、不挂父控制台），
+/// 返回后调用方立即退出 0，不等窗口。Windows 上照引擎 `spawn_detached` 的
+/// 做法：std 的 Command 一律以 bInheritHandles=TRUE 创建子进程，宿主的
+/// 管道会漏进子进程、拖住调用方的 EOF；这里直接 CreateProcessW 且
+/// bInheritHandles=FALSE（引擎侧函数不外放，同做法在本文件内复制）。
+pub fn spawn_open_window(run_id: &str) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("定位程序失败：{e}"))?;
+    spawn_open_window_with(&exe, run_id, spawn_window_detached)
+}
+
+#[cfg(windows)]
+fn spawn_window_detached(exe: &Path, args: &[String]) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        CreateProcessW, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS,
+        PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    let application: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
+    // 参数只有 `open` 与已过 valid_id 校验的 run id，不含引号或空白。
+    let quoted = std::iter::once(format!("\"{}\"", exe.display()))
+        .chain(args.iter().map(|a| format!("\"{a}\"")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut command_line: Vec<u16> = quoted.encode_utf16().chain(Some(0)).collect();
+    let startup = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..STARTUPINFOW::default()
+    };
+    let mut information = PROCESS_INFORMATION::default();
+    unsafe {
+        CreateProcessW(
+            PCWSTR(application.as_ptr()),
+            PWSTR(command_line.as_mut_ptr()),
+            None,
+            None,
+            false,
+            CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            None,
+            PCWSTR::null(),
+            &startup,
+            &mut information,
+        )
+        .map_err(|e| format!("启动窗口进程失败：{e}"))?;
+        let _ = CloseHandle(information.hThread);
+        let _ = CloseHandle(information.hProcess);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn spawn_window_detached(exe: &Path, args: &[String]) -> Result<(), String> {
+    std::process::Command::new(exe)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("启动窗口进程失败：{e}"))
 }
 
 // ── 数据装配 ─────────────────────────────────────────────────────────────
@@ -101,7 +188,8 @@ pub struct RunView {
     pub run_id: String,
     pub graph_id: String,
     pub project: String,
-    /// 推断出的模式名（「X 模式」/「自定义模式」）；run 被拒前没建节点时为空。
+    /// 模式名：按 run 文件的 preset_id 从预设清单取（内置用自己的名字，
+    /// 用户自建为「自定义模式 · 名称」）；为空或找不到时「自定义模式」。
     pub preset_name: String,
     pub graph_title: String,
     pub status: String,
@@ -117,6 +205,42 @@ fn non_empty(value: String) -> Option<String> {
     (!value.trim().is_empty()).then_some(value)
 }
 
+/// CLI 侧的存在性核对（R1-7）：只有「run 文件不存在」算找不到（退出码 1），
+/// 其它读取错误（目录不可读等）由调用方按退出码 3 处理。路径布局与引擎的
+/// `run_path` 一致（该函数不外放，这里只能重复这一处知识）。
+pub fn open_run_exists(root: &Path, run_id: &str) -> Result<bool, String> {
+    if !crate::engine::valid_id(run_id) {
+        return Err("run_id 无效".into());
+    }
+    let path = root.join("runs").join(format!("{run_id}.json"));
+    match std::fs::metadata(&path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("读取 run 失败：{error}")),
+    }
+}
+
+/// 模式名：按 preset_id 从预设清单取显示名（R1-4）。内置预设用自己的名字；
+/// 用户自建为「自定义模式 · 名称」（名称空白时只留「自定义模式」）；
+/// id 为空（旧 run 文件、targets 直给）或清单里找不到时「自定义模式」。
+fn preset_display_name(root: &Path, preset_id: &str) -> String {
+    if preset_id.is_empty() {
+        return "自定义模式".into();
+    }
+    let presets = &orchestration::raw_presets_from(root).presets;
+    let Some(preset) = presets.iter().find(|p| p.id == preset_id) else {
+        return "自定义模式".into();
+    };
+    if preset.builtin {
+        return preset.name.clone();
+    }
+    if preset.name.trim().is_empty() {
+        "自定义模式".into()
+    } else {
+        format!("自定义模式 · {}", preset.name.trim())
+    }
+}
+
 /// 读 run 文件与图文件，拼查看页数据。图读不出来（被删、解析失败）时降级：
 /// run 摘要照常返回，正文与产物缺席。
 pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
@@ -129,7 +253,6 @@ pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
             .flatten()
     };
     let depths = graph.as_ref().map(crate::engine::depth_map);
-    let roles: Vec<String> = run.nodes.iter().map(|n| n.role.clone()).collect();
     let nodes = run
         .nodes
         .iter()
@@ -211,7 +334,7 @@ pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
         run_id: run.run_id.clone(),
         graph_id: run.graph_id.clone(),
         project: run.project.clone(),
-        preset_name: infer_preset_name(root, &roles),
+        preset_name: preset_display_name(root, &run.preset_id),
         graph_title: graph
             .as_ref()
             .map(|g| g.title.clone())
@@ -223,55 +346,6 @@ pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
         leftover: run.leftover.clone(),
         nodes,
     })
-}
-
-/// 模式名推断：run 文件与图上都没有预设记录（TASK-36 的产出），这里按 run
-/// 摘要里的角色序列（盖章插入序）对预设清单做前缀匹配——修正轮补的节点排在
-/// 初始清单之后，不影响前缀。取最长匹配；同长时内置预设优先；推不出来按
-/// 命名规范显示「自定义模式」。run 没建节点（派发前被拒）时返回空串，页面
-/// 不显示模式名。
-fn infer_preset_name(root: &Path, roles: &[String]) -> String {
-    if roles.is_empty() {
-        return String::new();
-    }
-    let mut best: Option<(usize, bool, String)> = None; // (角色数, 是否内置, 显示名)
-    for preset in &orchestration::raw_presets_from(root).presets {
-        let sequence: Vec<&str> = preset
-            .stages
-            .iter()
-            .flat_map(|stage| stage.nodes.iter())
-            .map(|t| t.role.trim())
-            .collect();
-        if sequence.is_empty() || sequence.len() > roles.len() {
-            continue;
-        }
-        let matched = roles
-            .iter()
-            .take(sequence.len())
-            .zip(sequence.iter())
-            .all(|(role, preset_role)| role.trim() == *preset_role);
-        if !matched {
-            continue;
-        }
-        let display = if preset.builtin {
-            preset.name.clone()
-        } else if preset.name.trim().is_empty() {
-            "自定义模式".into()
-        } else {
-            format!("自定义模式 · {}", preset.name.trim())
-        };
-        let better = match &best {
-            None => true,
-            Some((length, builtin, _)) => {
-                sequence.len() > *length || (sequence.len() == *length && preset.builtin && !*builtin)
-            }
-        };
-        if better {
-            best = Some((sequence.len(), preset.builtin, display));
-        }
-    }
-    best.map(|(_, _, display)| display)
-        .unwrap_or_else(|| "自定义模式".into())
 }
 
 // ── Tauri 命令 ───────────────────────────────────────────────────────────
@@ -435,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn load_run_view_running_keeps_status_and_infer_mode() {
+    fn load_run_view_running_keeps_status_and_maps_preset_id() {
         let root = temp("running");
         let graph = economy_graph();
         orchestration::save_graph_in(&root, &graph).unwrap();
@@ -444,6 +518,7 @@ mod tests {
             graph_id: "g1".into(),
             project: "D:/p".into(),
             status: "running".into(),
+            preset_id: "builtin-economy".into(),
             nodes: vec![
                 run_node("n-plan", "出方案"),
                 run_node("n-exec", "执行"),
@@ -543,29 +618,36 @@ mod tests {
     #[test]
     fn load_run_view_failed_carries_reason_and_degrades_without_graph() {
         let root = temp("failed");
-        let run = EngineRun {
-            run_id: "r2".into(),
-            graph_id: "gone".into(),
-            project: "D:/p".into(),
-            status: "failed".into(),
-            nodes: vec![run_node("n1", "执行")],
-            reason: "引擎进程已退出".into(),
-            started_at: "2026-10-01T08:00:00.000Z".into(),
-            updated_at: "2026-10-01T08:00:30.000Z".into(),
-            ..EngineRun::default()
-        };
-        write_run_file(&root, &run);
+        // 旧 run 文件：不带 preset_id 字段（手写 JSON 模拟 R1-4 之前的产出）。
+        std::fs::create_dir_all(root.join("runs")).unwrap();
+        std::fs::write(
+            root.join("runs/r2.json"),
+            r#"{
+  "run_id": "r2",
+  "graph_id": "gone",
+  "project": "D:/p",
+  "status": "failed",
+  "nodes": [
+    {"node_id": "n1", "role": "执行", "agent": "claude", "model": "sonnet", "status": "done", "text_excerpt": "", "artifacts_dir": ""}
+  ],
+  "started_at": "2026-10-01T08:00:00.000Z",
+  "reason": "引擎进程已退出",
+  "pid": 0,
+  "updated_at": "2026-10-01T08:00:30.000Z"
+}"#,
+        )
+        .unwrap();
         let view = build_run_view(&root, "r2").unwrap();
         assert_eq!(view.status, "failed");
         assert_eq!(view.reason, "引擎进程已退出");
-        // 图文件不存在：run 摘要仍可用，角色与目标来自 run 摘要；模式推断只看
-        // 角色序列，这一路单「执行」照共享模式推断。
+        // 图文件不存在：run 摘要仍可用，角色与目标来自 run 摘要；旧 run 没有
+        // preset_id，模式名按「自定义模式」处理。
         assert_eq!(view.graph_title, "");
         assert_eq!(view.nodes.len(), 1);
         assert_eq!(view.nodes[0].role, "执行");
         assert_eq!(view.nodes[0].model, "sonnet");
         assert_eq!(view.nodes[0].has_result, false);
-        assert_eq!(view.preset_name, "共享模式");
+        assert_eq!(view.preset_name, "自定义模式");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -610,67 +692,110 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    // ── 模式名推断 ───────────────────────────────────────────────────────
+    // ── 模式名（R1-4：按 preset_id 取，不再按角色序列推断） ─────────────
 
     #[test]
-    fn infer_preset_name_matches_builtin_shapes_and_falls_back() {
+    fn preset_name_comes_from_preset_id() {
         let root = temp("preset");
-        let cases: &[(&[&str], &str)] = &[
-            (&["出方案", "执行", "验收", "验证"], "经济模式"),
-            // 修正轮补的执行与验收排在初始清单之后，前缀仍成立。
-            (&["出方案", "执行", "验收", "验证", "执行", "验收"], "经济模式"),
-            (&["验收", "验证", "验证"], "盲审模式"),
-            (&["执行", "执行", "执行"], "擂台模式"),
-            (&["验证", "验证", "验证"], "评审模式"),
-            (&["拆分"], "蜂群模式"),
-            (&["执行"], "共享模式"),
-            // targets 直给 / 对不上任何预设：自定义模式。
-            (&["验证", "验证"], "自定义模式"),
-        ];
-        for (roles, expected) in cases {
-            let roles: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
-            assert_eq!(&infer_preset_name(&root, &roles), expected, "{roles:?}");
-        }
-        assert_eq!(infer_preset_name(&root, &[]), "");
+        // 内置预设用自己的名字。
+        assert_eq!(preset_display_name(&root, "builtin-economy"), "经济模式");
+        assert_eq!(preset_display_name(&root, "builtin-blind"), "盲审模式");
+        // id 为空（targets 直给、旧 run 文件）与清单里找不到的 id 都退「自定义模式」。
+        assert_eq!(preset_display_name(&root, ""), "自定义模式");
+        assert_eq!(preset_display_name(&root, "builtin-gone"), "自定义模式");
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn infer_preset_name_prefers_longest_match_then_builtin() {
+    fn preset_name_labels_user_presets_as_custom() {
         let root = temp("preset-user");
-        // 用户预设 [执行, 验收]（两层）比内置共享 [执行] 长：匹配更长者胜。
+        // 用户自建预设：按命名规范显示「自定义模式 · 名称」；名称空白只留
+        // 「自定义模式」；比内置同形状预设优先按 id 精确命中。
         let file = crate::orchestration::PresetFile {
             version: 1,
-            presets: vec![Preset {
-                id: "u1".into(),
-                name: "预发回归".into(),
-                builtin: false,
-                stages: vec![
-                    Stage {
+            presets: vec![
+                Preset {
+                    id: "u1".into(),
+                    name: "预发回归".into(),
+                    builtin: false,
+                    stages: vec![Stage {
                         nodes: vec![Target {
                             role: "执行".into(),
                             ..Target::default()
                         }],
-                    },
-                    Stage {
-                        nodes: vec![Target {
-                            role: "验收".into(),
-                            ..Target::default()
-                        }],
-                    },
-                ],
-            }],
+                    }],
+                },
+                Preset {
+                    id: "u2".into(),
+                    name: "  ".into(),
+                    builtin: false,
+                    stages: vec![Stage {
+                        nodes: vec![Target::default()],
+                    }],
+                },
+            ],
         };
         std::fs::write(
             root.join("presets.json"),
             serde_json::to_string_pretty(&file).unwrap(),
         )
         .unwrap();
-        let two: Vec<String> = vec!["执行".into(), "验收".into()];
-        assert_eq!(infer_preset_name(&root, &two), "自定义模式 · 预发回归");
-        // 只有 [执行] 时用户预设两段对不上，内置共享胜出。
-        let one: Vec<String> = vec!["执行".into()];
-        assert_eq!(infer_preset_name(&root, &one), "共享模式");
+        assert_eq!(preset_display_name(&root, "u1"), "自定义模式 · 预发回归");
+        assert_eq!(preset_display_name(&root, "u2"), "自定义模式");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // ── 冷启动拉起（R1-5）与存在性核对（R1-7） ─────────────────────────
+
+    #[test]
+    fn open_window_args_carry_open_and_run_id() {
+        assert_eq!(
+            open_window_args("run-1"),
+            vec!["open".to_string(), "run-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn spawn_open_window_with_spawns_and_marks_env_without_blocking() {
+        // 注入的 spawn 立即返回：拉起入口本身不等窗口，只转交参数。
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorder = seen.clone();
+        spawn_open_window_with(Path::new("D:/fake/aicross.exe"), "run-1", move |exe, args| {
+            assert_eq!(exe, Path::new("D:/fake/aicross.exe"));
+            *recorder.lock().unwrap() = args.to_vec();
+            Ok(())
+        })
+        .expect("拉起成功");
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            vec!["open".to_string(), "run-1".to_string()]
+        );
+        // 环境变量已置位：被拉起的窗口进程凭它不再拉起下一个。
+        assert_eq!(std::env::var(OPEN_WINDOW_ENV).as_deref(), Ok("1"));
+        std::env::remove_var(OPEN_WINDOW_ENV);
+        // spawn 报错原样传出（调用方按退出码 3 处理）。
+        let error = spawn_open_window_with(Path::new("D:/fake/aicross.exe"), "run-1", |_, _| {
+            Err("启动窗口进程失败：模拟".into())
+        })
+        .unwrap_err();
+        assert!(error.contains("启动窗口进程失败"));
+    }
+
+    #[test]
+    fn open_run_exists_distinguishes_missing_from_other_errors() {
+        let root = temp("exists");
+        std::fs::create_dir_all(root.join("runs")).unwrap();
+        // 文件不存在：Ok(false)，命令行按退出码 1。
+        assert_eq!(open_run_exists(&root, "no-such-run").unwrap(), false);
+        std::fs::write(root.join("runs/r1.json"), "{}").unwrap();
+        assert_eq!(open_run_exists(&root, "r1").unwrap(), true);
+        // 非法 id 是参数错，不是「找不到」。
+        assert!(open_run_exists(&root, "bad/id").is_err());
+        // 其它读取错误（如路径超长）：Err，命令行按退出码 3，不当「找不到」。
+        // 注：Windows 上「runs 被同名文件占住」也报 NotFound，归入找不到。
+        let long_id = "r".repeat(300);
+        let error = open_run_exists(&root, &long_id).unwrap_err();
+        assert!(error.contains("读取 run 失败"), "{error}");
         let _ = std::fs::remove_dir_all(root);
     }
 }
