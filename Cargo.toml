@@ -45,6 +45,9 @@ tauri-plugin-clipboard-manager = "2"
 # Utilities
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Graph.nodes 用 IndexMap 保持插入序，与前端 JS 对象的键序语义一致
+# （修正轮验收查找、遗留节点复用、latest_leaf 平局都按插入序）。
+indexmap = { version = "2", features = ["serde"] }
 serde_yaml = "0.9"
 # TOML parsing for the kimi resource fact source (~/.kimi-code/config.toml [models])
 toml = "0.9"
@@ -84,6 +87,12 @@ keyring = "3"
 rmcp = { version = "0.8", features = ["server", "macros", "transport-streamable-http-server"] }
 axum = "0.7"
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+# 只有金标准重放（src/engine/golden.rs）依赖 serde_json::Value 对象的插入序
+# （与 JS 对象键序对齐），生产代码不依赖 Map 的键序，因此 preserve_order 只在
+# 测试构建打开：特性按构建种类统一，正常构建的 serde_json::Map 仍是 BTreeMap。
+serde_json = { version = "1", features = ["preserve_order"] }
 
 [profile.release]
 opt-level = "z"

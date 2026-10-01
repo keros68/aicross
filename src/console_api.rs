@@ -78,6 +78,8 @@ pub struct ConsoleRun {
     pub started_at: String,
     #[serde(default, skip_serializing_if = "String::is_empty")] pub reason: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")] pub in_flight_node_ids: Vec<String>,
+    #[serde(default)] pub pid: u32,
+    #[serde(default)] pub updated_at: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -303,7 +305,7 @@ where F: FnOnce(ConsoleDispatchEvent) -> Result<(), ()> {
     let run_id = Uuid::new_v4().to_string();
     insert_inflight_run(ConsoleRun {
         run_id: run_id.clone(), graph_id: String::new(), project: request.project.clone(), status: "running".into(), nodes: Vec::new(),
-        leftover: Vec::new(), started_at: Utc::now().to_rfc3339(), reason: String::new(), in_flight_node_ids: Vec::new(),
+        leftover: Vec::new(), started_at: Utc::now().to_rfc3339(), reason: String::new(), in_flight_node_ids: Vec::new(), pid: 0, updated_at: Utc::now().to_rfc3339(),
     })?;
     let (sender, receiver) = mpsc::sync_channel(1);
     pending_dispatches().lock().map_err(|_| ApiError::new(409, "运行状态不可用"))?.insert(run_id.clone(), sender);
@@ -338,7 +340,7 @@ where F: FnOnce(ConsoleProposalEvent) -> Result<(), ()> {
     let proposal_id = Uuid::new_v4().to_string();
     let run = ConsoleRun {
         run_id: proposal_id.clone(), graph_id: String::new(), project: request.project.clone(), status: "proposed".into(), nodes: Vec::new(),
-        leftover: Vec::new(), started_at: Utc::now().to_rfc3339(), reason: request.reason.clone().unwrap_or_default(), in_flight_node_ids: Vec::new(),
+        leftover: Vec::new(), started_at: Utc::now().to_rfc3339(), reason: request.reason.clone().unwrap_or_default(), in_flight_node_ids: Vec::new(), pid: 0, updated_at: Utc::now().to_rfc3339(),
     };
     let (sender, receiver) = mpsc::sync_channel(1);
     pending_proposals().lock().map_err(|_| ApiError::new(409, "运行状态不可用"))?
@@ -462,6 +464,8 @@ pub fn console_register_proposal(app: AppHandle, proposal_id: String, project: S
         started_at: Utc::now().to_rfc3339(),
         reason,
         in_flight_node_ids: Vec::new(),
+        pid: 0,
+        updated_at: Utc::now().to_rfc3339(),
     };
     insert_run(snapshot.clone()).map_err(|error| error.reason)?;
     emit_runs(&app, "proposal", &snapshot.graph_id, &[]);
@@ -589,7 +593,7 @@ mod tests {
     }
 
     fn run(id: &str, status: &str, started: &str) -> ConsoleRun {
-        ConsoleRun { run_id: id.into(), graph_id: "g".into(), project: "p".into(), status: status.into(), nodes: Vec::new(), leftover: Vec::new(), started_at: started.into(), reason: String::new(), in_flight_node_ids: Vec::new() }
+        ConsoleRun { run_id: id.into(), graph_id: "g".into(), project: "p".into(), status: status.into(), nodes: Vec::new(), leftover: Vec::new(), started_at: started.into(), reason: String::new(), in_flight_node_ids: Vec::new(), pid: 0, updated_at: started.into() }
     }
 
     #[derive(Default)]

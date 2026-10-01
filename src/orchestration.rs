@@ -9,8 +9,8 @@
 //!   不落盘，由 `list_presets` 每次合并。
 //! - `graphs/<id>.json`：一图一文件，原子写。
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -31,8 +31,10 @@ pub struct Graph {
     pub title: String,
     #[serde(default)]
     pub root: String,
+    /// 节点表用 IndexMap 保持插入序，对齐前端 JS 对象的键序语义：
+    /// 找等待中的验收、复用遗留节点、latest_leaf 同深平局都按插入序取第一个。
     #[serde(default)]
-    pub nodes: HashMap<String, GraphNode>,
+    pub nodes: IndexMap<String, GraphNode>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]
@@ -144,6 +146,8 @@ pub struct Reply {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ReplyArtifacts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_node_id: Option<String>,
     #[serde(default)]
     pub diff: String,
     #[serde(default)]
@@ -199,6 +203,8 @@ pub struct Target {
     /// 只读 | 单写者 | worktree
     #[serde(default)]
     pub write: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_command: Option<String>,
     /// 备选目标；不设则主目标失败即终态
     #[serde(default)]
     pub fallback: Option<FallbackTarget>,
@@ -718,7 +724,7 @@ fn validate_graph_id(id: &str) -> Result<(), String> {
 /// 注意用的是 `detected` 不是 `connected`：节点面板与 `@` 弹层要看到本机探测到的
 /// 全部模型（本机 pi 一家三个 provider 就有 31 条），未冒烟的由前端按 status 打后缀。
 /// 左栏资源 tab 与预设角色默认值仍走 `connected`（可派发清单语义），不受影响。
-fn dispatchable_from(root: &Path) -> DispatchableModels {
+pub(crate) fn dispatchable_from(root: &Path) -> DispatchableModels {
     let path = resources_path(root);
     match detected_resources(&path) {
         Ok(models) => DispatchableModels {
@@ -740,7 +746,16 @@ fn dispatchable_from(root: &Path) -> DispatchableModels {
 
 /// 内置三个预设 + presets.json 里的用户预设；文件不存在、解析失败或
 /// version != 1 时拒绝该文件、只返回内置（与 graphs 的版本校验对齐）。
-fn presets_from(root: &Path) -> PresetFile {
+pub(crate) fn presets_from(root: &Path) -> PresetFile {
+    let mut file = raw_presets_from(root);
+    fill_role_defaults(&mut file.presets, &roles_from(root));
+    file
+}
+
+/// 与 `presets_from` 同一份清单但不填角色默认。引擎的建图盖章走
+/// TS `runConsoleDispatch` 口径：预设原样取出，角色默认由引擎自己在
+/// `apply_role_defaults` 里套，避免填两遍。
+pub(crate) fn raw_presets_from(root: &Path) -> PresetFile {
     let mut presets = builtin_presets();
     let path = presets_path(root);
     if let Ok(contents) = fs::read_to_string(&path) {
@@ -750,7 +765,6 @@ fn presets_from(root: &Path) -> PresetFile {
             }
         }
     }
-    fill_role_defaults(&mut presets, &roles_from(root));
     PresetFile {
         version: 1,
         presets,
@@ -768,7 +782,7 @@ fn save_user_presets_in(root: &Path, presets: Vec<Preset>) -> Result<(), String>
     write_json_atomic(&presets_path(root), &file)
 }
 
-fn save_graph_in(root: &Path, graph: &Graph) -> Result<(), String> {
+pub(crate) fn save_graph_in(root: &Path, graph: &Graph) -> Result<(), String> {
     if graph.version != 1 {
         return Err(format!("图 version 只支持 1，收到 {}", graph.version));
     }
@@ -776,7 +790,7 @@ fn save_graph_in(root: &Path, graph: &Graph) -> Result<(), String> {
     write_json_atomic(&graphs_dir(root).join(format!("{}.json", graph.id)), graph)
 }
 
-fn load_graph_in(root: &Path, id: &str) -> Result<Option<Graph>, String> {
+pub(crate) fn load_graph_in(root: &Path, id: &str) -> Result<Option<Graph>, String> {
     validate_graph_id(id)?;
     let path = graphs_dir(root).join(format!("{id}.json"));
     let contents = match fs::read_to_string(&path) {
@@ -1006,7 +1020,7 @@ mod tests {
             created_at: "2026-09-13T10:02:00Z".into(),
             source: String::new(),
         };
-        let nodes: HashMap<String, GraphNode> = [root, turn, accept]
+        let nodes: IndexMap<String, GraphNode> = [root, turn, accept]
             .into_iter()
             .map(|n| (n.id.clone(), n))
             .collect();
@@ -1282,6 +1296,30 @@ mod tests {
         assert_eq!(economy.stages[0].nodes[0].model, "glm-5.3-flash");
         assert_eq!(economy.stages[1].nodes[0].write, "单写者");
         assert_eq!(economy.stages[2].nodes[0].model, "kimi-code/k3-256k");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task36_graph_roundtrip_preserves_validation_and_source_node_fields() {
+        let root = temp_root("task36-roundtrip");
+        let mut graph = sample_graph();
+        let node = graph.nodes.get_mut(&graph.root).unwrap();
+        node.target = Some(Target {
+            validation_command: Some("cargo test".into()),
+            ..Target::default()
+        });
+        node.reply = Some(Reply {
+            artifacts: Some(ReplyArtifacts {
+                source_node_id: Some("source-1".into()),
+                ..ReplyArtifacts::default()
+            }),
+            ..Reply::default()
+        });
+        save_graph_in(&root, &graph).unwrap();
+        let loaded = load_graph_in(&root, &graph.id).unwrap().unwrap();
+        let loaded_node = loaded.nodes.get(&loaded.root).unwrap();
+        assert_eq!(loaded_node.target.as_ref().unwrap().validation_command.as_deref(), Some("cargo test"));
+        assert_eq!(loaded_node.reply.as_ref().unwrap().artifacts.as_ref().unwrap().source_node_id.as_deref(), Some("source-1"));
         let _ = fs::remove_dir_all(root);
     }
 

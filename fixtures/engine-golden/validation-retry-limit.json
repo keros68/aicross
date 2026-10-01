@@ -1,0 +1,1316 @@
+{
+  "name": "验证命令失败重试到上限，等待中的验收与验证兄弟一并标跳过",
+  "input": {
+    "event": {
+      "run_id": "run-1",
+      "project": "D:/project",
+      "text": "实现任务",
+      "preset": "builtin-economy"
+    },
+    "settings": {
+      "timeoutSecs": 600,
+      "concurrency": 3,
+      "maxRequests": 8,
+      "classificationModel": "",
+      "classifyProposals": false,
+      "swarmLimit": 4,
+      "consoleRunLimit": 3,
+      "redact": true,
+      "writeProjectDispatch": true,
+      "ccSwitchPath": "",
+      "validationCommand": "",
+      "acpEnabled": false,
+      "fixRoundLimit": 1
+    },
+    "models": [
+      {
+        "id": "plan",
+        "agent": "claude",
+        "provider": "",
+        "vendor": "claude-vendor",
+        "billing_source": "订阅",
+        "tier": "高",
+        "thinking": "高",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
+      },
+      {
+        "id": "exec",
+        "agent": "codex",
+        "provider": "",
+        "vendor": "codex-vendor",
+        "billing_source": "订阅",
+        "tier": "低",
+        "thinking": "低",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
+      },
+      {
+        "id": "review",
+        "agent": "kimi",
+        "provider": "",
+        "vendor": "kimi-vendor",
+        "billing_source": "订阅",
+        "tier": "中",
+        "thinking": "中",
+        "status": "已接入",
+        "verification": "native",
+        "source": "",
+        "smoked_at": "",
+        "smoke_model": "",
+        "smoke_failure": "",
+        "meta": "",
+        "note": ""
+      }
+    ],
+    "resourcesError": null,
+    "presets": [
+      {
+        "id": "builtin-shared",
+        "name": "共享模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "执行",
+                "thinking": "中",
+                "visibility": "共享",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "builtin-economy",
+        "name": "经济模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "出方案",
+                "tier": "高",
+                "thinking": "高",
+                "visibility": "共享",
+                "write": "只读"
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "执行",
+                "tier": "低",
+                "thinking": "低",
+                "visibility": "共享",
+                "write": "单写者"
+              }
+            ]
+          },
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "验收",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "builtin-blind",
+        "name": "盲审模式",
+        "builtin": true,
+        "stages": [
+          {
+            "nodes": [
+              {
+                "agent": "",
+                "model": "",
+                "role": "验收",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              },
+              {
+                "agent": "",
+                "model": "",
+                "role": "验证",
+                "thinking": "中",
+                "visibility": "盲",
+                "write": "只读"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "roles": {
+      "version": 1,
+      "planning": {
+        "agent": "claude",
+        "provider": "",
+        "model": "plan",
+        "tier": "高",
+        "thinking": "高"
+      },
+      "execution": {
+        "agent": "codex",
+        "provider": "",
+        "model": "exec",
+        "tier": "低",
+        "thinking": "低"
+      },
+      "acceptance": {
+        "agent": "kimi",
+        "provider": "",
+        "model": "review",
+        "tier": "中",
+        "thinking": "中"
+      }
+    },
+    "runs": [
+      {
+        "run_id": "run-1",
+        "graph_id": "",
+        "project": "D:/project",
+        "status": "running",
+        "nodes": [],
+        "leftover": [],
+        "started_at": "TIME_1",
+        "in_flight_node_ids": []
+      }
+    ],
+    "existingGraphs": [],
+    "git": {
+      "state": "no_git"
+    }
+  },
+  "stages": [
+    {
+      "request": {
+        "runId": "run-1",
+        "stage": 1,
+        "projectDir": "D:/project",
+        "settings": {
+          "timeoutSecs": 600,
+          "concurrency": 3,
+          "maxRequests": 8,
+          "redact": true,
+          "writeProjectDispatch": true,
+          "ccSwitchPath": "",
+          "validationCommand": "",
+          "acpEnabled": false,
+          "fixRoundLimit": 1
+        },
+        "nodes": [
+          {
+            "nodeId": "UUID_1",
+            "stage": 1,
+            "agent": "claude",
+            "provider": "",
+            "model": "plan",
+            "vendor": "claude-vendor",
+            "billingSource": "订阅",
+            "role": "出方案",
+            "tier": "高",
+            "thinking": "高",
+            "visibility": "共享",
+            "prompt": "[用户]\n实现任务\n\n末尾输出“任务契约”，目标、范围、不做、验收标准各一句。",
+            "currentMessage": "",
+            "materials": [],
+            "sessionId": "",
+            "previousRunner": "",
+            "write": "只读",
+            "originalRequest": "实现任务",
+            "upstreamArtifacts": []
+          }
+        ]
+      },
+      "injected": {
+        "results": [
+          {
+            "nodeId": "UUID_1",
+            "stage": 1,
+            "status": "ok",
+            "text": "方案：分两步实现。",
+            "rawStdout": "",
+            "rawStderr": "",
+            "modelReported": "plan",
+            "sessionId": "",
+            "tokensIn": 11,
+            "tokensOut": 22,
+            "cacheRead": 0,
+            "durationMs": 33,
+            "exitCode": 0,
+            "timedOut": false,
+            "truncated": false,
+            "redacted": 0,
+            "isolation": "完全",
+            "runner": "oneshot",
+            "workdir": "",
+            "dispatchFile": "",
+            "frontmatter": "",
+            "outputPreview": "",
+            "error": "",
+            "artifacts": null,
+            "validationOutput": "",
+            "fallbackFrom": "",
+            "fallbackTo": ""
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "runId": "run-1",
+        "stage": 2,
+        "projectDir": "D:/project",
+        "settings": {
+          "timeoutSecs": 600,
+          "concurrency": 3,
+          "maxRequests": 8,
+          "redact": true,
+          "writeProjectDispatch": true,
+          "ccSwitchPath": "",
+          "validationCommand": "",
+          "acpEnabled": false,
+          "fixRoundLimit": 1
+        },
+        "nodes": [
+          {
+            "nodeId": "UUID_2",
+            "stage": 2,
+            "agent": "codex",
+            "provider": "",
+            "model": "exec",
+            "vendor": "codex-vendor",
+            "billingSource": "订阅",
+            "role": "执行",
+            "tier": "低",
+            "thinking": "低",
+            "visibility": "共享",
+            "prompt": "需要精确数值的部分必须写代码并执行，给出运行结果；不得心算。\n不得 git push、发布、安装依赖或调用付费接口；这些留给用户在验收之后做。\n\n[用户]\n实现任务\n\n[模型回复 claude/plan]\n方案：分两步实现。",
+            "currentMessage": "",
+            "materials": [],
+            "sessionId": "",
+            "previousRunner": "",
+            "write": "单写者",
+            "originalRequest": "实现任务",
+            "upstreamArtifacts": []
+          }
+        ]
+      },
+      "injected": {
+        "results": [
+          {
+            "nodeId": "UUID_2",
+            "stage": 2,
+            "status": "validation_failed",
+            "text": "",
+            "rawStdout": "",
+            "rawStderr": "",
+            "modelReported": "exec",
+            "sessionId": "",
+            "tokensIn": 11,
+            "tokensOut": 22,
+            "cacheRead": 0,
+            "durationMs": 33,
+            "exitCode": 1,
+            "timedOut": false,
+            "truncated": false,
+            "redacted": 0,
+            "isolation": "完全",
+            "runner": "oneshot",
+            "workdir": "",
+            "dispatchFile": "",
+            "frontmatter": "",
+            "outputPreview": "",
+            "error": "验证失败",
+            "artifacts": null,
+            "validationOutput": "exit 1",
+            "fallbackFrom": "",
+            "fallbackTo": ""
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "runId": "run-1",
+        "stage": 2,
+        "projectDir": "D:/project",
+        "settings": {
+          "timeoutSecs": 600,
+          "concurrency": 3,
+          "maxRequests": 8,
+          "redact": true,
+          "writeProjectDispatch": true,
+          "ccSwitchPath": "",
+          "validationCommand": "",
+          "acpEnabled": false,
+          "fixRoundLimit": 1
+        },
+        "nodes": [
+          {
+            "nodeId": "UUID_3",
+            "stage": 2,
+            "agent": "codex",
+            "provider": "",
+            "model": "exec",
+            "vendor": "codex-vendor",
+            "billingSource": "订阅",
+            "role": "执行",
+            "tier": "低",
+            "thinking": "低",
+            "visibility": "共享",
+            "prompt": "需要精确数值的部分必须写代码并执行，给出运行结果；不得心算。\n不得 git push、发布、安装依赖或调用付费接口；这些留给用户在验收之后做。\n\n[用户]\n实现任务\n\n[模型回复 claude/plan]\n方案：分两步实现。\n\n[用户]\n[修正 1/1] 验证命令未通过，请修正后重新运行。\n\nexit 1",
+            "currentMessage": "[用户]\n[修正 1/1] 验证命令未通过，请修正后重新运行。\n\nexit 1",
+            "materials": [],
+            "sessionId": "",
+            "previousRunner": "",
+            "write": "单写者",
+            "originalRequest": "实现任务",
+            "upstreamArtifacts": [],
+            "fixRound": true
+          }
+        ]
+      },
+      "injected": {
+        "results": [
+          {
+            "nodeId": "UUID_3",
+            "stage": 2,
+            "status": "validation_failed",
+            "text": "",
+            "rawStdout": "",
+            "rawStderr": "",
+            "modelReported": "exec",
+            "sessionId": "",
+            "tokensIn": 11,
+            "tokensOut": 22,
+            "cacheRead": 0,
+            "durationMs": 33,
+            "exitCode": 1,
+            "timedOut": false,
+            "truncated": false,
+            "redacted": 0,
+            "isolation": "完全",
+            "runner": "oneshot",
+            "workdir": "",
+            "dispatchFile": "",
+            "frontmatter": "",
+            "outputPreview": "",
+            "error": "验证失败",
+            "artifacts": null,
+            "validationOutput": "exit 1",
+            "fallbackFrom": "",
+            "fallbackTo": ""
+          }
+        ]
+      }
+    }
+  ],
+  "runUpdates": [
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [
+        "UUID_1"
+      ],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "pending",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [
+        "UUID_1"
+      ],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [
+        "UUID_2"
+      ],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "pending",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [
+        "UUID_2"
+      ],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "failed",
+          "text_excerpt": "验证命令未通过，未送审",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "上游验证未通过",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "failed",
+          "text_excerpt": "验证命令未通过，未送审",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "上游验证未通过",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "failed",
+          "text_excerpt": "验证命令未通过，未送审",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "上游验证未通过",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_3",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "draft",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [
+        "UUID_3"
+      ],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "failed",
+          "text_excerpt": "验证命令未通过，未送审",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "上游验证未通过",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_3",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "pending",
+          "text_excerpt": "",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [
+        "UUID_3"
+      ],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "failed",
+          "text_excerpt": "验证命令未通过，未送审",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "上游验证未通过",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_3",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "running",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "failed",
+          "text_excerpt": "验证命令未通过，未送审",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "上游验证未通过",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_3",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
+    },
+    {
+      "run_id": "run-1",
+      "graph_id": "UUID_4",
+      "status": "failed",
+      "nodes": [
+        {
+          "node_id": "UUID_1",
+          "role": "出方案",
+          "agent": "claude",
+          "model": "plan",
+          "status": "done",
+          "text_excerpt": "方案：分两步实现。",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_2",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_5",
+          "role": "验收",
+          "agent": "kimi",
+          "model": "review",
+          "status": "failed",
+          "text_excerpt": "验证命令未通过，未送审",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_6",
+          "role": "验证",
+          "agent": "kimi",
+          "model": "review",
+          "status": "draft",
+          "text_excerpt": "上游验证未通过",
+          "artifacts_dir": ""
+        },
+        {
+          "node_id": "UUID_3",
+          "role": "执行",
+          "agent": "codex",
+          "model": "exec",
+          "status": "failed",
+          "text_excerpt": "[验证输出]\nexit 1",
+          "artifacts_dir": ""
+        }
+      ],
+      "leftover": [],
+      "in_flight_node_ids": [],
+      "reason": ""
+    }
+  ],
+  "finalGraph": {
+    "version": 1,
+    "id": "UUID_4",
+    "title": "实现任务",
+    "root": "UUID_7",
+    "nodes": {
+      "UUID_7": {
+        "id": "UUID_7",
+        "kind": "material",
+        "parents": [],
+        "user": {
+          "text": "实现任务",
+          "attachments": []
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "UUID_1": {
+        "id": "UUID_1",
+        "kind": "turn",
+        "parents": [
+          "UUID_7"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "done",
+          "text": "方案：分两步实现。",
+          "model_reported": "plan",
+          "tokens_in": 11,
+          "tokens_out": 22,
+          "ms": 33,
+          "runner": "oneshot"
+        },
+        "target": {
+          "agent": "claude",
+          "model": "plan",
+          "role": "出方案",
+          "tier": "高",
+          "thinking": "高",
+          "visibility": "共享",
+          "write": "只读",
+          "provider": ""
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "UUID_2": {
+        "id": "UUID_2",
+        "kind": "turn",
+        "parents": [
+          "UUID_1"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "failed",
+          "text": "[验证输出]\nexit 1",
+          "error_kind": "validation_failed",
+          "model_reported": "exec",
+          "tokens_in": 11,
+          "tokens_out": 22,
+          "ms": 33,
+          "runner": "oneshot"
+        },
+        "target": {
+          "agent": "codex",
+          "model": "exec",
+          "role": "执行",
+          "tier": "低",
+          "thinking": "低",
+          "visibility": "共享",
+          "write": "单写者",
+          "provider": ""
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "UUID_5": {
+        "id": "UUID_5",
+        "kind": "turn",
+        "parents": [
+          "UUID_2"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "failed",
+          "text": "验证命令未通过，未送审"
+        },
+        "target": {
+          "agent": "kimi",
+          "model": "review",
+          "role": "验收",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读",
+          "provider": "",
+          "tier": "中"
+        },
+        "created_at": "TIME_1",
+        "source": "console"
+      },
+      "UUID_6": {
+        "id": "UUID_6",
+        "kind": "turn",
+        "parents": [
+          "UUID_2"
+        ],
+        "user": {
+          "text": "盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": "",
+          "skipped_reason": "上游验证未通过"
+        },
+        "target": {
+          "agent": "kimi",
+          "model": "review",
+          "role": "验证",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读",
+          "provider": "",
+          "tier": "中"
+        },
+        "created_at": "TIME_2",
+        "source": "console"
+      },
+      "UUID_3": {
+        "id": "UUID_3",
+        "kind": "turn",
+        "parents": [
+          "UUID_1"
+        ],
+        "user": {
+          "text": "[修正 1/1] 验证命令未通过，请修正后重新运行。\n\nexit 1",
+          "attachments": []
+        },
+        "reply": {
+          "status": "failed",
+          "text": "[验证输出]\nexit 1",
+          "error_kind": "validation_failed",
+          "model_reported": "exec",
+          "tokens_in": 11,
+          "tokens_out": 22,
+          "ms": 33,
+          "runner": "oneshot"
+        },
+        "target": {
+          "agent": "codex",
+          "model": "exec",
+          "role": "执行",
+          "tier": "低",
+          "thinking": "低",
+          "visibility": "共享",
+          "write": "单写者",
+          "provider": ""
+        },
+        "created_at": "TIME_1"
+      },
+      "UUID_8": {
+        "id": "UUID_8",
+        "kind": "turn",
+        "parents": [
+          "UUID_3"
+        ],
+        "user": {
+          "text": "",
+          "attachments": []
+        },
+        "reply": {
+          "status": "draft",
+          "text": "",
+          "skipped_reason": "上游验证未通过"
+        },
+        "target": {
+          "agent": "kimi",
+          "model": "review",
+          "role": "验收",
+          "thinking": "中",
+          "visibility": "盲",
+          "write": "只读",
+          "provider": "",
+          "tier": "中"
+        },
+        "created_at": "TIME_2"
+      }
+    },
+    "created_at": "TIME_1",
+    "updated_at": "TIME_1",
+    "project": "D:/project",
+    "source": "console"
+  },
+  "notes": [
+    "请求里的 fixRound 按 isFixRoundExecution 计算写入夹具（R1-2 口径）；窗口控制台路径的 buildRequest 从不带该字段，属 TS 侧缺陷，本期不改 TS 行为。"
+  ]
+}
