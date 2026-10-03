@@ -615,7 +615,9 @@ pub(crate) fn dispatch_stage_core(
         ActiveRunGuard(request.run_id.clone())
     };
     let project = project_path(&request.project_dir)?;
-    let run_root = dispatch_data_root()?.join("runs").join(&request.run_id);
+    let runs_dir = dispatch_data_root()?.join("runs");
+    prune_old_runs(&runs_dir);
+    let run_root = runs_dir.join(&request.run_id);
     let _classification_cleanup = ClassificationRunCleanup::new(&request.run_id, &run_root);
     fs::create_dir_all(&run_root).map_err(|error| format!("创建运行目录失败：{error}"))?;
     let log_dir = if request.settings.write_project_dispatch {
@@ -775,7 +777,7 @@ pub(crate) fn dispatch_data_root() -> Result<PathBuf, String> {
         return Ok(PathBuf::from(path));
     }
     #[cfg(test)]
-    return Ok(std::env::temp_dir().join(format!("aicross-test-runtime-{}", std::process::id())));
+    return Ok(crate::paths::test_temp_dir().join("runtime"));
     #[cfg(not(test))]
     aicross_root()
 }
@@ -831,6 +833,35 @@ impl Drop for ActiveRunGuard {
     fn drop(&mut self) {
         if let Ok(mut active) = active_runs().lock() {
             active.remove(&self.0);
+        }
+    }
+}
+
+/// 运行记录保留天数：每次派发开始时删掉 `runs/` 下超过这个天数没动过的
+/// 运行目录与同名的 `.json` / `.raw.txt`，进程内仍在跑的 run 跳过。
+const RUN_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);
+
+fn prune_old_runs(runs_dir: &Path) {
+    let active = active_runs().lock().map(|set| set.clone()).unwrap_or_default();
+    for entry in fs::read_dir(runs_dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let run_id = name.split('.').next().unwrap_or_default();
+        if active.contains(run_id) {
+            continue;
+        }
+        let expired = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age > RUN_RETENTION);
+        if !expired {
+            continue;
+        }
+        let path = entry.path();
+        let removed = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+        if let Err(error) = removed {
+            eprintln!("清理过期运行记录失败 {}：{error}", path.display());
         }
     }
 }
@@ -4333,8 +4364,28 @@ mod tests {
         result.stdout.trim().to_string()
     }
     #[test]
+    fn prune_old_runs_removes_expired_records_only() {
+        let runs = crate::paths::test_temp_dir().join(format!("aicross-prune-{}", Uuid::new_v4()));
+        fs::create_dir_all(&runs).unwrap();
+        let old = std::time::SystemTime::now() - RUN_RETENTION - Duration::from_secs(60);
+        let active_id = format!("prune-active-{}", Uuid::new_v4());
+        for name in ["expired.json", "expired.raw.txt", "fresh.json", &format!("{active_id}.json")] {
+            fs::write(runs.join(name), "{}").unwrap();
+            if name != "fresh.json" {
+                fs::File::options().write(true).open(runs.join(name)).unwrap().set_modified(old).unwrap();
+            }
+        }
+        active_runs().lock().unwrap().insert(active_id.clone());
+        prune_old_runs(&runs);
+        active_runs().lock().unwrap().remove(&active_id);
+        assert!(!runs.join("expired.json").exists());
+        assert!(!runs.join("expired.raw.txt").exists());
+        assert!(runs.join("fresh.json").exists());
+        assert!(runs.join(format!("{active_id}.json")).exists());
+    }
+    #[test]
     fn task08a_r1_split_role_is_rejected_when_not_readonly() {
-        let root = std::env::temp_dir().join(format!("aicross-split-guard-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-split-guard-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let mut split = node(Vec::new());
         split.role = "拆分".into();
@@ -4458,7 +4509,7 @@ mod tests {
         blind: bool,
         accept_criteria: &str,
     ) -> Result<(String, Vec<String>, usize), String> {
-        let project = std::env::temp_dir().join(format!("aicross-prepare-source-{}", Uuid::new_v4()));
+        let project = crate::paths::test_temp_dir().join(format!("aicross-prepare-source-{}", Uuid::new_v4()));
         fs::create_dir_all(&project).unwrap();
         let result = prepare_outbound(
             request,
@@ -4526,7 +4577,7 @@ mod tests {
 
     #[test]
     fn r3_3_empty_target_returns_node_error_without_creating_run_files() {
-        let root = std::env::temp_dir().join(format!("aicross-r3-empty-target-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r3-empty-target-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let mut empty = node(Vec::new());
         empty.agent.clear();
@@ -4539,7 +4590,7 @@ mod tests {
 
     #[test]
     fn r3_7_large_stdout_is_externalized_but_small_stdout_is_inlined() {
-        let root = std::env::temp_dir().join(format!("aicross-r3-stdout-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r3-stdout-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let large = "x".repeat(40 * 1024);
         let recorded = record_stdout(&large, &root, "node-large", "主");
@@ -4570,7 +4621,7 @@ mod tests {
         assert!(!artifacts.diff.contains(secret));
         assert!(!artifacts.changed_files[0].content.contains(secret));
 
-        let root = std::env::temp_dir().join(format!("aicross-r3-blind-redact-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r3-blind-redact-{}", Uuid::new_v4()));
         let mut blind = node(Vec::new());
         blind.original_request = "review".into();
         blind.upstream_artifacts = vec![DispatchArtifacts {
@@ -4587,7 +4638,7 @@ mod tests {
 
     #[test]
     fn r3_13_missing_git_probe_falls_back_and_failed_materialization_leaves_no_diff_dir() {
-        let root = std::env::temp_dir().join(format!("aicross-r3-git-fallback-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r3-git-fallback-{}", Uuid::new_v4()));
         let missing = root.join("missing-project");
         let fake_git = root.join("git-does-not-exist.exe");
         assert!(!project_is_git_work_tree_with(&fake_git, &missing, Duration::from_millis(50)).unwrap_or(false));
@@ -4611,7 +4662,7 @@ mod tests {
 
     #[test]
     fn r3_14_blind_single_writer_nodes_do_not_take_the_project_write_lock() {
-        let project = std::env::temp_dir().join(format!("aicross-r4-blind-lock-{}", Uuid::new_v4()));
+        let project = crate::paths::test_temp_dir().join(format!("aicross-r4-blind-lock-{}", Uuid::new_v4()));
         fs::create_dir_all(&project).unwrap();
         let _held = acquire_project_write(&project, Duration::from_secs(1), "writer").unwrap();
         let mut blind = node(Vec::new());
@@ -4626,7 +4677,7 @@ mod tests {
 
     #[test]
     fn r4_2_invalid_acceptance_write_returns_node_error() {
-        let root = std::env::temp_dir().join(format!("aicross-r4-readonly-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r4-readonly-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let mut invalid = node(Vec::new());
         invalid.node_id = "invalid-review".into();
@@ -4641,7 +4692,7 @@ mod tests {
 
     #[test]
     fn r4_1_worktree_fallback_runs_validation_in_effective_directory() {
-        let root = std::env::temp_dir().join(format!("aicross-r4-validation-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r4-validation-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let mut worktree = node(Vec::new());
         worktree.role = "执行".into();
@@ -4767,7 +4818,7 @@ mod tests {
 
     #[test]
     fn r1_record_unknown_key_is_ignored_and_missing_keys_use_defaults() {
-        let root = std::env::temp_dir().join(format!("aicross-r1-record-defaults-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r1-record-defaults-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("record.md");
         fs::write(&path, "---\nschema: aicross-dispatch/1\nnode: legacy\nunknown_key: ignored\n---\n\n## 回复正文\n\nok\n").unwrap();
@@ -4779,7 +4830,7 @@ mod tests {
 
     #[test]
     fn r1_record_schema_mismatch_is_rejected() {
-        let root = std::env::temp_dir().join(format!("aicross-r1-record-schema-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r1-record-schema-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("record.md");
         fs::write(&path, "---\nschema: aicross-dispatch/999\nnode: legacy\n---\n\n## 回复正文\n\nok\n").unwrap();
@@ -4791,7 +4842,7 @@ mod tests {
     fn r1_acp_to_oneshot_fallback_resets_attempt_tool_counts() {
         let _pool_guard = channels::acp::test_pool_guard();
         if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
-        let root = std::env::temp_dir().join(format!("aicross-r1-acp-fallback-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r1-acp-fallback-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -4809,7 +4860,7 @@ mod tests {
     #[test]
     fn r1_backup_attempt_does_not_inherit_primary_tool_counts() {
         if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
-        let root = std::env::temp_dir().join(format!("aicross-r1-backup-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r1-backup-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -4835,7 +4886,7 @@ mod tests {
     /// 验证失败的节点直接判 error，通道一次都不该跑（stub 不留痕迹）。
     #[test]
     fn task09_first_use_verification_failure_fails_node_before_channel() {
-        let root = std::env::temp_dir().join(format!("aicross-task09-verify-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task09-verify-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -4888,7 +4939,7 @@ mod tests {
     /// 而不是先在写锁上等到超时；worktree 目录也不该被建出来。
     #[test]
     fn r1_first_use_verification_runs_before_write_lock_and_worktree() {
-        let root = std::env::temp_dir().join(format!("aicross-r1-lock-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r1-lock-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -4945,7 +4996,7 @@ mod tests {
     /// 修正轮 R1-3：验证窗口内点了叫停——该节点按「已取消」返回，不进通道。
     #[test]
     fn r1_cancel_during_first_use_verification_stops_the_node() {
-        let root = std::env::temp_dir().join(format!("aicross-r1-cancel-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r1-cancel-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -4990,7 +5041,7 @@ mod tests {
         if channels::resolve_binary("python", None).is_err() {
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-r1-nostore-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r1-nostore-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5020,7 +5071,7 @@ mod tests {
 
     #[test]
     fn acp_disabled_or_unsupported_preserves_oneshot_dispatch_result() {
-        let root = std::env::temp_dir().join(format!("aicross-acp-regression-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-acp-regression-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -5086,7 +5137,7 @@ mod tests {
     fn run_one_interactive_claude_uses_acp_even_with_acp_switch_off_and_asks_the_user() {
         let _pool_guard = channels::acp::test_pool_guard();
         let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
-        let root = std::env::temp_dir().join(format!("aicross-run-one-interactive-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-run-one-interactive-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5115,7 +5166,7 @@ mod tests {
     fn run_one_silent_acp_timeout_stays_acp_and_never_calls_oneshot() {
         let _pool_guard = channels::acp::test_pool_guard();
         let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
-        let root = std::env::temp_dir().join(format!("aicross-run-one-timeout-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-run-one-timeout-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5133,7 +5184,7 @@ mod tests {
     fn run_one_cancelled_acp_stays_acp_and_never_calls_oneshot() {
         let _pool_guard = channels::acp::test_pool_guard();
         let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
-        let root = std::env::temp_dir().join(format!("aicross-run-one-cancel-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-run-one-cancel-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5155,7 +5206,7 @@ mod tests {
     fn run_one_acp_turn_failure_stays_acp_and_never_calls_oneshot() {
         let _pool_guard = channels::acp::test_pool_guard();
         let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
-        let root = std::env::temp_dir().join(format!("aicross-run-one-failed-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-run-one-failed-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5174,7 +5225,7 @@ mod tests {
     fn run_one_dead_acp_falls_back_once_without_resume_and_rewrites_full_task() {
         let _pool_guard = channels::acp::test_pool_guard();
         let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
-        let root = std::env::temp_dir().join(format!("aicross-run-one-fallback-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-run-one-fallback-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5214,7 +5265,7 @@ mod tests {
     fn run_one_live_acp_follow_up_records_only_current_message() {
         let _pool_guard = channels::acp::test_pool_guard();
         let Some(_) = channels::resolve_binary("python", None).ok() else { eprintln!("跳过：PATH 中没有 python"); return };
-        let root = std::env::temp_dir().join(format!("aicross-run-one-acp-follow-up-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-run-one-acp-follow-up-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5239,7 +5290,7 @@ mod tests {
 
     #[test]
     fn unsupported_acp_previous_runner_resets_session_and_uses_full_context() {
-        let root = std::env::temp_dir().join(format!("aicross-acp-off-resume-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-acp-off-resume-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5396,7 +5447,7 @@ mod tests {
 
     #[test]
     fn blind_directory_contains_only_selected_materials() {
-        let root = std::env::temp_dir().join(format!("aicross-blind-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-blind-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run = root.join("run");
         fs::create_dir_all(project.join(".dispatch")).unwrap();
@@ -5423,7 +5474,7 @@ mod tests {
 
     #[test]
     fn preparation_failure_records_only_unsent_placeholder() {
-        let root = std::env::temp_dir().join(format!("aicross-unsent-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-unsent-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -5451,7 +5502,7 @@ mod tests {
 
     #[test]
     fn state_uses_actual_limit_and_separates_failures() {
-        let root = std::env::temp_dir().join(format!("aicross-state-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-state-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("STATE.md");
         let status = HashMap::from([
@@ -5496,7 +5547,7 @@ mod tests {
 
     #[test]
     fn task06_single_writer_rollback_restores_changed_deleted_and_created_files() {
-        let root = std::env::temp_dir().join(format!("aicross-task06-rollback-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-rollback-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("changed.txt"), "before").unwrap();
         fs::write(root.join("deleted.txt"), "restore me").unwrap();
@@ -5518,7 +5569,7 @@ mod tests {
 
     #[test]
     fn task07_before_snapshot_write_failure_restores_previous_directory() {
-        let root = std::env::temp_dir().join(format!("aicross-task07-snapshot-restore-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task07-snapshot-restore-{}", Uuid::new_v4()));
         let old = root.join(".dispatch/run/node.before");
         fs::create_dir_all(&old).unwrap();
         fs::write(old.join("kept.txt"), "old snapshot").unwrap();
@@ -5532,7 +5583,7 @@ mod tests {
 
     #[test]
     fn task07_before_snapshot_success_replaces_old_and_removes_prev() {
-        let root = std::env::temp_dir().join(format!("aicross-task07-snapshot-commit-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task07-snapshot-commit-{}", Uuid::new_v4()));
         let old = root.join(".dispatch/run/node.before");
         fs::create_dir_all(&old).unwrap();
         fs::write(old.join("stale.txt"), "stale").unwrap();
@@ -5558,7 +5609,7 @@ mod tests {
 
     #[test]
     fn task07_zero_change_redispatch_preserves_nonempty_snapshot() {
-        let root = std::env::temp_dir().join(format!("aicross-task07-zero-change-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task07-zero-change-{}", Uuid::new_v4()));
         let old = root.join(".dispatch/run/node.before");
         fs::create_dir_all(&old).unwrap();
         fs::write(old.join("kept.txt"), "old snapshot").unwrap();
@@ -5570,7 +5621,7 @@ mod tests {
 
     #[test]
     fn r1_before_root_file_error_preserves_existing_prev_directory() {
-        let root = std::env::temp_dir().join(format!("aicross-r1-before-file-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r1-before-file-{}", Uuid::new_v4()));
         let before_root = root.join(".dispatch/run/node.before");
         let previous = root.join(".dispatch/run/node.before.prev");
         fs::create_dir_all(&previous).unwrap();
@@ -5594,7 +5645,7 @@ mod tests {
     #[test]
     fn r1_zero_change_redispatch_keeps_old_snapshot_discoverable_for_rollback() {
         if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
-        let root = std::env::temp_dir().join(format!("aicross-r1-zero-e2e-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r1-zero-e2e-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = project.join(".dispatch");
         fs::create_dir_all(&project).unwrap();
@@ -5621,7 +5672,7 @@ mod tests {
 
     #[test]
     fn task07_latest_before_dir_rejects_uncanonicalizable_workdir() {
-        let root = std::env::temp_dir().join(format!("aicross-task07-fail-closed-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task07-fail-closed-{}", Uuid::new_v4()));
         let dispatch = root.join(".dispatch");
         let before = dispatch.join("run/node.before");
         fs::create_dir_all(&before).unwrap();
@@ -5643,7 +5694,7 @@ mod tests {
             eprintln!("跳过：PATH 中没有 python");
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-task44-inflight-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task44-inflight-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5686,7 +5737,7 @@ mod tests {
     /// 内容的文件只进清单。
     #[test]
     fn task44_inflight_snapshot_manifest_records_size_and_stored_flag() {
-        let root = std::env::temp_dir().join(format!("aicross-task44-manifest-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task44-manifest-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         fs::write(project.join("a.txt"), "before").unwrap();
@@ -5724,7 +5775,7 @@ mod tests {
             eprintln!("跳过：PATH 中没有 python");
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-task06-run-one-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-run-one-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = project.join(".dispatch");
         let run_root = root.join("runs");
@@ -5758,7 +5809,7 @@ mod tests {
 
     #[test]
     fn task06_rollback_reports_over_eight_megabyte_snapshot_entries_as_skipped() {
-        let root = std::env::temp_dir().join(format!("aicross-task06-large-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-large-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let before = HashMap::from([("large.bin".into(), SnapshotFile { bytes: None, size: SNAPSHOT_FILE_LIMIT + 1, modified_ns: 1, ..SnapshotFile::default() })]);
         let after = HashMap::from([("large.bin".into(), SnapshotFile { bytes: None, size: SNAPSHOT_FILE_LIMIT + 1, modified_ns: 2, ..SnapshotFile::default() })]);
@@ -5770,7 +5821,7 @@ mod tests {
 
     #[test]
     fn task06_duplicate_active_run_is_rejected_before_dispatch() {
-        let root = std::env::temp_dir().join(format!("aicross-task06-active-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-active-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         struct Reset(&'static str);
         impl Drop for Reset { fn drop(&mut self) { if let Ok(mut active) = active_runs().lock() { active.remove(self.0); } } }
@@ -5791,7 +5842,7 @@ mod tests {
 
     #[test]
     fn task26_r1_classification_run_directory_is_removed_after_success_and_error() {
-        let root = std::env::temp_dir().join(format!("aicross-classify-cleanup-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-classify-cleanup-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         let runtime = dispatch_data_root().unwrap();
@@ -5828,7 +5879,7 @@ mod tests {
 
     #[test]
     fn task26_r1_concurrent_classification_runs_remove_only_their_own_directories() {
-        let root = std::env::temp_dir().join(format!("aicross-classify-concurrent-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-classify-concurrent-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         let runtime = dispatch_data_root().unwrap();
@@ -5867,7 +5918,7 @@ mod tests {
 
     #[test]
     fn task06_rollback_created_root_path_does_not_escape_project() {
-        let root = std::env::temp_dir().join(format!("aicross-task06-rooted-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-rooted-{}", Uuid::new_v4()));
         let before = root.join(".dispatch/run/node.before");
         fs::create_dir_all(&before).unwrap();
         fs::write(before.join(".created"), "/x").unwrap();
@@ -5879,7 +5930,7 @@ mod tests {
 
     #[test]
     fn task06_snapshot_outside_project_is_absolute_and_colocated_with_records() {
-        let root = std::env::temp_dir().join(format!("aicross-task06-external-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-external-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("runtime/dispatch");
         fs::create_dir_all(&project).unwrap();
@@ -5894,7 +5945,7 @@ mod tests {
 
     #[test]
     fn task06_reconcile_parses_embedded_heading_and_legacy_record() {
-        let root = std::env::temp_dir().join(format!("aicross-task06-parse-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-parse-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let base = "---\nschema: aicross-dispatch/1\nrun_id: r\nstage: 1\nnode: n\nagent: codex\nprovider: ''\nmodel: m\nvendor: v\nbilling_source: b\nrole: r\ntier: t\nthinking: t\nvisibility: shared\nisolation: partial\nrunner: acp\nrunner_note: ''\nworkdir: x\nmaterials: []\nredacted: 0\ntruncated: false\nstatus: ok\nstarted_at: '2026-01-01T00:00:00+00:00'\nended_at: '2026-01-01T00:00:01+00:00'\nduration_ms: 1\ntokens_in: 2\ntokens_out: 3\ncache_read: 4\nidentity: i\nsession_id: s\nexit_code: 0\nerror: ''\n---\n\n## 任务全文\n\n含 ## 产物 JSON 字样\n\n## 回复正文\n\n正文";
         let legacy = root.join("legacy.md");
@@ -5924,7 +5975,7 @@ mod tests {
     #[test]
     fn task06_snapshot_persist_failure_warns_without_flipping_success() {
         if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
-        let root = std::env::temp_dir().join(format!("aicross-task06-persist-warning-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-persist-warning-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -5946,7 +5997,7 @@ mod tests {
     #[test]
     fn task06_early_failure_does_not_replace_previous_before_snapshot() {
         if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
-        let root = std::env::temp_dir().join(format!("aicross-task06-preserve-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-preserve-{}", Uuid::new_v4()));
         let project = root.join("project"); let log_dir = project.join(".dispatch");
         fs::create_dir_all(&log_dir).unwrap(); fs::write(project.join("a.txt"), "old").unwrap();
         let stub = root.join("stub.py");
@@ -5966,7 +6017,7 @@ mod tests {
 
     #[test]
     fn task06_rollback_reads_before_directory_beyond_snapshot_total_limit() {
-        let root = std::env::temp_dir().join(format!("aicross-task06-total-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-total-{}", Uuid::new_v4()));
         let before = root.join(".dispatch/run/node.before"); fs::create_dir_all(&before).unwrap();
         let file = fs::File::create(before.join("large.bin")).unwrap(); file.set_len(ROLLBACK_TEST_TOTAL_LIMIT + 1).unwrap(); drop(file);
         fs::write(before.join(".created"), "").unwrap(); fs::write(before.join(".skipped"), "").unwrap();
@@ -5981,7 +6032,7 @@ mod tests {
     #[test]
     fn task06_rollback_replaces_target_symlink_without_following_it() {
         use std::os::windows::fs::symlink_file;
-        let root = std::env::temp_dir().join(format!("aicross-task06-link-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task06-link-{}", Uuid::new_v4()));
         let outside = root.with_extension("outside"); let before = root.join(".dispatch/run/node.before");
         fs::create_dir_all(&before).unwrap(); fs::write(before.join("a.txt"), "inside").unwrap();
         fs::write(before.join(".created"), "").unwrap(); fs::write(before.join(".skipped"), "").unwrap(); fs::write(&outside, "outside").unwrap();
@@ -6058,7 +6109,7 @@ mod tests {
 
     #[test]
     fn git_repository_uses_three_line_unified_diff() {
-        let root = std::env::temp_dir().join(format!("aicross-git-diff-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-git-diff-{}", Uuid::new_v4()));
         let project = root.join("project");
         let scratch = root.join("scratch");
         fs::create_dir_all(&project).unwrap();
@@ -6094,7 +6145,7 @@ mod tests {
 
     #[test]
     fn snapshot_marks_files_over_eight_megabytes_without_reading_content() {
-        let root = std::env::temp_dir().join(format!("aicross-large-snapshot-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-large-snapshot-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("large.bin");
         let file = fs::File::create(&path).unwrap();
@@ -6108,7 +6159,7 @@ mod tests {
 
     #[test]
     fn snapshot_skips_excluded_directories_and_enforces_total_bytes() {
-        let root = std::env::temp_dir().join(format!("aicross-limited-snapshot-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-limited-snapshot-{}", Uuid::new_v4()));
         fs::create_dir_all(root.join(".venv")).unwrap();
         fs::create_dir_all(root.join("coverage")).unwrap();
         fs::write(root.join(".venv/secret.txt"), b"skip").unwrap();
@@ -6125,7 +6176,7 @@ mod tests {
 
     #[test]
     fn project_write_lock_is_mutually_exclusive() {
-        let root = std::env::temp_dir().join(format!("aicross-lock-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-lock-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let first = acquire_project_write(&root, Duration::from_secs(1), "lock-first").unwrap();
         let path = root.clone();
@@ -6143,7 +6194,7 @@ mod tests {
 
     #[test]
     fn project_write_lock_wait_can_be_cancelled() {
-        let root = std::env::temp_dir().join(format!("aicross-lock-cancel-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-lock-cancel-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let first = acquire_project_write(&root, Duration::from_secs(2), "cancel-first").unwrap();
         let path = root.clone();
@@ -6171,7 +6222,7 @@ mod tests {
 
     #[test]
     fn node_stage_is_used_for_result_and_record() {
-        let root = std::env::temp_dir().join(format!("aicross-node-stage-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-node-stage-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -6196,7 +6247,7 @@ mod tests {
 
     #[test]
     fn blind_acceptance_directory_contains_only_artifact_delivery() {
-        let root = std::env::temp_dir().join(format!("aicross-artifact-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-artifact-{}", Uuid::new_v4()));
         let mut request = node(Vec::new());
         request.original_request = "逐字原始需求".into();
         request.upstream_artifacts = vec![DispatchArtifacts {
@@ -6239,7 +6290,7 @@ mod tests {
             eprintln!("跳过：PATH 中没有 python");
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-task28-stage-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-stage-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         let stub = root.join("cc_switch_stub.py");
@@ -6327,7 +6378,7 @@ mod tests {
             eprintln!("跳过：PATH 中没有 python");
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-accept43-stage-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-accept43-stage-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         let stub = root.join("cc_switch_stub.py");
@@ -6408,7 +6459,7 @@ mod tests {
         if !require_git("task32_readonly_project_copy_reaches_blind_review_through_dispatch_stage_core") {
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-task28-stage-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-stage-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(project.join("src")).unwrap();
         fs::create_dir_all(project.join(".dispatch")).unwrap();
@@ -6511,7 +6562,7 @@ mod tests {
 
     #[test]
     fn task28_multiple_readonly_answers_have_upstream_sections() {
-        let root = std::env::temp_dir().join(format!("aicross-task28-multi-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-multi-{}", Uuid::new_v4()));
         let mut request = node(Vec::new());
         request.upstream_artifacts = vec![
             DispatchArtifacts {
@@ -6536,7 +6587,7 @@ mod tests {
 
     #[test]
     fn task28_nonempty_diff_does_not_write_answer() {
-        let root = std::env::temp_dir().join(format!("aicross-task28-diff-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-diff-{}", Uuid::new_v4()));
         let mut request = node(Vec::new());
         request.upstream_artifacts = vec![DispatchArtifacts {
             diff: "--- a/a.py\n+++ b/a.py\n".into(),
@@ -6560,7 +6611,7 @@ mod tests {
 
     #[test]
     fn task32_non_git_project_copy_reuses_snapshot_directory_exclusions() {
-        let root = std::env::temp_dir().join(format!("aicross-task32-nongit-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-nongit-{}", Uuid::new_v4()));
         let project = root.join("source");
         let workdir = root.join("blind");
         for directory in ["src", "node_modules/pkg", "target/debug", ".venv/lib", ".dispatch/run"] {
@@ -6599,7 +6650,7 @@ mod tests {
         if !require_git("task32_r1_truncated_git_file_list_keeps_complete_paths_and_marks_incomplete") {
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-task32-truncated-list-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-truncated-list-{}", Uuid::new_v4()));
         let project = root.join("source");
         let workdir = root.join("blind");
         fs::create_dir_all(&project).unwrap();
@@ -6633,7 +6684,7 @@ mod tests {
 
     #[test]
     fn task32_r1_single_file_read_failure_is_skipped_without_losing_other_files() {
-        let root = std::env::temp_dir().join(format!("aicross-task32-read-failure-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-read-failure-{}", Uuid::new_v4()));
         let project = root.join("source");
         let workdir = root.join("blind");
         fs::create_dir_all(&project).unwrap();
@@ -6670,7 +6721,7 @@ mod tests {
         if !require_git("task32_r1_parent_symlink_cannot_escape_project_copy_source") {
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-task32-parent-link-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-parent-link-{}", Uuid::new_v4()));
         let project = root.join("source");
         let outside = root.join("outside");
         let workdir = root.join("blind");
@@ -6723,7 +6774,7 @@ mod tests {
 
     #[test]
     fn task32_project_copy_limit_is_reported_in_prompt() {
-        let root = std::env::temp_dir().join(format!("aicross-task32-limit-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-limit-{}", Uuid::new_v4()));
         let project = root.join("source");
         let workdir = root.join("blind");
         fs::create_dir_all(&project).unwrap();
@@ -6752,7 +6803,7 @@ mod tests {
 
     #[test]
     fn task32_r1_project_copy_limit_message_uses_configured_file_limit() {
-        let root = std::env::temp_dir().join(format!("aicross-task32-limit-message-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-limit-message-{}", Uuid::new_v4()));
         let project = root.join("source");
         let destination = root.join("copy");
         fs::create_dir_all(&project).unwrap();
@@ -6776,7 +6827,7 @@ mod tests {
 
     #[test]
     fn task32_project_copy_stops_at_total_and_file_count_limits() {
-        let root = std::env::temp_dir().join(format!("aicross-task32-limits-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-limits-{}", Uuid::new_v4()));
         let project = root.join("source");
         fs::create_dir_all(&project).unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {
@@ -6816,7 +6867,7 @@ mod tests {
 
     #[test]
     fn task32_project_copy_redacts_text_and_preserves_binary_bytes() {
-        let root = std::env::temp_dir().join(format!("aicross-task32-redact-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-redact-{}", Uuid::new_v4()));
         let project = root.join("source");
         let workdir = root.join("blind");
         fs::create_dir_all(project.join("src")).unwrap();
@@ -6847,7 +6898,7 @@ mod tests {
 
     #[test]
     fn task32_project_attachment_name_conflict_is_rejected() {
-        let root = std::env::temp_dir().join(format!("aicross-task32-conflict-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-conflict-{}", Uuid::new_v4()));
         let project = root.join("source");
         let workdir = root.join("blind");
         let attachments = root.join("attachments");
@@ -6880,7 +6931,7 @@ mod tests {
         if !require_git("task32_project_copy_uses_recorded_registered_worktree") {
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-task32-worktree-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task32-worktree-{}", Uuid::new_v4()));
         let project = root.join("source");
         let worktree = root.join("worktree");
         let workdir = root.join("blind");
@@ -6918,7 +6969,7 @@ mod tests {
 
     #[test]
     fn task28_answer_strips_worktree_warning_prefix() {
-        let root = std::env::temp_dir().join(format!("aicross-task28-warning-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-warning-{}", Uuid::new_v4()));
         let mut request = node(Vec::new());
         request.upstream_artifacts = vec![DispatchArtifacts {
             stdout_summary: "worktree 不可用，已退回单写者：not a git repository\n最终答案".into(),
@@ -6932,7 +6983,7 @@ mod tests {
     /// TASK-43：单写者执行改了文件后的盲验收，盲目录一律有 project/，内容是改后的文件。
     #[test]
     fn accept43_blind_acceptance_always_gets_project_copy_after_changes() {
-        let root = std::env::temp_dir().join(format!("aicross-accept43-project-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-accept43-project-{}", Uuid::new_v4()));
         let project = root.join("source");
         let workdir = root.join("blind");
         fs::create_dir_all(project.join("src")).unwrap();
@@ -6975,7 +7026,7 @@ mod tests {
         if !require_git("accept43_project_copies_follow_upstream_worktrees") {
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-accept43-wt-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-accept43-wt-{}", Uuid::new_v4()));
         let project = root.join("source");
         let worktree_a = root.join("wt-a");
         let worktree_b = root.join("wt-b");
@@ -7036,7 +7087,7 @@ mod tests {
     /// TASK-43：上游 diff 全空、什么也没改时，提示说明以 project/ 当前内容为准。
     #[test]
     fn accept43_empty_diff_note_says_nothing_changed() {
-        let root = std::env::temp_dir().join(format!("aicross-accept43-unchanged-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-accept43-unchanged-{}", Uuid::new_v4()));
         let project = root.join("source");
         let workdir = root.join("blind");
         fs::create_dir_all(&project).unwrap();
@@ -7066,7 +7117,7 @@ mod tests {
     /// TASK-43：盲目录写 ACCEPT.md；执行节点不收；未给时不写文件、不加提示。
     #[test]
     fn accept43_accept_file_reaches_acceptance_but_not_executor() {
-        let root = std::env::temp_dir().join(format!("aicross-accept43-accept-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-accept43-accept-{}", Uuid::new_v4()));
         let project = root.join("source");
         let blind_dir = root.join("blind");
         fs::create_dir_all(&project).unwrap();
@@ -7154,7 +7205,7 @@ mod tests {
         if !require_git("accept43_request_md_header_carries_commit_ids") {
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-accept43-header-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-accept43-header-{}", Uuid::new_v4()));
         let project = root.join("source");
         let worktree = root.join("wt");
         fs::create_dir_all(&project).unwrap();
@@ -7233,7 +7284,7 @@ mod tests {
             eprintln!("跳过：PATH 中没有 python");
             return;
         }
-        let root = std::env::temp_dir().join(format!("aicross-task34-warning-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task34-warning-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = project.join(".dispatch");
         fs::create_dir_all(&log_dir).unwrap();
@@ -7292,7 +7343,7 @@ mod tests {
 
     #[test]
     fn task28_answer_uses_outbound_redaction() {
-        let root = std::env::temp_dir().join(format!("aicross-task28-redact-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-redact-{}", Uuid::new_v4()));
         let mut request = node(Vec::new());
         request.upstream_artifacts = vec![DispatchArtifacts {
             stdout_summary: "api_key=sk-task28-secret".into(),
@@ -7308,7 +7359,7 @@ mod tests {
 
     #[test]
     fn task28_answer_marks_existing_2000_character_truncation() {
-        let root = std::env::temp_dir().join(format!("aicross-task28-truncate-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-truncate-{}", Uuid::new_v4()));
         let mut request = node(Vec::new());
         request.upstream_artifacts = vec![DispatchArtifacts {
             stdout_summary: "长".repeat(2000),
@@ -7324,7 +7375,7 @@ mod tests {
 
     #[test]
     fn task28_r1_warning_prefix_does_not_change_truncation_fact() {
-        let root = std::env::temp_dir().join(format!("aicross-task28-r1-truncate-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-r1-truncate-{}", Uuid::new_v4()));
 
         // 警告 + 1970 字完整回复：整段超过 2000 字，但回复本身没被截，不能标截断。
         let complete_summary = format!(
@@ -7363,7 +7414,7 @@ mod tests {
 
     #[test]
     fn task28_r1_all_empty_answers_do_not_create_answer_material() {
-        let root = std::env::temp_dir().join(format!("aicross-task28-r1-empty-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-r1-empty-{}", Uuid::new_v4()));
         let mut request = node(Vec::new());
         request.upstream_artifacts = vec![
             DispatchArtifacts { stdout_summary: " \r\n\t".into(), ..DispatchArtifacts::default() },
@@ -7381,7 +7432,7 @@ mod tests {
 
     #[test]
     fn task28_r1_answer_attachment_name_conflict_is_rejected() {
-        let root = std::env::temp_dir().join(format!("aicross-task28-r1-conflict-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task28-r1-conflict-{}", Uuid::new_v4()));
         let attachments = root.join("attachments");
         let workdir = root.join("blind");
         fs::create_dir_all(&attachments).unwrap();
@@ -7400,7 +7451,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn blind_acceptance_rejects_drive_relative_changed_path() {
-        let root = std::env::temp_dir().join(format!("aicross-artifact-prefix-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-artifact-prefix-{}", Uuid::new_v4()));
         let mut request = node(Vec::new());
         request.upstream_artifacts = vec![DispatchArtifacts {
             changed_files: vec![ChangedFile { path: "C:escape.txt".into(), content: "no".into() }],
@@ -7436,7 +7487,7 @@ mod tests {
     #[test]
     fn task14_quota_fallback_order_runs_fake_channel_through_three_attempts() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-quota-fallback-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-quota-fallback-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -7492,7 +7543,7 @@ mod tests {
     #[test]
     fn task26_logged_out_fallback_uses_one_resource_snapshot_and_updates_main_record() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-login-fallback-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-login-fallback-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -7535,7 +7586,7 @@ mod tests {
     #[test]
     fn task26_r1_logged_out_after_failed_fallback_updates_main_record() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-login-fallback-record-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-login-fallback-record-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -7592,7 +7643,7 @@ mod tests {
     #[test]
     fn task14_r1_skipped_candidate_reset_is_returned_when_no_attempt_has_one() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-quota-skipped-reset-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-quota-skipped-reset-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -7628,7 +7679,7 @@ mod tests {
     #[test]
     fn task14_exhausted_fake_channels_return_quota_not_error() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-quota-terminal-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-quota-terminal-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -7655,7 +7706,7 @@ mod tests {
     #[test]
     fn task14_r1_writable_quota_rolls_back_before_fallback() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-quota-writable-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-quota-writable-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = project.join(".dispatch");
         fs::create_dir_all(&log_dir).unwrap();
@@ -7682,7 +7733,7 @@ mod tests {
     #[test]
     fn task14_r2_writable_quota_without_changes_falls_back_without_rollback() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-quota-nochange-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-quota-nochange-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = project.join(".dispatch");
         fs::create_dir_all(&log_dir).unwrap();
@@ -7707,7 +7758,7 @@ mod tests {
     #[test]
     fn task14_r2_quota_rollback_ignores_stale_snapshot_from_earlier_run() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-quota-stale-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-quota-stale-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = project.join(".dispatch");
         fs::create_dir_all(&log_dir).unwrap();
@@ -7740,7 +7791,7 @@ mod tests {
     #[test]
     fn task14_r1_first_use_quota_switches_to_fallback_without_entering_primary_channel() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-first-use-quota-dispatch-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-first-use-quota-dispatch-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = root.join("logs");
         fs::create_dir_all(&project).unwrap();
@@ -7775,7 +7826,7 @@ mod tests {
     #[test]
     fn task14_r1_writable_quota_stops_when_rollback_fails() {
         if channels::resolve_binary("python", None).is_err() { return; }
-        let root = std::env::temp_dir().join(format!("aicross-quota-rollback-fail-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-quota-rollback-fail-{}", Uuid::new_v4()));
         let project = root.join("project");
         let log_dir = project.join(".dispatch");
         fs::create_dir_all(&log_dir).unwrap();
@@ -7808,7 +7859,7 @@ mod tests {
 
     #[test]
     fn task06_fallback_reruns_once_uses_fields_without_reply_marker() {
-        let root = std::env::temp_dir().join(format!("aicross-fallback-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-fallback-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -7855,7 +7906,7 @@ mod tests {
 
     #[test]
     fn fallback_blind_attempt_gets_fresh_material_dir() {
-        let root = std::env::temp_dir().join(format!("aicross-fallback-blind-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-fallback-blind-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -7900,7 +7951,7 @@ mod tests {
 
     #[test]
     fn writable_non_quota_failure_does_not_switch_fallback() {
-        let root = std::env::temp_dir().join(format!("aicross-fallback-writable-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-fallback-writable-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -7944,7 +7995,7 @@ mod tests {
 
     #[test]
     fn fallback_reruns_for_blind_node_and_marks_no_skip() {
-        let root = std::env::temp_dir().join(format!("aicross-fallback-blind-rerun-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-fallback-blind-rerun-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -7987,7 +8038,7 @@ mod tests {
 
     #[test]
     fn fallback_record_uses_fallback_billing_and_vendor() {
-        let root = std::env::temp_dir().join(format!("aicross-fallback-billing-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-fallback-billing-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -8035,7 +8086,7 @@ mod tests {
 
     #[test]
     fn fallback_agent_blocks_same_agent_node_from_running_concurrently() {
-        let root = std::env::temp_dir().join(format!("aicross-fallback-serial-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-fallback-serial-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         // A 的备选 agent 与 B 的主 agent 相同：B 必须等 A 整个结束才能开始。
@@ -8092,7 +8143,7 @@ mod tests {
     // （k3-256k 之类模型 ID 推断不出厂商）。
     #[test]
     fn fallback_record_prefers_dispatched_vendor_over_inference() {
-        let root = std::env::temp_dir().join(format!("aicross-fallback-vendor-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-fallback-vendor-{}", Uuid::new_v4()));
         let project = root.join("project");
         let run_root = root.join("runs");
         let log_dir = root.join("logs");
@@ -8135,7 +8186,7 @@ mod tests {
     // R2-3：主/备两次尝试的原始输出转存路径不同且都存在（备选不再覆盖主尝试）。
     #[test]
     fn task14_r1_production_backup_labels_keep_all_raw_dumps_separate() {
-        let root = std::env::temp_dir().join(format!("aicross-rawdump-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-rawdump-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let large = "x".repeat(40 * 1024);
         let primary = record_stdout(&large, &root, "node-1", "主");
@@ -8155,7 +8206,7 @@ mod tests {
     // R2-7：仲裁角色与验收/验证一样由 Rust 强制只读（此前只有前端 validateNode 提示）。
     #[test]
     fn arbitration_role_is_forced_readonly_by_engine() {
-        let root = std::env::temp_dir().join(format!("aicross-arb-readonly-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-arb-readonly-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         let mut arb = node(Vec::new());
@@ -8499,7 +8550,7 @@ mod tests {
         const EXECUTION_TEMPLATE: &str = include_str!("../fixtures/prompts/execution.txt");
         const ACCEPTANCE_TEMPLATE: &str = include_str!("../fixtures/prompts/acceptance.txt");
         let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let project = std::env::temp_dir().join(format!("aicross-pipeline-{}", Uuid::new_v4()));
+        let project = crate::paths::test_temp_dir().join(format!("aicross-pipeline-{}", Uuid::new_v4()));
         fs::create_dir_all(project.join("fixtures/pipeline")).unwrap();
         fs::copy(
             repository.join("fixtures/pipeline/roman.py"),
@@ -8731,7 +8782,7 @@ mod tests {
         for leaked in ["pi/", "codex/", "glm-5.3-flash", "gpt-5.6-luna"] {
             assert!(!dispute.contains(leaked), "中性描述不得写双方 agent/model：{leaked}");
         }
-        let material = std::env::temp_dir().join(format!("aicross-arb-root-{}.md", Uuid::new_v4()));
+        let material = crate::paths::test_temp_dir().join(format!("aicross-arb-root-{}.md", Uuid::new_v4()));
         fs::write(&material, prompt).unwrap();
         let arb_prompt = format!(
             "{}\n\n[用户] {prompt}\n\n[附件] {}\n\n{dispute}",
@@ -8778,7 +8829,7 @@ mod tests {
     // ── TASK-12 审查材料附带验证输出 / 修正轮上限 / 提示词固定关注点 ──────────
 
     fn task12_temp(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("aicross-task12-{name}-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task12-{name}-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         root
     }
@@ -9068,7 +9119,7 @@ mod tests {
     fn task13_repo(tag: &str) -> (PathBuf, PathBuf, DirectorySnapshot, std::sync::MutexGuard<'static, ()>) {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|error| error.into_inner());
-        let root = std::env::temp_dir().join(format!("aicross-red-green-{tag}-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-red-green-{tag}-{}", Uuid::new_v4()));
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         test_git(&project, &["init"]);
@@ -9391,7 +9442,7 @@ mod tests {
 
     #[test]
     fn task13_validation_timeout_is_a_structured_verdict() {
-        let root = std::env::temp_dir().join(format!("aicross-task13-timeout-verdict-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task13-timeout-verdict-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let run = run_validation(&task13_timeout_command(), &root, Duration::from_millis(50), None);
         assert_eq!(run.verdict, ValidationVerdict::TimedOut);

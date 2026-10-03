@@ -658,7 +658,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn cmd_script_under_a_path_with_spaces_runs_and_receives_arguments() {
-        let dir = std::env::temp_dir().join(format!("aicross cmd {}", Uuid::new_v4()));
+        let dir = crate::paths::test_temp_dir().join(format!("aicross cmd {}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("echo args.cmd");
         std::fs::write(&script, "@echo off\r\necho [%~1] [%~2]\r\n").unwrap();
@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn run_process_times_out_and_terminates_the_child_tree() {
-        let marker = std::env::temp_dir().join(format!("aicross-timeout-{}", Uuid::new_v4()));
+        let marker = crate::paths::test_temp_dir().join(format!("aicross-timeout-{}", Uuid::new_v4()));
         let (program, mut args) = shell();
         #[cfg(windows)]
         args.push(format!(

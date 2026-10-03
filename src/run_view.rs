@@ -504,7 +504,7 @@ mod tests {
     use uuid::Uuid;
 
     fn temp(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("aicross-view-{name}-{}", Uuid::new_v4()));
+        let dir = crate::paths::test_temp_dir().join(format!("aicross-view-{name}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

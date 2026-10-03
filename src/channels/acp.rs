@@ -1535,7 +1535,7 @@ mod tests {
     fn shutdown_all_sends_session_close_when_capability_is_available() {
         let _pool_guard = test_pool_guard();
         shutdown_all();
-        let marker = std::env::temp_dir().join(format!("aicross-acp-close-{}", uuid::Uuid::new_v4()));
+        let marker = crate::paths::test_temp_dir().join(format!("aicross-acp-close-{}", uuid::Uuid::new_v4()));
         let argument = format!("--close-file={}", marker.display());
         let Some(mut client) = fake_client_with(&[&argument]) else { return };
         let cwd = std::env::current_dir().unwrap();
@@ -1552,7 +1552,7 @@ mod tests {
         let _pool_guard = test_pool_guard();
         let cwd = std::env::current_dir().unwrap();
         let script = cwd.join("fixtures/acp/fake_server.py");
-        let starts = std::env::temp_dir().join(format!("aicross-acp-starts-{}", uuid::Uuid::new_v4()));
+        let starts = crate::paths::test_temp_dir().join(format!("aicross-acp-starts-{}", uuid::Uuid::new_v4()));
         let provider = format!("__aicross_test__|{}|{}|--start-file={}", script.display(), script.display(), starts.display());
         thread::scope(|scope| {
             let handles = (0..2).map(|index| {

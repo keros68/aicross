@@ -3699,7 +3699,7 @@ mod accept_criteria_run_file {
 
     #[test]
     fn accept_criteria_is_stored_in_the_run_file_and_omitted_when_empty() {
-        let root = std::env::temp_dir().join(format!("aicross-accept43-run-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-accept43-run-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("resources.json"),
@@ -3747,9 +3747,9 @@ mod recover_cmd {
     /// 单写者，以及不属于本 run 的 pending 单写者（在图上，不在 run 摘要
     /// 里）。run 摘要的节点顺序与图插入序不同，输出顺序按 run 摘要。
     fn fixture(name: &str) -> RecoverFixture {
-        let root = std::env::temp_dir().join(format!("aicross-recover-{name}-{}", Uuid::new_v4()));
-        let project = std::env::temp_dir().join(format!("aicross-recover-p-{name}-{}", Uuid::new_v4()));
-        let worktree = std::env::temp_dir().join(format!("aicross-recover-wt-{name}-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-recover-{name}-{}", Uuid::new_v4()));
+        let project = crate::paths::test_temp_dir().join(format!("aicross-recover-p-{name}-{}", Uuid::new_v4()));
+        let worktree = crate::paths::test_temp_dir().join(format!("aicross-recover-wt-{name}-{}", Uuid::new_v4()));
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(&worktree).unwrap();
         fs::write(worktree.join("wt.txt"), "worktree").unwrap();
@@ -4057,8 +4057,8 @@ mod recover_cmd {
     }
 
     fn inflight_fixture(name: &str, manifest: Option<&str>) -> InflightFixture {
-        let root = std::env::temp_dir().join(format!("aicross-inflight-{name}-{}", Uuid::new_v4()));
-        let project = std::env::temp_dir().join(format!("aicross-inflight-p-{name}-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-inflight-{name}-{}", Uuid::new_v4()));
+        let project = crate::paths::test_temp_dir().join(format!("aicross-inflight-p-{name}-{}", Uuid::new_v4()));
         fs::create_dir_all(&project).unwrap();
         let node = format!("exec-{}", Uuid::new_v4());
         let mut graph = new_graph(
@@ -4219,8 +4219,7 @@ mod recover_cmd {
         orchestration::save_graph_in(&f.root, &graph).unwrap();
         write_run_file(&f, "running", u32::MAX);
         // dispatch.rs 建 worktree 用引擎数据目录下的 runs/<run>/<node>/wt。
-        let inferred = std::env::temp_dir()
-            .join(format!("aicross-test-runtime-{}", std::process::id()))
+        let inferred = crate::paths::test_temp_dir().join("runtime")
             .join("runs")
             .join(&f.run_id)
             .join(&f.wt_node)

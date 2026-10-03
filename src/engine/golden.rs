@@ -501,7 +501,7 @@ fn engine_golden_fixtures_replay() {
         if actual != fixture {
             let diff = first_diff(&fixture, &actual, "$".to_string())
                 .unwrap_or_else(|| "（顺序差异？）".to_string());
-            let actual_path = std::env::temp_dir().join(format!("aicross-golden-{slug}.actual.json"));
+            let actual_path = crate::paths::test_temp_dir().join(format!("aicross-golden-{slug}.actual.json"));
             fs::write(&actual_path, serde_json::to_string_pretty(&actual).unwrap()).unwrap();
             panic!("夹具 {slug} 重放不一致：{diff}\n实际输出已写到 {}", actual_path.display());
         }

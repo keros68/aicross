@@ -3,7 +3,7 @@
 use super::*;
 
 fn temp(name: &str) -> PathBuf {
-    let p = std::env::temp_dir().join(format!("aicross-engine-{name}-{}", Uuid::new_v4()));
+    let p = crate::paths::test_temp_dir().join(format!("aicross-engine-{name}-{}", Uuid::new_v4()));
     fs::create_dir_all(&p).unwrap();
     p
 }

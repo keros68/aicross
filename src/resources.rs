@@ -2453,7 +2453,7 @@ mod tests {
     /// 改用可注入 pi 路径的全量探测入口）：探测合并后登录态落盘，但凭据本体不进资源库。
     #[test]
     fn task17_pi_detect_list_auth_merge_persists_without_auth_payload() {
-        let root = std::env::temp_dir().join(format!("aicross-pi-detect-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-pi-detect-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         #[cfg(windows)]
         let body = r#"@echo off
@@ -2497,7 +2497,7 @@ exit 2
     /// pi 缺席时探测照常写回，残留的旧登录态清成未知。
     #[test]
     fn task17_missing_pi_detection_clears_stale_login() {
-        let root = std::env::temp_dir().join(format!("aicross-pi-stale-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-pi-stale-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         let model = ResourceModel {
@@ -2517,7 +2517,7 @@ exit 2
     /// pi 登录探测在取资源库锁之前跑，不把其他写方挡在锁外。
     #[test]
     fn task17_pi_login_probe_runs_before_store_lock() {
-        let root = std::env::temp_dir().join(format!("aicross-pi-lock-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-pi-lock-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let marker = root.join("auth-started");
         #[cfg(windows)]
@@ -2576,7 +2576,7 @@ exit 2
     /// 原测试里 fallback 清单轮转与 update_model 的断言随那些函数一并删除。
     #[test]
     fn task14_quota_expiry_is_cleared_and_marks_roundtrip() {
-        let root = std::env::temp_dir().join(format!("aicross-quota-store-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-quota-store-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         let mut primary = fixture_model("main");
@@ -2727,7 +2727,7 @@ exit 2
             .expect("hints");
         assert!(!hints.is_empty());
 
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -2759,7 +2759,7 @@ exit 2
 
     #[test]
     fn connected_filters_status() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -2778,7 +2778,7 @@ exit 2
     /// 未验证 → 验证失败，同一档内 agent/provider/id。
     #[test]
     fn detected_keeps_unverified_drops_cc_switch_and_sorts_by_verification() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3018,13 +3018,13 @@ exit 2
     /// TASK-17：命令缺失和超时都不是「已退出」，只能留下 unknown。
     #[test]
     fn task17_pi_login_missing_command_and_timeout_are_unknown() {
-        let missing = std::env::temp_dir().join(format!("aicross-no-pi-{}", Uuid::new_v4()));
+        let missing = crate::paths::test_temp_dir().join(format!("aicross-no-pi-{}", Uuid::new_v4()));
         assert_eq!(
             check_pi_provider_login_with(&missing, "missing", Duration::from_millis(30)),
             ResourceLogin::Unknown
         );
 
-        let root = std::env::temp_dir().join(format!("aicross-pi-timeout-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-pi-timeout-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         #[cfg(windows)]
         let body = "@echo off\r\nping -n 3 127.0.0.1 > nul\r\necho {\"ready\":true}\r\n";
@@ -3049,7 +3049,7 @@ exit 2
 
     #[test]
     fn task17_old_resource_json_defaults_login_to_unknown() {
-        let root = std::env::temp_dir().join(format!("aicross-legacy-login-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-legacy-login-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(&path, r#"{"version":1,"agents":[{"id":"pi","models":[{"id":"legacy","agent":"pi","provider":"p"}]}]}"#).unwrap();
@@ -3145,7 +3145,7 @@ exit 2
     /// 标记的旧值算静态值，别名表修正后跟着更新；标了 `identity` 的实测真身不动。
     #[test]
     fn task09b_legacy_store_backfills_resolved_id() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3316,7 +3316,7 @@ exit 2
             version: 1,
             agents: vec![fixture_agent("pi", vec![matched, unmatched])],
         };
-        let root = std::env::temp_dir().join(format!("aicross-task21-rejudge-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task21-rejudge-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         save_store(&path, &original).unwrap();
@@ -3476,7 +3476,7 @@ exit 2
     /// 旧库加载不动超时档：有失败原因的 timeout 记录不被重判成 failed。
     #[test]
     fn task42_timeout_record_survives_reload() {
-        let root = std::env::temp_dir().join(format!("aicross-task42-reload-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task42-reload-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3556,7 +3556,7 @@ exit 2
     /// unverified；旧字段本身不动。
     #[test]
     fn task09_legacy_store_infers_verification_three_ways() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3595,7 +3595,7 @@ exit 2
     /// 原生模型不走首次验证：冒烟函数一次都不该被调用。
     #[test]
     fn task09_verify_on_first_use_never_smokes_native_models() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3625,7 +3625,7 @@ exit 2
     /// 再派发一次不重试（failed 不是 unverified），冒烟函数只被调一次。
     #[test]
     fn task09_first_use_failure_persists_and_does_not_retry() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3653,7 +3653,7 @@ exit 2
 
     #[test]
     fn task14_r1_first_use_quota_keeps_model_unverified() {
-        let root = std::env::temp_dir().join(format!("aicross-first-use-quota-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-first-use-quota-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3681,7 +3681,7 @@ exit 2
     /// 第三方首次派发验证通过：写 verified，第二次派发不再验证。
     #[test]
     fn task09_first_use_success_is_verified_once_only() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3715,7 +3715,7 @@ exit 2
     /// 降回 unverified，首次派发真的会验证；换回官方端点再回到 native、不验证。
     #[test]
     fn r1_claude_on_third_party_endpoint_is_not_native() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         let raw = r#"{"version":1,"agents":[{"id":"claude","name":"Claude Code","models":[
@@ -3830,7 +3830,7 @@ exit 2
     /// 匹配落空 → 静默 Skipped，G1 承诺了却一个请求都不发），结果写回原条目。
     #[test]
     fn r1_first_use_verifies_when_provider_is_empty() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3866,7 +3866,7 @@ exit 2
     /// 库里根本没这一条时返回 NotInStore（放行，但留痕说明没验）。
     #[test]
     fn r1_first_use_reports_ambiguous_provider_and_missing_entry() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3907,7 +3907,7 @@ exit 2
     /// 返回 Cancelled 让节点按「已取消」结束。
     #[test]
     fn r1_first_use_cancelled_does_not_write_store() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3936,7 +3936,7 @@ exit 2
     /// 再读状态，拿到 Skipped，不会各发一次短请求、也不会按写回顺序互相覆盖。
     #[test]
     fn r1_concurrent_first_use_smokes_only_once() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -3984,7 +3984,7 @@ exit 2
     /// 「失败不自动重试」就不成立了，所以这次派发按失败返回并写明原因。
     #[test]
     fn r1_first_use_write_back_failure_fails_the_dispatch() {
-        let root = std::env::temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-resources-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         fs::write(
@@ -4136,7 +4136,7 @@ exit 2
     /// 原生（不冒烟）；挂了 ANTHROPIC_BASE_URL 就是第三方（要冒烟）。
     #[test]
     fn task39_smoke_agent_third_party_respects_endpoint_kind() {
-        let root = std::env::temp_dir().join(format!("aicross-task39-smoke-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task39-smoke-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
         let claude_model = ResourceModel {

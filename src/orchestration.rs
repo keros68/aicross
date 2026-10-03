@@ -611,7 +611,7 @@ mod tests {
     use super::*;
 
     fn temp_root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("aicross-orch-test-{tag}-{}", Uuid::new_v4()));
+        let dir = crate::paths::test_temp_dir().join(format!("aicross-orch-test-{tag}-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

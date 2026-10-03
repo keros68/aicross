@@ -10,7 +10,9 @@ Codex、Kimi 等装了 ai-cross skill 的对话窗）：模型提议派发、用
 Windows 用 `aicross_0.1.0_x64-setup.exe` 或 `aicross_0.1.0_x64_en-US.msi`，
 两个装的是同一个程序，装一个就行。运行需要 WebView2，缺失时安装器会补装。
 安装包把安装目录加入当前用户 PATH，卸载时只删除这一项。程序数据都在
-`~/.aicross/`（资源库、预设、图、run 摘要、配置），卸载不删。
+`~/.aicross/`（资源库、预设、图、run 摘要、配置），卸载不删。设了环境变量
+`AICROSS_HOME` 时数据目录改为它指向的位置，下文的 `~/.aicross/` 都按它读。
+`runs/` 下超过 30 天未改动的运行记录在下次派发时删除。
 macOS 与 Linux 目前只保证能编译，安装包未做验证。
 
 ## 命令行

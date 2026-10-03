@@ -947,7 +947,7 @@ mod tests {
     fn propose_is_recognized_as_removed_and_exits_2() {
         // TASK-40 R1-6：propose 随窗口 HTTP 通道删除；不再拉起窗口，
         // stderr 给去向提示，退出码 2（参数错同档）。
-        let root = std::env::temp_dir().join(format!("aicross-cli-propose-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-cli-propose-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -963,7 +963,7 @@ mod tests {
     #[test]
     fn missing_run_is_a_business_failure() {
         // status 直接走引擎读 run：run 不存在是业务失败（退出码 1），不再有清单一说。
-        let root = std::env::temp_dir().join(format!("aicross-cli-missing-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-cli-missing-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let args = vec!["aicross".into(), "status".into(), "run-1".into()];
         let mut stdout = Vec::new();
@@ -976,7 +976,7 @@ mod tests {
 
     #[test]
     fn dispatch_reads_multiline_text_from_file_only() {
-        let root = std::env::temp_dir().join(format!("aicross-cli-text-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-cli-text-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let text_path = root.join("prompt.txt");
         fs::write(&text_path, "第一行\n第二行").unwrap();
@@ -1006,7 +1006,7 @@ mod tests {
 
     #[test]
     fn dispatch_strips_utf8_bom_and_rejects_non_utf8() {
-        let root = std::env::temp_dir().join(format!("aicross-cli-encoding-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-cli-encoding-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("prompt.txt");
         fs::write(&path, [vec![0xef, 0xbb, 0xbf], "正文".as_bytes().to_vec()].concat()).unwrap();
@@ -1019,7 +1019,7 @@ mod tests {
 
     #[test]
     fn dispatch_accept_file_requires_value_and_existing_utf8_file() {
-        let root = std::env::temp_dir().join(format!("aicross-cli-accept-missing-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-cli-accept-missing-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let text_path = root.join("t.txt");
         fs::write(&text_path, "正文").unwrap();
@@ -1057,7 +1057,7 @@ mod tests {
 
     #[test]
     fn dispatch_accept_file_goes_into_request_body_and_truncates_at_64kb() {
-        let root = std::env::temp_dir().join(format!("aicross-cli-accept-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-cli-accept-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let text_path = root.join("t.txt");
         fs::write(&text_path, "正文").unwrap();
@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn run_subcommand_validates_run_id() {
-        let root = std::env::temp_dir().join(format!("aicross-cli-run-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-cli-run-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -1150,7 +1150,7 @@ mod tests {
     #[test]
     fn dispatch_exit_3_when_runs_dir_not_writable() {
         // R2-12：退出码 3 的「run 目录不可写」来源。
-        let root = std::env::temp_dir().join(format!("aicross-cli-runs-dir-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-cli-runs-dir-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("runs"), "blocked").unwrap();
         let text_path = root.join("prompt.txt");
@@ -1179,7 +1179,7 @@ mod tests {
     // ── TASK-39：resources / config 命令层 ──────────────────────────
 
     fn fixture_root(tag: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!("aicross-task39-{tag}-{}", Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task39-{tag}-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         root
     }

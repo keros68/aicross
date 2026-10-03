@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn private_install_is_preferred_and_found_under_node_modules_bin() {
-        let root = std::env::temp_dir().join(format!("aicross-acp-prefix-{}", uuid::Uuid::new_v4()));
+        let root = crate::paths::test_temp_dir().join(format!("aicross-acp-prefix-{}", uuid::Uuid::new_v4()));
         let bin = root.join("node_modules").join(".bin");
         std::fs::create_dir_all(&bin).unwrap();
         assert!(private_binary_in(&root, "claude-agent-acp").is_none());
@@ -259,7 +259,7 @@ mod tests {
     }
 
     fn temp_prefix() -> PathBuf {
-        std::env::temp_dir().join(format!("aicross-acp-install-{}", uuid::Uuid::new_v4()))
+        crate::paths::test_temp_dir().join(format!("aicross-acp-install-{}", uuid::Uuid::new_v4()))
     }
 
     fn npm_result(stderr: &str) -> ProcessResult {
