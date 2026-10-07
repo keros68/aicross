@@ -114,10 +114,10 @@ describe('run viewer data assembly (TASK-37)', () => {
   it('labels node statuses including skipped and error kinds', () => {
     expect(nodeStatusLabel(node({ status: 'done' }))).toBe('完成');
     expect(nodeStatusLabel(node({ status: 'pending' }))).toBe('运行中');
-    expect(nodeStatusLabel(node({ status: 'draft' }))).toBe('待派');
+    expect(nodeStatusLabel(node({ status: 'draft' }))).toBe('未开始');
     expect(nodeStatusLabel(node({ status: 'quota_exhausted' }))).toBe('额度用尽');
     expect(nodeStatusLabel(node({ status: 'failed', errorKind: 'timeout' }))).toBe('超时');
-    expect(nodeStatusLabel(node({ status: 'failed', errorKind: 'identity_mismatch' }))).toBe('真身不符');
+    expect(nodeStatusLabel(node({ status: 'failed', errorKind: 'identity_mismatch' }))).toBe('实际模型不符');
     expect(nodeStatusLabel(node({ status: 'failed', errorKind: 'validation_failed' }))).toBe('验证命令未通过');
     expect(nodeStatusLabel(node({ status: 'failed', errorKind: 'cancelled' }))).toBe('已取消');
     expect(nodeStatusLabel(node({ status: 'failed', errorKind: 'error' }))).toBe('失败');
@@ -134,10 +134,10 @@ describe('run viewer data assembly (TASK-37)', () => {
     // 运行中给「—」，不回填请求值。
     expect(reportedModelLabel(node({ status: 'pending' }))).toBe('—');
     // 终态拿不到真身：kimi 说明不报，其余标未报告。
-    expect(reportedModelLabel(node({ agent: 'kimi' }))).toBe('kimi 不报真身');
-    expect(reportedModelLabel(node({ agent: 'claude' }))).toBe('未报告');
+    expect(reportedModelLabel(node({ agent: 'kimi' }))).toBe('未返回实际模型');
+    expect(reportedModelLabel(node({ agent: 'claude' }))).toBe('未返回');
     // 切过备选时按备选的 agent 判断。
-    expect(reportedModelLabel(node({ agent: 'claude', fallbackFrom: 'claude/sonnet', fallbackTo: 'kimi/k3' }))).toBe('kimi 不报真身');
+    expect(reportedModelLabel(node({ agent: 'claude', fallbackFrom: 'claude/sonnet', fallbackTo: 'kimi/k3' }))).toBe('未返回实际模型');
   });
 
   it('flags identity mismatch only when the engine judged it', () => {

@@ -75,30 +75,30 @@ export function cardSubtitle(node: RunViewNode): string {
 
 export function nodeStatusLabel(node: RunViewNode): string {
   if (node.skippedReason !== '') return '已跳过';
-  if (node.status === 'draft') return '待派';
+  if (node.status === 'draft') return '未开始';
   if (node.status === 'pending') return '运行中';
   if (node.status === 'done') return '完成';
   if (node.status === 'quota_exhausted' || node.errorKind === 'quota_exhausted') return '额度用尽';
-  if (node.errorKind === 'identity_mismatch') return '真身不符';
+  if (node.errorKind === 'identity_mismatch') return '实际模型不符';
   if (node.errorKind === 'validation_failed') return '验证命令未通过';
   if (node.errorKind === 'timeout') return '超时';
   if (node.errorKind === 'cancelled') return '已取消';
   return '失败';
 }
 
-/** 异常状态才给胶囊（视觉纪律）：完成与待派用纯文字。 */
+/** 异常状态才给胶囊（视觉纪律）：完成与未开始用纯文字。 */
 export function nodeStatusTone(node: RunViewNode): 'alert' | 'plain' {
   const label = nodeStatusLabel(node);
-  return label === '完成' || label === '待派' ? 'plain' : 'alert';
+  return label === '完成' || label === '未开始' ? 'plain' : 'alert';
 }
 
-/** 实际回答的模型：拿不到真身标「未报告」（kimi 不报真身），运行中给「—」，
+/** 实际回答的模型：拿不到时标「未返回」（kimi 不返回实际模型，标「未返回实际模型」），运行中给「—」，
  * 不回填请求值。 */
 export function reportedModelLabel(node: RunViewNode): string {
   if (node.modelReported !== '') return node.modelReported;
   if (node.status === 'pending' || node.status === 'draft') return '—';
   const agent = (node.fallbackTo.split('/')[0] || node.agent).trim();
-  return agent === 'kimi' ? 'kimi 不报真身' : '未报告';
+  return agent === 'kimi' ? '未返回实际模型' : '未返回';
 }
 
 /** 真身不符的标记只认引擎判定（errorKind === 'identity_mismatch'，

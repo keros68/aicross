@@ -1,55 +1,31 @@
 /* TASK-37 查看器。视觉纪律（PRODUCT.md）：1px 边框和背景差分块，不用阴影；
-   容器 8px、列表行 4px、胶囊全圆；厂商色只做色点；间距取 4 的倍数；
+   容器 8px、列表行 4px、胶囊全圆；agent 图标标识各路；间距取 4 的倍数；
    模型 ID、路径、数字用 IBM Plex Mono，数字 tabular-nums；
    字号只用 12 / 13 / 14 / 15 / 16 / 18 六级。 */
 
 .run-viewer {
-  position: fixed;
-  /* R1-6：让出 40px 自绘标题栏（.titlebar 高度，见 global.css），缩放边
-     条由 html.run-viewer-open 抬到本层之上（TASK-40 起窗口只有首页与查看
-     页两层）。 */
-  top: 40px;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 12500;
+  /* 查看页铺满顶栏下方的内容区（.app-content），顶栏导航保留；工具行左边是
+     「返回」与标题（fix-51-r1）。 */
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   background: var(--bg-app);
   color: var(--text-1);
 }
 
-/* R1-6：查看页打开期间窗口缩放边条抬到查看页之上，边条仍可拖拽。 */
-html.run-viewer-open .resize-edges {
-  z-index: 13000;
-}
-
-.run-viewer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border);
-}
-
-.run-viewer-head-main {
-  min-width: 0;
-}
-
 .run-viewer-title {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 12px;
-}
-
-.run-viewer-preset {
-  font-size: 18px;
+  gap: 8px;
+  font-size: 16px;
   font-weight: 600;
 }
 
 .run-viewer-status {
   font-size: 13px;
+  font-weight: 400;
   color: var(--text-2);
 }
 
@@ -64,7 +40,7 @@ html.run-viewer-open .resize-edges {
   display: flex;
   flex-wrap: wrap;
   gap: 16px;
-  margin-top: 4px;
+  margin-bottom: 12px;
   color: var(--text-3);
   font-size: 12px;
 }
@@ -74,22 +50,20 @@ html.run-viewer-open .resize-edges {
   font-variant-numeric: tabular-nums;
 }
 
-.run-viewer-head button,
 .run-viewer-card-actions button {
   display: inline-flex;
   align-items: center;
   min-height: 28px;
   padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  background: transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
   color: var(--text-1);
   font-size: 13px;
 }
 
-.run-viewer-head button:hover,
 .run-viewer-card-actions button:hover:not(:disabled) {
-  border-color: var(--accent);
+  background: var(--bg-hover);
 }
 
 .run-viewer-card-actions button:disabled {
@@ -100,7 +74,7 @@ html.run-viewer-open .resize-edges {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 16px 24px 32px;
+  padding: 4px 24px 32px;
 }
 
 .run-viewer-section-title {
@@ -144,20 +118,20 @@ html.run-viewer-open .resize-edges {
   display: grid;
   gap: 12px;
   align-items: start;
-  overflow-x: auto;
   padding-bottom: 4px;
 }
 
 .run-viewer-card {
   min-width: 0;
-  padding: 12px;
+  padding: 16px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 16px;
   background: var(--bg-panel);
 }
 
 .run-viewer-card.adopted {
-  border-color: var(--accent);
+  border-color: var(--active-border);
+  background: var(--active-bg);
 }
 
 .run-viewer-card-head {
@@ -166,12 +140,10 @@ html.run-viewer-open .resize-edges {
   gap: 8px;
 }
 
-.run-viewer-vendor-dot {
+.run-viewer-agent-icon {
   flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  margin-top: 6px;
-  border-radius: var(--radius-pill);
+  display: inline-flex;
+  margin-top: 2px;
 }
 
 .run-viewer-card-titles {
