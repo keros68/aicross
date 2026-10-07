@@ -236,6 +236,28 @@ aicross 改做「编排配置器」：窗口里定编排，宿主里执行。参
 | pi | `pi --version` | `~/.pi/agent/models-store.json` + `pi --list-models`（列出 ≠ 有权限，冒烟为准） |
 | cc-switch | `cc_switch.py list` | cc-switch.db 映射（只读） |
 
+### 更多 agent（10-07 用户定）
+
+资源页从固定四家改为按一张支持清单探测。清单随软件版本发布，每项写明：命令名、版本参数、模型清单从哪读、无头派发的命令模板、能否只读、能否点名具体模型。
+
+- **能派发的门槛**：有无头一问一答（prompt 走 stdin 或文件）、能选模型、能在空目录或只读模式下跑。达不到的不进清单（只有桌面版的不算）。
+- **厂商按模型算**：Cursor、Copilot、WorkBuddy 这类本身不是模型厂商。模型名能认出厂商的（claude-* → Anthropic、gpt-* → OpenAI、gemini-* → Google 等）照常参与跨厂商规则；`auto` 这类路由档和 Qoder 的分档认不出厂商，记为「未知」，只能当执行位，不进验收 / 验证位。
+- **未实测的标出来**：命令模板照官方文档写、还没在真机上跑通的 agent，资源页标「未实测」，一键推荐不选；真机冒烟通过后去掉标记。
+- **页面**：装了的照常列出；没装的折叠成「未安装 N 个」，展开只给名称与官网链接，不占主列表。
+- **主 agent**：清单里的 agent 都可作主 agent，skill 安装位置与斜杠命令格式按各家官方文档补；查不到的先只支持派发，不支持作主 agent。
+
+首批（10-07 按官方文档核实）：
+
+| agent | 命令 | 无头 | 选模型 | 模型清单 | 只读 / 隔离 | 备注 |
+|---|---|---|---|---|---|---|
+| Antigravity | `agy` | 材料走 stdin 一行 NDJSON（`--input-format stream-json`） | `--model` | `agy models`（本机实测：Gemini、Claude、GPT-OSS 都有） | 无头下工具全被拒，只能当纯文本盲审位；空目录跑，`--mode plan` 未证实只读 | 本机已装 1.3.1；Gemini 是盲审第二家厂商；`response` 为空判失败 |
+| Cursor | `cursor-agent` | `-p` | `--model` | `cursor-agent models` | 待核实 | 有 `auto` 路由档 |
+| WorkBuddy / CodeBuddy | `codebuddy` | `-p` | `--model` | 未找到列模型的命令 | `--permission-mode plan` | 两者同一命令 |
+| GitHub Copilot | `copilot` | `-p` | `--model` | 待核实 | 无只读档，靠 `--deny-tool` 与空目录 | |
+| Qoder | `qodercli` | `-p` | 只能选档位 | 五个固定档位 | 待核实 | 认不出厂商，只当执行位 |
+
+顺序：先接 Antigravity（本机可实测），再按清单接其余四家。
+
 ### 蜂群（窗口版已有，无窗口版另起一期）
 
 大任务先由「出方案」角色拆成至多 4 件互不踩脚的小活（清单带标题、文件范围 glob、验收命令），文件范围重叠的必须改到不重叠或合并，有先后依赖的不进蜂群。每件各派一家在自己的 worktree 做，完成后在各自 worktree 提交，项目目录（必须干净）按清单顺序 `cherry-pick`，每并一件跑一次验证：冲突 → 中止并留 worktree、标「冲突待裁决」；验证红 → 退回上一件、标「测试红」。单件失败不停整批。冲突不自动解，也不派模型解。无窗口版要把「清单确认」这道 G1 放进宿主对话。
