@@ -10,6 +10,7 @@ import {
   initialOf,
   AGENT_OPEN_STORAGE_KEY,
   agentExpandable,
+  agentHomepage,
   agentStats,
   isMissing,
   missingCount,
@@ -20,6 +21,9 @@ import {
   isAgentOpen,
   isNativeAgent,
   isUnavailable,
+  isInstalled,
+  isUntested,
+  notInstalledText,
   readAgentOpen,
   writeAgentOpen,
   MODEL_PREVIEW_LIMIT,
@@ -39,6 +43,8 @@ import {
   seatOptions,
   seatStatus,
   sourceText,
+  splitInstalled,
+  isConfirmedInstalled,
   splitMissingModels,
   stateTone,
 } from '../config-view';
@@ -333,9 +339,9 @@ describe('未探测时模式页提示（fix-49-r1）', () => {
 });
 
 describe('概览卡（fix-49-r2）', () => {
-  it('资源：agent 数、可用模型（下拉里可选的）、已验证、不可用（非 0 时可点筛选）', () => {
+  it('资源：已安装 agent 数、可用模型（下拉里可选的）、已验证、不可用（非 0 时可点筛选）', () => {
     expect(resourcesOverview(resources)).toEqual([
-      { label: 'agent', value: '3', alert: false },
+      { label: 'agent', value: '2', alert: false },
       { label: '可用模型', value: '3', alert: false },
       { label: '已验证', value: '1', alert: false },
       { label: '不可用', value: '2', alert: true, filter: 'unavailable' },
@@ -575,5 +581,64 @@ describe('文案、折叠与清理（fix-51-r3）', () => {
   it('清理确认框标题与引用提示', () => {
     expect(pruneTitle(3)).toBe('清理 3 个未发现的模型');
     expect(referencedText(2)).toBe('2 个已清理的模型仍被引用');
+  });
+});
+
+describe('更多 agent（TASK-62）', () => {
+  const agent = (id: string, state: string, extra: { untested?: boolean; homepage?: string } = {}) => ({
+    id, name: id, version: '', state, note: '', models: [], ...extra,
+  });
+
+  it('按状态分出已安装与未安装，各自保持引擎给的顺序', () => {
+    const list = [
+      agent('claude', '可用'),
+      agent('cursor', '未安装'),
+      agent('agy', '可用', { untested: true }),
+      agent('qoder', '未安装'),
+      agent('codex', '未登录'),
+    ];
+    const { installed, notInstalled } = splitInstalled(list);
+    expect(installed.map((a) => a.id)).toEqual(['claude', 'agy', 'codex']);
+    expect(notInstalled.map((a) => a.id)).toEqual(['cursor', 'qoder']);
+    expect(isInstalled(list[1])).toBe(false);
+    expect(splitInstalled([])).toEqual({ installed: [], notInstalled: [] });
+  });
+
+  it('未安装折叠行文字', () => {
+    expect(notInstalledText(5)).toBe('未安装 5 个');
+  });
+
+  it('旧引擎缺 untested、homepage 时按 false 与空串', () => {
+    expect(isUntested(agent('claude', '可用'))).toBe(false);
+    expect(isUntested(agent('agy', '可用', { untested: true }))).toBe(true);
+    expect(agentHomepage(agent('claude', '可用'))).toBe('');
+    expect(agentHomepage(agent('cursor', '未安装', { homepage: ' https://cursor.com ' }))).toBe('https://cursor.com');
+  });
+
+  it('统计卡的 agent 数只算已安装的', () => {
+    const data: ResourcesOutput = {
+      agents: [agent('claude', '可用'), agent('cursor', '未安装'), agent('copilot', '未安装')],
+    };
+    expect(resourcesOverview(data)[0]).toEqual({ label: 'agent', value: '1', alert: false });
+  });
+
+  it('从未探测的 agent 留在主列表，但不计入 agent 数', () => {
+    const data: ResourcesOutput = { agents: [agent('claude', '未探测'), agent('agy', '未探测')] };
+    expect(splitInstalled(data.agents).installed).toHaveLength(2);
+    expect(isConfirmedInstalled(agent('claude', '未探测'))).toBe(false);
+    expect(resourcesOverview(data)[0]).toEqual({ label: 'agent', value: '0', alert: false });
+  });
+
+  it('下拉选项带上 agent 的未实测标记', () => {
+    const data: ResourcesOutput = {
+      agents: [
+        {
+          ...agent('agy', '可用', { untested: true }),
+          models: [{ id: 'gemini-3-pro', agent: 'agy', provider: '', resolved_id: '', state: '可用', note: '' }],
+        },
+        resources.agents[0],
+      ],
+    };
+    expect(seatOptions(data).map((o) => [o.agent, o.untested])).toEqual([['agy', true], ['claude', false]]);
   });
 });

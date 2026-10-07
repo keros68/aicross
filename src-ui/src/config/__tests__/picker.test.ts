@@ -79,3 +79,13 @@ describe('pickerPlacement', () => {
     expect(pickerPlacement(100, 136, 220).listMax).toBe(120);
   });
 });
+
+describe('模型选择：未实测分组（TASK-62）', () => {
+  it('所属 agent 未实测的分组带标记，其余不带', () => {
+    const groups = groupOptions([
+      { ...option('agy', null, 'gemini-3-pro'), untested: true },
+      option('claude', null, 'sonnet'),
+    ]);
+    expect(groups.map((group) => [group.label, group.untested])).toEqual([['agy', true], ['claude', false]]);
+  });
+});

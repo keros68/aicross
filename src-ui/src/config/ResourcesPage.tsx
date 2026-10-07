@@ -7,7 +7,8 @@
 // config_snapshot 的 resources，操作结束后重新取一次。探测、测试连接、清理同一时间
 // 只跑一个。TASK-58：从未探测时顶部空态条与「探测」；探测中按进度事件显示「探测中 2/4」与
 // 各卡片转圈；有未验证第三方模型的卡片可「全部测试」（并发 3，可取消）；模式页「去测试」
-// 跳来时展开对应卡片。
+// 跳来时展开对应卡片。TASK-62：没装的 agent 折叠成末尾一行「未安装 N 个」，展开后每行图标、
+// 名称与官网地址（可复制）；未实测的 agent 卡片标题旁标「未实测」。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { commands, isTauri, type DetectProgress, type ResourceModelEntry, type ResourcesOutput } from '../tauri';
@@ -15,10 +16,14 @@ import {
   DETECT_STALE_HINT,
   MODEL_PREVIEW_LIMIT,
   agentExpandable,
+  agentHomepage,
   agentStats,
   canSmoke,
   isAgentOpen,
+  isInstalled,
   isUnavailable,
+  isUntested,
+  notInstalledText,
   readAgentOpen,
   writeAgentOpen,
   detectStatus,
@@ -33,11 +38,13 @@ import {
   resourcesOverview,
   resolvedModelText,
   seatKey,
+  splitInstalled,
   splitMissingModels,
   stateLabel,
   stateTone,
 } from './config-view';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
+import { CopyButton } from './SlashCard';
 import { AgentIcon, ProviderIcon } from '../components/common/AgentIcon';
 import { Icon } from '../components/common/Icon';
 import { StatCards } from '../components/common/StatCards';
@@ -116,6 +123,8 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
   // 全部测试：进度与取消标记。
   const [batch, setBatch] = useState<{ agent: string; done: number; total: number } | null>(null);
   const batchStop = useRef(false);
+  // 「未安装 N 个」是否展开。
+  const [showNotInstalled, setShowNotInstalled] = useState(false);
 
   // 快照请求序号：首次读取、刷新、探测 / 测试连接 / 清理后的重读各自取号，落地前核对
   // 是最新一次，过期的结果丢弃，避免旧结果盖掉新结果（同模式页）。
@@ -182,6 +191,17 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
     const frame = window.requestAnimationFrame(scrollToPending);
     return () => window.cancelAnimationFrame(frame);
   }, [focusAgent, scrollToPending]);
+
+  // 「去测试」的目标已不在主列表（未安装）时，每次跳转展开一次折叠行，再滚到对应行。
+  const handledFocusSeq = useRef(-1);
+  useEffect(() => {
+    if (!focusAgent || resources === null || handledFocusSeq.current === focusAgent.seq) return;
+    if (!resources.agents.some((agent) => agent.id === focusAgent.agent && !isInstalled(agent))) return;
+    handledFocusSeq.current = focusAgent.seq;
+    setShowNotInstalled(true);
+    const frame = window.requestAnimationFrame(scrollToPending);
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusAgent, resources, scrollToPending]);
 
   useEffect(() => {
     if (resources === null || pendingScroll.current === null) return;
@@ -282,7 +302,8 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
     setBusy(null);
   };
 
-  const agents = resources?.agents ?? [];
+  const allAgents = resources?.agents ?? [];
+  const { installed: agents, notInstalled } = splitInstalled(allAgents);
   const missingTotal = missingCount(resources);
   const detected = detectStatus(resources?.detected_at, loadedAt);
   const detecting = busy?.kind === 'detect';
@@ -423,7 +444,7 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
             onFilter={(next) => setFilter(next === 'unavailable' ? 'unavailable' : null)}
           />
         )}
-        {resources !== null && agents.length === 0 && <p className="cfg-empty">暂无资源记录</p>}
+        {resources !== null && allAgents.length === 0 && <p className="cfg-empty">暂无资源记录</p>}
         <div className="card-stack">
           {agents.map((agent) => {
             const stats = (
@@ -445,6 +466,7 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
                   <div className="card-row card-head">
                     <AgentIcon agent={agent.id} size={24} />
                     <span className="card-title">{agent.name || agent.id}</span>
+                    {isUntested(agent) && <span className="pill muted">未实测</span>}
                     {versionText(agent.version) !== '' && <span className="pill mono">{versionText(agent.version)}</span>}
                     <span className="cfg-spacer" />
                     {stats}
@@ -472,6 +494,7 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
               <>
                 <AgentIcon agent={agent.id} size={24} />
                 <span className="card-title">{agent.name || agent.id}</span>
+                {isUntested(agent) && <span className="pill muted">未实测</span>}
                 {version !== '' && <span className="pill mono">{version}</span>}
                 {pending && <span className="spin" aria-label="探测中"><Icon name="refresh" size={14} /></span>}
                 <span className="cfg-spacer" />
@@ -587,6 +610,38 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
               </section>
             );
           })}
+          {!filtering && notInstalled.length > 0 && (
+            <section className="card">
+              <div className="card-row card-head card-head-split">
+                <button
+                  type="button"
+                  className="card-toggle-inner"
+                  aria-expanded={showNotInstalled}
+                  onClick={() => setShowNotInstalled((current) => !current)}
+                >
+                  <span className="card-title">{notInstalledText(notInstalled.length)}</span>
+                  <span className="cfg-spacer" />
+                  <Icon name={showNotInstalled ? 'chevron-up' : 'chevron-down'} size={16} />
+                </button>
+              </div>
+              {showNotInstalled && notInstalled.map((agent) => {
+                const homepage = agentHomepage(agent);
+                return (
+                  <div key={agent.id} id={`agent-card-${agent.id}`} className="card-row">
+                    <AgentIcon agent={agent.id} size={20} />
+                    <span>{agent.name || agent.id}</span>
+                    <span className="cfg-spacer" />
+                    {homepage !== '' && (
+                      <>
+                        <span className="cfg-mono cfg-dim homepage-text" title="官网">{homepage}</span>
+                        <CopyButton text={homepage} icon />
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </section>
+          )}
         </div>
       </div>
       {pruneAsk && (

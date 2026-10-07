@@ -332,9 +332,18 @@
 }
 
 .picker-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 10px 10px 4px;
   font-size: 12px;
   color: var(--text-3);
+}
+
+.picker-group-title .pill {
+  min-height: 18px;
+  padding: 0 6px;
+  font-size: 11px;
 }
 
 .picker-item {
@@ -974,4 +983,13 @@ button.card-toggle-inner:hover {
 
 .focus-input[aria-invalid="true"] {
   border-color: var(--red);
+}
+
+/* 未安装的 agent 行里的官网地址（TASK-62）：可选中复制。 */
+.homepage-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
 }

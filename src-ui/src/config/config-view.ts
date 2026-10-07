@@ -55,6 +55,8 @@ export interface SeatOption {
   /** 资源状态词；当前值已不在资源里时为「不可用」。 */
   state: string;
   disabled: boolean;
+  /** 所属 agent 未实测（TASK-62）；下拉分组名后标「未实测」。 */
+  untested?: boolean;
 }
 
 /** 选人时不能选的状态。 */
@@ -84,6 +86,7 @@ export function seatOptions(resources: ResourcesOutput | null | undefined): Seat
         model: model.id,
         state: stateLabel(model.state),
         disabled: UNSELECTABLE_STATES.has(model.state),
+        untested: isUntested(agent),
       });
     }
   }
@@ -142,17 +145,56 @@ export function isUnavailable(model: Pick<ResourceModelEntry, 'state'>): boolean
   return UNAVAILABLE_STATES.has(model.state);
 }
 
-/** 资源页概览：agent 数 · 可用模型数（人选下拉里可选的）· 已验证 · 不可用（非 0 时可点筛选）。 */
+// ── 已安装 / 未安装（TASK-62）────────────────────────────────────────
+
+/** 引擎给出的 agent 状态为「未安装」的不算已安装。 */
+export function isInstalled(agent: Pick<ResourceAgentEntry, 'state'>): boolean {
+  return agent.state !== '未安装';
+}
+
+/** 确认装了的：探测过且不是「未安装」。从未探测的照常列卡片，但不计入 agent 数。 */
+export function isConfirmedInstalled(agent: Pick<ResourceAgentEntry, 'state'>): boolean {
+  return agent.state !== '未安装' && agent.state !== '未探测';
+}
+
+/** 分出已安装与未安装，各自保持引擎给的顺序。 */
+export function splitInstalled<T extends Pick<ResourceAgentEntry, 'state'>>(
+  agents: readonly T[],
+): { installed: T[]; notInstalled: T[] } {
+  const installed: T[] = [];
+  const notInstalled: T[] = [];
+  for (const agent of agents) (isInstalled(agent) ? installed : notInstalled).push(agent);
+  return { installed, notInstalled };
+}
+
+/** 未安装折叠行的文字。 */
+export function notInstalledText(count: number): string {
+  return `未安装 ${count} 个`;
+}
+
+/** 旧引擎没有 untested 字段时按 false。 */
+export function isUntested(agent: Pick<ResourceAgentEntry, 'untested'>): boolean {
+  return agent.untested === true;
+}
+
+/** 官网地址；旧引擎没有 homepage 字段时为空串。 */
+export function agentHomepage(agent: Pick<ResourceAgentEntry, 'homepage'>): string {
+  return (agent.homepage ?? '').trim();
+}
+
+/** 资源页概览：已安装 agent 数 · 可用模型数（人选下拉里可选的）· 已验证 · 不可用（非 0 时可点筛选）。
+ *  模型统计只算已安装的 agent。 */
 export function resourcesOverview(resources: ResourcesOutput | null | undefined): StatItem[] {
-  const agents = resources?.agents ?? [];
+  const agents = splitInstalled(resources?.agents ?? []).installed;
   const models = agents.flatMap((agent) => agent.models);
+  const installedCount = agents.filter(isConfirmedInstalled).length;
   const usable = seatOptions(resources).filter((option) => !option.disabled).length;
   const verified = models.filter((model) => model.state === '已验证').length;
   const unavailable = models.filter(isUnavailable).length;
   const unavailableItem: StatItem = { label: '不可用', value: String(unavailable), alert: unavailable > 0 };
   if (unavailable > 0) unavailableItem.filter = 'unavailable';
   return [
-    { label: 'agent', value: String(agents.length), alert: false },
+    { label: 'agent', value: String(installedCount), alert: false },
     { label: '可用模型', value: String(usable), alert: false },
     { label: '已验证', value: String(verified), alert: false },
     unavailableItem,
