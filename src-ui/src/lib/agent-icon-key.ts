@@ -20,6 +20,7 @@ const BY_AGENT: Record<string, AgentIconKey> = {
   pi: 'pi',
   qwen: 'qwen',
   antigravity: 'antigravity',
+  agy: 'antigravity',
   opencode: 'opencode',
   grok: 'grok',
   mimocode: 'mimocode',

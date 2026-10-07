@@ -279,6 +279,10 @@ export interface ResourceAgentEntry {
   state: string;
   note: string;
   models: ResourceModelEntry[];
+  /** 命令模板还没在真机上跑通（TASK-61）；旧引擎缺这个字段时按 false。 */
+  untested?: boolean;
+  /** 官网地址（TASK-61）；旧引擎缺这个字段时按空串。 */
+  homepage?: string;
 }
 
 export interface ResourcesOutput {

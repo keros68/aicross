@@ -162,7 +162,10 @@ export function ModelPicker({
             )}
             {groups.map((group) => (
               <div key={group.key} className="picker-group">
-                <div className="picker-group-title">{group.label}</div>
+                <div className="picker-group-title">
+                  {group.label}
+                  {group.untested && <span className="pill muted">未实测</span>}
+                </div>
                 {group.items.map((option) => {
                   const index = indexOf(option.key);
                   return (

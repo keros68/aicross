@@ -10,6 +10,8 @@ export interface PickerGroup {
   label: string;
   agent: string;
   provider: string | null;
+  /** 所属 agent 未实测（TASK-62）。 */
+  untested: boolean;
   items: SeatOption[];
 }
 
@@ -35,6 +37,7 @@ export function groupOptions(options: SeatOption[]): PickerGroup[] {
         label: option.provider ? `${option.agent} · ${option.provider}` : option.agent,
         agent: option.agent,
         provider: option.provider,
+        untested: option.untested === true,
         items: [],
       };
       groups.push(group);

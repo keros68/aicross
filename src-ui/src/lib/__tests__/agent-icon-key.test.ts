@@ -8,10 +8,12 @@ describe('agent 图标（fix-49-r2）', () => {
     expect(agentIconKey('kimi')).toBe('kimicode');
     expect(agentIconKey('kimicode')).toBe('kimicode');
     expect(agentIconKey('pi')).toBe('pi');
+    expect(agentIconKey('agy')).toBe('antigravity');
   });
 
   it('没收录的为 null，界面退回首字母', () => {
     expect(agentIconKey('hermes')).toBeNull();
+    for (const id of ['cursor', 'codebuddy', 'copilot', 'qoder']) expect(agentIconKey(id)).toBeNull();
     expect(agentIconKey('')).toBeNull();
   });
 

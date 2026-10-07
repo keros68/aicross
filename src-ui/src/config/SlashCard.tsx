@@ -54,7 +54,7 @@ function ModeMark({ id, name, description }: ModeChoice & { description?: string
 }
 
 /** 复制按钮：复制后短暂显示「已复制」，失败时短暂显示「复制失败」。 */
-function CopyButton({ text, icon }: { text: string; icon?: boolean }) {
+export function CopyButton({ text, icon }: { text: string; icon?: boolean }) {
   const [result, setResult] = useState<'' | 'done' | 'fail'>('');
   // 结果提示的定时器：再次点击先清掉上一次的，卸载时清理。
   const timer = useRef<number | undefined>(undefined);
