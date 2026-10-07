@@ -53,7 +53,7 @@ export function ResizeEdges() {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const win = getCurrentWindow();
       const sync = async () => {
-        try { setMaximized(await win.isMaximized()); } catch {}
+        try { setMaximized(await win.isMaximized()); } catch { /* 取不到最大化状态时保持原值 */ }
       };
       sync();
       const fn = await win.onResized(sync);
@@ -72,7 +72,7 @@ export function ResizeEdges() {
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       await getCurrentWindow().startResizeDragging(dir);
-    } catch {}
+    } catch { /* 缩放拖动不可用时忽略 */ }
   };
 
   return (

@@ -5,6 +5,7 @@ import ReactDOM from 'react-dom/client';
 import { App } from './App';
 import { invoke } from './tauri';
 import { IS_MACOS } from './lib/platform';
+import { followSystemTheme } from './lib/theme';
 import './styles/global.css';
 
 // macOS uses native window decorations + traffic lights (titleBarStyle:
@@ -13,6 +14,9 @@ import './styles/global.css';
 // is dropped — the OS owns the corners there. Win/Linux keep the frameless
 // shell with custom controls on the right.
 if (IS_MACOS) document.documentElement.classList.add('is-macos');
+
+// 浅色 / 深色跟随系统设置，窗口开着时切换系统配色也会实时跟上。
+followSystemTheme();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

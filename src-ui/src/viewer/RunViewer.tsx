@@ -2,13 +2,16 @@
 // 宿主对话里由 skill 调命令行。数据经 load_run_view 读 run 文件与图文件
 // （只读）；run 运行中每 2 秒重取一次，终态停止。修正轮 R1（fix-37-r1）：
 // 轮询出错保留旧数据继续重试（R1-7）；轮询与采纳的响应按请求序号丢弃过期
-// 结果（R1-8）；refreshSeq 变化时重取（R1-9）；挂载后焦点落在「关闭」、
+// 结果（R1-8）；refreshSeq 变化时重取（R1-9）；挂载后焦点落在「返回」、
 // Tab 不出查看页、Esc 只关最上层（R1-6）。
 
 import { useEffect, useRef, useState } from 'react';
 import { commands, type RunView, type RunViewNode } from '../tauri';
 import { ConsoleMarkdown } from './ConsoleMarkdown';
-import { vendorColor } from './vendor';
+import { stageGridColumns } from './run-list';
+import { AgentIcon } from '../components/common/AgentIcon';
+import { Icon } from '../components/common/Icon';
+import { PageHeader } from '../components/common/PageHeader';
 import {
   RUN_VIEW_POLL_INTERVAL_MS,
   acceptanceVerdict,
@@ -38,6 +41,10 @@ interface Props {
   runId: string;
   /** 热启动事件的递增序号（R1-9）：同一个 run 再次 open 时靠它触发重取。 */
   refreshSeq: number;
+  /** 顶栏「刷新」的计数（fix-51-r1）：变化时重取。 */
+  refreshKey: number;
+  /** 刷新触发的读取结束后回报（key 为本次 refreshKey），顶栏据此停止转圈。 */
+  onRefreshDone: (key: number, ok: boolean) => void;
   onClose: () => void;
 }
 
@@ -51,7 +58,7 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
-export function RunViewer({ runId, refreshSeq, onClose }: Props) {
+export function RunViewer({ runId, refreshSeq, refreshKey, onRefreshDone, onClose }: Props) {
   const [view, setView] = useState<RunView | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [adoptBusyNodeId, setAdoptBusyNodeId] = useState('');
@@ -62,7 +69,7 @@ export function RunViewer({ runId, refreshSeq, onClose }: Props) {
   // 结果一律丢弃。
   const requestSeq = useRef(0);
   // R1-7：是否已拿到过数据。拿到过后再出错保留旧数据继续重试，只有首次
-  // 读取失败才显示「找不到这次派发」。
+  // 读取失败才显示「未找到该派发」。
   const hasData = useRef(false);
   // 最近一次已知状态：出错重试只对运行中的 run 有意义，终态 run 不另起
   // 轮询循环。
@@ -73,10 +80,17 @@ export function RunViewer({ runId, refreshSeq, onClose }: Props) {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    // 顶栏刷新触发的这一轮：第一次读取结束后回报一次。
+    let report = refreshKey > 0;
+    const done = (ok: boolean) => {
+      if (report) onRefreshDone(refreshKey, ok);
+      report = false;
+    };
     const tick = async () => {
       const seq = ++requestSeq.current;
       try {
         const next = await commands.loadRunView(runId);
+        done(true);
         // 过期响应（采纳刚接过序号）不落地，但链不停：运行中的 run 照常排
         // 下一次重取，采纳后的下一次重取会带回最新状态。
         const stale = cancelled || seq !== requestSeq.current;
@@ -89,6 +103,7 @@ export function RunViewer({ runId, refreshSeq, onClose }: Props) {
         const delay = pollIntervalMs(next.status);
         if (delay !== null && !cancelled) timer = window.setTimeout(tick, delay);
       } catch {
+        done(false);
         if (cancelled || seq !== requestSeq.current) return;
         if (!hasData.current) {
           setNotFound(true);
@@ -105,7 +120,7 @@ export function RunViewer({ runId, refreshSeq, onClose }: Props) {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [runId, refreshSeq]);
+  }, [runId, refreshSeq, refreshKey, onRefreshDone]);
 
   useEffect(() => {
     if (view?.status !== 'running') return;
@@ -114,14 +129,11 @@ export function RunViewer({ runId, refreshSeq, onClose }: Props) {
     return () => window.clearInterval(timer);
   }, [view?.status, view?.runId]);
 
-  // R1-6：挂载后焦点落在「关闭」按钮；查看页打开期间缩放边条抬到查看页
-  // 之上（样式见 RunViewer.css），标题栏不在查看页覆盖范围内。读取态与
-  // 正文态切换时「关闭」换成了另一个元素，重取焦点。
+  // R1-6：挂载后焦点落在页头的「返回」按钮。查看页只占右侧内容区，左侧导航与
+  // 缩放边条都在它之外。读取态与正文态切换时「返回」换成了另一个元素，重取焦点。
   const showMissing = notFound || view === null;
   useEffect(() => {
     closeRef.current?.focus();
-    document.documentElement.classList.add('run-viewer-open');
-    return () => document.documentElement.classList.remove('run-viewer-open');
   }, [showMissing]);
 
   useEffect(() => {
@@ -185,14 +197,20 @@ export function RunViewer({ runId, refreshSeq, onClose }: Props) {
     }
   };
 
+  const backButton = (
+    <button type="button" className="icon-btn" ref={closeRef} onClick={onClose} title="返回" aria-label="返回">
+      <Icon name="back" />
+    </button>
+  );
+
   if (showMissing) {
     return (
       <div className="run-viewer" role="dialog" aria-label="查看派发" ref={rootRef}>
+        <PageHeader left={<span className="run-viewer-title">{backButton}查看派发</span>} />
         <div className="run-viewer-missing">
           {notFound
-            ? <><div className="run-viewer-missing-text">找不到这次派发</div><div className="run-viewer-missing-id">{runId}</div></>
-            : <div className="run-viewer-missing-text">正在读取这次派发…</div>}
-          <button type="button" ref={closeRef} onClick={onClose}>关闭</button>
+            ? <><div className="run-viewer-missing-text">未找到该派发</div><div className="run-viewer-missing-id">{runId}</div></>
+            : <div className="run-viewer-missing-text">读取中…</div>}
         </div>
       </div>
     );
@@ -202,27 +220,27 @@ export function RunViewer({ runId, refreshSeq, onClose }: Props) {
   const tone = runStatusTone(view.status);
   return (
     <div className="run-viewer" role="dialog" aria-label="查看派发" ref={rootRef}>
-      <header className="run-viewer-head">
-        <div className="run-viewer-head-main">
-          <div className="run-viewer-title">
-            {view.presetName !== '' && <span className="run-viewer-preset">{view.presetName}</span>}
+      <PageHeader
+        left={(
+          <span className="run-viewer-title">
+            {backButton}
+            {view.presetName !== '' ? view.presetName : '查看派发'}
             <span className={`run-viewer-status${tone === 'plain' ? '' : tone === 'pill' ? ' run-viewer-pill run-viewer-status-running' : ' run-viewer-pill alert'}`}>
               {runStatusLabel(view.status)}
             </span>
-          </div>
-          <div className="run-viewer-meta">
-            <span>开始时间 <span className="run-viewer-mono">{formatStartedAt(view.startedAt)}</span></span>
-            <span>总耗时 <span className="run-viewer-mono">{formatDuration(runElapsedMs(view, now))}</span></span>
-            <span className="run-viewer-mono">run {view.runId}</span>
-          </div>
-        </div>
-        <button type="button" ref={closeRef} onClick={onClose}>关闭</button>
-      </header>
+          </span>
+        )}
+      />
       <div className="run-viewer-body">
+        <div className="run-viewer-meta">
+          <span>开始时间 <span className="run-viewer-mono">{formatStartedAt(view.startedAt)}</span></span>
+          <span>总耗时 <span className="run-viewer-mono">{formatDuration(runElapsedMs(view, now))}</span></span>
+          <span className="run-viewer-mono">run {view.runId}</span>
+        </div>
         {view.reason !== '' && <div className="run-viewer-reason">{runStatusLabel(view.status)}原因：{view.reason}</div>}
         {view.leftover.length > 0 && (
           <section className="run-viewer-leftover">
-            <div className="run-viewer-section-title">遗留</div>
+            <div className="run-viewer-section-title">遗留问题</div>
             <ol>{view.leftover.map((item, index) => <li key={index}>{item}</li>)}</ol>
           </section>
         )}
@@ -231,7 +249,7 @@ export function RunViewer({ runId, refreshSeq, onClose }: Props) {
             <div className="run-viewer-section-title">{group.title}</div>
             <div
               className="run-viewer-cards"
-              style={{ gridTemplateColumns: `repeat(${stageColumnCount(group.nodes.length)}, minmax(280px, 1fr))` }}
+              style={{ gridTemplateColumns: stageGridColumns(stageColumnCount(group.nodes.length)) }}
             >
               {group.nodes.map((node) => (
                 <RunCard
@@ -263,7 +281,7 @@ function RunCard({ node, view, busy, onAdopt }: {
   return (
     <section className={`run-viewer-card${node.adopted ? ' adopted' : ''}`}>
       <div className="run-viewer-card-head">
-        <span className="run-viewer-vendor-dot" style={{ backgroundColor: vendorColor(node.agent) }} />
+        <span className="run-viewer-agent-icon"><AgentIcon agent={node.agent} size={16} /></span>
         <div className="run-viewer-card-titles">
           <div className="run-viewer-card-title">{cardTitle(node, view)}</div>
           <div className="run-viewer-card-subtitle">{cardSubtitle(node)}</div>
@@ -276,7 +294,7 @@ function RunCard({ node, view, busy, onAdopt }: {
           <dt>实际模型</dt>
           <dd className="run-viewer-mono">
             {reportedModelLabel(node)}
-            {identityMismatch(node) && <span className="run-viewer-mismatch">真身不符</span>}
+            {identityMismatch(node) && <span className="run-viewer-mismatch">实际模型不符</span>}
           </dd>
         </div>
         <div>
@@ -297,7 +315,7 @@ function RunCard({ node, view, busy, onAdopt }: {
       {node.artifacts && (
         <details className="run-viewer-artifacts">
           <summary>产物 · {node.artifacts.changedFileCount} 个文件</summary>
-          {worktree !== '' && <div className="run-viewer-worktree">采纳前请手动合并：{worktree}</div>}
+          {worktree !== '' && <div className="run-viewer-worktree">待手动合并：{worktree}</div>}
           <pre>{node.artifacts.diff || '无文件改动'}</pre>
         </details>
       )}

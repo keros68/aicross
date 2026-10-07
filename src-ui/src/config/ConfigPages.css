@@ -1,0 +1,977 @@
+/* 资源、skill、模式三页（TASK-47 起；fix-51-r1 改为 magpie 观感）。页面骨架、工具行、
+   卡片与行、按钮、数字条、分段切换在 global.css；这里是三页各自的行、模型选择下拉、
+   厂商信息与提示条。颜色只取 global.css 的变量；绿色 --accent 只给主按钮，蓝色
+   --active-* 只给当前生效的一项，模式色与厂商色只做标识块浅底、图标与色点；
+   模型 id、agent、版本、路径用 IBM Plex Mono。 */
+
+.cfg-empty {
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-panel);
+  font-size: 15px;
+  color: var(--text-2);
+}
+
+.cfg-error {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--red);
+  word-break: break-all;
+}
+
+.cfg-head-error {
+  margin-bottom: 12px;
+}
+
+.cfg-note {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.cfg-mono {
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+.cfg-dim {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.cfg-spacer {
+  flex: 1;
+}
+
+.cfg-state {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.cfg-alert-text {
+  color: var(--red);
+}
+
+/* 工具行左边的上次探测时间。 */
+.cfg-detected {
+  font-size: 13px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* 页面顶部的一条提示（未探测、未安装、未配置、推荐说明、重复安装）。 */
+.cfg-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-panel);
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.cfg-banner .icon {
+  color: var(--text-3);
+}
+
+.cfg-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.cfg-banner.alert {
+  border-color: var(--red);
+}
+
+.cfg-banner.alert .icon {
+  color: var(--red);
+}
+
+.cfg-banner-path {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+/* ── 模式分组：组标题小号灰字，组与组 24px ── */
+
+.cfg-group + .cfg-group {
+  margin-top: 24px;
+}
+
+.cfg-group-title {
+  margin: 0 0 8px 4px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.cfg-active-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  font-size: 13px;
+  color: var(--active-fg);
+}
+
+.cfg-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--active-fg);
+}
+
+/* ── 资源页：卡片里一行一个模型 ── */
+
+/* 与 global.css 的 .card-row 同级时以这里为准（加类名提高优先级）。 */
+.card-row.model-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  min-height: 48px;
+  justify-content: center;
+}
+
+.model-row-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 12px;
+  min-width: 0;
+}
+
+.model-row-id {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.model-row.missing,
+.model-row.missing .cfg-state {
+  color: var(--text-3);
+}
+
+/* ── 模式页：每个位置一行，左「阶段号 · 角色」，右模型选择、思考、备选 ── */
+
+.card-row.seat-row {
+  flex-wrap: wrap;
+}
+
+.seat-row-main {
+  flex: 1 1 140px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.seat-row-role {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.seat-row-stage {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-control);
+  color: var(--text-2);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.seat-row-tag {
+  min-height: 20px;
+}
+
+.seat-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.seat-row-thinking {
+  width: 104px;
+}
+
+.seat-row-saving {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.seat-row-error {
+  flex-basis: 100%;
+}
+
+/* ── 模型选择下拉（magpie picker） ── */
+
+.picker {
+  position: relative;
+  min-width: 0;
+}
+
+.picker-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 300px;
+  max-width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-control);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+
+.picker-trigger:hover:not(:disabled) {
+  background: var(--bg-control-hover);
+}
+
+.picker-trigger:disabled {
+  opacity: 0.6;
+}
+
+.picker-trigger.alert {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.picker-trigger .icon:last-child {
+  color: var(--text-3);
+}
+
+.picker-trigger-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-badge {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  background: var(--active-bg);
+  color: var(--active-fg);
+  font-size: 12px;
+}
+
+.picker-badge.alert {
+  background: transparent;
+  color: var(--red);
+}
+
+.picker-icon-trigger {
+  background: var(--bg-control);
+}
+
+.picker-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 360px;
+  max-width: calc(100vw - 48px);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-panel);
+  box-shadow: 0 16px 40px var(--shadow);
+  overflow: hidden;
+}
+
+.picker-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--divider);
+  color: var(--text-3);
+}
+
+.picker-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 15px;
+}
+
+.picker-search input::placeholder {
+  color: var(--text-3);
+}
+
+.picker-pop.up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.picker-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.picker-group-title {
+  padding: 10px 10px 4px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+
+.picker-item.active {
+  background: var(--bg-control);
+}
+
+.picker-item:disabled {
+  color: var(--text-3);
+  opacity: 0.6;
+}
+
+.picker-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-item-state {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.picker-item .icon:last-child {
+  color: var(--accent);
+}
+
+.picker-empty {
+  padding: 16px 10px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+/* ── 主 agent 的厂商信息（工具行左边） ── */
+
+.host-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 14px;
+}
+
+.host-bar-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+.host-bar-value {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.host-bar-value.cfg-alert-text {
+  color: var(--red);
+}
+
+.host-bar-select {
+  min-height: 30px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-control);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+.host-bar-basis {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.host-bar-select:hover:not(:disabled) {
+  background: var(--bg-control-hover);
+}
+
+.host-bar-error {
+  flex-basis: 100%;
+}
+
+/* ── skill 页：位置行 ── */
+
+.skill-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill-scope {
+  min-width: 48px;
+  justify-content: center;
+}
+
+.skill-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.skill-row-action {
+  width: 34px;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.skill-state.muted {
+  color: var(--text-3);
+}
+
+.skill-state.ok {
+  border-color: var(--active-border);
+  color: var(--active-fg);
+}
+
+.skill-state.alert {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+/* ── 资源页：可点的卡片头（fix-51-r2，展开 / 收起模型列表） ── */
+
+.card-row.card-toggle {
+  width: 100%;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 16px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.card-row.card-toggle[aria-expanded="true"] {
+  border-radius: 16px 16px 0 0;
+}
+
+.card-row.card-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.card-row.card-toggle .icon:last-child {
+  color: var(--text-3);
+}
+
+/* ── 资源页：一行说明、agent 状态行、未发现行（fix-51-r3） ── */
+
+.note-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-row.agent-state-row {
+  min-height: 44px;
+}
+
+.card-row.agent-state-row .note-line {
+  flex: 1;
+  min-width: 0;
+  margin-top: 0;
+}
+
+.card-row.missing-row {
+  justify-content: center;
+  min-height: 44px;
+}
+
+.missing-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 14px;
+}
+
+.missing-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+/* ── skill 页：斜杠命令卡片（TASK-53） ── */
+
+.slash-card {
+  margin-top: 12px;
+}
+
+.card-row.slash-warn {
+  min-height: 44px;
+  color: var(--red);
+  font-size: 14px;
+}
+
+.slash-label {
+  flex-shrink: 0;
+  min-width: 40px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.slash-trigger {
+  flex-shrink: 0;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.slash-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--tone);
+  font-size: 14px;
+}
+
+.slash-mode-name {
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.slash-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.slash-state.ok {
+  border-color: var(--active-border);
+  color: var(--active-fg);
+}
+
+.slash-state.alert {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.slash-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.card-row.slash-form {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.slash-form-fields {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.slash-name {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-control);
+}
+
+.slash-prefix {
+  color: var(--text-3);
+  font-size: 14px;
+}
+
+.slash-name input,
+.slash-note-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 14px;
+}
+
+.slash-name input {
+  width: 160px;
+}
+
+.slash-name input[aria-invalid="true"] {
+  color: var(--red);
+}
+
+.slash-mode-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.slash-note-input {
+  flex: 1;
+  min-width: 160px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-control);
+  font-family: var(--font);
+}
+
+.copy-fail {
+  color: var(--red);
+}
+
+.picker-item:hover:not(:disabled) {
+  background: var(--bg-control);
+}
+
+/* ── 斜杠命令：按模式列出（TASK-54） ── */
+
+.slash-mode-cell {
+  flex: 0 0 112px;
+  min-width: 0;
+}
+
+.slash-arg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.slash-arg .slash-trigger {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-suggested {
+  color: var(--text-3);
+}
+
+.card-row.slash-skipped {
+  align-items: flex-start;
+}
+
+.slash-skipped-list {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+
+/* ── 模式页：卡片头的介绍、自定义分组的新建、编辑器（TASK-55） ── */
+
+.card-head-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cfg-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cfg-group-action {
+  margin-left: auto;
+}
+
+.dialog-list {
+  margin-top: 4px;
+  padding-left: 18px;
+}
+
+.dialog.preset-editor {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.preset-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.preset-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.preset-field > span {
+  width: 40px;
+  flex-shrink: 0;
+  color: var(--text-3);
+}
+
+.preset-field input {
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: var(--bg-control);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 14px;
+}
+
+.preset-field input[aria-invalid="true"] {
+  border-color: var(--red);
+}
+
+.preset-field-error {
+  margin: -4px 0 0 52px;
+}
+
+.preset-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.preset-arrow {
+  margin: 0 0 8px 16px;
+  font-size: 14px;
+  color: var(--text-3);
+}
+
+.preset-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.preset-stage-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.preset-add {
+  align-self: flex-start;
+}
+
+/* ── 模式卡片头：位置数量调节（TASK-56） ── */
+
+.count-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 0 2px 0 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-control);
+}
+
+.count-label {
+  margin-right: 4px;
+  font-size: 13px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.icon-btn.count-btn {
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.icon-btn.count-btn:hover:not(:disabled) {
+  background: var(--bg-control-hover);
+}
+
+/* ── TASK-58 新用户走查修正 ── */
+
+/* 资源页从未探测时的空态条。 */
+.cfg-banner.empty-banner {
+  padding: 16px 20px;
+  font-size: 15px;
+  color: var(--text-1);
+}
+
+.cfg-banner.empty-banner .icon {
+  color: var(--accent);
+}
+
+/* agent 卡片头：左边可点的展开区域，右边「全部测试」。 */
+.card-row.card-head-split {
+  padding: 0 12px 0 0;
+  gap: 8px;
+}
+
+.card-toggle-inner {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 10px 8px 10px 20px;
+  border: none;
+  border-radius: 16px 0 0 16px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.card-toggle-inner:hover {
+  background: var(--bg-hover);
+}
+
+.card-toggle-inner > .icon:last-child {
+  color: var(--text-3);
+}
+
+.batch-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* 模型选择：还没选时中性虚线框 + 灰字。 */
+.picker-trigger.empty {
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-3);
+}
+
+.picker-trigger.empty:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+/* 推荐提示里「pi 有 33 个模型未验证」+「去测试」。 */
+.banner-action-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* skill 页：页头的状态标签（已安装 / 由其他软件管理）。 */
+.skill-global-state {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+/* 编辑器：位置行用四列下拉 + 删除，上方列名对齐。 */
+.preset-node {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) 34px;
+  align-items: center;
+  gap: 6px;
+}
+
+.preset-node .pill-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.preset-node-head {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* ── 评审视角下拉与自定义输入（TASK-60） ── */
+
+.focus-select {
+  min-height: 28px;
+  font-size: 13px;
+}
+
+.focus-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.focus-input {
+  width: 120px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: var(--bg-control);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 13px;
+}
+
+.focus-input[aria-invalid="true"] {
+  border-color: var(--red);
+}
