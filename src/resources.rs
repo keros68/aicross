@@ -11,9 +11,10 @@
 //! 不读 `~/.pi/auth.json`、`~/.cc-switch/*.db`；错误摘要一律过 `safe_summary`
 //! 脱敏后才落盘或回传前端。
 
+use crate::agent_catalog::ModelSource;
 use crate::channels;
 use crate::paths::aicross_root;
-use crate::process::{run_process, run_process_registered, version_for, ProcessResult};
+use crate::process::{run_process, run_process_registered, version_with_arg, ProcessResult};
 use chrono::{DateTime, Local, SecondsFormat};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -87,15 +88,14 @@ pub(crate) const AGENT_NAME_CODEX: &str = "Codex";
 pub(crate) const AGENT_NAME_KIMI: &str = "Kimi Code";
 pub(crate) const AGENT_NAME_PI: &str = "pi agent";
 
-/// 原生 agent：(机器 id, 显示名)。显示名是资源库唯一事实源。
-const NATIVE_AGENTS: [(&str, &str); 3] = [
-    ("claude", AGENT_NAME_CLAUDE),
-    ("codex", AGENT_NAME_CODEX),
-    ("kimi", AGENT_NAME_KIMI),
-];
+/// 资源库里 agent 的骨架、显示名、是否原生都按支持清单
+/// （`agent_catalog::SUPPORTED_AGENTS`）来；上面四个显示名常量与清单一致，
+/// 由 `task61_catalog_names_match_resource_constants` 钉住。
+const AGENT_KIND_BUILTIN: &str = "内置";
 
-/// pi 不是原生端点，但和原生三家共用资源库的内置 agent 骨架。
-const PI_AGENT: (&str, &str) = ("pi", AGENT_NAME_PI);
+/// 新 agent 的模型厂商按模型名推（TASK-61）：认不出的记「未知」——
+/// 不进验收 / 验证位，只能当执行位。
+pub(crate) const VENDOR_UNKNOWN: &str = "未知";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ResourceStore {
@@ -123,6 +123,12 @@ pub struct ResourceAgent {
     pub version: String,
     #[serde(default)]
     pub models: Vec<ResourceModel>,
+    /// 命令模板只照官方文档写、没在真机跑通（TASK-61）；按支持清单填。
+    #[serde(default)]
+    pub untested: bool,
+    /// 官网（TASK-61）；资源页「未安装」里给链接。按支持清单填。
+    #[serde(default)]
+    pub homepage: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -372,9 +378,7 @@ pub(crate) fn mark_quota_exhausted(
 /// agent id 是不是原生三家。大小写不敏感——手工添加的 agent 写成 `Codex`
 /// 时，前端（`toLowerCase`）和这里必须判成同一档。
 fn is_native_agent(agent: &str) -> bool {
-    NATIVE_AGENTS
-        .iter()
-        .any(|(id, _)| id.eq_ignore_ascii_case(agent.trim()))
+    crate::agent_catalog::find(agent).is_some_and(|entry| entry.native)
 }
 
 /// 第三方端点判定。目前只覆盖 claude（进程环境 `ANTHROPIC_BASE_URL` 或
@@ -390,6 +394,13 @@ fn third_party_endpoint(agent: &str) -> bool {
 /// `aicross resources` 按它标注原生模型不冒烟。
 pub(crate) fn is_native_model(agent: &str) -> bool {
     is_native_agent(agent) && !third_party_endpoint(agent)
+}
+
+/// 原生模型一般不冒烟；agy 例外（TASK-61）：资源页「测试」走一次最小派发，
+/// 回答非空即通过——无头下工具全被拒时回答为空，读模型清单看不出来。
+/// 结果只写 status 与冒烟详情，验证档仍是 native。
+pub(crate) fn native_smoke_dispatches(agent: &str) -> bool {
+    agent.trim().eq_ignore_ascii_case("agy")
 }
 
 /// 旧库没有 `verification` 时的推断：原生一律 native；其余按旧 `status`
@@ -697,26 +708,32 @@ fn verification_rank(verification: &str) -> u8 {
     }
 }
 
-/// 保证内置四 agent 骨架存在；迁移掉历史 store 里的 cc-switch agent
-/// （已降级为发现提示）；回填 model.agent 冗余字段。
+/// 保证支持清单里每个 agent 的骨架存在（没装的也列，`detected: false`、
+/// 无模型，界面据此折叠）；显示名、`untested`、`homepage` 按清单刷新；
+/// 迁移掉历史 store 里的 cc-switch agent（已降级为发现提示）；回填
+/// model.agent 冗余字段。
 pub fn ensure_agents(store: &mut ResourceStore) {
     store.version = 1;
     store.agents.retain(|agent| agent.id != "cc-switch");
-    for (id, name) in NATIVE_AGENTS.into_iter().chain(std::iter::once(PI_AGENT)) {
-        if store.agents.iter().all(|agent| agent.id != id) {
+    for entry in crate::agent_catalog::SUPPORTED_AGENTS {
+        if store.agents.iter().all(|agent| agent.id != entry.id) {
             store.agents.push(ResourceAgent {
-                id: id.to_string(),
-                name: name.to_string(),
-                kind: "内置".to_string(),
+                id: entry.id.to_string(),
+                name: entry.name.to_string(),
+                kind: AGENT_KIND_BUILTIN.to_string(),
                 detected: false,
                 version: "未检测".to_string(),
                 models: Vec::new(),
+                untested: entry.untested,
+                homepage: entry.homepage.to_string(),
             });
         }
-        if let Some(agent) = store.agents.iter_mut().find(|agent| agent.id == id) {
-            agent.name = name.to_string();
+        if let Some(agent) = store.agents.iter_mut().find(|agent| agent.id == entry.id) {
+            agent.name = entry.name.to_string();
+            agent.untested = entry.untested;
+            agent.homepage = entry.homepage.to_string();
             if agent.kind.trim().is_empty() {
-                agent.kind = "内置".to_string();
+                agent.kind = AGENT_KIND_BUILTIN.to_string();
             }
         }
     }
@@ -744,14 +761,14 @@ fn resolve_cli(name: &str) -> Option<PathBuf> {
     if path.components().count() > 1 && path.is_file() {
         return Some(path.to_path_buf());
     }
-    if name == "kimi" {
-        if let Some(fallback) =
-            dirs::home_dir().map(|home| home.join(".kimi-code").join("bin").join("kimi.exe"))
-        {
-            if fallback.is_file() {
-                return Some(fallback);
-            }
-        }
+    // 支持清单里的 agent 统一走 `agent_catalog::resolve_program`（兜底路径
+    // 优先，再查 PATH）：kimi 要原生 exe，agy 在 Windows 上 PATH 里常常没有；
+    // 派发与冒烟对 agy 用同一个函数，三处结果一致。
+    if let Some(entry) = crate::agent_catalog::SUPPORTED_AGENTS
+        .iter()
+        .find(|entry| entry.command == name)
+    {
+        return crate::agent_catalog::resolve_program(entry.id);
     }
     let lookup = if cfg!(windows) { "where.exe" } else { "which" };
     #[cfg(windows)]
@@ -789,10 +806,14 @@ fn resolve_cli(name: &str) -> Option<PathBuf> {
 }
 
 fn detect_version(binary: Option<&PathBuf>) -> (bool, String) {
+    detect_version_with(binary, "--version")
+}
+
+fn detect_version_with(binary: Option<&PathBuf>, version_arg: &str) -> (bool, String) {
     match binary {
         Some(path) => (
             true,
-            version_for(path).unwrap_or_else(|| "已检测".to_string()),
+            version_with_arg(path, version_arg).unwrap_or_else(|| "已检测".to_string()),
         ),
         None => (false, "未检测".to_string()),
     }
@@ -865,22 +886,35 @@ fn prepare_plain_detection(agent_id: &str) -> PreparedAgentDetection {
         };
     }
 
-    let resolved = resolve_cli(agent_id);
-    let (detected, version) = detect_version(resolved.as_ref());
-    let missing_error =
-        (!detected).then(|| format!("探测 {agent_id} 失败：未检测到 {agent_id}"));
-    let models = if agent_id == "claude" && !detected {
+    let entry = crate::agent_catalog::find(agent_id);
+    let command = entry.map_or(agent_id, |entry| entry.command);
+    let resolved = resolve_cli(command);
+    let (detected, version) =
+        detect_version_with(resolved.as_ref(), entry.map_or("--version", |entry| entry.version_arg));
+    // 支持清单里固定四家以外的 agent 没装是常态：只记未安装，不报错。
+    let mut missing_error = (!detected && entry.map_or(true, |entry| entry.core))
+        .then(|| format!("探测 {agent_id} 失败：未检测到 {command}"));
+    let source = entry.map(|entry| entry.models);
+    let models = match (source, resolved.as_deref()) {
         // claude 的模型是静态预设，未检测时没有事实源可读；仍走一次
         // 空合并，只给既有条目刷「未在事实源中」标记（与 codex/kimi
-        // 走同一条合并路径），不新增预设条目。
-        Some(Ok(Vec::new()))
-    } else {
-        match agent_id {
-            "claude" => Some(Ok(claude_presets(resolved.as_ref()))),
-            "codex" => Some(detect_codex()),
-            "kimi" => Some(detect_kimi()),
-            _ => Some(Ok(Vec::new())),
+        // 走同一条合并路径），不新增预设条目。新增的 agent 同理：
+        // 没装就没有清单可读。
+        (Some(ModelSource::ClaudeHelp), _) if !detected => Some(Ok(Vec::new())),
+        (Some(ModelSource::ClaudeHelp), _) => Some(Ok(claude_presets(resolved.as_ref()))),
+        (Some(ModelSource::CodexCache), _) => Some(detect_codex()),
+        (Some(ModelSource::KimiConfig), _) => Some(detect_kimi()),
+        (Some(ModelSource::AgyModels), Some(binary)) => Some(detect_agy(binary)),
+        (Some(ModelSource::CursorModels), Some(binary)) => {
+            let (models, error) = cursor_models_or_mark_missing(detect_cursor(binary));
+            if error.is_some() {
+                missing_error = error;
+            }
+            models
         }
+        (Some(ModelSource::StaticTable), Some(_)) => Some(static_table_models(agent_id)),
+        (Some(ModelSource::QoderTiers), Some(_)) => Some(Ok(qoder_tier_models())),
+        _ => Some(Ok(Vec::new())),
     };
     PreparedAgentDetection {
         agent_id: agent_id.to_string(),
@@ -1127,6 +1161,163 @@ fn parse_kimi_config(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
         return Err("未找到 [models.\"…\"] 段".to_string());
     }
     Ok(output)
+}
+
+// ── 支持清单里的新 agent（TASK-61）────────────────────────────────────────
+
+/// 列模型命令的等待上限：`agy models` 要先联网拉清单。
+const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 列模型命令跑一次：超时或非零退出都算失败，返回 stdout。
+fn run_model_list(binary: &Path, args: &[&str], label: &str) -> Result<String, String> {
+    let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+    let listed = run_process(binary, &args, None, MODEL_LIST_TIMEOUT, None)?;
+    if listed.timed_out || listed.code.is_some_and(|code| code != 0) {
+        return Err(format!("{label} {}", process_error_summary(&listed)));
+    }
+    Ok(listed.stdout)
+}
+
+/// 新 agent 的模型厂商按模型名推：复用 `infer_vendor`，认不出的记「未知」
+/// （cursor 的 `auto`、qoder 的档位名）。
+pub(crate) fn vendor_for_listed_model(id: &str) -> &'static str {
+    match infer_vendor(id) {
+        "其他" => VENDOR_UNKNOWN,
+        vendor => vendor,
+    }
+}
+
+fn listed_model(id: &str, agent: &str, thinking: &str, source: &str, meta: &str) -> ResourceModel {
+    detected_model(
+        id,
+        agent,
+        "",
+        vendor_for_listed_model(id),
+        "官方订阅",
+        thinking,
+        source,
+        meta,
+    )
+}
+
+fn detect_agy(binary: &Path) -> Result<Vec<ResourceModel>, String> {
+    let stdout = run_model_list(binary, &["models"], "agy models")?;
+    parse_agy_models(&stdout, &source_read("agy models"))
+}
+
+/// `agy models`（1.3.1 实测）：首行 `Fetching available models...`，其后每行
+/// 「id<TAB>显示名」。不含 TAB 的行一律跳过。
+fn parse_agy_models(stdout: &str, source: &str) -> Result<Vec<ResourceModel>, String> {
+    let models = stdout
+        .lines()
+        .filter_map(|line| {
+            let (id, name) = line.split_once('\t')?;
+            let id = id.trim();
+            (!id.is_empty() && !id.contains(' ')).then(|| {
+                listed_model(id, "agy", "支持", source, name.trim())
+            })
+        })
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        Err("agy models 没有列出模型".to_string())
+    } else {
+        Ok(models)
+    }
+}
+
+/// fix-61-r1 7：`cursor-agent models` 解析失败时按「事实源里没有」合并空清单，
+/// 已有模型由 `merge_detected_models` 标「未在事实源中」、不再可选，同时写一条错误。
+/// 固定四家的失败处理不走这里（它们失败时不合并，保留原状）。
+fn cursor_models_or_mark_missing(
+    listed: Result<Vec<ResourceModel>, String>,
+) -> (Option<Result<Vec<ResourceModel>, String>>, Option<String>) {
+    match listed {
+        Ok(models) => (Some(Ok(models)), None),
+        Err(error) => (Some(Ok(Vec::new())), Some(format!("探测 cursor 失败：{error}"))),
+    }
+}
+
+fn detect_cursor(binary: &Path) -> Result<Vec<ResourceModel>, String> {
+    let stdout = run_model_list(binary, &["models"], "cursor-agent models")?;
+    parse_cursor_models(&stdout, &source_read("cursor-agent models"))
+}
+
+/// `cursor-agent models`（未实测，按官方文档的「id - 显示名」行解析，去掉
+/// `(current)` / `(default)` 标注）。一行都解析不出就报错、清单留空。
+fn parse_cursor_models(stdout: &str, source: &str) -> Result<Vec<ResourceModel>, String> {
+    let models = stdout
+        .lines()
+        .filter_map(|line| {
+            let (id, name) = line.trim().split_once(" - ")?;
+            let id = id.trim();
+            if id.is_empty() || id.contains(char::is_whitespace) {
+                return None;
+            }
+            let name = name
+                .replace("(current)", "")
+                .replace("(default)", "")
+                .trim()
+                .to_string();
+            Some(listed_model(id, "cursor", "未知", source, &name))
+        })
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        Err("cursor-agent models 的输出解析不出模型".to_string())
+    } else {
+        Ok(models)
+    }
+}
+
+/// 没有可靠列模型命令的 agent 用的小表：随版本发布，每家注明来源与日期。
+const AGENT_MODELS_TEXT: &str = include_str!("data/agent-models.json");
+
+fn static_table_models(agent_id: &str) -> Result<Vec<ResourceModel>, String> {
+    parse_static_table(AGENT_MODELS_TEXT, agent_id)
+}
+
+fn parse_static_table(text: &str, agent_id: &str) -> Result<Vec<ResourceModel>, String> {
+    let table: Value =
+        serde_json::from_str(text).map_err(|error| format!("内置模型表解析失败：{error}"))?;
+    let entry = table
+        .get("agents")
+        .and_then(|agents| agents.get(agent_id))
+        .ok_or_else(|| format!("内置模型表里没有 {agent_id}"))?;
+    let source = source_value(
+        &format!(
+            "内置模型表（{}）",
+            entry.get("source").and_then(Value::as_str).unwrap_or("未注明")
+        ),
+        entry.get("date").and_then(Value::as_str).unwrap_or("未注明"),
+    );
+    let models = entry
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| listed_model(id.trim(), agent_id, "未知", &source, ""))
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        Err(format!("内置模型表里 {agent_id} 没有模型"))
+    } else {
+        Ok(models)
+    }
+}
+
+/// Qoder 只能选档位，不能点名模型：固定五档，厂商一律「未知」。
+const QODER_TIERS: [&str; 5] = ["lite", "efficient", "auto", "performance", "ultimate"];
+
+fn qoder_tier_models() -> Vec<ResourceModel> {
+    let source = source_value("Qoder 固定档位", "2026-10-07");
+    QODER_TIERS
+        .iter()
+        .map(|tier| {
+            let mut model = listed_model(tier, "qoder", "未知", &source, "档位，不对应具体模型");
+            model.vendor = VENDOR_UNKNOWN.to_string();
+            model
+        })
+        .collect()
 }
 
 fn detect_pi(binary: &Path) -> Result<(Vec<ResourceModel>, Vec<String>), String> {
@@ -1789,16 +1980,25 @@ fn run_smoke_registered(
         session_dir.as_deref(),
         None,
         false, // 冒烟只读，不给写工具（第 4 期新增 writable 参数）
+        Duration::from_secs(SMOKE_TIMEOUT_SECS),
     )?;
+    // agy 在本次调用专属的空目录里跑（fix-61-r1 3），返回前（含失败、超时）
+    // 由 SmokeScratch 的 Drop 删掉；其余 agent 照旧在系统临时目录跑。
+    let scratch = match aicross_root() {
+        Ok(root) => SmokeScratch::create_in(&root, &model.agent)?,
+        Err(_) => None,
+    };
     let temp = std::env::temp_dir();
+    let cwd = scratch.as_ref().map_or(temp.as_path(), |scratch| scratch.path.as_path());
     let result = run_process_registered(
         &invocation.program,
         &invocation.args,
         invocation.input.as_deref(),
         Duration::from_secs(SMOKE_TIMEOUT_SECS),
-        Some(&temp),
+        Some(cwd),
         registry_key,
     )?;
+    drop(scratch);
     // 超时先于输出解析拦截（TASK-42）：进程已被终止，解析残余输出只会造出
     // 看不懂的失败原因。这条错误由 apply_smoke_outcome 记成 timeout 档。
     if result.timed_out {
@@ -1829,6 +2029,32 @@ fn run_smoke_registered(
             Ok(SmokeSuccess { identity: output.identity, meta_marker: alias_marker })
         }
         Err(error) => Err(error.message),
+    }
+}
+
+/// 冒烟专属空目录（fix-61-r1 3）：只给只看得到文字的 agent（agy）建，位置
+/// `$AICROSS_HOME/scratch/smoke-<agent>-<uuid>`；离开作用域即删除。
+struct SmokeScratch {
+    path: PathBuf,
+}
+
+impl SmokeScratch {
+    fn create_in(root: &Path, agent: &str) -> Result<Option<SmokeScratch>, String> {
+        if !crate::agent_catalog::is_text_only(agent) {
+            return Ok(None);
+        }
+        let path = root
+            .join("scratch")
+            .join(format!("smoke-{}-{}", agent.trim().to_ascii_lowercase(), Uuid::new_v4()));
+        fs::create_dir_all(&path)
+            .map_err(|error| format!("创建冒烟目录失败 {}：{error}", path.display()))?;
+        Ok(Some(SmokeScratch { path }))
+    }
+}
+
+impl Drop for SmokeScratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -2814,6 +3040,7 @@ mod tests {
             detected: true,
             version: "test".to_string(),
             models,
+            ..ResourceAgent::default()
         }
     }
 
@@ -3426,6 +3653,16 @@ exit 2
                 version: "0.86.0".to_string(),
                 result: Some(Ok((vec![pi.clone()], vec!["provider x 读不了".to_string()]))),
             }),
+            // TASK-61：支持清单里其余的 agent 按未安装处理（不报错）。
+            other if crate::agent_catalog::find(other).is_some_and(|entry| !entry.core) => {
+                PreparedDetection::Plain(PreparedAgentDetection {
+                    agent_id: agent_id.to_string(),
+                    detected: false,
+                    version: "未检测".to_string(),
+                    missing_error: None,
+                    models: Some(Ok(Vec::new())),
+                })
+            }
             other => panic!("假探测不认识 agent：{other}"),
         }
     }
@@ -3462,9 +3699,14 @@ exit 2
             .iter()
             .map(|agent| (agent.id.as_str(), agent.detected))
             .collect();
+        // TASK-61：支持清单里其余五家按未安装列出。
         assert_eq!(
             detected,
-            vec![("claude", true), ("codex", true), ("kimi", false), ("pi", true)]
+            vec![
+                ("claude", true), ("codex", true), ("kimi", false), ("pi", true),
+                ("agy", false), ("cursor", false), ("codebuddy", false), ("copilot", false),
+                ("qoder", false),
+            ]
         );
         let _ = fs::remove_dir_all(parallel_path.parent().unwrap());
         let _ = fs::remove_dir_all(sequential_path.parent().unwrap());
@@ -3523,9 +3765,14 @@ exit 2
             .iter()
             .map(|agent| (agent.id.as_str(), agent.detected))
             .collect();
+        // TASK-61：支持清单里其余五家按未安装列出。
         assert_eq!(
             detected,
-            vec![("claude", true), ("codex", false), ("kimi", false), ("pi", true)]
+            vec![
+                ("claude", true), ("codex", false), ("kimi", false), ("pi", true),
+                ("agy", false), ("cursor", false), ("codebuddy", false), ("copilot", false),
+                ("qoder", false),
+            ]
         );
         assert!(operation.store.detected_at.is_some());
         // 写盘：重新读盘核对结果真的落了盘。
@@ -4349,16 +4596,6 @@ exit 2
 
     #[test]
     fn task15_builtin_agent_display_names_are_canonical() {
-        assert_eq!(
-            NATIVE_AGENTS,
-            [
-                ("claude", "Claude Code"),
-                ("codex", "Codex"),
-                ("kimi", "Kimi Code"),
-            ]
-        );
-        assert_eq!(PI_AGENT, ("pi", "pi agent"));
-
         let mut store = ResourceStore::default();
         ensure_agents(&mut store);
         let names: Vec<(&str, &str)> = store
@@ -4366,6 +4603,7 @@ exit 2
             .iter()
             .map(|agent| (agent.id.as_str(), agent.name.as_str()))
             .collect();
+        // TASK-61：骨架按支持清单补齐，固定四家在前、名称不变
         assert_eq!(
             names,
             vec![
@@ -4373,8 +4611,21 @@ exit 2
                 ("codex", "Codex"),
                 ("kimi", "Kimi Code"),
                 ("pi", "pi agent"),
+                ("agy", "Antigravity"),
+                ("cursor", "Cursor"),
+                ("codebuddy", "WorkBuddy / CodeBuddy"),
+                ("copilot", "GitHub Copilot CLI"),
+                ("qoder", "Qoder"),
             ]
         );
+        for (id, name) in [
+            ("claude", AGENT_NAME_CLAUDE),
+            ("codex", AGENT_NAME_CODEX),
+            ("kimi", AGENT_NAME_KIMI),
+            ("pi", AGENT_NAME_PI),
+        ] {
+            assert_eq!(crate::agent_catalog::find(id).unwrap().name, name);
+        }
 
         let mut old_store = ResourceStore {
             detected_at: None,
@@ -5153,5 +5404,187 @@ exit 2
                 model.status, model.smoke_model, model.smoke_failure
             );
         }
+    }
+
+    /// TASK-61：新 agent 的厂商按模型名推，认不出的记「未知」。
+    #[test]
+    fn task61_listed_model_vendor_by_model_name() {
+        assert_eq!(vendor_for_listed_model("gemini-3.8-flash-low"), "Google");
+        assert_eq!(vendor_for_listed_model("claude-opus-5-5-high"), "Anthropic");
+        assert_eq!(vendor_for_listed_model("gpt-oss-120b-medium"), "OpenAI");
+        assert_eq!(vendor_for_listed_model("gpt-5"), "OpenAI");
+        assert_eq!(vendor_for_listed_model("o3"), "OpenAI");
+        assert_eq!(vendor_for_listed_model("auto"), VENDOR_UNKNOWN);
+        for tier in QODER_TIERS {
+            assert_eq!(vendor_for_listed_model(tier), VENDOR_UNKNOWN, "{tier}");
+        }
+    }
+
+    /// TASK-61：`agy models` 的「id<TAB>显示名」行（1.3.1 真机输出节选），
+    /// 跳过 `Fetching available models...`；原生、官方订阅、厂商按模型分开。
+    #[test]
+    fn task61_parse_agy_models_skips_banner_and_splits_vendors() {
+        set_claude_third_party(false);
+        let stdout = "Fetching available models...\n\
+gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n\
+gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n\
+claude-opus-5-5-low\tClaude Opus 5.5 (Low)\n\
+gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n\
+\n";
+        let models = parse_agy_models(stdout, "来源：读取 agy models · 2026-10-07").unwrap();
+        let summary: Vec<(&str, &str)> =
+            models.iter().map(|model| (model.id.as_str(), model.vendor.as_str())).collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("gemini-3.8-flash-high", "Google"),
+                ("gemini-3.8-flash-low", "Google"),
+                ("claude-opus-5-5-low", "Anthropic"),
+                ("gpt-oss-120b-medium", "OpenAI"),
+            ]
+        );
+        for model in &models {
+            assert_eq!(model.agent, "agy");
+            assert_eq!(model.provider, "");
+            assert_eq!(model.verification, VERIFICATION_NATIVE);
+            assert_eq!(model.billing_source, "官方订阅");
+        }
+        assert_eq!(models[0].meta, "Gemini 3.8 Flash (High)");
+        assert!(parse_agy_models("Fetching available models...\n", "s").is_err());
+    }
+
+    /// TASK-61：cursor-agent models 按「id - 显示名」解析（假输出）；解析不出报错。
+    #[test]
+    fn task61_parse_cursor_models_with_fake_output() {
+        let stdout = "Available models\n\nauto - Auto  (current)\ngpt-5 - GPT-5\nsonnet-4.5 - Claude 4.5 Sonnet\n\nTip: use --model <id>\n";
+        let models = parse_cursor_models(stdout, "s").unwrap();
+        let summary: Vec<(&str, &str, &str)> = models
+            .iter()
+            .map(|model| (model.id.as_str(), model.vendor.as_str(), model.meta.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("auto", VENDOR_UNKNOWN, "Auto"),
+                ("gpt-5", "OpenAI", "GPT-5"),
+                ("sonnet-4.5", VENDOR_UNKNOWN, "Claude 4.5 Sonnet"),
+            ]
+        );
+        // 未实测 agent 不是原生：首次派发前要验证
+        assert!(models.iter().all(|model| model.verification == VERIFICATION_UNVERIFIED));
+        assert!(parse_cursor_models("Error: not logged in\n", "s").is_err());
+    }
+
+    /// TASK-61：copilot / codebuddy 读随版本发布的小表（注明来源与日期）；
+    /// qoder 固定五档，厂商全「未知」。
+    #[test]
+    fn task61_static_table_and_qoder_tiers() {
+        for agent in ["copilot", "codebuddy"] {
+            let models = static_table_models(agent).unwrap();
+            assert!(!models.is_empty(), "{agent}");
+            assert!(models.iter().all(|model| model.agent == agent));
+            assert!(models[0].source.contains("内置模型表"), "{}", models[0].source);
+            assert!(models[0].source.contains("2026-10-07"), "{}", models[0].source);
+        }
+        assert!(parse_static_table("{\"agents\":{}}", "copilot").is_err());
+        let qoder = qoder_tier_models();
+        assert_eq!(
+            qoder.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+            vec!["lite", "efficient", "auto", "performance", "ultimate"]
+        );
+        assert!(qoder.iter().all(|model| model.vendor == VENDOR_UNKNOWN));
+    }
+
+    /// fix-61-r1 3：agy 冒烟在 `$AICROSS_HOME/scratch/` 下的专属空目录里跑，
+    /// 离开作用域（成功、失败、超时都一样）即删除；其余 agent 不建。
+    #[test]
+    fn task61_r1_agy_smoke_scratch_is_private_and_removed() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t61-smoke-{}", Uuid::new_v4()));
+        let first = SmokeScratch::create_in(&root, "agy").unwrap().unwrap();
+        let second = SmokeScratch::create_in(&root, "agy").unwrap().unwrap();
+        assert_ne!(first.path, second.path, "每次调用专属");
+        assert!(first.path.starts_with(root.join("scratch")));
+        assert!(fs::read_dir(&first.path).unwrap().next().is_none(), "空目录");
+        let (first_path, second_path) = (first.path.clone(), second.path.clone());
+        drop(first);
+        assert!(!first_path.exists());
+        // 提前返回（失败、超时）同样经 Drop 清理
+        let failed = || -> Result<(), String> {
+            let _scratch = second;
+            Err("冒烟超时（180 秒）".into())
+        };
+        assert!(failed().is_err());
+        assert!(!second_path.exists());
+        for agent in ["claude", "codex", "kimi", "pi"] {
+            assert!(SmokeScratch::create_in(&root, agent).unwrap().is_none(), "{agent}");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-61-r1 7：cursor-agent models 解析失败时合并空清单，已有模型标
+    /// 「未在事实源中」（不再可选），并写一条错误。
+    #[test]
+    fn task61_r1_cursor_parse_failure_marks_existing_models_missing() {
+        let mut store = ResourceStore::default();
+        ensure_agents(&mut store);
+        let existing = parse_cursor_models("gpt-5 - GPT-5\n", "s").unwrap();
+        merge_detected_models(&mut store, "cursor", existing);
+        let (models, error) =
+            cursor_models_or_mark_missing(parse_cursor_models("Error: not logged in\n", "s"));
+        assert!(error.as_deref().is_some_and(|error| error.starts_with("探测 cursor 失败")));
+        let mut errors = Vec::new();
+        apply_prepared_plain_detection(
+            &mut store,
+            PreparedAgentDetection {
+                agent_id: "cursor".into(),
+                detected: true,
+                version: "test".into(),
+                missing_error: error,
+                models,
+            },
+            &mut errors,
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let cursor = store.agents.iter().find(|agent| agent.id == "cursor").unwrap();
+        assert_eq!(cursor.models.len(), 1);
+        assert!(is_missing_from_detection(&cursor.models[0]));
+        // 解析成功时照常合并、不写错误
+        let (models, error) = cursor_models_or_mark_missing(parse_cursor_models("gpt-5 - GPT-5\n", "s"));
+        assert!(error.is_none());
+        assert_eq!(models.unwrap().unwrap().len(), 1);
+    }
+
+    /// fix-61-r1 4：探测与派发 / 冒烟找 agy 用同一个解析函数，结果一致。
+    #[test]
+    fn task61_r1_agy_program_resolution_is_shared() {
+        assert_eq!(resolve_cli("agy"), crate::agent_catalog::resolve_program("agy"));
+        assert_eq!(resolve_cli("kimi"), crate::agent_catalog::resolve_program("kimi"));
+    }
+
+    /// TASK-61：骨架按支持清单补齐并刷新 untested / homepage（旧库缺字段或
+    /// 写错都按清单改正）；agy 是原生，未实测四家不是。
+    #[test]
+    fn task61_ensure_agents_fills_untested_and_homepage_from_catalog() {
+        set_claude_third_party(false);
+        let mut store: ResourceStore = serde_json::from_str(
+            r#"{"version":1,"agents":[{"id":"cursor","name":"x","untested":false}]}"#,
+        )
+        .unwrap();
+        ensure_agents(&mut store);
+        let cursor = store.agents.iter().find(|agent| agent.id == "cursor").unwrap();
+        assert!(cursor.untested);
+        assert_eq!(cursor.name, "Cursor");
+        assert_eq!(cursor.homepage, "https://cursor.com/cli");
+        let agy = store.agents.iter().find(|agent| agent.id == "agy").unwrap();
+        assert!(!agy.untested);
+        assert!(!agy.detected);
+        assert!(agy.models.is_empty());
+        assert!(is_native_model("agy"));
+        assert!(!is_native_model("cursor"));
+        assert!(native_smoke_dispatches("agy"));
+        assert!(!native_smoke_dispatches("claude"));
+        let json = serde_json::to_value(&store).unwrap();
+        assert_eq!(json["agents"][0]["untested"], true);
+        assert!(json["agents"][0]["homepage"].is_string());
     }
 }

@@ -2574,8 +2574,15 @@ fn run_one_attempt(
     let mut verify_error = String::new();
     let mut verify_note = String::new();
     let mut verify_quota_resets_at = None;
+    // TASK-61：只接盲位置的 agent（agy 与未实测四家）落在共享 / 单写者位置时
+    // 派发前直接失败，不验证、不建 worktree、不铺材料。
+    let blind_only = crate::agent_catalog::seat_violation(&node.agent, &node.visibility);
+    // fix-61-r1 5：agy 模型自带档位时思考强度由模型决定，留痕记实际生效值。
+    node.thinking = channels::effective_thinking(&node.agent, &node.model, &node.thinking);
     if is_cancelled(&cancel_key) {
         verify_error = "派发已取消".to_string();
+    } else if let Some(reason) = blind_only {
+        verify_error = format!("{reason}；本位置可见性为「{}」，请改派到盲位置或换 agent", node.visibility);
     } else {
         match first_use_verification(&node.agent, &node.provider, &node.model, &cancel_key) {
             crate::resources::FirstUseVerification::Skipped => {}
@@ -2680,6 +2687,17 @@ fn run_one_attempt(
     // TASK-12：审查材料附带验证输出（盲目录物化后、派发前；一处调用）。
     let (prepared, validation_attached) =
         attach_review_validation(run_id, project, settings, &node, &workdir, blind, timeout, prepared);
+    // fix-61-r1 1：只看得到 stdin 文字的 agent（agy）——盲目录里的材料全部
+    // 内联进提示词；要读项目副本、有二进制或超上限时不发出。
+    let prepared = match prepared {
+        Ok(OutboundPreparation::Materialized(prompt, names, count))
+            if blind && crate::agent_catalog::is_text_only(&node.agent) =>
+        {
+            inline_materials_for_text_only(&node.agent, &prompt, &workdir, &names)
+                .map(|prompt| OutboundPreparation::Materialized(prompt, names, count))
+        }
+        other => other,
+    };
     let effective_session =
         if channels::normalize_agent(&node.agent) == "pi" && node.session_id.is_empty() {
             Uuid::new_v4().to_string()
@@ -2854,6 +2872,7 @@ fn run_one_attempt(
             (!settings.cc_switch_path.trim().is_empty())
                 .then(|| Path::new(settings.cc_switch_path.trim())),
             node.write != "只读",
+            timeout,
         ) {
             Ok(invocation) => {
                 entered_channel = true;
@@ -3323,6 +3342,89 @@ fn attach_review_validation(
     prompt.push_str("\n\n验证命令输出：\n");
     prompt.push_str(&text);
     (Ok(OutboundPreparation::Materialized(prompt, names, count)), true)
+}
+
+/// 只看得到文字的 agent 一次能内联的材料总长（提示词 + 材料原文，字节）。
+/// 上限 200 KB：agy 固定足迹约 1.3 万 token，200 KB 文本约 5–7 万 token，
+/// 远低于 Gemini 的上下文。升级条件：真机实测更长输入的回答质量与
+/// `--print-timeout` 都可接受后再调高，或改为分段派发。
+const TEXT_ONLY_INLINE_LIMIT: usize = 200 * 1024;
+
+const TEXT_ONLY_INLINE_NOTE: &str =
+    "以下是本节点的全部材料原文（工作目录里的同名文件内容与此相同），直接据此作答，不要读取文件。";
+
+/// fix-61-r1 1：agy 无头下读文件会被拒，盲目录里的材料（REQUEST.md、
+/// diff.patch、changed/、ANSWER.md、ACCEPT.md、VALIDATION.txt、附件）
+/// 全部以文本内联进提示词；提示词里已原样出现的内容不重复。
+/// 不发出的情况：需要读项目只读副本（如有上游产物的盲验收）、材料里有
+/// 二进制、总长超过 `TEXT_ONLY_INLINE_LIMIT`。
+fn inline_materials_for_text_only(
+    agent: &str,
+    prompt: &str,
+    workdir: &Path,
+    names: &[String],
+) -> Result<String, String> {
+    if let Some(copy) = names
+        .iter()
+        .find(|name| name.ends_with('/') && name.as_str() != "changed/")
+    {
+        return Err(format!(
+            "{agent} 只看得到提示词里的文字，读不到项目只读副本 {copy}（本节点要核对改后的项目或跑验证），不发出；请改派能读文件的 agent"
+        ));
+    }
+    let mut files = Vec::new();
+    collect_material_files(workdir, workdir, &mut files)?;
+    files.sort();
+    let mut body = String::new();
+    for (relative, path) in files {
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("读取材料失败 {relative}：{error}"))?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            format!("{agent} 只能接收文字材料：{relative} 是二进制，不发出")
+        })?;
+        if !text.trim().is_empty() && prompt.contains(text.as_str()) {
+            continue;
+        }
+        body.push_str(&format!("\n\n[材料全文 {relative}]\n{text}"));
+    }
+    let inlined = if body.is_empty() {
+        prompt.to_string()
+    } else {
+        format!("{prompt}\n\n{TEXT_ONLY_INLINE_NOTE}{body}")
+    };
+    if inlined.len() > TEXT_ONLY_INLINE_LIMIT {
+        return Err(format!(
+            "{agent} 只能内联文字材料：提示词与材料合计 {} KB，超过 {} KB 上限，不发出",
+            inlined.len().div_ceil(1024),
+            TEXT_ONLY_INLINE_LIMIT / 1024
+        ));
+    }
+    Ok(inlined)
+}
+
+/// 盲目录下的全部文件：(以 / 分隔的相对路径, 绝对路径)。
+fn collect_material_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<(String, PathBuf)>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(dir).map_err(|error| format!("读取盲审目录失败：{error}"))?;
+    for entry in entries {
+        let path = entry.map_err(|error| format!("读取盲审目录失败：{error}"))?.path();
+        if path.is_dir() {
+            collect_material_files(root, &path, files)?;
+        } else {
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            files.push((relative, path));
+        }
+    }
+    Ok(())
 }
 
 fn reset_acp_fallback(full_prompt: &str) -> (String, String) {
@@ -4934,6 +5036,128 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// fix-61-r1 1：派给 agy 的盲审节点，盲目录里的材料（REQUEST.md、
+    /// diff.patch、changed/、ACCEPT.md）全部内联进提示词；提示词里已有的不重复。
+    #[test]
+    fn task61_r1_text_only_agent_gets_all_materials_inlined() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t61-inline-{}", Uuid::new_v4()));
+        let workdir = root.join("blind");
+        let mut request = node(Vec::new());
+        request.agent = "agy".into();
+        request.role = "验证".into();
+        request.original_request = "修好除零".into();
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            diff: "+if b == 0 { return None; }".into(),
+            changed_files: vec![ChangedFile {
+                path: "src/calc.rs".into(),
+                content: "fn div(a: i32, b: i32) -> Option<i32> { CHANGED_MARKER }".into(),
+            }],
+            ..DispatchArtifacts::default()
+        }];
+        let (prompt, names, _) =
+            prepare_outbound_test_with_accept(&request, false, &workdir, true, "必须处理 b 为 0").unwrap();
+        let inlined = inline_materials_for_text_only("agy", &prompt, &workdir, &names).unwrap();
+        assert!(inlined.starts_with(&prompt));
+        assert!(inlined.contains(TEXT_ONLY_INLINE_NOTE));
+        assert!(inlined.contains("[材料全文 REQUEST.md]\n修好除零"), "{inlined}");
+        assert!(inlined.contains("[材料全文 changed/src/calc.rs]"), "{inlined}");
+        assert!(inlined.contains("CHANGED_MARKER"));
+        assert!(inlined.contains("[材料全文 ACCEPT.md]\n必须处理 b 为 0"), "{inlined}");
+        // diff 已在提示词里原样出现（≤30 KB 内联），不再重复
+        assert!(!inlined.contains("[材料全文 diff.patch]"), "{inlined}");
+        assert_eq!(inlined.matches("+if b == 0 { return None; }").count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-61-r1 1：要读项目副本、有二进制材料或超过总长上限时不发出。
+    #[test]
+    fn task61_r1_text_only_agent_refuses_project_copy_binary_and_oversize() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t61-inline-refuse-{}", Uuid::new_v4()));
+        let workdir = root.join("blind");
+        fs::create_dir_all(workdir.join("project")).unwrap();
+        fs::write(workdir.join("REQUEST.md"), "需求").unwrap();
+        let names = vec!["REQUEST.md".to_string(), "project/".to_string()];
+        let error = inline_materials_for_text_only("agy", "p", &workdir, &names).unwrap_err();
+        assert!(error.contains("项目只读副本") && error.contains("不发出"), "{error}");
+
+        fs::remove_dir_all(workdir.join("project")).unwrap();
+        fs::write(workdir.join("logo.png"), [0x89_u8, 0x50, 0xff, 0xfe, 0x00]).unwrap();
+        let names = vec!["REQUEST.md".to_string(), "logo.png".to_string()];
+        let error = inline_materials_for_text_only("agy", "p", &workdir, &names).unwrap_err();
+        assert!(error.contains("二进制") && error.contains("logo.png"), "{error}");
+
+        fs::remove_file(workdir.join("logo.png")).unwrap();
+        fs::write(workdir.join("big.txt"), "x".repeat(TEXT_ONLY_INLINE_LIMIT)).unwrap();
+        let names = vec!["REQUEST.md".to_string(), "big.txt".to_string()];
+        let error = inline_materials_for_text_only("agy", "p", &workdir, &names).unwrap_err();
+        assert!(error.contains("上限") && error.contains("不发出"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-61-r1 1：agy 落在有上游产物的盲验收位（要读项目副本）时，节点在
+    /// 派发前失败，不进通道。
+    #[test]
+    fn task61_r1_text_only_agent_on_acceptance_with_project_copy_fails_before_channel() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t61-accept-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(project.join("README.md"), "demo").unwrap();
+        let settings = DispatchSettings { timeout_secs: 5, ..DispatchSettings::default() };
+        let mut request = node(Vec::new());
+        request.agent = "agy".into();
+        // 不存在的模型名：万一拦截失效进了通道，agy 也只会报模型选择错误，不消耗额度
+        request.model = "aicross-test-no-such-model".into();
+        request.role = "验收".into();
+        request.upstream_artifacts = vec![DispatchArtifacts {
+            diff: "+x".into(),
+            changed_files: vec![ChangedFile { path: "README.md".into(), content: "demo2".into() }],
+            ..DispatchArtifacts::default()
+        }];
+        let result = run_one("t61-accept", &project, &run_root, &log_dir, &settings, request);
+        assert_eq!(result.status, "error");
+        assert!(result.error.contains("项目只读副本"), "{}", result.error);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-61：只接盲位置的 agent（agy、未实测四家）落在共享 / 单写者位置时
+    /// 派发前直接失败：不做首次验证、不建 worktree、不进通道。
+    #[test]
+    fn task61_blind_only_agent_on_shared_seat_fails_before_dispatch() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t61-blind-only-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let settings = DispatchSettings { timeout_secs: 2, ..DispatchSettings::default() };
+        for (agent, write, expected) in [
+            ("agy", "单写者", "纯文本盲审"),
+            ("agy", "worktree", "纯文本盲审"),
+            ("cursor", "只读", "只接盲"),
+        ] {
+            let mut request = node(Vec::new());
+            request.agent = agent.into();
+            request.model = "gemini-3.8-flash-low".into();
+            request.visibility = "共享".into();
+            request.write = write.into();
+            FIRST_USE_CALLS.with(|cell| cell.borrow_mut().clear());
+            let failed = run_one("t61-blind-only", &project, &run_root, &log_dir, &settings, request.clone());
+            assert_eq!(failed.status, "error", "{agent}/{write}");
+            assert!(failed.error.contains(expected), "{}", failed.error);
+            assert!(failed.error.contains("共享"), "{}", failed.error);
+            assert!(FIRST_USE_CALLS.with(|cell| cell.borrow().is_empty()), "不该做首次验证");
+            // fix-61-r1 5：agy 模型自带档位，留痕记实际生效值而不是位置设的「中」
+            if agent == "agy" {
+                assert!(failed.frontmatter.contains("由模型决定：low"), "{}", failed.frontmatter);
+            }
+            assert!(!run_root.join(&request.node_id).join("wt").exists(), "不该建 worktree");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
     /// 修正轮 R1-3/4：首次验证跑在取项目写锁、建 worktree、备料之前。
     /// 测试握着同一项目的写锁，验证失败的节点必须直接返回「首次验证失败」，
     /// 而不是先在写锁上等到超时；worktree 目录也不该被建出来。
@@ -5339,6 +5563,7 @@ mod tests {
             None,
             None,
             false,
+            Duration::from_secs(60),
         )
         .unwrap();
         assert!(!invocation.args.iter().any(|arg| arg == "-S" || arg == "-r"));

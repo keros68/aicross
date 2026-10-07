@@ -82,7 +82,23 @@ worktree 时取该 worktree；多路上游各附一份，`project-2/` 起递增�
 每个派出的节点，提示词末尾固定追加一句如实汇报要求：`Be honest in your
 response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。`
 所有角色与模式都一样；ACP 与一次性 CLI 两条通道在引擎构造请求的同一处
-追加，没有开关；派发原文在提示词里原样保留。
+追加，没有开关；派发原文在提示词里原样保留。派给 agy 的节点在这句之后再
+追加 `不要使用任何工具，直接用文字回答。`（agy 无头模式下工具全被拒）。
+
+agy、cursor、codebuddy、copilot、qoder 只接盲位置：落在共享或单写者位置时
+节点派发前直接失败（不做首次验证、不建 worktree），错误写明原因。agy 在盲
+目录里跑 `agy --model <m> --input-format stream-json --output-format stream-json
+--print-timeout <超时>s [--effort low|medium|high]`（模型 id 自带 `-low` /
+`-medium` / `-high` 等档位后缀时不传 `--effort`，两者冲突 agy 直接报错），
+材料是 stdin 的一行 NDJSON；
+最后一行 `{"event":"result"}` 的 `status` 不是 SUCCESS 或 `response` 为空即失败。
+agy 读不了文件：盲目录里的材料（REQUEST.md、diff.patch、changed/、ANSWER.md、
+ACCEPT.md、VALIDATION.txt、附件）全部以文本内联进提示词（提示词里已有的不重复），
+提示词与材料合计上限 200 KB；超上限、有二进制材料、或节点要读项目只读副本
+（如有上游产物的盲验收）时派发前失败，不发出。模型 id 自带档位时思考强度由
+模型决定，留痕的 `thinking`、run 摘要节点的 `thinking`（仅此时写出）与
+`config show` 的 `effective.thinking` 都记「由模型决定：low」这类实际生效值。
+cursor、codebuddy、copilot、qoder 是未实测通道，派发直接失败并提示「未实测通道」。
 
 首个响应带真实的 `graph_id` 与本次新建的 `node_ids`：
 
@@ -201,15 +217,26 @@ aicross config recommend --host claude --mode blind --all
 顶层 `detected_at` 是最近一次成功写回的探测时间（RFC3339；从未探测过为
 null）。从未探测过时（`detected_at` 为 null）每个 agent 与其下模型都显示
 「未探测」，agent 的 note 为「尚未探测」；探测过后只有 可用 / 未安装 两态。
+agent 按支持清单列出（claude、codex、kimi、pi、agy、cursor、codebuddy、
+copilot、qoder），没装的也列（`state` 未安装、`models` 为空）。每个 agent
+另带 `untested`（布尔：命令模板只照官方文档写、没在真机跑通，一键推荐不选）
+与 `homepage`（官网链接）。
 `resources detect` 重新探测全部 agent（含 pi provider 登录检查）并写
 回资源库，同时更新 `detected_at`；各 agent 的探测在资源库锁外并行跑，
 全部完成后一次合并写盘。窗口命令 `resources_detect` 同一实现体，每个
 agent 探测完发一次 `resources-detect-progress` 事件
 （`{ "agent": …, "done": …, "total": … }`）。cc-switch 发现提示的路径取派发设置里的
 `ccSwitchPath`。单个 agent 探不到或事实源读取失败时逐行写 stderr，退出码仍
-为 0。`resources smoke <agent>` 对该 agent 的第三方模型各发一次短请求并核对
+为 0；claude、codex、kimi、pi 以外的 agent 没装时只记未安装，不写 stderr。
+模型清单：agy 读 `agy models`（30 秒超时），cursor 读 `cursor-agent models`，
+copilot、codebuddy 读随版本发布的内置小表，qoder 固定五档
+（lite / efficient / auto / performance / ultimate）。`cursor-agent models` 解析失败时
+写一条错误，cursor 已有模型标「未在事实源中」、不再可选。这几家的模型厂商按模型名推，
+认不出的记「未知」，只能当执行位（出方案、拆分、顾问与审查位都不进推荐）。`resources smoke <agent>` 对该 agent 的第三方模型各发一次短请求并核对
 真身；`--model` 只冒烟这一个，`--provider` 在同名模型挂多个 provider 时指定
-端点；原生模型不冒烟，退出 0。模型状态为「未发现」（资源库 `meta` 带
+端点；原生模型不冒烟，退出 0。agy 例外：`resources smoke agy --model <m>`
+真发一次最小派发，回答非空即通过，失败退出 1（验证档仍为原生）；它在本次调用
+专属的空目录 `$AICROSS_HOME/scratch/smoke-agy-<uuid>` 里跑，结束（含失败、超时）即删除。模型状态为「未发现」（资源库 `meta` 带
 「未在事实源中」标记，即最近一次探测没有发现它；原生模型同样适用）时不发
 请求：单个模型冒烟退出 1 并说明；按 agent 冒烟跳过它，逐行写 stderr，不算
 失败。可冒烟的模型全被跳过时，输出仍保留该 agent 的条目与跳过说明。冒烟、
@@ -234,7 +261,12 @@ roles.json 角色引用的——这些照样删除，相关位置在 `config sho
 见「主 agent 与 --host」；modes 段按该主 agent 的配置显示。`config set-role` 把角色指
 到资源库里的模型，目标不在资源库时退出 2 并列出可选模型；目标是「未发现」的
 模型（最近一次探测没有发现）时同样退出 2，原因与可选模型一并写在 stderr
-（列表里去掉未发现的）；`roles.json` 损坏时退出 1，不写盘。`config set` 只认
+（列表里去掉未发现的）；只接盲位置的 agent（agy 与未实测四家）设成
+planning / execution 时退出 2（这两个角色默认补的是共享位置），acceptance 照常写入；
+`roles.json` 损坏时退出 1，不写盘。`config show` 每个位置的 `effective` 另带
+`invalid`：生效人选（含角色默认）或其备选违反位置硬规则（只接盲的 agent 落在
+非盲位置）时为原因，合规为 null。一键推荐凑不出合规人选时不退回违反硬规则的
+角色默认，notes 写明该位置需手动指定。`config set` 只认
 `dispatch-settings.json` 的键
 （`timeoutSecs`、`concurrency`、`maxRequests`、`fixRoundLimit`、`swarmLimit`、
 `consoleRunLimit`、`validationCommand`、`redact`、`writeProjectDispatch`、
@@ -363,7 +395,9 @@ version 1 的旧格式不做迁移（从未发布过）：宽松读取当空配�
   `--fallback-provider` 要跟着另两项。模式不存在、阶段或位置超出范围、
   `--thinking` 非法、备选项缺配对退出 2（模式不存在时列出可选的 id 与名称）；
   人选或备选不在资源库、或指向「未发现」的模型，都退出 2 并列出该 agent 下可
-  选的模型（列表里去掉未发现的）；资源库读不了退出 3。写入的人选 `origin`
+  选的模型（列表里去掉未发现的）；人选或备选是只接盲位置的 agent（agy 与
+  cursor、codebuddy、copilot、qoder），而该位置可见性不是「盲」时退出 2；
+  资源库读不了退出 3。写入的人选 `origin`
   一律为 `manual`。写入后输出该模式那一项（同 `config show` 的 `modes[i]`）。
 - `config clear-seat <模式> [<阶段> <位置>] [--host <h>]`：给了位置只清这一个
   （置 null），没给清掉该模式全部人选；输出同 `set-seat`。

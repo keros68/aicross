@@ -123,7 +123,8 @@ fn candidate_pool(store: &ResourceStore, table: &TierTable) -> Vec<Candidate> {
     let now_millis = chrono::Local::now().timestamp_millis();
     let mut pool = Vec::new();
     for agent in &store.agents {
-        if !agent.detected {
+        // 未实测的 agent（TASK-61）一律不进推荐；手动选仍可。
+        if !agent.detected || crate::agent_catalog::is_untested(&agent.id) {
             continue;
         }
         for model in &agent.models {
@@ -289,7 +290,38 @@ fn normalized_vendor(value: &str) -> String {
 /// 厂商是否参与同阶段去重与主 agent 避让：「其他」（认不出）与空厂商
 /// 不参与——既不挡同阶段的其它位置，也不被挡（fix-50-r2）。
 fn participates_in_vendor_rules(vendor: &str) -> bool {
-    !vendor.is_empty() && vendor != "其他"
+    !vendor.is_empty() && vendor != "其他" && vendor != resources::VENDOR_UNKNOWN
+}
+
+/// 位置硬规则（TASK-61 / fix-61-r1）：违反时返回原因，候选与角色默认都按它筛。
+/// - 只接盲的 agent 不进非盲位置；
+/// - 未实测的 agent 不进推荐；
+/// - 只看得到文字的 agent（agy）不填验收位（验收要读项目副本、跑验证）；
+/// - 厂商「未知」的模型只当执行位（出方案 / 拆分 / 顾问 / 审查位都不进）。
+fn seat_rule_violation(agent: &str, vendor: &str, role: &str, visibility: &str) -> Option<String> {
+    if let Some(reason) = crate::agent_catalog::seat_violation(agent, visibility) {
+        return Some(reason.to_string());
+    }
+    if crate::agent_catalog::is_untested(agent) {
+        return Some(format!("{agent} 是未实测通道，不进推荐"));
+    }
+    if crate::agent_catalog::is_text_only(agent) && role == "验收" {
+        return Some(format!("{agent} 读不到项目副本，不填验收位"));
+    }
+    if normalized_vendor(vendor) == resources::VENDOR_UNKNOWN && role != "执行" {
+        return Some("厂商未知，只当执行位".to_string());
+    }
+    None
+}
+
+/// 某个位置的候选：候选池里不违反位置硬规则的那些（保持原顺序）。
+fn seat_pool(pool: &[Candidate], role: &str, visibility: &str) -> Vec<Candidate> {
+    pool.iter()
+        .filter(|candidate| {
+            seat_rule_violation(&candidate.agent, &candidate.vendor, role, visibility).is_none()
+        })
+        .cloned()
+        .collect()
 }
 
 /// 审查位同人判断用的键：agent/provider/model，provider 空时为空串。
@@ -428,8 +460,10 @@ pub(crate) fn recommend_into(
                     }
                 }
                 let empty_models = HashSet::new();
+                // 位置硬规则（TASK-61 / fix-61-r1）筛掉不合规的候选。
+                let seat_pool = seat_pool(&pool, &target.role, &target.visibility);
                 let pick = choose_candidate(
-                    &pool,
+                    &seat_pool,
                     &target.role,
                     host,
                     host_vendor,
@@ -515,7 +549,27 @@ pub(crate) fn recommend_into(
                         // 凑不出人时若角色默认会补位，那个人照样跑：厂商占位
                         // （同阶段其它审查者与执行厂商的判断把它算进去），并在
                         // notes 写明（fix-50-r1：空位不再预先当作占位）。
-                        if !role_template.stages[i].nodes[j].model.trim().is_empty() {
+                        // 角色默认本身违反位置硬规则时不退回它（fix-61-r1 2）：
+                        // 不占位、不写「使用角色默认」，写明需手动指定。
+                        let default_violation = {
+                            let default_target = &role_template.stages[i].nodes[j];
+                            (!default_target.model.trim().is_empty())
+                                .then(|| {
+                                    seat_rule_violation(
+                                        &default_target.agent,
+                                        &effective_vendor(store, default_target),
+                                        &target.role,
+                                        &target.visibility,
+                                    )
+                                })
+                                .flatten()
+                        };
+                        if let Some(reason) = &default_violation {
+                            notes.push(format!(
+                                "角色默认 {} 不合规（{reason}），未采用；该位置需手动指定",
+                                target_desc(&role_template.stages[i].nodes[j]),
+                            ));
+                        } else if !role_template.stages[i].nodes[j].model.trim().is_empty() {
                             let default_target = &role_template.stages[i].nodes[j];
                             let vendor = normalized_vendor(&comparison_vendor_of_target(
                                 store, default_target, host, host_vendor, host_vendor_known,
@@ -1923,5 +1977,181 @@ mod tests {
         // 没有未验证模型时不追加。
         let clean = fixture_store();
         assert!(unverified_counts(&clean).is_empty());
+    }
+
+    /// TASK-61：未实测 agent 的模型一律不进推荐（即使已验证）；厂商「未知」
+    /// 的模型只当执行位、不进验收 / 验证位；只接盲位置的 agy 不进共享位置。
+    #[test]
+    fn task61_recommend_skips_untested_unknown_vendor_reviewers_and_blind_only_shared() {
+        let store = ResourceStore {
+            version: 1,
+            agents: vec![
+                ResourceAgent {
+                    id: "claude".into(),
+                    name: "Claude Code".into(),
+                    detected: true,
+                    models: vec![model("claude", "", "sonnet", "Anthropic", "native")],
+                    ..ResourceAgent::default()
+                },
+                ResourceAgent {
+                    id: "cursor".into(),
+                    name: "Cursor".into(),
+                    detected: true,
+                    untested: true,
+                    models: vec![model("cursor", "", "gpt-5", "OpenAI", "verified")],
+                    ..ResourceAgent::default()
+                },
+                ResourceAgent {
+                    id: "pi".into(),
+                    name: "pi agent".into(),
+                    detected: true,
+                    models: vec![model("pi", "x", "mystery", "未知", "verified")],
+                    ..ResourceAgent::default()
+                },
+                ResourceAgent {
+                    id: "agy".into(),
+                    name: "Antigravity".into(),
+                    detected: true,
+                    models: vec![
+                        model("agy", "", "gemini-3.8-flash-high", "Google", "native"),
+                        model("agy", "", "claude-opus-5-5-high", "Anthropic", "native"),
+                    ],
+                    ..ResourceAgent::default()
+                },
+            ],
+            detected_at: None,
+        };
+        let presets = vec![preset("builtin-economy")];
+        let (picks, _) = recommend_into(
+            &store,
+            &fixture_modes(),
+            "claude",
+            "Anthropic",
+            true,
+            &presets,
+            &crate::orchestration::RoleSettings::default(),
+            None,
+            false,
+        );
+        let seats = &pick_of(&picks, "builtin-economy").seats;
+        let all: Vec<String> = seats.iter().flatten().flatten().map(seat_desc).collect();
+        assert!(!all.iter().any(|seat| seat.starts_with("cursor/")), "{all:?}");
+        // 出方案、执行是共享位置：agy 不进
+        for stage in &seats[..2] {
+            for seat in stage.iter().flatten() {
+                assert_ne!(seat.agent, "agy", "{all:?}");
+            }
+        }
+        // 验收：agy 读不到项目副本不填（fix-61-r1 1），未知厂商不进 → 留空；
+        // 验证：主 agent 厂商 Anthropic 避开（含 agy 的 claude 档）→ agy 的 Gemini
+        assert!(seats[2][0].is_none(), "{:?}", seats[2]);
+        assert_eq!(seat_desc(seats[2][1].as_ref().unwrap()), "agy//gemini-3.8-flash-high");
+        // 未知厂商只当执行位：出方案 / 拆分 / 顾问 / 审查位都筛掉（fix-61-r1 6）
+        let only_unknown = vec![Candidate {
+            agent: "pi".into(),
+            provider: Some("x".into()),
+            model: "mystery".into(),
+            vendor: "未知".into(),
+            tier: TIER_UNKNOWN.into(),
+            billing: BILLING_UNKNOWN.into(),
+            verified: true,
+        }];
+        assert_eq!(seat_pool(&only_unknown, "执行", "共享").len(), 1);
+        for role in ["出方案", "拆分", "顾问", "验收", "验证", "仲裁"] {
+            assert!(seat_pool(&only_unknown, role, "盲").is_empty(), "{role}");
+        }
+    }
+
+    /// fix-61-r1 6：自定义模式里同时有规划位与执行位时，厂商「未知」的模型
+    /// 只填执行位，规划位凑不出人留空。
+    #[test]
+    fn task61_r1_unknown_vendor_skips_planning_seat_in_custom_mode() {
+        let store = ResourceStore {
+            version: 1,
+            agents: vec![ResourceAgent {
+                id: "pi".into(),
+                name: "pi agent".into(),
+                detected: true,
+                models: vec![model("pi", "x", "mystery", "未知", "verified")],
+                ..ResourceAgent::default()
+            }],
+            detected_at: None,
+        };
+        let shared = |role: &str| Target {
+            role: role.into(),
+            visibility: "共享".into(),
+            write: "只读".into(),
+            ..Target::default()
+        };
+        let custom = Preset {
+            id: "custom-plan-exec".into(),
+            name: "自定义".into(),
+            stages: vec![
+                crate::orchestration::Stage { nodes: vec![shared("出方案")] },
+                crate::orchestration::Stage { nodes: vec![shared("顾问"), shared("执行")] },
+            ],
+            ..Preset::default()
+        };
+        let (picks, notes) = recommend_into(
+            &store,
+            &fixture_modes(),
+            "claude",
+            "Anthropic",
+            true,
+            &[custom],
+            &crate::orchestration::RoleSettings::default(),
+            None,
+            true,
+        );
+        let seats = &pick_of(&picks, "custom-plan-exec").seats;
+        assert!(seats[0][0].is_none(), "出方案不填未知厂商：{seats:?}");
+        assert!(seats[1][0].is_none(), "顾问不填未知厂商：{seats:?}");
+        assert_eq!(seat_desc(seats[1][1].as_ref().unwrap()), "pi/x/mystery");
+        assert!(notes.iter().any(|note| note.contains("出方案")), "{notes:?}");
+    }
+
+    /// fix-61-r1 2：凑不出合规候选时，不退回违反硬规则的角色默认（agy 设成
+    /// 执行角色默认、落在共享执行位）：不写「使用角色默认」，写明需手动指定。
+    #[test]
+    fn task61_r1_recommend_does_not_fall_back_to_illegal_role_default() {
+        let store = ResourceStore {
+            version: 1,
+            agents: vec![ResourceAgent {
+                id: "agy".into(),
+                name: "Antigravity".into(),
+                detected: true,
+                models: vec![model("agy", "", "gemini-3.8-flash-low", "Google", "native")],
+                ..ResourceAgent::default()
+            }],
+            detected_at: None,
+        };
+        let roles = crate::orchestration::RoleSettings {
+            execution: crate::orchestration::RoleProfile {
+                agent: "agy".into(),
+                model: "gemini-3.8-flash-low".into(),
+                ..crate::orchestration::RoleProfile::default()
+            },
+            ..crate::orchestration::RoleSettings::default()
+        };
+        for fill_all in [false, true] {
+            let (picks, notes) = recommend_into(
+                &store,
+                &fixture_modes(),
+                "claude",
+                "Anthropic",
+                true,
+                &[preset("builtin-shared")],
+                &roles,
+                None,
+                fill_all,
+            );
+            let seats = &pick_of(&picks, "builtin-shared").seats;
+            assert!(seats[0][0].is_none(), "{seats:?}");
+            assert!(!notes.iter().any(|note| note.starts_with("使用角色默认")), "{notes:?}");
+            assert!(
+                notes.iter().any(|note| note.contains("不合规") && note.contains("需手动指定")),
+                "{notes:?}"
+            );
+        }
     }
 }

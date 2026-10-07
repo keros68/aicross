@@ -553,11 +553,12 @@ pub fn cancel_registered(key: &str) -> bool {
     }
 }
 
+/// 跑 `<binary> <version_arg>` 取版本行；版本参数由支持清单给（TASK-61）。
 #[allow(dead_code)]
-pub fn version_for(binary: &Path) -> Option<String> {
+pub fn version_with_arg(binary: &Path, version_arg: &str) -> Option<String> {
     let result = run_process(
         binary,
-        &["--version".to_string()],
+        &[version_arg.to_string()],
         None,
         Duration::from_secs(2),
         None,

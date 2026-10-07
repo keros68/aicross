@@ -321,7 +321,9 @@ fn resources_smoke_at(
                     messages: vec![resources::NOT_DETECTED_NOTE.to_string()],
                 });
             }
-            if resources::is_native_model(&target.agent) {
+            if resources::is_native_model(&target.agent)
+                && !resources::native_smoke_dispatches(&target.agent)
+            {
                 return Ok(SmokeOutcome {
                     exit: 0,
                     value: resources_value_filtered(&store, Some(&agent_id)),
@@ -343,7 +345,12 @@ fn resources_smoke_at(
                         model.id == target.id && model.provider == target.provider
                     })
                 })
-                .filter(|model| model.verification == resources::VERIFICATION_FAILED)
+                .filter(|model| {
+                    model.verification == resources::VERIFICATION_FAILED
+                        // 原生模型的测试结果不改验证档（恒为 native），失败看冒烟原因
+                        || (resources::native_smoke_dispatches(&model.agent)
+                            && !model.smoke_failure.is_empty())
+                })
                 .map(|model| model.smoke_failure.clone());
             match failure {
                 Some(reason) => Ok(SmokeOutcome {
@@ -827,6 +834,18 @@ fn run_config_set_role(
                 return code;
             }
         };
+    // fix-61-r1 2：planning / execution 的角色默认补的是出方案、拆分、执行
+    // 这些共享位置，只接盲的 agent 不能设成这两个角色（否则角色默认会绕过
+    // set-seat 的限制）；acceptance 补的验收 / 验证位是盲位置，照常允许。
+    if role != "acceptance" {
+        if let Some(reason) = crate::agent_catalog::blind_only_reason(&agent_id) {
+            let _ = writeln!(
+                stderr,
+                "{reason}：{role} 角色补的是共享位置，{agent_id} 只能设为 acceptance 或放在盲位置"
+            );
+            return 2;
+        }
+    }
     // R1-2：roles_from 对损坏文件静默回默认值，整份写回会丢其余角色；
     // 严格读取遇损坏或读不了拒写。
     let mut roles = match crate::orchestration::roles_from_strict(root) {
@@ -1003,6 +1022,19 @@ fn resource_state_of(store: Option<&ResourceStore>, target: &Target) -> String {
     state.to_string()
 }
 
+/// 生效人选与它的备选是否违反位置硬规则（只接盲的 agent 落在非盲位置）。
+/// 返回给 `config show` 的说明；合规为 None。
+fn seat_invalid_reason(target: &Target) -> Option<String> {
+    let fallback_agent = target.fallback.as_ref().map(|fallback| fallback.agent.as_str());
+    std::iter::once(target.agent.as_str())
+        .chain(fallback_agent)
+        .find_map(|agent| {
+            crate::agent_catalog::seat_violation(agent, &target.visibility).map(|reason| {
+                format!("{reason}：{agent} 不能放在可见性为「{}」的位置", target.visibility)
+            })
+        })
+}
+
 /// `modes` 数组的一项：预设信息加每个位置的 seat（该主 agent 配置里
 /// modes.json 原样）、effective（按补人顺序填好的人选，附 `state`：该人选
 /// 在资源库里的状态，TASK-48）与 source（预设 / 位置 / 角色 / 未指定）；
@@ -1070,9 +1102,17 @@ fn mode_entry(
                             "provider": target.provider,
                             "model": target.model,
                             "tier": target.tier.clone().unwrap_or_default(),
-                            "thinking": target.thinking,
+                            // fix-61-r1 5：实际生效值（agy 模型自带档位时由模型决定）
+                            "thinking": crate::channels::effective_thinking(
+                                &target.agent,
+                                &target.model,
+                                &target.thinking,
+                            ),
                             "fallback": target.fallback,
                             "state": resource_state_of(store, target),
+                            // fix-61-r1 2：生效人选（含角色默认）或备选违反位置硬规则
+                            // 时的原因；合规为 null。
+                            "invalid": seat_invalid_reason(target),
                         })
                     };
                     // 预设本身给这个位置定的思考强度（人选未覆盖前的值），
@@ -2099,6 +2139,22 @@ pub(crate) fn config_set_seat_at(
                 format!("位置超出范围：{} 第 {stage} 阶段共 {node_count} 个位置", preset.name),
             ));
         }
+        // TASK-61：只接盲位置的 agent（agy 与未实测四家）不许写进共享 /
+        // 单写者位置；人选与备选都查。
+        let visibility = &preset.stages[stage - 1].nodes[index - 1].visibility;
+        let chosen_agents = std::iter::once(agent_id.as_str())
+            .chain(fallback.as_ref().map(|fallback| fallback.agent.as_str()));
+        for agent in chosen_agents {
+            if let Some(reason) = crate::agent_catalog::seat_violation(agent, visibility) {
+                return Err((
+                    2,
+                    format!(
+                        "{reason}：{} 第 {stage} 阶段第 {index} 个位置可见性为「{visibility}」，{agent} 只能放在盲位置",
+                        preset.name
+                    ),
+                ));
+            }
+        }
         let section = crate::orchestration::host_section_mut(&mut modes, host);
         let stages = section.seats.entry(wanted.clone()).or_default();
         // 写盘前按预设形状补齐 null（fix-46-r1 R7），前面的阶段不再落盘为空数组。
@@ -2594,6 +2650,8 @@ fn agent_entry(agent: &ResourceAgent, ever_detected: bool, now_millis: i64) -> V
         "state": state,
         "note": note,
         "models": models,
+        "untested": agent.untested,
+        "homepage": agent.homepage,
     })
 }
 
@@ -3138,8 +3196,19 @@ mod tests {
         assert_eq!(code, 0);
         assert!(stderr.contains("已读取资源库"), "{stderr}");
         let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
-        // 读取层的 ensure_agents 会补齐缺失的内置 agent（codex 不在样板里，补进来）
-        assert_eq!(parsed["agents"].as_array().unwrap().len(), 4);
+        // 读取层的 ensure_agents 会补齐缺失的内置 agent（codex 不在样板里，补进来）；
+        // TASK-61 起按支持清单补齐九家，每家带 untested 与 homepage。
+        assert_eq!(parsed["agents"].as_array().unwrap().len(), 9);
+        let agy = parsed["agents"].as_array().unwrap().iter()
+            .find(|agent| agent["id"] == "agy").unwrap();
+        assert_eq!(agy["untested"], false);
+        assert_eq!(agy["homepage"], "https://antigravity.google");
+        assert_eq!(agy["state"], "未安装");
+        assert_eq!(agy["models"].as_array().unwrap().len(), 0);
+        let cursor = parsed["agents"].as_array().unwrap().iter()
+            .find(|agent| agent["id"] == "cursor").unwrap();
+        assert_eq!(cursor["untested"], true);
+        assert_eq!(cursor["homepage"], "https://cursor.com/cli");
         let kimi = parsed["agents"].as_array().unwrap().iter()
             .find(|agent| agent["id"] == "kimi").unwrap();
         assert_eq!(kimi["state"], "未安装");
@@ -3226,7 +3295,7 @@ mod tests {
         assert_eq!(code, 0, "{stderr}");
         assert_eq!(*seen.lock().unwrap(), vec![Some("D:\\tools\\cc_switch.py".to_string())]);
         assert!(stderr.contains("探测 codex 失败"), "{stderr}");
-        assert!(stderr.contains("已探测 4 个 agent"), "{stderr}");
+        assert!(stderr.contains("已探测 9 个 agent"), "{stderr}");
         let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
         let kimi = parsed["agents"].as_array().unwrap().iter()
             .find(|agent| agent["id"] == "kimi").unwrap();
@@ -4603,6 +4672,108 @@ mod tests {
         // 清空后再清一次仍然成功（幂等）。
         let (code, _, _) = run_config_acp(&root, &["aicross", "config", "clear-seat", "blind", "--host", "claude"], &AcpOps::production());
         assert_eq!(code, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-61：只接盲位置的 agent 写进共享位置（人选或备选）时 set-seat 拦住，
+    /// 退出码 2；盲位置照常写入。
+    #[test]
+    fn task61_set_seat_rejects_blind_only_agent_on_shared_seat() {
+        let root = fixture_root("t61-seat");
+        fs::write(
+            root.join("resources.json"),
+            r#"{"version":1,"detectedAt":"2026-10-07T09:00:00+08:00","agents":[
+                {"id":"agy","name":"Antigravity","kind":"内置","detected":true,"version":"1.3.1","models":[
+                    {"id":"gemini-3.8-flash-low","agent":"agy","provider":"","vendor":"Google","verification":"native"}
+                ]},
+                {"id":"pi","name":"pi agent","kind":"内置","detected":true,"version":"0.86.1","models":[
+                    {"id":"glm-4.7","agent":"pi","provider":"zai","vendor":"Zhipu","verification":"verified"}
+                ]}
+            ]}"#,
+        )
+        .unwrap();
+        let agy = || SeatChoice {
+            agent: "agy".into(),
+            model: "gemini-3.8-flash-low".into(),
+            ..SeatChoice::default()
+        };
+        let (code, message) = config_set_seat_at(&root, "claude", "shared", 1, 1, agy()).unwrap_err();
+        assert_eq!(code, 2);
+        assert!(message.contains("纯文本盲审") && message.contains("共享"), "{message}");
+        let with_fallback = SeatChoice {
+            agent: "pi".into(),
+            provider: Some("zai".into()),
+            model: "glm-4.7".into(),
+            fallback: Some(FallbackTarget {
+                agent: "agy".into(),
+                provider: None,
+                model: "gemini-3.8-flash-low".into(),
+            }),
+            ..SeatChoice::default()
+        };
+        let (code, _) = config_set_seat_at(&root, "claude", "shared", 1, 1, with_fallback).unwrap_err();
+        assert_eq!(code, 2);
+        let value = config_set_seat_at(&root, "claude", "blind", 1, 1, agy()).unwrap();
+        assert_eq!(value["stages"][0][0]["seat"]["agent"], "agy");
+        // fix-61-r1 5：effective 的思考强度记实际生效值（模型自带档位）
+        assert_eq!(value["stages"][0][0]["effective"]["thinking"], "由模型决定：low");
+        assert_eq!(value["stages"][0][0]["effective"]["invalid"], Value::Null);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-61-r1 2：set-role 把只接盲的 agent 设成 planning / execution 退出 2
+    /// （角色默认补的是共享位置）；acceptance 照常写入。`config show` 对生效
+    /// 人选违反位置硬规则的组合（如旧 roles.json 里留下的执行角色默认）标出原因。
+    #[test]
+    fn task61_r1_set_role_rejects_blind_only_agent_and_show_marks_invalid() {
+        let root = fixture_root("t61-r1-role");
+        fs::write(
+            root.join("resources.json"),
+            r#"{"version":1,"detectedAt":"2026-10-07T09:00:00+08:00","agents":[
+                {"id":"agy","name":"Antigravity","kind":"内置","detected":true,"version":"1.3.1","models":[
+                    {"id":"gemini-3.8-flash-low","agent":"agy","provider":"","vendor":"Google","verification":"native"}
+                ]}
+            ]}"#,
+        )
+        .unwrap();
+        let acp = AcpOps::production();
+        for role in ["planning", "execution"] {
+            let (code, _, stderr) = run_config_acp(
+                &root,
+                &["aicross", "config", "set-role", role, "--agent", "agy", "--model", "gemini-3.8-flash-low"],
+                &acp,
+            );
+            assert_eq!(code, 2, "{role}: {stderr}");
+            assert!(stderr.contains("纯文本盲审") && stderr.contains(role), "{stderr}");
+        }
+        assert!(!root.join("roles.json").exists(), "拒绝时不写盘");
+        let (code, _, stderr) = run_config_acp(
+            &root,
+            &["aicross", "config", "set-role", "acceptance", "--agent", "agy", "--model", "gemini-3.8-flash-low"],
+            &acp,
+        );
+        assert_eq!(code, 0, "{stderr}");
+        // 旧 roles.json 里留下的非法执行角色默认：config show 标出原因
+        let mut roles = crate::orchestration::roles_from_strict(&root).unwrap();
+        roles.execution = RoleProfile {
+            agent: "agy".into(),
+            provider: String::new(),
+            model: "gemini-3.8-flash-low".into(),
+            tier: String::new(),
+            thinking: "中".into(),
+        };
+        crate::orchestration::save_roles_in(&root, &roles).unwrap();
+        let show = config_show_value(&root, Some("claude"), &[]);
+        let shared = show["modes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|mode| mode["id"] == "builtin-shared")
+            .unwrap();
+        let effective = &shared["stages"][0][0]["effective"];
+        assert_eq!(effective["agent"], "agy");
+        assert!(effective["invalid"].as_str().unwrap().contains("纯文本盲审"), "{effective}");
+        assert_eq!(effective["thinking"], "由模型决定：low");
         let _ = fs::remove_dir_all(root);
     }
 

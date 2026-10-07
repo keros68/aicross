@@ -5,6 +5,9 @@ use serde_json::Value;
 
 pub(crate) mod acp;
 pub(crate) mod acp_setup;
+mod cli_agents;
+
+pub(crate) use cli_agents::{effective_thinking, AGY_NO_TOOLS};
 
 pub(crate) const KNOWN_MODEL_ROUTES: &[(&str, &str, &str)] = &[
     ("deepseek", "deepseek-v4-flash", "deepseek-flash"),
@@ -244,7 +247,21 @@ pub fn build_invocation(
     session_dir: Option<&Path>,
     cc_switch_path: Option<&Path>,
     writable: bool,
+    timeout: std::time::Duration,
 ) -> Result<Invocation, String> {
+    let normalized = normalize_agent(agent);
+    // 支持清单里新增的 agent（TASK-61）走自己的模板，只接盲位置。
+    if cli_agents::handles(normalized) {
+        let spec = cli_agents::spec(normalized, model, thinking, blind, prompt, timeout)?;
+        // 与探测同一个解析函数、同一优先级（兜底路径优先，fix-61-r1 4）。
+        let program = crate::agent_catalog::resolve_program(normalized)
+            .ok_or_else(|| format!("未找到 {} 可执行文件", spec.binary))?;
+        return Ok(Invocation {
+            program,
+            args: spec.args,
+            input: spec.input,
+        });
+    }
     #[cfg(test)]
     if normalize_agent(agent) == "kimi" {
         if let Some((_, oneshot, _)) = test_provider_parts(provider) {
@@ -257,7 +274,6 @@ pub fn build_invocation(
             return Ok(Invocation { program, args, input: None });
         }
     }
-    let normalized = normalize_agent(agent);
     let spec = build_invocation_spec(
         normalized,
         provider,
@@ -512,6 +528,9 @@ pub fn parse_output(
             "执行超过 {} 秒",
             result.timeout.as_secs()
         )));
+    }
+    if let Some(parsed) = cli_agents::parse(normalize_agent(agent), result) {
+        return parsed.map_err(ChannelParseError::new);
     }
     match normalize_agent(agent) {
         "claude" => parse_claude(result).map_err(ChannelParseError::new),

@@ -2790,3 +2790,83 @@ fn task57_r1_dispatch_prompts_end_with_honest_reporting() {
         assert_eq!(node.prompt.matches(HONEST_REPORTING).count(), 1, "{}", node.prompt);
     }
 }
+
+/// TASK-61：派给 agy 的节点在如实汇报要求之后再拼「不要使用任何工具」，
+/// 只拼一次；其它 agent 的节点不带这一句。
+#[test]
+fn task61_agy_prompt_appends_no_tools_after_honest_reporting() {
+    let preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-blind")
+        .unwrap();
+    let mut graph = Graph {
+        version: 1,
+        id: "g61".into(),
+        root: "root".into(),
+        ..Graph::default()
+    };
+    graph.nodes.insert(
+        "root".into(),
+        GraphNode {
+            id: "root".into(),
+            kind: "material".into(),
+            user: Message {
+                text: "审查这段代码".into(),
+                ..Message::default()
+            },
+            ..GraphNode::default()
+        },
+    );
+    let mut seq = 0usize;
+    let mut ids = move || {
+        seq += 1;
+        format!("n{seq}")
+    };
+    let (mut graph, created) = stamp_with(&graph, "root", &preset, 3, &[], &mut ids, Utc::now());
+    let agy_id = created[0].clone();
+    let target = graph.nodes.get_mut(&agy_id).unwrap().target.as_mut().unwrap();
+    target.agent = "agy".into();
+    target.model = "gemini-3.8-flash-low".into();
+    let request = build_request(
+        "run-61",
+        "D:/p",
+        &EngineSettings::default(),
+        &graph,
+        &created,
+        &[],
+        "审查这段代码",
+    );
+    let no_tools = crate::channels::AGY_NO_TOOLS;
+    for node in &request.nodes {
+        assert_eq!(node.prompt.matches(HONEST_REPORTING).count(), 1, "{}", node.prompt);
+        if node.node_id == agy_id {
+            assert!(node.prompt.ends_with(&format!("{HONEST_REPORTING}\n{no_tools}")), "{}", node.prompt);
+            assert_eq!(node.prompt.matches(no_tools).count(), 1);
+        } else {
+            assert!(node.prompt.ends_with(HONEST_REPORTING), "{}", node.prompt);
+            assert!(!node.prompt.contains(no_tools), "{}", node.prompt);
+        }
+    }
+}
+
+/// fix-61-r1 5：run 摘要里 agy 模型自带档位的节点记实际生效的思考强度；
+/// 其余节点不写这个字段（序列化与旧格式一致）。
+#[test]
+fn task61_r1_run_summary_records_model_decided_thinking() {
+    let mut graph = Graph::default();
+    let mut agy = turn("a", &[], "验证", "2026-10-07T00:00:00Z");
+    {
+        let target = agy.target.as_mut().unwrap();
+        target.agent = "agy".into();
+        target.model = "gemini-3.8-flash-low".into();
+        target.visibility = "盲".into();
+    }
+    graph.nodes.insert("a".into(), agy);
+    graph.nodes.insert("b".into(), turn("b", &[], "执行", "2026-10-07T00:00:01Z"));
+    let summary = node_summary(&graph, ["a".to_string(), "b".to_string()]);
+    assert_eq!(summary[0].thinking, "由模型决定：low");
+    assert_eq!(summary[1].thinking, "");
+    let value = serde_json::to_value(&summary).unwrap();
+    assert_eq!(value[0]["thinking"], "由模型决定：low");
+    assert!(value[1].get("thinking").is_none(), "{value}");
+}

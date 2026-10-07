@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "comment": "没有可靠列模型命令的 agent 用的模型小表，随版本发布。每家注明来源与日期；名单只取官方文档 --model 示例里出现过的模型名，未在真机核对，以 agent 实际接受的为准。",
+  "agents": {
+    "copilot": {
+      "source": "GitHub Copilot CLI 官方文档 --model 示例，docs.github.com/copilot",
+      "date": "2026-10-07",
+      "models": ["claude-sonnet-4.5", "claude-sonnet-4", "gpt-5"]
+    },
+    "codebuddy": {
+      "source": "CodeBuddy Code 官方文档 --model 示例，www.workbuddy.ai/docs/cli",
+      "date": "2026-10-07",
+      "models": ["claude-4.0", "gpt-5", "gemini-2.5-pro"]
+    }
+  }
+}

@@ -165,6 +165,10 @@ pub struct RunNode {
     pub artifacts_dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_resets_at: Option<String>,
+    /// 实际生效的思考强度与位置设置不同时写出（fix-61-r1 5：agy 模型 id 自带
+    /// 档位时为「由模型决定：low」等）；相同时为空、不写出。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub thinking: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -466,6 +470,18 @@ pub(crate) fn node_summary(graph: &Graph, ids: impl IntoIterator<Item = String>)
                     .and_then(|a| a.worktree.clone())
                     .unwrap_or_default(),
                 quota_resets_at: reply.and_then(|r| r.quota_resets_at.clone()),
+                thinking: {
+                    let effective = crate::channels::effective_thinking(
+                        &target.agent,
+                        &target.model,
+                        &target.thinking,
+                    );
+                    if effective == target.thinking {
+                        String::new()
+                    } else {
+                        effective
+                    }
+                },
             })
         })
         .collect()
@@ -1488,6 +1504,11 @@ fn build_request(
             // 原样保留，这段只追加在末尾。
             prompt.push_str("\n\n");
             prompt.push_str(HONEST_REPORTING);
+            // TASK-61：agy 无头下工具全被拒，同一处再拼「不要使用任何工具」。
+            if crate::channels::normalize_agent(&target.agent) == "agy" {
+                prompt.push_str("\n");
+                prompt.push_str(crate::channels::AGY_NO_TOOLS);
+            }
             let fallback = target
                 .fallback
                 .as_ref()
