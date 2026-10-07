@@ -1445,6 +1445,8 @@ fn task42_plan_with_verification(verification: &str) -> Plan {
         resources_error: None,
         presets: &presets,
         roles: &roles,
+        host_modes: None,
+        default_preset: "builtin-economy",
         active_runs: 0,
         existing: None,
         git_dirty_count: &mut git_dirty_count,
@@ -1471,5 +1473,1320 @@ fn plan_dispatch_passes_smoke_timeout_and_still_rejects_failed() {
     match unverified {
         Plan::Ready { .. } => {}
         Plan::Rejected { reason, .. } => panic!("未验证不应拦派发：{reason}"),
+    }
+}
+
+// ── TASK-48：资源库里「未发现」的模型 ────────────────────────────────
+
+/// 派发前检查的注入式小夹具：模型清单与单阶段目标直给，返回 plan。
+fn task48_plan_with(models: Vec<ResourceModel>, targets: Vec<Target>) -> Plan {
+    task48_plan_with_preset(
+        models,
+        Preset {
+            id: "p48".into(),
+            name: "直给".into(),
+            description: String::new(),
+            builtin: false,
+            stages: vec![orchestration::Stage { nodes: targets }],
+        },
+    )
+}
+
+/// 同上，预设直给：多阶段用（fix-48-r1 R2 的后面阶段用例）。
+fn task48_plan_with_preset(models: Vec<ResourceModel>, preset: Preset) -> Plan {
+    let settings = EngineSettings::default();
+    let presets = vec![preset.clone()];
+    let roles = RoleSettings::default();
+    let mut git_dirty_count = move || None;
+    let mut seq = 0usize;
+    let mut ids = move || {
+        seq += 1;
+        format!("00000000-0000-4000-8000-{seq:012}")
+    };
+    let mut clock = move || Utc::now();
+    let mut input = PlanInput {
+        run_id: "r48",
+        project: "D:/p48",
+        text: "任务",
+        preset: Some(preset.id.as_str()),
+        attachments: &[],
+        targets: &[],
+        settings: &settings,
+        models: &models,
+        resources_error: None,
+        presets: &presets,
+        roles: &roles,
+        host_modes: None,
+        default_preset: "p48",
+        active_runs: 0,
+        existing: None,
+        git_dirty_count: &mut git_dirty_count,
+    };
+    plan_dispatch(&mut input, &mut ids, &mut clock)
+}
+
+fn task48_pi_model(id: &str, meta: &str) -> ResourceModel {
+    ResourceModel {
+        agent: "pi".into(),
+        id: id.into(),
+        provider: "zai".into(),
+        verification: crate::resources::VERIFICATION_VERIFIED.into(),
+        meta: meta.into(),
+        ..ResourceModel::default()
+    }
+}
+
+fn task48_target_with_fallback(
+    model: &str,
+    fallback: Option<crate::orchestration::FallbackTarget>,
+) -> Target {
+    Target {
+        agent: "pi".into(),
+        provider: Some("zai".into()),
+        model: model.into(),
+        role: "执行".into(),
+        thinking: "中".into(),
+        visibility: "共享".into(),
+        write: "只读".into(),
+        fallback,
+        ..Target::default()
+    }
+}
+
+/// 目标是「未发现」（meta 带 MISSING_MARKER）时拒绝，原因给下一步；
+/// 压在验证结果之上——同一条模型即使 verification 是 verified 也拒。
+#[test]
+fn task48_dispatch_rejects_missing_target_with_reason() {
+    let models = vec![task48_pi_model("glm-4.7", crate::resources::MISSING_MARKER)];
+    let targets = vec![task48_target_with_fallback("glm-4.7", None)];
+    match task48_plan_with(models, targets) {
+        Plan::Rejected { reason, .. } => {
+            assert_eq!(reason, "pi/glm-4.7 在最近一次探测中未发现，请重新探测或换人选");
+        }
+        Plan::Ready { .. } => panic!("未发现的目标应拦下"),
+    }
+}
+
+/// fix-48-r1 R1：同一模型 id 挂两个 provider、只有一个带「未发现」标记时，
+/// 查找认目标的 provider——选正常那条照常派出，选带标记那条被拒；备选
+/// 同口径。
+#[test]
+fn task48_dispatch_target_lookup_respects_provider() {
+    let normal = task48_pi_model("glm-4.7", "");
+    let marked = task48_pi_model("glm-4.7", crate::resources::MISSING_MARKER);
+    // 目标指定正常 provider：照常派出。
+    let mut target = task48_target_with_fallback("glm-4.7", None);
+    target.provider = Some("opencode-go".into());
+    match task48_plan_with(
+        vec![task48_with_provider(&marked, "deepseek"), normal.clone()],
+        vec![target],
+    ) {
+        Plan::Ready { .. } => {}
+        Plan::Rejected { reason, .. } => panic!("正常 provider 不该被牵连：{reason}"),
+    }
+    // 目标指定带标记的 provider：拒绝，原因指向这条。
+    let mut target = task48_target_with_fallback("glm-4.7", None);
+    target.provider = Some("deepseek".into());
+    match task48_plan_with(
+        vec![task48_with_provider(&marked, "deepseek"), normal.clone()],
+        vec![target],
+    ) {
+        Plan::Rejected { reason, .. } => {
+            assert_eq!(reason, "pi/glm-4.7 在最近一次探测中未发现，请重新探测或换人选");
+        }
+        Plan::Ready { .. } => panic!("带标记的 provider 应拦下"),
+    }
+    // 备选同口径：备选带标记的 provider 丢弃并留说明，正常 provider 保留。
+    let fallback_marked = crate::orchestration::FallbackTarget {
+        agent: "pi".into(),
+        provider: Some("deepseek".into()),
+        model: "glm-4.7".into(),
+    };
+    let mut target = task48_target_with_fallback("glm-4.7", Some(fallback_marked));
+    target.provider = Some("opencode-go".into());
+    match task48_plan_with(
+        vec![task48_with_provider(&marked, "deepseek"), normal.clone()],
+        vec![target],
+    ) {
+        Plan::Ready { graph, notes, .. } => {
+            let t = graph.nodes.values().find_map(|n| n.target.clone()).expect("target");
+            assert!(t.fallback.is_none(), "带标记 provider 的备选应丢弃");
+            assert_eq!(
+                notes,
+                vec!["备选 pi/glm-4.7 在最近一次探测中未发现，已从该节点移除".to_string()]
+            );
+        }
+        Plan::Rejected { reason, .. } => panic!("备选带标记不该拦主目标：{reason}"),
+    }
+    let fallback_ok = crate::orchestration::FallbackTarget {
+        agent: "pi".into(),
+        provider: Some("opencode-go".into()),
+        model: "glm-4.7".into(),
+    };
+    let mut target = task48_target_with_fallback("glm-4.7", Some(fallback_ok));
+    target.provider = Some("opencode-go".into());
+    match task48_plan_with(vec![task48_with_provider(&marked, "deepseek"), normal], vec![target]) {
+        Plan::Ready { graph, notes, .. } => {
+            let t = graph.nodes.values().find_map(|n| n.target.clone()).expect("target");
+            assert_eq!(t.fallback.as_ref().expect("正常备选应保留").model, "glm-4.7");
+            assert!(notes.is_empty());
+        }
+        Plan::Rejected { reason, .. } => panic!("正常备选不该丢：{reason}"),
+    }
+}
+
+/// 复制一条模型并改 provider（夹具小工具）。
+fn task48_with_provider(model: &ResourceModel, provider: &str) -> ResourceModel {
+    let mut copy = model.clone();
+    copy.provider = provider.into();
+    copy
+}
+
+/// fix-48-r1 R2：第二阶段（盲审 / 经济模式的后面阶段）人选未发现，同样
+/// 在派发前拒绝，不留到执行时才失败。
+#[test]
+fn task48_dispatch_rejects_missing_target_in_later_stage() {
+    let models = vec![
+        task48_pi_model("glm-4.7", ""),
+        task48_pi_model("gone", crate::resources::MISSING_MARKER),
+    ];
+    let preset = Preset {
+        id: "p2".into(),
+        name: "两阶段".into(),
+        description: String::new(),
+        builtin: false,
+        stages: vec![
+            orchestration::Stage {
+                nodes: vec![task48_target_with_fallback("glm-4.7", None)],
+            },
+            orchestration::Stage {
+                nodes: vec![task48_target_with_fallback("gone", None)],
+            },
+        ],
+    };
+    match task48_plan_with_preset(models, preset) {
+        Plan::Rejected { reason, .. } => {
+            assert_eq!(reason, "pi/gone 在最近一次探测中未发现，请重新探测或换人选");
+        }
+        Plan::Ready { .. } => panic!("第二阶段目标未发现也应拦下"),
+    }
+}
+
+/// fix-48-r1 R2：第二阶段备选未发现同样从该节点移除并留说明，主目标照常。
+#[test]
+fn task48_dispatch_drops_missing_fallback_in_later_stage() {
+    let models = vec![
+        task48_pi_model("glm-4.7", ""),
+        task48_pi_model("gone", crate::resources::MISSING_MARKER),
+    ];
+    let preset = Preset {
+        id: "p2".into(),
+        name: "两阶段".into(),
+        description: String::new(),
+        builtin: false,
+        stages: vec![
+            orchestration::Stage {
+                nodes: vec![task48_target_with_fallback("glm-4.7", None)],
+            },
+            orchestration::Stage {
+                nodes: vec![task48_target_with_fallback(
+                    "glm-4.7",
+                    Some(crate::orchestration::FallbackTarget {
+                        agent: "pi".into(),
+                        provider: Some("zai".into()),
+                        model: "gone".into(),
+                    }),
+                )],
+            },
+        ],
+    };
+    match task48_plan_with_preset(models, preset) {
+        Plan::Ready { graph, notes, .. } => {
+            assert_eq!(
+                notes,
+                vec!["备选 pi/gone 在最近一次探测中未发现，已从该节点移除".to_string()]
+            );
+            let with_fallback = graph
+                .nodes
+                .values()
+                .filter_map(|n| n.target.as_ref())
+                .filter(|t| t.fallback.is_some())
+                .count();
+            assert_eq!(with_fallback, 0, "第二阶段备选应已从节点移除");
+        }
+        Plan::Rejected { reason, .. } => panic!("第二阶段备选未发现不应拦主目标：{reason}"),
+    }
+}
+
+/// 备选是「未发现」时只丢掉这个备选，主目标照常派出，notes 里留说明；
+/// 备选正常时原样保留、notes 为空。
+#[test]
+fn task48_dispatch_drops_missing_fallback_but_keeps_normal_one() {
+    let make_targets = |fallback: Option<crate::orchestration::FallbackTarget>| {
+        vec![task48_target_with_fallback("glm-4.7", fallback)]
+    };
+    let models = vec![
+        task48_pi_model("glm-4.7", ""),
+        task48_pi_model("gone", crate::resources::MISSING_MARKER),
+    ];
+    let fallback_missing = crate::orchestration::FallbackTarget {
+        agent: "pi".into(),
+        provider: Some("zai".into()),
+        model: "gone".into(),
+    };
+    match task48_plan_with(models, make_targets(Some(fallback_missing))) {
+        Plan::Ready { graph, notes, .. } => {
+            let target = graph.nodes.values().find_map(|n| n.target.clone()).expect("target");
+            assert!(target.fallback.is_none(), "未发现的备选应丢掉");
+            assert_eq!(
+                notes,
+                vec!["备选 pi/gone 在最近一次探测中未发现，已从该节点移除".to_string()]
+            );
+        }
+        Plan::Rejected { reason, .. } => panic!("备选未发现不应拦主目标：{reason}"),
+    }
+    let fallback_ok = crate::orchestration::FallbackTarget {
+        agent: "pi".into(),
+        provider: Some("zai".into()),
+        model: "glm-4.7".into(),
+    };
+    let models_ok = vec![task48_pi_model("glm-4.7", "")];
+    match task48_plan_with(models_ok, make_targets(Some(fallback_ok))) {
+        Plan::Ready { graph, notes, .. } => {
+            let target = graph.nodes.values().find_map(|n| n.target.clone()).expect("target");
+            assert_eq!(target.fallback.as_ref().expect("fallback kept").model, "glm-4.7");
+            assert!(notes.is_empty());
+        }
+        Plan::Rejected { reason, .. } => panic!("正常备选不应丢：{reason}"),
+    }
+}
+
+/// 端到端：备选未发现时 run 文件带 notes，落图的备选已丢掉，响应也带 notes。
+#[test]
+fn task48_start_dispatch_writes_fallback_note_to_run_file() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    let root = temp("task48-fallback-note");
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"pi","models":[
+            {"id":"glm-4.7","agent":"pi","provider":"zai","status":"已接入","verification":"verified","resolved_id":"glm-4.7","resolved_source":"identity"},
+            {"id":"gone","agent":"pi","provider":"zai","status":"已接入","verification":"verified","resolved_id":"gone","resolved_source":"identity","meta":"未在事实源中"}
+        ]}]}
+"#,
+    )
+    .unwrap();
+    let input = DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "实现任务".into(),
+        targets: vec![task48_target_with_fallback(
+            "glm-4.7",
+            Some(crate::orchestration::FallbackTarget {
+                agent: "pi".into(),
+                provider: Some("zai".into()),
+                model: "gone".into(),
+            }),
+        )],
+        ..DispatchInput::default()
+    };
+    let result = start_dispatch_with(&root, input, spawn_ok).expect("派发成功");
+    assert_eq!(result["accepted"].as_bool(), Some(true));
+    assert_eq!(result["notes"].as_array().map(Vec::len), Some(1));
+    let run: EngineRun = serde_json::from_slice(
+        &fs::read(runs_dir(&root).join(format!("{}.json", result["run_id"].as_str().unwrap()))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        run.notes,
+        vec!["备选 pi/gone 在最近一次探测中未发现，已从该节点移除".to_string()]
+    );
+    let graph = orchestration::load_graph_in(&root, &run.graph_id)
+        .unwrap()
+        .expect("graph");
+    let target = graph.nodes.values().find_map(|n| n.target.clone()).expect("target");
+    assert!(target.fallback.is_none(), "落图的备选应已丢掉");
+    let _ = fs::remove_dir_all(root);
+}
+
+// ── TASK-46：模式人选与默认模式 ─────────────────────────────────────
+
+fn task46_seat(agent: &str, provider: Option<&str>, model: &str) -> crate::orchestration::SeatChoice {
+    crate::orchestration::SeatChoice {
+        agent: agent.into(),
+        provider: provider.map(str::to_string),
+        model: model.into(),
+        ..crate::orchestration::SeatChoice::default()
+    }
+}
+
+/// 四种来源各一条：预设写死 / 位置人选 / 角色默认 / 未指定。
+#[test]
+fn task46_fill_seats_reports_all_four_sources() {
+    let mut preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-economy")
+        .unwrap();
+    // 出方案写死人选；执行留给角色默认；验收留给位置人选；验证什么都不留。
+    preset.stages[0].nodes[0].agent = "codex".into();
+    preset.stages[0].nodes[0].model = "hardwired".into();
+    let roles = RoleSettings {
+        execution: crate::orchestration::RoleProfile {
+            agent: "codex".into(),
+            provider: "".into(),
+            model: "exec".into(),
+            tier: "低".into(),
+            thinking: "低".into(),
+        },
+        ..RoleSettings::default()
+    };
+    let seats = vec![
+        vec![None],
+        vec![None],
+        vec![Some(task46_seat("pi", Some("zai"), "glm-4.7")), None],
+    ];
+    let (filled, sources) = fill_seats(&preset, &roles, Some(&seats));
+    assert_eq!(sources, vec![vec!["预设"], vec!["角色"], vec!["位置", "未指定"]]);
+    let planning = &filled.stages[0].nodes[0];
+    assert_eq!((planning.agent.as_str(), planning.model.as_str()), ("codex", "hardwired"));
+    let execution = &filled.stages[1].nodes[0];
+    assert_eq!((execution.agent.as_str(), execution.model.as_str()), ("codex", "exec"));
+    assert_eq!(execution.tier.as_deref(), Some("低"));
+    let acceptance = &filled.stages[2].nodes[0];
+    assert_eq!((acceptance.agent.as_str(), acceptance.model.as_str()), ("pi", "glm-4.7"));
+    assert!(filled.stages[2].nodes[1].model.is_empty());
+}
+
+/// tier / thinking 空串沿用预设值，非空覆盖；fallback 写进 Target.fallback。
+#[test]
+fn task46_fill_seats_overrides_tier_thinking_and_writes_fallback() {
+    let preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-blind")
+        .unwrap();
+    let seats = vec![vec![
+        Some(crate::orchestration::SeatChoice {
+            tier: "高".into(),
+            fallback: Some(crate::orchestration::FallbackTarget {
+                agent: "claude".into(),
+                provider: None,
+                model: "sonnet".into(),
+            }),
+            ..task46_seat("pi", Some("zai"), "glm-4.7")
+        }),
+        Some(task46_seat("codex", None, "exec")),
+        None,
+    ]];
+    let (filled, _) = fill_seats(&preset, &RoleSettings::default(), Some(&seats));
+    let first = &filled.stages[0].nodes[0];
+    assert_eq!(first.tier.as_deref(), Some("高"), "seat tier 非空应覆盖预设");
+    assert_eq!(first.thinking, "中", "seat thinking 空串应沿用预设");
+    let fallback = first.fallback.as_ref().unwrap();
+    assert_eq!((fallback.agent.as_str(), fallback.model.as_str()), ("claude", "sonnet"));
+    assert!(fallback.provider.is_none());
+    let second = &filled.stages[0].nodes[1];
+    assert_eq!(second.thinking, "中", "seat 未给 thinking 应沿用预设");
+    assert!(second.fallback.is_none());
+}
+
+/// seats 与预设长度对不上：阶段多出的忽略、位置缺的按 null。
+#[test]
+fn task46_fill_seats_tolerates_shape_mismatch() {
+    let preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-blind")
+        .unwrap();
+    // 阶段多出一个（多出的忽略），首个阶段位置只有 1 个（缺的按 null）。
+    let seats = vec![
+        vec![Some(task46_seat("pi", Some("zai"), "glm-4.7"))],
+        vec![Some(task46_seat("codex", None, "exec"))],
+    ];
+    let (filled, sources) = fill_seats(&preset, &RoleSettings::default(), Some(&seats));
+    assert_eq!(sources, vec![vec!["位置", "未指定", "未指定"]]);
+    assert_eq!(filled.stages.len(), 1);
+    assert_eq!(filled.stages[0].nodes.len(), 3);
+}
+
+/// fix-46-r1 R5：agent 或 model 为空的人选按未设处理，继续走角色 / 未指定；
+/// thinking 非法值忽略，不覆盖预设值。
+#[test]
+fn task46_fill_seats_ignores_empty_seat_and_invalid_thinking() {
+    let preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-blind")
+        .unwrap();
+    let roles = RoleSettings {
+        acceptance: crate::orchestration::RoleProfile {
+            agent: "codex".into(),
+            provider: "".into(),
+            model: "accept".into(),
+            tier: "".into(),
+            thinking: "高".into(),
+        },
+        ..RoleSettings::default()
+    };
+    let seats = vec![vec![
+        // agent 为空：按未设处理；盲审的角色档整份跳过，落在「未指定」。
+        Some(task46_seat("", Some("zai"), "glm-4.7")),
+        // model 为空：同样按未设处理。
+        Some(task46_seat("pi", Some("zai"), " ")),
+        // thinking 非法：位置生效，但 thinking 沿用预设的「中」。
+        Some(crate::orchestration::SeatChoice {
+            thinking: "超高".into(),
+            ..task46_seat("pi", Some("zai"), "glm-4.7")
+        }),
+    ]];
+    let (filled, sources) = fill_seats(&preset, &roles, Some(&seats));
+    assert_eq!(sources, vec![vec!["未指定", "未指定", "位置"]]);
+    assert!(filled.stages[0].nodes[0].model.is_empty());
+    assert!(filled.stages[0].nodes[1].model.is_empty());
+    assert_eq!(filled.stages[0].nodes[2].model, "glm-4.7");
+    assert_eq!(filled.stages[0].nodes[2].thinking, "中", "非法 thinking 应沿用预设");
+    // 对照：经济模式里 agent 为空的人选落到「角色」档（验收角色已设）。
+    let economy = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-economy")
+        .unwrap();
+    let seats = vec![
+        vec![None],
+        vec![None],
+        vec![Some(task46_seat(" ", None, "x")), None],
+    ];
+    let (filled, sources) = fill_seats(&economy, &roles, Some(&seats));
+    assert_eq!(sources[2], vec!["角色", "角色"], "验收与验证都走验收角色");
+    assert_eq!(filled.stages[2].nodes[0].model, "accept");
+    assert_eq!(filled.stages[2].nodes[1].model, "accept");
+}
+
+/// fix-46-r1 R9：盲审模式在 roles.json 设了角色时，没有位置人选的来源仍是
+/// 「未指定」（规则 3 对盲审整份跳过，不因设了角色而变）。
+#[test]
+fn task46_blind_with_roles_but_no_seats_stays_unspecified() {
+    let preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-blind")
+        .unwrap();
+    let roles = RoleSettings {
+        planning: crate::orchestration::RoleProfile {
+            agent: "codex".into(),
+            provider: "".into(),
+            model: "plan".into(),
+            tier: "".into(),
+            thinking: "".into(),
+        },
+        execution: crate::orchestration::RoleProfile {
+            agent: "codex".into(),
+            provider: "".into(),
+            model: "exec".into(),
+            tier: "".into(),
+            thinking: "".into(),
+        },
+        acceptance: crate::orchestration::RoleProfile {
+            agent: "codex".into(),
+            provider: "".into(),
+            model: "accept".into(),
+            tier: "".into(),
+            thinking: "".into(),
+        },
+        ..RoleSettings::default()
+    };
+    let (filled, sources) = fill_seats(&preset, &roles, None);
+    assert_eq!(sources, vec![vec!["未指定", "未指定", "未指定"]]);
+    for node in &filled.stages[0].nodes {
+        assert!(node.model.is_empty());
+    }
+}
+
+/// fix-46-r1 R9：同一阶段的人选位置数多于预设节点数，多出的忽略。
+#[test]
+fn task46_fill_seats_ignores_extra_positions_in_row() {
+    let preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-blind")
+        .unwrap();
+    let seats = vec![vec![
+        None,
+        Some(task46_seat("pi", Some("zai"), "glm-4.7")),
+        None,
+        Some(task46_seat("codex", None, "extra")),
+        Some(task46_seat("claude", None, "extra-2")),
+    ]];
+    let (filled, sources) = fill_seats(&preset, &RoleSettings::default(), Some(&seats));
+    assert_eq!(sources, vec![vec!["未指定", "位置", "未指定"]]);
+    assert_eq!(filled.stages[0].nodes.len(), 3);
+    assert!(filled.stages[0].nodes[2].model.is_empty());
+}
+
+/// 用户预设写死的人选不被 modes.json 覆盖（规则 1 优先于规则 2）。
+#[test]
+fn task46_fill_seats_keeps_user_preset_hardwired_target() {
+    let preset = crate::orchestration::Preset {
+        id: "u1".into(),
+        name: "自定义".into(),
+        description: String::new(),
+        builtin: false,
+        stages: vec![crate::orchestration::Stage {
+            nodes: vec![Target {
+                agent: "codex".into(),
+                model: "hardwired".into(),
+                role: "执行".into(),
+                thinking: "中".into(),
+                visibility: "共享".into(),
+                write: "只读".into(),
+                ..Target::default()
+            }],
+        }],
+    };
+    let seats = vec![vec![Some(task46_seat("pi", Some("zai"), "glm-4.7"))]];
+    let (filled, sources) = fill_seats(&preset, &RoleSettings::default(), Some(&seats));
+    assert_eq!(sources, vec![vec!["预设"]]);
+    let target = &filled.stages[0].nodes[0];
+    assert_eq!((target.agent.as_str(), target.model.as_str()), ("codex", "hardwired"));
+}
+
+/// 盲审模式有人选时能派出（run 记 builtin-blind）；没有人选时仍被拒。
+#[test]
+fn task46_blind_dispatch_with_seats_is_accepted_and_without_is_rejected() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    let root = temp("task46-blind");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"pi","models":[{"id":"glm-4.7","agent":"pi","provider":"zai","verification":"verified"}]}]}"#,
+    )
+    .unwrap();
+    let input = |root: &Path| DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "盲审这个改动".into(),
+        preset: Some("builtin-blind".into()),
+        ..DispatchInput::default()
+    };
+    let run_preset_id = |root: &Path, result: &Value| -> String {
+        let run: EngineRun = serde_json::from_slice(
+            &fs::read(runs_dir(root).join(format!("{}.json", result["run_id"].as_str().unwrap()))).unwrap(),
+        )
+        .unwrap();
+        run.preset_id
+    };
+    // 没有人选：仍被派发前检查拒绝。
+    let result = start_dispatch_with(&root, input(&root), spawn_ok).unwrap();
+    assert_eq!(result["accepted"].as_bool(), Some(false));
+    assert!(result["reason"].as_str().unwrap().contains("没有可派发目标"), "{result}");
+    assert_eq!(run_preset_id(&root, &result), "builtin-blind");
+
+    // 有人选：三个位置都按人选派出（modes.json v2：配置挂在主 agent 下）。
+    let modes = modes_for_host(
+        "claude",
+        crate::orchestration::HostModes {
+            seats: indexmap::IndexMap::from([(
+                "builtin-blind".into(),
+                vec![vec![
+                    Some(task46_seat("pi", Some("zai"), "glm-4.7")),
+                    Some(task46_seat("pi", Some("zai"), "glm-4.7")),
+                    Some(task46_seat("pi", Some("zai"), "glm-4.7")),
+                ]],
+            )]),
+            ..crate::orchestration::HostModes::default()
+        },
+    );
+    crate::orchestration::save_modes_in(&root, &modes).unwrap();
+    let result = start_dispatch_with(&root, input(&root), spawn_ok).unwrap();
+    assert_eq!(result["accepted"].as_bool(), Some(true), "{result}");
+    assert_eq!(run_preset_id(&root, &result), "builtin-blind");
+    let graph = orchestration::load_graph_in(&root, result["graph_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    let ids: Vec<String> = result["node_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids.len(), 3);
+    for id in &ids {
+        let target = graph.nodes.get(id).unwrap().target.as_ref().unwrap();
+        assert_eq!((target.agent.as_str(), target.model.as_str()), ("pi", "glm-4.7"));
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+/// 默认模式：未设 → 经济；设了盲审 → 盲审；指向不存在的预设 → 经济；
+/// 显式 --preset 优先于默认模式。run 文件的 preset_id 记实际用的那个。
+#[test]
+fn task46_default_mode_resolved_for_dispatch_without_preset() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    /// 每个用例一个新根目录：stub 拉起的 run 停在启动窗口内，同根连发
+    /// 会触在飞上限。
+    fn dispatch_case(default_mode: Option<&str>, preset: Option<&str>) -> (PathBuf, Value) {
+        let root = temp("task46-default");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("resources.json"),
+            r#"{"version":1,"agents":[
+                {"id":"pi","models":[{"id":"glm-4.7","agent":"pi","provider":"zai","verification":"verified"}]},
+                {"id":"codex","models":[{"id":"exec","agent":"codex"}]}
+            ]}"#,
+        )
+        .unwrap();
+        // 经济模式三个角色都有人，未设角色默认时会被「没有可派发目标」拒绝。
+        fs::write(
+            root.join("roles.json"),
+            r#"{"version":1,"planning":{"agent":"codex","model":"exec","thinking":"低"},"execution":{"agent":"codex","model":"exec","thinking":"低"},"acceptance":{"agent":"pi","provider":"zai","model":"glm-4.7","thinking":"中"}}"#,
+        )
+        .unwrap();
+        if let Some(default_mode) = default_mode {
+            // 盲审预设没有角色默认可补，设成默认模式时必须带人选才能派出。
+            let modes = modes_for_host(
+                "claude",
+                crate::orchestration::HostModes {
+                    default_mode: default_mode.into(),
+                    seats: indexmap::IndexMap::from([(
+                        "builtin-blind".into(),
+                        vec![vec![
+                            Some(task46_seat("pi", Some("zai"), "glm-4.7")),
+                            Some(task46_seat("pi", Some("zai"), "glm-4.7")),
+                            Some(task46_seat("pi", Some("zai"), "glm-4.7")),
+                        ]],
+                    )]),
+                    ..crate::orchestration::HostModes::default()
+                },
+            );
+            crate::orchestration::save_modes_in(&root, &modes).unwrap();
+        }
+        let input = DispatchInput {
+            project: root.to_string_lossy().into(),
+            text: "任务".into(),
+            preset: preset.map(str::to_string),
+            ..DispatchInput::default()
+        };
+        let result = start_dispatch_with(&root, input, spawn_ok).unwrap();
+        (root, result)
+    }
+    let run_preset_id = |root: &Path, result: &Value| -> String {
+        let run: EngineRun = serde_json::from_slice(
+            &fs::read(runs_dir(root).join(format!("{}.json", result["run_id"].as_str().unwrap()))).unwrap(),
+        )
+        .unwrap();
+        run.preset_id
+    };
+
+    // 未设默认模式 → 经济。
+    let (root, result) = dispatch_case(None, None);
+    assert_eq!(result["accepted"].as_bool(), Some(true), "{result}");
+    assert_eq!(run_preset_id(&root, &result), "builtin-economy");
+    let _ = fs::remove_dir_all(root);
+
+    // 设了盲审 → 盲审。
+    let (root, result) = dispatch_case(Some("builtin-blind"), None);
+    assert_eq!(result["accepted"].as_bool(), Some(true), "{result}");
+    assert_eq!(run_preset_id(&root, &result), "builtin-blind");
+    let _ = fs::remove_dir_all(root);
+
+    // 指向不存在的预设 → 经济。
+    let (root, result) = dispatch_case(Some("builtin-ghost"), None);
+    assert_eq!(result["accepted"].as_bool(), Some(true), "{result}");
+    assert_eq!(run_preset_id(&root, &result), "builtin-economy");
+    let _ = fs::remove_dir_all(root);
+
+    // 显式 --preset 优先于默认模式。（引擎层不解析别名，别名在命令行入口
+    // build_request 里解析。）
+    let (root, result) = dispatch_case(Some("builtin-blind"), Some("builtin-economy"));
+    assert_eq!(result["accepted"].as_bool(), Some(true), "{result}");
+    assert_eq!(run_preset_id(&root, &result), "builtin-economy");
+    let _ = fs::remove_dir_all(root);
+}
+
+/// modes.json v2：把一个主 agent 的配置包成整份文件（测试夹具用）。
+fn modes_for_host(host: &str, section: crate::orchestration::HostModes) -> ModesFile {
+    ModesFile {
+        version: crate::orchestration::MODES_VERSION,
+        hosts: indexmap::IndexMap::from([(host.to_string(), section)]),
+    }
+}
+
+/// default_preset_id：空与未知回经济，存在的预设（含用户预设）生效，trim 后匹配。
+#[test]
+fn task46_default_preset_id_rules() {
+    let presets = crate::orchestration::builtin_presets();
+    let modes = |default_mode: &str| crate::orchestration::HostModes {
+        default_mode: default_mode.into(),
+        ..crate::orchestration::HostModes::default()
+    };
+    assert_eq!(default_preset_id(None, &presets), "builtin-economy");
+    assert_eq!(default_preset_id(Some(&modes("")), &presets), "builtin-economy");
+    assert_eq!(default_preset_id(Some(&modes("builtin-ghost")), &presets), "builtin-economy");
+    assert_eq!(default_preset_id(Some(&modes("builtin-blind")), &presets), "builtin-blind");
+    assert_eq!(default_preset_id(Some(&modes(" builtin-blind ")), &presets), "builtin-blind");
+}
+
+/// 复审追加：人选有效而备选的 agent 或 model 为空时，备选按未设处理。
+#[test]
+fn task46_fill_seats_ignores_empty_fallback() {
+    let preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-blind")
+        .unwrap();
+    let fallback = |agent: &str, model: &str| crate::orchestration::FallbackTarget {
+        agent: agent.into(),
+        provider: None,
+        model: model.into(),
+    };
+    let seats = vec![vec![
+        Some(crate::orchestration::SeatChoice {
+            fallback: Some(fallback("", "sonnet")),
+            ..task46_seat("pi", Some("zai"), "glm-4.7")
+        }),
+        Some(crate::orchestration::SeatChoice {
+            fallback: Some(fallback("claude", " ")),
+            ..task46_seat("pi", Some("zai"), "glm-4.7")
+        }),
+        Some(crate::orchestration::SeatChoice {
+            fallback: Some(fallback("claude", "sonnet")),
+            ..task46_seat("pi", Some("zai"), "glm-4.7")
+        }),
+    ]];
+    let (filled, sources) = fill_seats(&preset, &RoleSettings::default(), Some(&seats));
+    assert_eq!(sources, vec![vec!["位置", "位置", "位置"]]);
+    assert!(filled.stages[0].nodes[0].fallback.is_none());
+    assert!(filled.stages[0].nodes[1].fallback.is_none());
+    assert_eq!(filled.stages[0].nodes[2].fallback.as_ref().unwrap().model, "sonnet");
+}
+
+// ── TASK-56：位置数量可调 ─────────────────────────────────────────────
+
+/// 盖一个单材料节点的图，返回新建节点的文本（按创建序）；focus 是评审
+/// 模式的生效视角名单（TASK-59），其它模式传空。
+fn task56_stamp_texts(preset: &Preset, focus: &[String]) -> Vec<String> {
+    let mut graph = Graph {
+        version: 1,
+        id: "g56".into(),
+        root: "root".into(),
+        ..Graph::default()
+    };
+    graph.nodes.insert(
+        "root".into(),
+        GraphNode {
+            id: "root".into(),
+            kind: "material".into(),
+            user: Message {
+                text: "材料".into(),
+                ..Message::default()
+            },
+            ..GraphNode::default()
+        },
+    );
+    let mut seq = 0usize;
+    let mut ids = move || {
+        seq += 1;
+        format!("n{seq}")
+    };
+    let base = Utc::now();
+    let (next, created) = stamp_with(&graph, "root", preset, 3, focus, &mut ids, base);
+    created
+        .iter()
+        .map(|id| next.nodes.get(id).unwrap().user.text.clone())
+        .collect()
+}
+
+fn task56_shaped(id: &str, count: usize) -> Preset {
+    let preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == id)
+        .unwrap();
+    crate::orchestration::shape_builtin_preset(&preset, count)
+}
+
+/// 位置文本随调整后的形状生成：评审视角按「安全 → 性能 → 需求覆盖」
+/// 依次取；盲审与经济的验证位置都用验证路由文本；经济减到 0 只剩验收。
+#[test]
+fn task56_stamp_texts_follow_adjusted_shape() {
+    // 评审：默认 3 个位置，三段视角文本依次出现；减到 2 只剩前两段。
+    let texts = task56_stamp_texts(&task56_shaped("builtin-jury", 3), &[]);
+    assert_eq!(texts.len(), 3);
+    assert!(texts[0].starts_with("安全评审："), "{}", texts[0]);
+    assert!(texts[1].starts_with("性能评审："), "{}", texts[1]);
+    assert!(texts[2].starts_with("需求覆盖评审："), "{}", texts[2]);
+    let texts = task56_stamp_texts(&task56_shaped("builtin-jury", 2), &[]);
+    assert_eq!(texts.len(), 2);
+    assert!(texts[0].starts_with("安全评审："), "{}", texts[0]);
+    assert!(texts[1].starts_with("性能评审："), "{}", texts[1]);
+    // 盲审：验收不覆盖，验证位置都套验证路由文本。
+    let route = "盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。";
+    let texts = task56_stamp_texts(&task56_shaped("builtin-blind", 1), &[]);
+    assert_eq!(texts, vec!["".to_string(), route.to_string()]);
+    let texts = task56_stamp_texts(&task56_shaped("builtin-blind", 4), &[]);
+    assert_eq!(
+        texts,
+        vec![
+            "".to_string(),
+            route.to_string(),
+            route.to_string(),
+            route.to_string(),
+            route.to_string(),
+        ]
+    );
+    // 经济：验证减到 0 只剩验收；加到 2 两路都是验证路由文本。
+    let texts = task56_stamp_texts(&task56_shaped("builtin-economy", 0), &[]);
+    assert_eq!(texts, vec!["".to_string(), "".to_string(), "".to_string()]);
+    let texts = task56_stamp_texts(&task56_shaped("builtin-economy", 2), &[]);
+    assert_eq!(
+        texts,
+        vec![
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            route.to_string(),
+            route.to_string(),
+        ]
+    );
+}
+
+// ── TASK-59：评审视角可选 ──────────────────────────────────────
+
+/// 视角文本：内置视角查表（规范 / 正确性 / 可维护性也在表里），自定义
+/// 文字套统一模板，空串给空。
+#[test]
+fn task59_jury_focus_text_lookup_and_template() {
+    assert_eq!(
+        jury_focus_text("安全"),
+        "安全评审：只从安全视角审查这批材料，指出风险、暴露面与缓释建议。"
+    );
+    assert_eq!(
+        jury_focus_text("规范"),
+        "规范评审：只从项目规范视角审查这批材料：对照仓库已有的编码规范与约定（如 AGENTS.md、CONTRIBUTING.md、lint 配置），指出违反之处与修改建议。"
+    );
+    assert_eq!(
+        jury_focus_text("正确性"),
+        "正确性评审：只从正确性视角审查这批材料，指出逻辑错误、遗漏的边界条件与反例。"
+    );
+    assert_eq!(
+        jury_focus_text("可维护性"),
+        "可维护性评审：只从可维护性视角审查这批材料，指出重复、命名、耦合与可以简化之处。"
+    );
+    assert_eq!(
+        jury_focus_text("可靠性"),
+        "可靠性评审：只从可靠性视角审查这批材料，指出问题与改进建议。"
+    );
+    assert_eq!(jury_focus_text(""), "");
+}
+
+/// fix-59-r1：视角文字校验——换行、制表在 trim 前就拒绝（首尾也算）；
+/// Unicode 格式字符（零宽、双向覆盖与隔离、BOM）拒绝；首尾普通空白去掉；
+/// 空白串规整为空串（表示用默认）。
+#[test]
+fn task59_normalize_focus_text_rules() {
+    assert_eq!(normalize_focus_text("  可靠性 ").unwrap(), "可靠性");
+    assert_eq!(normalize_focus_text("   ").unwrap(), "");
+    assert_eq!(normalize_focus_text("").unwrap(), "");
+    for bad in ["规范\n", "\n规范", "\r规范", "规范\t", "两\n行"] {
+        let message = normalize_focus_text(bad).unwrap_err();
+        assert!(message.contains("控制字符"), "{bad:?} → {message}");
+    }
+    assert!(normalize_focus_text("\u{1b}[31m红").unwrap_err().contains("控制字符"));
+    for bad in [
+        "规\u{200b}范",
+        "规\u{200f}范",
+        "\u{202a}规范",
+        "\u{202e}规范",
+        "\u{2066}规范\u{2069}",
+        "\u{feff}规范",
+        "规\u{ad}范",
+    ] {
+        let message = normalize_focus_text(bad).unwrap_err();
+        assert!(message.contains("格式字符"), "{bad:?} → {message}");
+        assert!(message.contains("\\u{"), "{bad:?} → {message}");
+    }
+    assert!(normalize_focus_text(&"长".repeat(20)).is_ok());
+    assert!(normalize_focus_text(&"长".repeat(21)).unwrap_err().contains("1–20 字"));
+}
+
+/// fix-59-r1：读出口用同一套校验——手写 modes.json 里带换行、超长、
+/// 格式字符的视角回落默认表，不报错；合格的照常生效（首尾空白去掉）。
+#[test]
+fn task59_focus_from_handwritten_modes_falls_back() {
+    let root = crate::paths::test_temp_dir()
+        .join(format!("aicross-t59-focus-read-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let long = "长".repeat(21);
+    let text = format!(
+        r#"{{"version":2,"hosts":{{"claude":{{"focus":{{"builtin-jury":["两\n行"," 可靠性 ","{long}"]}}}},"codex":{{"focus":{{"builtin-jury":["规\u200b范","\u202e性能","正确性\t"]}}}}}}}}"#
+    );
+    std::fs::write(root.join("modes.json"), text).unwrap();
+    let modes = crate::orchestration::modes_from(&root);
+    let preset = task56_shaped("builtin-jury", 3);
+    let section = crate::orchestration::host_section(&modes, "claude");
+    assert!(section.is_some(), "手写的 modes.json 要能读到");
+    let names = jury_focus_names(section, &preset);
+    assert_eq!(
+        names,
+        vec!["安全".to_string(), "可靠性".to_string(), "需求覆盖".to_string()]
+    );
+    // 盖章文本同一份名单：不合格的位置是默认文本，合格的按自定义模板。
+    let texts = task56_stamp_texts(&preset, &names);
+    assert!(texts[0].starts_with("安全评审："), "{}", texts[0]);
+    assert!(texts[1].starts_with("可靠性评审："), "{}", texts[1]);
+    assert!(texts[2].starts_with("需求覆盖评审："), "{}", texts[2]);
+    // 零宽、双向覆盖、制表：全部回默认表。
+    let section = crate::orchestration::host_section(&modes, "codex");
+    assert!(section.is_some());
+    assert_eq!(
+        jury_focus_names(section, &preset),
+        jury_focus_names(None, &preset)
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 生效视角名单：配置里设了的生效（含内置名与自定义文字），空串或缺的
+/// 下标回默认表；数量调小后多出的项不进名单，调大后恢复。
+#[test]
+fn task59_jury_focus_names_follow_config_and_shape() {
+    let section = |focus: Vec<String>| crate::orchestration::HostModes {
+        focus: indexmap::IndexMap::from([("builtin-jury".to_string(), focus)]),
+        ..crate::orchestration::HostModes::default()
+    };
+    let preset3 = task56_shaped("builtin-jury", 3);
+    // 改成「规范」＋自定义文字，空串回默认。
+    let names = jury_focus_names(
+        Some(&section(vec![
+            "规范".into(),
+            String::new(),
+            "可靠性".into(),
+        ])),
+        &preset3,
+    );
+    assert_eq!(names, vec!["规范".to_string(), "性能".to_string(), "可靠性".to_string()]);
+    // 全部空串与没有配置一致，都回默认表。
+    assert_eq!(
+        jury_focus_names(Some(&section(vec![String::new(), String::new(), String::new()])), &preset3),
+        jury_focus_names(None, &preset3)
+    );
+    assert_eq!(
+        jury_focus_names(None, &preset3),
+        vec!["安全".to_string(), "性能".to_string(), "需求覆盖".to_string()]
+    );
+    // 数量调到 2：多出的第三项不进名单，前两位不变；调回 3 后恢复。
+    let preset2 = task56_shaped("builtin-jury", 2);
+    let focus = vec!["规范".to_string(), String::new(), "可靠性".to_string()];
+    assert_eq!(
+        jury_focus_names(Some(&section(focus.clone())), &preset2),
+        vec!["规范".to_string(), "性能".to_string()]
+    );
+    assert_eq!(
+        jury_focus_names(Some(&section(focus)), &preset3)[2],
+        "可靠性"
+    );
+    // 非评审模式给空名单。
+    assert!(jury_focus_names(None, &task56_shaped("builtin-blind", 2)).is_empty());
+}
+
+/// 盖章用上配置的视角：改成「规范」的节点是规范文本，自定义文字套模板，
+/// 空串回默认。
+#[test]
+fn task59_stamp_texts_follow_focus_overrides() {
+    let section = crate::orchestration::HostModes {
+        focus: indexmap::IndexMap::from([(
+            "builtin-jury".to_string(),
+            vec!["规范".to_string(), String::new(), "可靠性".to_string()],
+        )]),
+        ..crate::orchestration::HostModes::default()
+    };
+    let preset = task56_shaped("builtin-jury", 3);
+    let texts = task56_stamp_texts(&preset, &jury_focus_names(Some(&section), &preset));
+    assert!(texts[0].starts_with("规范评审：只从项目规范视角"), "{}", texts[0]);
+    assert!(texts[1].starts_with("性能评审："), "{}", texts[1]);
+    assert!(
+        texts[2].starts_with("可靠性评审：只从可靠性视角审查这批材料"),
+        "{}",
+        texts[2]
+    );
+}
+
+/// 派发按调整后的形状建节点：盲审 counts=1 时只建验收 + 1 路验证，
+/// 验证节点的正文仍是验证路由文本。
+#[test]
+fn task56_dispatch_builds_nodes_per_counts() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    let root = temp("task56-dispatch");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"pi","models":[{"id":"glm-4.7","agent":"pi","provider":"zai","verification":"verified"}]}]}"#,
+    )
+    .unwrap();
+    let seat = task46_seat("pi", Some("zai"), "glm-4.7");
+    let modes = modes_for_host(
+        "claude",
+        crate::orchestration::HostModes {
+            counts: indexmap::IndexMap::from([("builtin-blind".to_string(), 1)]),
+            seats: indexmap::IndexMap::from([(
+                "builtin-blind".into(),
+                vec![vec![Some(seat.clone()), Some(seat)]],
+            )]),
+            ..crate::orchestration::HostModes::default()
+        },
+    );
+    crate::orchestration::save_modes_in(&root, &modes).unwrap();
+    let input = DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "盲审这个改动".into(),
+        preset: Some("builtin-blind".into()),
+        ..DispatchInput::default()
+    };
+    let result = start_dispatch_with(&root, input, spawn_ok).unwrap();
+    assert_eq!(result["accepted"].as_bool(), Some(true), "{result}");
+    let graph = orchestration::load_graph_in(&root, result["graph_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    let ids: Vec<String> = result["node_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids.len(), 2, "验收加 1 路验证：{ids:?}");
+    let roles: Vec<&str> = ids
+        .iter()
+        .map(|id| graph.nodes.get(id).unwrap().target.as_ref().unwrap().role.as_str())
+        .collect();
+    assert_eq!(roles, ["验收", "验证"]);
+    let route = "盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。";
+    assert_eq!(graph.nodes.get(&ids[1]).unwrap().user.text, route);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// 派发（start_dispatch_with → plan_dispatch）用上该主 agent 配置的评审
+/// 视角：改成「规范」后节点正文是规范文本，自定义文字套模板，清空后回
+/// 默认；数量调到 2 后多出的视角项不影响。counts 与 focus 同一条路径，
+/// 都从 modes.json 的 host 段取。
+#[test]
+fn task59_dispatch_stamps_configured_focus() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    let root = temp("task59-dispatch-focus");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"pi","models":[{"id":"glm-4.7","agent":"pi","provider":"zai","verification":"verified"}]}]}"#,
+    )
+    .unwrap();
+    let seat = task46_seat("pi", Some("zai"), "glm-4.7");
+    let write_modes = |count: usize, focus: &[&str]| {
+        let list: Vec<String> = focus.iter().map(|name| name.to_string()).collect();
+        let modes = modes_for_host(
+            "claude",
+            crate::orchestration::HostModes {
+                counts: indexmap::IndexMap::from([("builtin-jury".to_string(), count as u32)]),
+                focus: indexmap::IndexMap::from([("builtin-jury".to_string(), list)]),
+                seats: indexmap::IndexMap::from([(
+                    "builtin-jury".into(),
+                    vec![vec![Some(seat.clone()); count]],
+                )]),
+                ..crate::orchestration::HostModes::default()
+            },
+        );
+        crate::orchestration::save_modes_in(&root, &modes).unwrap();
+    };
+    let texts_of = |focus: &[&str], count: usize| {
+        write_modes(count, focus);
+        let input = DispatchInput {
+            project: root.to_string_lossy().into(),
+            text: "评审这个改动".into(),
+            preset: Some("builtin-jury".into()),
+            ..DispatchInput::default()
+        };
+        let result = start_dispatch_with(&root, input, spawn_ok).unwrap();
+        assert_eq!(result["accepted"].as_bool(), Some(true), "{result}");
+        let graph = orchestration::load_graph_in(&root, result["graph_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        result["node_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| graph.nodes.get(id.as_str().unwrap()).unwrap().user.text.clone())
+            .collect::<Vec<String>>()
+    };
+    // 内置名、自定义文字、空串回默认各占一位。
+    let texts = texts_of(&["规范", "", "可靠性"], 3);
+    assert!(texts[0].starts_with("规范评审：只从项目规范视角"), "{}", texts[0]);
+    assert!(texts[1].starts_with("性能评审："), "{}", texts[1]);
+    assert!(
+        texts[2].starts_with("可靠性评审：只从可靠性视角审查这批材料"),
+        "{}",
+        texts[2]
+    );
+    // 清空后回默认表。
+    let texts = texts_of(&["", "", ""], 3);
+    assert!(texts[0].starts_with("安全评审："), "{}", texts[0]);
+    assert!(texts[1].starts_with("性能评审："), "{}", texts[1]);
+    assert!(texts[2].starts_with("需求覆盖评审："), "{}", texts[2]);
+    // 数量调到 2：多出的第三项不影响前两位。
+    let texts = texts_of(&["规范", "", "多余的"], 2);
+    assert_eq!(texts.len(), 2);
+    assert!(texts[0].starts_with("规范评审："), "{}", texts[0]);
+    assert!(texts[1].starts_with("性能评审："), "{}", texts[1]);
+    let _ = fs::remove_dir_all(root);
+}
+
+/// 自定义模式真正走一次派发（start_dispatch_with → plan_dispatch）：引擎
+/// 按 id 取到 presets.json 里的用户预设，按它的阶段建节点，节点 target
+/// 的角色与人选与预设、modes.json 一致。
+#[test]
+fn task56_custom_preset_dispatches_with_own_shape() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    let node = |role: &str, visibility: &str, write: &str| crate::orchestration::Target {
+        role: role.into(),
+        visibility: visibility.into(),
+        write: write.into(),
+        thinking: "中".into(),
+        ..crate::orchestration::Target::default()
+    };
+    let custom = crate::orchestration::Preset {
+        id: "custom-flow".into(),
+        name: "流水模式".into(),
+        description: "自定义的三个阶段".into(),
+        builtin: false,
+        stages: vec![
+            crate::orchestration::Stage {
+                nodes: vec![node("执行", "共享", "单写者")],
+            },
+            crate::orchestration::Stage {
+                nodes: vec![node("验收", "盲", "只读"), node("验证", "盲", "只读")],
+            },
+        ],
+    };
+    let root = temp("task56-custom-preset");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[
+            {"id":"pi","models":[{"id":"glm-4.7","agent":"pi","provider":"zai","verification":"verified"}]},
+            {"id":"codex","models":[{"id":"gpt-5.2","agent":"codex","verification":"verified"}]}
+        ]}"#,
+    )
+    .unwrap();
+    crate::orchestration::save_presets_in(
+        &root,
+        &crate::orchestration::PresetFile {
+            version: 1,
+            presets: vec![custom],
+        },
+    )
+    .unwrap();
+    let seat = task46_seat("pi", Some("zai"), "glm-4.7");
+    let accept = task46_seat("codex", None, "gpt-5.2");
+    let modes = modes_for_host(
+        "claude",
+        crate::orchestration::HostModes {
+            seats: indexmap::IndexMap::from([(
+                "custom-flow".into(),
+                vec![vec![Some(seat.clone())], vec![Some(accept), Some(seat)]],
+            )]),
+            ..crate::orchestration::HostModes::default()
+        },
+    );
+    crate::orchestration::save_modes_in(&root, &modes).unwrap();
+    let input = DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "按自定义模式派发".into(),
+        preset: Some("custom-flow".into()),
+        ..DispatchInput::default()
+    };
+    let result = start_dispatch_with(&root, input, spawn_ok).unwrap();
+    assert_eq!(result["accepted"].as_bool(), Some(true), "{result}");
+    let graph = orchestration::load_graph_in(&root, result["graph_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    let ids: Vec<String> = result["node_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids.len(), 3, "阶段形状 1 + 2：{ids:?}");
+    let summary: Vec<(String, String, String)> = ids
+        .iter()
+        .map(|id| {
+            let target = graph.nodes.get(id).unwrap().target.as_ref().unwrap();
+            (
+                target.role.clone(),
+                target.agent.clone(),
+                target.model.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("执行".to_string(), "pi".to_string(), "glm-4.7".to_string()),
+            ("验收".to_string(), "codex".to_string(), "gpt-5.2".to_string()),
+            ("验证".to_string(), "pi".to_string(), "glm-4.7".to_string()),
+        ],
+        "{summary:?}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+/// fix-57-r1 8：盖章后派发构造出的每个节点提示词都以如实汇报要求收尾
+/// （所有角色同一处追加），用户原文在提示词里原样保留，不被改动。
+#[test]
+fn task57_r1_dispatch_prompts_end_with_honest_reporting() {
+    let preset = crate::orchestration::builtin_presets()
+        .into_iter()
+        .find(|preset| preset.id == "builtin-economy")
+        .unwrap();
+    let mut graph = Graph {
+        version: 1,
+        id: "g57".into(),
+        root: "root".into(),
+        ..Graph::default()
+    };
+    graph.nodes.insert(
+        "root".into(),
+        GraphNode {
+            id: "root".into(),
+            kind: "material".into(),
+            user: Message {
+                text: "实现导出功能".into(),
+                ..Message::default()
+            },
+            ..GraphNode::default()
+        },
+    );
+    let mut seq = 0usize;
+    let mut ids = move || {
+        seq += 1;
+        format!("n{seq}")
+    };
+    let (graph, created) = stamp_with(&graph, "root", &preset, 3, &[], &mut ids, Utc::now());
+    let request = build_request(
+        "run-1",
+        "D:/p",
+        &EngineSettings::default(),
+        &graph,
+        &created,
+        &[],
+        "实现导出功能",
+    );
+    assert_eq!(request.nodes.len(), created.len());
+    for node in &request.nodes {
+        assert!(
+            node.prompt.ends_with(HONEST_REPORTING),
+            "提示词应以如实汇报要求收尾：{}",
+            node.prompt
+        );
+        // 用户原文不被改动：原样出现在提示词里。
+        assert!(node.prompt.contains("[用户]\n实现导出功能"), "{}", node.prompt);
+        // 常量只定义一处：追加的就是那个常量，不含其它变体。
+        assert_eq!(node.prompt.matches(HONEST_REPORTING).count(), 1, "{}", node.prompt);
     }
 }

@@ -392,6 +392,7 @@ fn run_fixture(fixture: &Value) -> Value {
         .with_timezone(&Utc);
     let mut clock = move || frozen;
 
+    // TASK-46：金标准夹具不涉及 modes.json，按空配置与经济缺省重放。
     let mut plan_input = PlanInput {
         run_id: &run_id,
         project: &project,
@@ -404,6 +405,8 @@ fn run_fixture(fixture: &Value) -> Value {
         resources_error: resources_error.as_deref(),
         presets: &presets,
         roles: &roles,
+        host_modes: None,
+        default_preset: "builtin-economy",
         active_runs,
         existing,
         git_dirty_count: &mut git_dirty_count,
@@ -427,6 +430,7 @@ fn run_fixture(fixture: &Value) -> Value {
             graph,
             created,
             original,
+            notes: _,
         } => {
             let mut sink = RecordingSink {
                 fixture_stages,

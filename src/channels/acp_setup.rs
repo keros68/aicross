@@ -8,7 +8,8 @@
 use crate::process::{run_process, ProcessResult};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 struct Adapter {
     agent: &'static str,
@@ -133,6 +134,41 @@ pub(crate) fn adapter_status() -> Vec<AdapterReport> {
     adapter_status_with(&|agent| resolve_adapter(agent).is_ok(), &|cli| super::resolve_binary(cli, None).is_ok())
 }
 
+/// 窗口进程的适配器状态缓存（走查 #9）：adapter_status 每次拉起 where.exe
+/// 逐家查（单次约 1 秒），窗口每次读配置都会调，切页就卡；60 秒内复用
+/// 上次结果。命令行一次性调用不经过缓存。装完适配器后调
+/// `clear_adapter_status_cache`，下一次读重新查。
+static ADAPTER_STATUS_CACHE: OnceLock<Mutex<Option<(Instant, Vec<AdapterReport>)>>> =
+    OnceLock::new();
+
+const ADAPTER_STATUS_CACHE_SECS: u64 = 60;
+
+/// 带 60 秒缓存的适配器状态（窗口读配置路径用）。
+pub(crate) fn adapter_status_cached() -> Vec<AdapterReport> {
+    let mut cached = ADAPTER_STATUS_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((at, reports)) = cached.as_ref() {
+        if at.elapsed() < Duration::from_secs(ADAPTER_STATUS_CACHE_SECS) {
+            return reports.clone();
+        }
+    }
+    let reports = adapter_status();
+    *cached = Some((Instant::now(), reports.clone()));
+    reports
+}
+
+/// 适配器安装结果落定后清缓存：下一次读配置重新查，不再显示装之前的
+/// 「未安装」。
+pub(crate) fn clear_adapter_status_cache() {
+    if let Some(cache) = ADAPTER_STATUS_CACHE.get() {
+        *cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+}
+
 fn adapter_status_with(adapter_ready: &dyn Fn(&str) -> bool, cli_present: &dyn Fn(&str) -> bool) -> Vec<AdapterReport> {
     ADAPTERS
         .iter()
@@ -161,13 +197,16 @@ pub(crate) fn install_missing_blocking() -> Vec<AdapterReport> {
         let _ = std::fs::create_dir_all(prefix);
         run_process(npm, args, None, Duration::from_secs(1800), Some(prefix))
     };
-    install_missing_with(&InstallEnv {
+    let reports = install_missing_with(&InstallEnv {
         adapter_ready: &adapter_ready,
         cli_present: &cli_present,
         npm: super::resolve_binary("npm", None).ok(),
         prefix: prefix(),
         run_npm: &run_npm,
-    })
+    });
+    // 装完适配器清状态缓存（走查 #9）：下一次读配置重新查。
+    clear_adapter_status_cache();
+    reports
 }
 
 pub(crate) fn install_missing_with(env: &InstallEnv) -> Vec<AdapterReport> {

@@ -105,3 +105,6 @@ binaries/
 
 # Local agent/tool plan scratch (e.g. .zcode/plans — session-scoped, not for the repo)
 /.zcode/
+
+# Python test cache (skill bundle)
+.pytest_cache/

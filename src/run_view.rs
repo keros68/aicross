@@ -867,6 +867,7 @@ mod tests {
                 Preset {
                     id: "u1".into(),
                     name: "预发回归".into(),
+                    description: String::new(),
                     builtin: false,
                     stages: vec![Stage {
                         nodes: vec![Target {
@@ -878,6 +879,7 @@ mod tests {
                 Preset {
                     id: "u2".into(),
                     name: "  ".into(),
+                    description: String::new(),
                     builtin: false,
                     stages: vec![Stage {
                         nodes: vec![Target::default()],
@@ -992,11 +994,13 @@ mod tests {
             reason: String::new(),
             pid: 0,
             pid_started_at: String::new(),
+            host: "claude".into(),
             original_request: "给解析器加测试\n顺便补文档".into(),
             accept_criteria: String::new(),
             preset_id: "builtin-economy".into(),
             leftover: Vec::new(),
             in_flight_node_ids: Vec::new(),
+            notes: Vec::new(),
             updated_at: updated_at.into(),
         }
     }

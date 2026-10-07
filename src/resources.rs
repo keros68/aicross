@@ -30,8 +30,14 @@ use uuid::Uuid;
 const STATUS_PENDING: &str = "待冒烟";
 const STATUS_CONNECTED: &str = "已接入";
 const STATUS_FAILED: &str = "冒烟失败";
-const MISSING_MARKER: &str = "未在事实源中";
+/// 「未在事实源中」标记：merge_detected_models 打，model_state / 引擎派发前
+/// 检查读；crate 内可见是为引擎测试构造夹具。
+pub(crate) const MISSING_MARKER: &str = "未在事实源中";
 const SMOKE_PROMPT: &str = "只回复 OK";
+
+/// 「未发现」状态的统一说明（TASK-48）：冒烟、选人选、派发的拒绝与跳过
+/// 都用这一句，不再各写各的。
+pub(crate) const NOT_DETECTED_NOTE: &str = "最近一次探测未发现";
 
 /// 09-15 口径的四态（写进 `ResourceModel::verification`，`aicross resources` 按它显示状态）。
 /// TASK-42 起追加 `timeout`：冒烟超时单独记档，不算验证失败、不拦派发。
@@ -97,6 +103,10 @@ pub struct ResourceStore {
     pub version: u32,
     #[serde(default)]
     pub agents: Vec<ResourceAgent>,
+    /// 最近一次成功写回的探测时间（RFC3339；TASK-48 的追加字段）。旧库没有
+    /// 该字段时为 None，`aicross resources` 的 `detected_at` 输出 null。
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "detectedAt")]
+    pub detected_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -195,7 +205,24 @@ pub struct ResourceOperation {
     pub errors: Vec<String>,
     #[serde(default)]
     pub cc_switch_hints: Vec<CcSwitchHint>,
+    /// 按条目批量操作时跳过未执行的条目与原因（TASK-48：未发现的模型
+    /// 不发请求）。跳过不算失败，不进 errors、不影响退出码。
+    #[serde(default)]
+    pub skipped: Vec<String>,
 }
+
+/// TASK-52 `resources prune` 的结果：清理后的资源库、被删的
+/// `agent/provider/model` 键，其中被 modes.json 人选或 roles.json 角色
+/// 引用的单列在 `referenced`（照样删除，输出里另列说明）。
+pub(crate) struct PruneOutcome {
+    pub store: ResourceStore,
+    pub removed: Vec<String>,
+    pub referenced: Vec<String>,
+}
+
+/// prune 时判断「被引用」的参照：modes.json 人选 / roles.json 角色里的一个
+/// 模型指向（agent, provider, model）。provider 为空表示不限 provider。
+pub(crate) type ModelReference = (String, String, String);
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct ResourceModelKey {
@@ -221,6 +248,9 @@ struct CodexModel {
     description: String,
     #[serde(default)]
     priority: Option<i64>,
+    /// `hide` 是 codex 自己不在选择器里列出的模型（自动审批审查、旧版保留等）。
+    #[serde(default)]
+    visibility: String,
     #[serde(default)]
     supported_reasoning_levels: Vec<Value>,
 }
@@ -549,6 +579,7 @@ fn load_or_default(path: &Path) -> Result<ResourceStore, String> {
         load(path)
     } else {
         Ok(ResourceStore {
+            detected_at: None,
             version: 1,
             agents: Vec::new(),
         })
@@ -769,63 +800,129 @@ fn detect_version(binary: Option<&PathBuf>) -> (bool, String) {
 
 // ── 探测 ──────────────────────────────────────────────────────────────────
 
-fn detect_into_supports_agent(agent_id: &str) -> bool {
-    agent_id != "pi"
+/// pi 的探测（版本、模型清单、provider 登录检查）必须先在资源库锁外
+/// 完成（探测一次最长几十秒，不能把其他写方挡在锁外），走 Pi 专用准备；
+/// 其余 agent 走通用准备（TASK-57 走查 #3 起全部 agent 都在锁外准备）。
+fn uses_pi_prepared_detection(agent_id: &str) -> bool {
+    agent_id == "pi"
 }
 
-fn detect_into(
-    store: &mut ResourceStore,
-    agent_id: &str,
-    errors: &mut Vec<String>,
-) {
-    if !detect_into_supports_agent(agent_id) {
-        errors.push("探测 pi 失败：pi 必须在资源库锁外完成探测".to_string());
-        return;
-    }
-    if store.agents.iter().all(|agent| agent.id != agent_id) {
-        errors.push(format!("探测资源失败：未知 agent：{agent_id}"));
-        return;
-    }
+/// 一个 agent 的锁外探测准备结果：跑版本与模型清单子进程，不碰资源库；
+/// 锁内由 `apply_prepared_detection` 合并。pi 与其余 agent 各走一档。
+/// `Failed` 是探测线程 panic 的占位结果（fix-57-r1 1）：锁内只记一条
+/// 错误，不合并该 agent，其余 agent 照常。
+enum PreparedDetection {
+    Pi(PreparedPiDetection),
+    Plain(PreparedAgentDetection),
+    Failed(String),
+}
 
+impl PreparedDetection {
+    fn agent_id(&self) -> &str {
+        match self {
+            PreparedDetection::Pi(_) => "pi",
+            PreparedDetection::Plain(prepared) => &prepared.agent_id,
+            PreparedDetection::Failed(agent_id) => agent_id,
+        }
+    }
+}
+
+/// 非 pi agent 的锁外探测准备：版本检测结果、失败说明与模型清单。
+/// `models` 为 None 表示不合并（手动 agent 没有事实源可读）。
+struct PreparedAgentDetection {
+    agent_id: String,
+    detected: bool,
+    version: String,
+    missing_error: Option<String>,
+    models: Option<Result<Vec<ResourceModel>, String>>,
+}
+
+fn prepare_agent_detection(agent_id: &str) -> PreparedDetection {
+    if uses_pi_prepared_detection(agent_id) {
+        return PreparedDetection::Pi(prepare_pi_detection(resolve_cli("pi")));
+    }
+    PreparedDetection::Plain(prepare_plain_detection(agent_id))
+}
+
+fn prepare_plain_detection(agent_id: &str) -> PreparedAgentDetection {
     // 手动 agent：二进制来自 tools.json 里的手动配置，没有事实源可读。
     if agent_id.starts_with("manual-") {
         let entry = crate::tool_config::get(agent_id);
         let (binary, _) = crate::tool_config::parse_command(&entry.command);
         let resolved = binary.as_deref().and_then(resolve_cli);
         let (detected, version) = detect_version(resolved.as_ref());
-        set_agent_detection(store, agent_id, detected, &version);
-        if !detected {
-            errors.push(format!(
-                "探测 {agent_id} 失败：未检测到 {}",
-                binary.as_deref().unwrap_or("（未配置二进制）")
-            ));
-        }
-        return;
+        return PreparedAgentDetection {
+            agent_id: agent_id.to_string(),
+            detected,
+            version,
+            missing_error: (!detected).then(|| {
+                format!(
+                    "探测 {agent_id} 失败：未检测到 {}",
+                    binary.as_deref().unwrap_or("（未配置二进制）")
+                )
+            }),
+            models: None,
+        };
     }
 
     let resolved = resolve_cli(agent_id);
     let (detected, version) = detect_version(resolved.as_ref());
-    set_agent_detection(store, agent_id, detected, &version);
-    if !detected {
-        errors.push(format!("探测 {agent_id} 失败：未检测到 {agent_id}"));
-        if agent_id == "claude" {
-            // claude 的模型是静态预设，未检测时没有事实源可读；仍走一次
-            // 空合并，只给既有条目刷「未在事实源中」标记（与 codex/kimi
-            // 走同一条合并路径），不新增预设条目。
-            merge_detected_models(store, agent_id, Vec::new());
-            return;
+    let missing_error =
+        (!detected).then(|| format!("探测 {agent_id} 失败：未检测到 {agent_id}"));
+    let models = if agent_id == "claude" && !detected {
+        // claude 的模型是静态预设，未检测时没有事实源可读；仍走一次
+        // 空合并，只给既有条目刷「未在事实源中」标记（与 codex/kimi
+        // 走同一条合并路径），不新增预设条目。
+        Some(Ok(Vec::new()))
+    } else {
+        match agent_id {
+            "claude" => Some(Ok(claude_presets(resolved.as_ref()))),
+            "codex" => Some(detect_codex()),
+            "kimi" => Some(detect_kimi()),
+            _ => Some(Ok(Vec::new())),
+        }
+    };
+    PreparedAgentDetection {
+        agent_id: agent_id.to_string(),
+        detected,
+        version,
+        missing_error,
+        models,
+    }
+}
+
+/// 锁内应用一个 agent 的探测结果（TASK-57 走查 #3）。
+fn apply_prepared_detection(
+    store: &mut ResourceStore,
+    prepared: PreparedDetection,
+    errors: &mut Vec<String>,
+) {
+    match prepared {
+        PreparedDetection::Pi(prepared) => apply_prepared_pi_detection(store, prepared, errors),
+        PreparedDetection::Plain(prepared) => apply_prepared_plain_detection(store, prepared, errors),
+        PreparedDetection::Failed(agent_id) => {
+            errors.push(format!("探测 {agent_id} 失败：线程异常"));
         }
     }
+}
 
-    let models = match agent_id {
-        "claude" => Ok(claude_presets(resolved.as_ref())),
-        "codex" => detect_codex(),
-        "kimi" => detect_kimi(),
-        _ => Ok(Vec::new()),
-    };
-    match models {
-        Ok(models) => merge_detected_models(store, agent_id, models),
-        Err(error) => errors.push(format!("探测 {agent_id} 失败：{error}")),
+fn apply_prepared_plain_detection(
+    store: &mut ResourceStore,
+    prepared: PreparedAgentDetection,
+    errors: &mut Vec<String>,
+) {
+    if store.agents.iter().all(|agent| agent.id != prepared.agent_id) {
+        errors.push(format!("探测资源失败：未知 agent：{}", prepared.agent_id));
+        return;
+    }
+    if let Some(error) = prepared.missing_error {
+        errors.push(error);
+    }
+    set_agent_detection(store, &prepared.agent_id, prepared.detected, &prepared.version);
+    match prepared.models {
+        Some(Ok(models)) => merge_detected_models(store, &prepared.agent_id, models),
+        Some(Err(error)) => errors.push(format!("探测 {} 失败：{error}", prepared.agent_id)),
+        None => {}
     }
 }
 
@@ -887,10 +984,14 @@ fn parse_codex_cache(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
         return Err("模型缓存清单为空".to_string());
     }
     let fetched_at = cache.fetched_at.unwrap_or_default();
-    let models = cache
+    let mut listed = cache
         .models
         .into_iter()
-        .filter(|model| !model.slug.trim().is_empty())
+        .filter(|model| !model.slug.trim().is_empty() && model.visibility.trim() != "hide")
+        .collect::<Vec<_>>();
+    listed.sort_by_key(|model| model.priority.unwrap_or(i64::MAX));
+    let models = listed
+        .into_iter()
         .map(|model| {
             let supports_thinking = !model.supported_reasoning_levels.is_empty();
             let efforts = model
@@ -1512,20 +1613,26 @@ fn model_key(model: &ResourceModel) -> (&str, &str, &str) {
 
 /// 合并事实源条目：已存在的保留用户字段（tier/status/冒烟结果/vendor/note），
 /// 新条目进「待冒烟」；消失的标「未在事实源中」（申报条目不标）。
+/// 同一 provider 内按事实源给出的顺序排列（codex 缓存按 priority 排，推荐在
+/// 同分时取靠前者）；事实源里没有的条目排在后面、按 id。
 fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: Vec<ResourceModel>) {
     let Some(agent) = store.agents.iter_mut().find(|agent| agent.id == agent_id) else {
         return;
     };
     let discovered_keys = discovered
         .iter()
-        .map(|model| {
+        .enumerate()
+        .map(|(index, model)| {
             (
-                model.agent.clone(),
-                model.provider.clone(),
-                model.id.clone(),
+                (
+                    model.agent.clone(),
+                    model.provider.clone(),
+                    model.id.clone(),
+                ),
+                index,
             )
         })
-        .collect::<HashSet<_>>();
+        .collect::<HashMap<_, _>>();
 
     for mut model in discovered {
         if let Some(existing) = agent
@@ -1564,16 +1671,22 @@ fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: 
             existing.provider.clone(),
             existing.id.clone(),
         );
-        if !discovered_keys.contains(&key)
+        if !discovered_keys.contains_key(&key)
             && !existing.source.starts_with("申报(")
             && !existing.source.starts_with("来源：用户申报 · ")
         {
             existing.meta = append_note_marker(&existing.meta, MISSING_MARKER);
         }
     }
-    agent
-        .models
-        .sort_by(|left, right| (&left.provider, &left.id).cmp(&(&right.provider, &right.id)));
+    let order = |model: &ResourceModel| {
+        discovered_keys
+            .get(&(model.agent.clone(), model.provider.clone(), model.id.clone()))
+            .copied()
+            .unwrap_or(usize::MAX)
+    };
+    agent.models.sort_by(|left, right| {
+        (&left.provider, order(left), &left.id).cmp(&(&right.provider, order(right), &right.id))
+    });
 }
 
 fn append_note_marker(note: &str, marker: &str) -> String {
@@ -2069,6 +2182,8 @@ pub(crate) fn infer_vendor(id: &str) -> &'static str {
         "DeepSeek"
     } else if normalized.contains("minimax") {
         "MiniMax"
+    } else if normalized.contains("gemini") || normalized.contains("google") {
+        "Google"
     } else if normalized.contains("qwen") || normalized.contains("alibaba") {
         "Alibaba"
     } else if normalized.contains("stepfun") || normalized.starts_with("step-") {
@@ -2160,13 +2275,21 @@ fn safe_summary(text: &str) -> String {
 /// agent 两态：探测到 → 可用；未探测到 → 未安装。
 pub(crate) const RESOURCE_STATE_AVAILABLE: &str = "可用";
 pub(crate) const RESOURCE_STATE_MISSING: &str = "未安装";
-/// 模型态：第三方按验证结果，pi 另有登录与额度两态。
+/// 模型态：第三方按验证结果，pi 另有登录与额度两态；TASK-48 起最近一次
+/// 探测没发现的模型另有「未发现」一态。
 pub(crate) const RESOURCE_STATE_UNVERIFIED: &str = "未验证";
 pub(crate) const RESOURCE_STATE_VERIFIED: &str = "已验证";
 pub(crate) const RESOURCE_STATE_FAILED: &str = "验证失败";
 pub(crate) const RESOURCE_STATE_TIMEOUT: &str = "冒烟超时";
 pub(crate) const RESOURCE_STATE_LOGGED_OUT: &str = "未登录";
 pub(crate) const RESOURCE_STATE_QUOTA: &str = "额度用尽";
+pub(crate) const RESOURCE_STATE_NOT_DETECTED: &str = "未发现";
+
+/// 走查 #1：资源库从未探测（`detectedAt` 为空）时 agent 与其下模型的第三
+/// 种态；探测过后回到 可用 / 未安装 两态。
+pub(crate) const RESOURCE_STATE_NEVER_DETECTED: &str = "未探测";
+/// 未探测时 agent 的下一步说明；同态的模型 note 为空。
+pub(crate) const NEVER_DETECTED_NOTE: &str = "尚未探测";
 
 pub(crate) fn agent_state(detected: bool) -> &'static str {
     if detected {
@@ -2187,13 +2310,59 @@ pub(crate) fn agent_state_note(agent: &ResourceAgent) -> String {
 
 /// 未安装时的下一步说明；agent 与它下面模型的 note 用同一句。
 fn install_note() -> &'static str {
-    "安装后运行 aicross resources detect"
+    "安装后重新探测"
 }
 
-/// 模型状态与下一步说明。优先级：agent 未安装 → 未过期的额度用尽 → 原生 →
-/// pi 未登录 → 验证结果。agent 未探测到时它下面的模型一并无从使用，状态
-/// 跟随 agent（fix-39-r1 R1-4）；原生模型也可能挂额度标记，引擎派发前拒掉
-/// 额度未恢复的目标时分原生与否，额度因此先于原生判（R1-3）。
+/// meta 是否带着「未在事实源中」标记（TASK-48）。标记由
+/// `merge_detected_models` 在最近一次探测没发现该模型时追加，这里只读，
+/// 不改合并规则；重新探测发现后整条替换，标记随 meta 自然消失。分段与
+/// `append_note_marker` 同一口径：按「；」分段后 trim 比对。
+pub(crate) fn is_missing_from_detection(model: &ResourceModel) -> bool {
+    model
+        .meta
+        .split('；')
+        .any(|part| part.trim() == MISSING_MARKER)
+}
+
+/// 按 agent + provider + id 查模型（fix-48-r1 R1）：派发前检查与 `config show`
+/// 的人选状态共用这一个函数，不再各写各的查找。provider 非空时只做精确
+/// 匹配——同一模型 id 可以挂在多个 provider 下，其中一个带「未在事实源中」
+/// 标记时，按 agent+id 取第一条会看错条目。provider 为空时实际派发由 agent
+/// 自己选端点，这里优先取没带「未发现」标记的那条，全部带标记才返回带标记
+/// 的，避免一个已撤掉的同名条目把可用的人选判成未发现。
+pub(crate) fn find_target_model<'a>(
+    models: &'a [ResourceModel],
+    agent: &str,
+    provider: &str,
+    id: &str,
+) -> Option<&'a ResourceModel> {
+    if provider.trim().is_empty() {
+        let mut same_id = models.iter().filter(|m| m.agent == agent && m.id == id);
+        let first = same_id.next()?;
+        if !is_missing_from_detection(first) {
+            return Some(first);
+        }
+        Some(same_id.find(|m| !is_missing_from_detection(m)).unwrap_or(first))
+    } else {
+        models
+            .iter()
+            .find(|m| m.agent == agent && m.provider == provider && m.id == id)
+    }
+}
+
+/// 探测成功写回前盖时间戳（fix-48-r1 R4）：生产与测试两个探测入口共用，
+/// console_cli 测试的注入实现也走它，「探测成功写回即更新 detectedAt」
+/// 只有这一处。
+pub(crate) fn stamp_detected_at(store: &mut ResourceStore) {
+    store.detected_at = Some(Local::now().to_rfc3339_opts(SecondsFormat::Secs, false));
+}
+
+/// 模型状态与下一步说明。优先级：agent 未安装 → 未发现 → 未过期的额度用尽
+/// → 原生 → pi 未登录 → 验证结果。agent 未探测到时它下面的模型一并无从使用，
+/// 状态跟随 agent（fix-39-r1 R1-4）；原生模型也可能挂额度标记，引擎派发前拒掉
+/// 额度未恢复的目标时分原生与否，额度因此先于原生判（R1-3）；探测没发现的
+/// 模型不管验证到哪一档都不能再派，未发现因此压在额度与验证结果之上，
+/// 原生模型同样适用（TASK-48）。
 /// `now_millis` 注入当前时间：过期的额度标记按验证结果展示
 /// （读取层的 `clear_expired_quota` 会顺带清掉库里的过期值）。
 pub(crate) fn model_state(
@@ -2203,6 +2372,9 @@ pub(crate) fn model_state(
 ) -> (&'static str, String) {
     if !agent_available {
         return (RESOURCE_STATE_MISSING, install_note().to_string());
+    }
+    if is_missing_from_detection(model) {
+        return (RESOURCE_STATE_NOT_DETECTED, NOT_DETECTED_NOTE.to_string());
     }
     let quota_active = model
         .quota_exhausted_until
@@ -2227,13 +2399,10 @@ pub(crate) fn model_state(
     match model.verification.as_str() {
         VERIFICATION_VERIFIED => (RESOURCE_STATE_VERIFIED, String::new()),
         // 超时不算验证失败（TASK-42）：状态插在「验证结果」一档内，
-        // note 给可复制的重试命令。
+        // note 说明不影响派发。
         VERIFICATION_TIMEOUT => (
             RESOURCE_STATE_TIMEOUT,
-            format!(
-                "可重试 aicross resources smoke {} --model {}；不影响派发",
-                model.agent, model.id
-            ),
+            "连接测试超时，不影响派发".to_string(),
         ),
         VERIFICATION_FAILED => (RESOURCE_STATE_FAILED, String::new()),
         _ => (RESOURCE_STATE_UNVERIFIED, String::new()),
@@ -2246,11 +2415,11 @@ pub(crate) fn model_state(
 fn pi_login_note(provider: &str) -> String {
     let provider = provider.trim();
     let login = if provider.is_empty() {
-        "在 pi 里执行 /login".to_string()
+        "/login".to_string()
     } else {
-        format!("在 pi 里执行 /login {provider}")
+        format!("/login {provider}")
     };
-    format!("{login}；登录后运行 aicross resources detect 刷新")
+    format!("未登录；在 pi 中运行 {login} 后重新探测")
 }
 
 // ── Tauri 命令 ────────────────────────────────────────────────────────────
@@ -2272,32 +2441,183 @@ pub(crate) fn detect_all_resources_at(
     path: &Path,
     cc_switch_path: Option<&str>,
 ) -> Result<ResourceOperation, String> {
-    let mut prepared_pi = Some(prepare_pi_detection(resolve_cli("pi")));
+    detect_all_resources_with_progress(path, cc_switch_path, &|_, _, _| {})
+}
+
+/// 探测全部 agent，每个 agent 探测完回调一次 `(agent_id, done, total)`
+/// （走查 #3）：窗口据此发进度事件，命令行传空回调。
+pub(crate) fn detect_all_resources_with_progress(
+    path: &Path,
+    cc_switch_path: Option<&str>,
+    on_done: &(dyn Fn(&str, usize, usize) + Sync),
+) -> Result<ResourceOperation, String> {
+    detect_all_resources_inner(path, cc_switch_path, on_done, &|agent_id| {
+        prepare_agent_detection(agent_id)
+    })
+}
+
+/// 探测主流程：各 agent 的探测（版本、模型清单、pi 的登录探测）在 store
+/// 锁外并行跑（每个 agent 一个线程），全部完成后在锁内一次性合并、盖
+/// `detectedAt`、写盘；合并按 agent 清单顺序进行，结果与逐个顺序跑一致。
+/// `prepare` 注入锁外探测，测试用假实现，不真跑本机 CLI。
+fn detect_all_resources_inner(
+    path: &Path,
+    cc_switch_path: Option<&str>,
+    on_done: &(dyn Fn(&str, usize, usize) + Sync),
+    prepare: &(dyn Fn(&str) -> PreparedDetection + Sync),
+) -> Result<ResourceOperation, String> {
+    // agent 清单先在锁内取齐（ensure_agents 可能补内置骨架），探测全部
+    // 放到锁外，不把其他写方挡在锁外几十秒。
+    let ids = {
+        let _guard = store_lock();
+        let mut store = load_or_default(path)?;
+        ensure_agents(&mut store);
+        store
+            .agents
+            .iter()
+            .map(|agent| agent.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let total = ids.len();
+    // 进度计数与回调在同一把锁里，事件里的 done 严格递增（fix-57-r1 2）。
+    // 锁可能因回调自身 panic 而中毒，拿回数据继续计数。
+    let finished = &std::sync::Mutex::new(0usize);
+    let prepared: Vec<PreparedDetection> = std::thread::scope(|scope| {
+        let handles: Vec<_> = ids
+            .iter()
+            .map(|agent_id| {
+                let agent_id = agent_id.clone();
+                let spawned = agent_id.clone();
+                let handle = scope.spawn(move || {
+                    let prepared = prepare(&spawned);
+                    let mut done =
+                        finished.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    *done += 1;
+                    on_done(&spawned, *done, total);
+                    prepared
+                });
+                (agent_id, handle)
+            })
+            .collect();
+        // 探测线程 panic 不作废整次探测：join 失败转成该 agent 的 Failed
+        // 占位，锁内合并时记一条错误，其余 agent 照常盖时间、写盘
+        // （fix-57-r1 1）。
+        handles
+            .into_iter()
+            .map(|(agent_id, handle)| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| PreparedDetection::Failed(agent_id))
+            })
+            .collect()
+    });
+    merge_prepared_detections(path, cc_switch_path, &ids, prepared)
+}
+
+/// 锁内合并：按 agent 清单顺序应用全部探测结果，查 cc-switch 发现提示，
+/// 盖 `detectedAt` 并写盘。并行与顺序两个入口共用这一步。
+fn merge_prepared_detections(
+    path: &Path,
+    cc_switch_path: Option<&str>,
+    ids: &[String],
+    mut prepared: Vec<PreparedDetection>,
+) -> Result<ResourceOperation, String> {
     let _guard = store_lock();
     let mut store = load_or_default(path)?;
     ensure_agents(&mut store);
-    let ids = store
-        .agents
-        .iter()
-        .map(|agent| agent.id.clone())
-        .collect::<Vec<_>>();
     let mut errors = Vec::new();
     for agent_id in ids {
-        if agent_id == "pi" {
-            apply_prepared_pi_detection(&mut store, prepared_pi.take().expect("pi is unique"), &mut errors);
-        } else {
-            detect_into(&mut store, &agent_id, &mut errors);
-        }
+        let index = prepared
+            .iter()
+            .position(|item| item.agent_id() == agent_id)
+            .expect("每个 agent 恰有一份探测结果");
+        let item = prepared.swap_remove(index);
+        apply_prepared_detection(&mut store, item, &mut errors);
     }
     let (cc_switch_hints, hint_error) = detect_cc_switch_hints(cc_switch_path);
     if let Some(error) = hint_error {
         errors.push(error);
     }
+    stamp_detected_at(&mut store);
     save_store(path, &store)?;
     Ok(ResourceOperation {
         store,
         errors,
         cc_switch_hints,
+        skipped: Vec::new(),
+    })
+}
+
+/// 顺序参照实现（测试用）：逐个探测后走同一份合并，结果应与并行版一致。
+#[cfg(test)]
+fn detect_all_resources_sequential_with(
+    path: &Path,
+    cc_switch_path: Option<&str>,
+    prepare: &(dyn Fn(&str) -> PreparedDetection + Sync),
+) -> Result<ResourceOperation, String> {
+    let ids = {
+        let _guard = store_lock();
+        let mut store = load_or_default(path)?;
+        ensure_agents(&mut store);
+        store
+            .agents
+            .iter()
+            .map(|agent| agent.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let prepared = ids.iter().map(|agent_id| prepare(agent_id)).collect();
+    merge_prepared_detections(path, cc_switch_path, &ids, prepared)
+}
+
+/// TASK-52：删除最近一次探测未发现（meta 带「未在事实源中」标记）的模型。
+/// 用户申报的模型不带标记，天然保留；被 modes.json 人选或 roles.json 角色
+/// 引用的照样删除，删掉的里面被引用的经 `referenced` 返回，调用方单列
+/// 说明。`agent_filter` 只清这一家（大小写不敏感，与其它 resources 命令
+/// 同一写法）；`referenced` 是调用方从 modes.json 与 roles.json 收集的
+/// 模型指向。在 store_lock 内读改写；没有要删的模型时不写盘。
+pub(crate) fn prune_missing_models_at(
+    path: &Path,
+    agent_filter: Option<&str>,
+    referenced: &[ModelReference],
+) -> Result<PruneOutcome, String> {
+    let _guard = store_lock();
+    let mut store = load_or_default(path)?;
+    ensure_agents(&mut store);
+    let mut removed = Vec::new();
+    let mut referenced_removed = Vec::new();
+    for agent in &mut store.agents {
+        if agent_filter.is_some_and(|wanted| !agent.id.eq_ignore_ascii_case(wanted.trim())) {
+            continue;
+        }
+        agent.models.retain(|model| {
+            if !is_missing_from_detection(model) {
+                return true;
+            }
+            let key = resource_model_key(&model.agent, &model.provider, &model.id);
+            if reference_matches(referenced, model) {
+                referenced_removed.push(key.clone());
+            }
+            removed.push(key);
+            false
+        });
+    }
+    if !removed.is_empty() {
+        save_store(path, &store)?;
+    }
+    Ok(PruneOutcome {
+        store,
+        removed,
+        referenced: referenced_removed,
+    })
+}
+
+/// 人选 / 角色是否指向这条模型：agent 与 model 要一致（agent 名大小写
+/// 不敏感），provider 为空表示不限，非空要相等。
+fn reference_matches(referenced: &[ModelReference], model: &ResourceModel) -> bool {
+    referenced.iter().any(|(agent, provider, id)| {
+        agent.trim().eq_ignore_ascii_case(model.agent.trim())
+            && id.trim() == model.id.trim()
+            && (provider.trim().is_empty() || provider.trim() == model.provider.trim())
     })
 }
 
@@ -2320,17 +2640,19 @@ fn detect_resource_agent_at_with_pi_binary(
     if let Some(prepared) = prepared_pi {
         apply_prepared_pi_detection(&mut store, prepared, &mut errors);
     } else {
-        detect_into(&mut store, agent_id, &mut errors);
+        apply_prepared_detection(&mut store, prepare_agent_detection(agent_id), &mut errors);
     }
     let (cc_switch_hints, hint_error) = detect_cc_switch_hints(cc_switch_path);
     if let Some(error) = hint_error {
         errors.push(error);
     }
+    stamp_detected_at(&mut store);
     save_store(path, &store)?;
     Ok(ResourceOperation {
         store,
         errors,
         cc_switch_hints,
+        skipped: Vec::new(),
     })
 }
 
@@ -2343,7 +2665,19 @@ pub(crate) fn smoke_resource_model_at(path: &Path, request: ResourceModelKey) ->
 }
 
 /// TASK-39：命令行按 agent 冒烟只挑第三方模型；原生模型不发请求
-/// （`aicross resources smoke <agent>` 的口径）。
+/// （`aicross resources smoke <agent>` 的口径）。TASK-48 起最近一次探测
+/// 没发现的模型同样不发请求，逐个给出跳过说明。过滤与跳过说明提成具名
+/// 函数（fix-48-r1 R5），生产入口与测试注入入口共用。
+fn smoke_agent_third_party_filter(model: &ResourceModel) -> bool {
+    !is_native_model(&model.agent) && !is_missing_from_detection(model)
+}
+
+/// 被排除条目的跳过说明：未发现的第三方模型逐个给一句；原生模型不说明。
+fn smoke_agent_third_party_skip_reason(model: &ResourceModel) -> Option<String> {
+    (!is_native_model(&model.agent) && is_missing_from_detection(model))
+        .then(|| format!("跳过 {}/{}：{}", model.agent, model.id, NOT_DETECTED_NOTE))
+}
+
 pub(crate) fn smoke_agent_third_party_at(
     path: &Path,
     agent_id: &str,
@@ -2351,44 +2685,75 @@ pub(crate) fn smoke_agent_third_party_at(
     smoke_agent_models_filtered_at(
         path,
         agent_id,
-        |model| !is_native_model(&model.agent),
+        smoke_agent_third_party_filter,
+        smoke_agent_third_party_skip_reason,
         run_smoke,
     )
 }
 
-/// 冒烟某个 agent 的模型（`filter` 挑条目）；失败汇总进 errors（单条失败不
-/// 中断整批）。每冒烟一条都重新 load → 改 → 写盘，不整批长持旧 store——一次
+/// 同上、冒烟函数可注入（只服务测试）：走与生产同一条过滤与跳过说明，
+/// 不在单测里真发模型请求。
+#[cfg(test)]
+fn smoke_agent_third_party_with(
+    path: &Path,
+    agent_id: &str,
+    smoke: impl FnMut(&ResourceModel) -> Result<SmokeSuccess, String>,
+) -> Result<ResourceOperation, String> {
+    smoke_agent_models_filtered_at(
+        path,
+        agent_id,
+        smoke_agent_third_party_filter,
+        smoke_agent_third_party_skip_reason,
+        smoke,
+    )
+}
+
+/// 冒烟某个 agent 的模型（`filter` 挑条目，`skip_reason` 给被排除条目的跳过
+/// 说明，返回 None 的不说明）；失败汇总进 errors（单条失败不中断整批），
+/// 跳过说明汇总进 skipped，不算失败、不影响退出码。每冒烟一条都重新
+/// load → 改 → 写盘，不整批长持旧 store——一次
 /// 冒烟最长 180 秒，整批持旧数据会把期间其他写方的更新整体抹掉（审查 2.4）。
 fn smoke_agent_models_filtered_at(
     path: &Path,
     agent_id: &str,
     filter: impl Fn(&ResourceModel) -> bool,
+    skip_reason: impl Fn(&ResourceModel) -> Option<String>,
     mut smoke: impl FnMut(&ResourceModel) -> Result<SmokeSuccess, String>,
 ) -> Result<ResourceOperation, String> {
-    let keys = {
+    // 第一次加锁读到的库作为返回值；全部条目被跳过时循环体不执行，
+    // 不能落回空库，否则命令行与窗口的输出会丢掉这个 agent（fix-48-r1 R3）。
+    let (keys, skipped, latest) = {
         let _guard = store_lock();
         let mut store = load_or_default(path)?;
         ensure_agents(&mut store);
-        store
-            .agents
+        let Some(agent) = store.agents.iter().find(|agent| agent.id == agent_id) else {
+            return Ok(ResourceOperation {
+                store,
+                errors: Vec::new(),
+                cc_switch_hints: Vec::new(),
+                skipped: Vec::new(),
+            });
+        };
+        let keys = agent
+            .models
             .iter()
-            .find(|agent| agent.id == agent_id)
-            .map(|agent| {
-                agent
-                    .models
-                    .iter()
-                    .filter(|model| filter(model))
-                    .map(|model| ResourceModelKey {
-                        agent_id: agent_id.to_string(),
-                        id: model.id.clone(),
-                        provider: model.provider.clone(),
-                    })
-                    .collect::<Vec<_>>()
+            .filter(|model| filter(model))
+            .map(|model| ResourceModelKey {
+                agent_id: agent_id.to_string(),
+                id: model.id.clone(),
+                provider: model.provider.clone(),
             })
-            .unwrap_or_default()
+            .collect::<Vec<_>>();
+        let skipped = agent
+            .models
+            .iter()
+            .filter(|model| !filter(model))
+            .filter_map(skip_reason)
+            .collect::<Vec<_>>();
+        (keys, skipped, store)
     };
     let mut errors = Vec::new();
-    let mut latest = ResourceStore::default();
+    let mut latest = latest;
     for key in &keys {
         let _guard = store_lock();
         let mut store = load_or_default(path)?;
@@ -2413,6 +2778,7 @@ fn smoke_agent_models_filtered_at(
         store: latest,
         errors,
         cc_switch_hints: Vec::new(),
+        skipped,
     })
 }
 
@@ -2422,6 +2788,22 @@ mod tests {
 
     fn fixture_model(id: &str) -> ResourceModel {
         detected_model(id, "codex", "", "OpenAI", "官方订阅", "支持", "读:fixture", "")
+    }
+
+    /// 厂商按模型 id 关键字推定（fix-50-r2：补 gemini / google → Google）；
+    /// 认不出的为「其他」（不参与推荐的厂商去重与主 agent 避让）。
+    #[test]
+    fn infer_vendor_maps_model_id_keywords() {
+        assert_eq!(infer_vendor("gemini-2.5-pro"), "Google");
+        assert_eq!(infer_vendor("Gemini-Flash"), "Google");
+        assert_eq!(infer_vendor("google/gemma-3"), "Google");
+        assert_eq!(infer_vendor("claude-sonnet-4-5"), "Anthropic");
+        assert_eq!(infer_vendor("gpt-5.2"), "OpenAI");
+        assert_eq!(infer_vendor("glm-4.7"), "Zhipu");
+        assert_eq!(infer_vendor("deepseek-chat"), "DeepSeek");
+        assert_eq!(infer_vendor("minimax-text"), "MiniMax");
+        assert_eq!(infer_vendor("qwen3.8-max"), "Alibaba");
+        assert_eq!(infer_vendor("mystery-model"), "其他");
     }
 
     fn fixture_agent(id: &str, models: Vec<ResourceModel>) -> ResourceAgent {
@@ -2480,7 +2862,7 @@ exit 2
 "#;
         let script = write_fake_pi(&root, body);
         let path = root.join("resources.json");
-        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        save_store(&path, &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
         let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, Some(script)).unwrap();
         assert!(operation.errors.is_empty(), "{:?}", operation.errors);
         let persisted = load(&path).unwrap();
@@ -2504,7 +2886,7 @@ exit 2
             id: "m".into(), agent: "pi".into(), provider: "p".into(),
             login: ResourceLogin::LoggedIn, ..Default::default()
         };
-        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![model])] }).unwrap();
+        save_store(&path, &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", vec![model])] }).unwrap();
         let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, None).unwrap();
         let pi = operation.store.agents.iter().find(|agent| agent.id == "pi").unwrap();
         assert!(!pi.detected);
@@ -2547,7 +2929,7 @@ exit 2
 "#;
         let script = write_fake_pi(&root, body);
         let path = root.join("resources.json");
-        save_store(&path, &ResourceStore { version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        save_store(&path, &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
         let thread_path = path.clone();
         let handle = std::thread::spawn(move || {
             detect_resource_agent_at_with_pi_binary(&thread_path, "pi", None, Some(script))
@@ -2584,6 +2966,7 @@ exit 2
         primary.provider = "p0".into();
         primary.quota_exhausted_until = Some("2000-01-01T00:00:00+08:00".into());
         let store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![primary])],
         };
@@ -2681,6 +3064,35 @@ exit 2
         assert_eq!(hints[0].name, "Zhipu GLM");
         assert!(hints[0].has_token);
         assert!(parse_codex_cache(r#"{"models":[]}"#, "读:fixture").is_err());
+    }
+
+    #[test]
+    fn codex_cache_skips_hidden_and_keeps_priority_order() {
+        let cache = r#"{"models":[
+            {"slug":"codex-auto-review","visibility":"hide","priority":43},
+            {"slug":"gpt-b","visibility":"list","priority":2},
+            {"slug":"gpt-legacy","visibility":"hide","priority":13},
+            {"slug":"gpt-c","visibility":"list","priority":9},
+            {"slug":"gpt-a","visibility":"list","priority":1}
+        ]}"#;
+        let models = parse_codex_cache(cache, "读:fixture").expect("codex cache");
+        let ids = models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids, ["gpt-a", "gpt-b", "gpt-c"]);
+
+        // 合并后资源库保持事实源顺序，而不是按 id 字母序；事实源里没有的排最后。
+        let mut store = ResourceStore {
+            detected_at: None,
+            version: 1,
+            agents: vec![fixture_agent("codex", vec![fixture_model("codex-auto-review")])],
+        };
+        merge_detected_models(&mut store, "codex", models);
+        let merged = store.agents[0]
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(merged, ["gpt-a", "gpt-b", "gpt-c", "codex-auto-review"]);
+        assert!(store.agents[0].models[3].meta.contains(MISSING_MARKER));
     }
 
     #[test]
@@ -2825,6 +3237,7 @@ exit 2
     #[test]
     fn merge_preserves_user_fields_adds_pending_and_marks_missing() {
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent(
                 "codex",
@@ -2893,6 +3306,7 @@ exit 2
         assert!(legacy.quota_exhausted_until.is_none());
 
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent(
                 "codex",
@@ -2972,11 +3386,158 @@ exit 2
     }
 
     #[test]
-    fn task26_detect_into_excludes_pi_prepared_outside_the_store_lock() {
-        assert!(!detect_into_supports_agent("pi"));
+    fn task26_pi_is_detected_outside_the_store_lock() {
+        assert!(uses_pi_prepared_detection("pi"));
         for agent in ["claude", "codex", "kimi", "manual-local"] {
-            assert!(detect_into_supports_agent(agent), "{agent}");
+            assert!(!uses_pi_prepared_detection(agent), "{agent}");
         }
+    }
+
+    /// 走查 #3 的假探测：每家固定结果，不真跑本机 CLI；kimi 故意探不到
+    /// 且模型清单读取失败，pi 带一条 provider 提示，覆盖错误路径。
+    fn task57_fake_prepare() -> impl Fn(&str) -> PreparedDetection + Sync {
+        let claude = detected_model("sonnet", "claude", "", "Anthropic", "官方订阅", "支持", "读:fixture", "");
+        let codex = vec![fixture_model("a"), fixture_model("b")];
+        let pi = detected_model("glm-4.7", "pi", "zai", "Zhipu", "按次", "支持", "读:fixture", "");
+        move |agent_id: &str| match agent_id {
+            "claude" => PreparedDetection::Plain(PreparedAgentDetection {
+                agent_id: agent_id.to_string(),
+                detected: true,
+                version: "2.1.0".to_string(),
+                missing_error: None,
+                models: Some(Ok(vec![claude.clone()])),
+            }),
+            "codex" => PreparedDetection::Plain(PreparedAgentDetection {
+                agent_id: agent_id.to_string(),
+                detected: true,
+                version: "0.2.0".to_string(),
+                missing_error: None,
+                models: Some(Ok(codex.clone())),
+            }),
+            "kimi" => PreparedDetection::Plain(PreparedAgentDetection {
+                agent_id: agent_id.to_string(),
+                detected: false,
+                version: "未检测".to_string(),
+                missing_error: Some(format!("探测 {agent_id} 失败：未检测到 {agent_id}")),
+                models: Some(Err("读取 ~/.kimi-code/config.toml 失败".to_string())),
+            }),
+            "pi" => PreparedDetection::Pi(PreparedPiDetection {
+                detected: true,
+                version: "0.86.0".to_string(),
+                result: Some(Ok((vec![pi.clone()], vec!["provider x 读不了".to_string()]))),
+            }),
+            other => panic!("假探测不认识 agent：{other}"),
+        }
+    }
+
+    fn task57_temp_root(tag: &str) -> PathBuf {
+        let root = crate::paths::test_temp_dir()
+            .join(format!("aicross-task57-{tag}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// 走查 #3：注入假探测，并行版与顺序版在同一份输入下合并出同一份
+    /// store（除 detectedAt 时间戳外逐字段一致），错误清单也一致。
+    #[test]
+    fn task57_parallel_detection_matches_sequential_merge() {
+        let prepare = task57_fake_prepare();
+        let parallel_path = task57_temp_root("parallel").join("resources.json");
+        let sequential_path = task57_temp_root("sequential").join("resources.json");
+        let parallel =
+            detect_all_resources_inner(&parallel_path, None, &|_, _, _| {}, &prepare).unwrap();
+        let sequential = detect_all_resources_sequential_with(&sequential_path, None, &prepare).unwrap();
+        assert_eq!(parallel.errors, sequential.errors);
+        assert!(parallel.store.detected_at.is_some());
+        assert!(sequential.store.detected_at.is_some());
+        let mut left = serde_json::to_value(&parallel.store).unwrap();
+        let mut right = serde_json::to_value(&sequential.store).unwrap();
+        left.as_object_mut().unwrap().remove("detectedAt");
+        right.as_object_mut().unwrap().remove("detectedAt");
+        assert_eq!(left, right);
+        // 四家都探完：三家可用，kimi 按假结果未安装。
+        let detected: Vec<(&str, bool)> = parallel
+            .store
+            .agents
+            .iter()
+            .map(|agent| (agent.id.as_str(), agent.detected))
+            .collect();
+        assert_eq!(
+            detected,
+            vec![("claude", true), ("codex", true), ("kimi", false), ("pi", true)]
+        );
+        let _ = fs::remove_dir_all(parallel_path.parent().unwrap());
+        let _ = fs::remove_dir_all(sequential_path.parent().unwrap());
+    }
+
+    /// 走查 #3：每个 agent 探测完回调一次，done 从 1 递增到 total。
+    #[test]
+    fn task57_progress_callback_fires_once_per_agent() {
+        let prepare = task57_fake_prepare();
+        let path = task57_temp_root("progress").join("resources.json");
+        let calls = std::sync::Mutex::new(Vec::<(String, usize, usize)>::new());
+        let operation = detect_all_resources_inner(&path, None, &|agent, done, total| {
+            calls.lock().unwrap().push((agent.to_string(), done, total));
+        }, &prepare).unwrap();
+        let calls = calls.into_inner().unwrap();
+        assert_eq!(calls.len(), operation.store.agents.len());
+        // done 严格递增（fix-57-r1 2）：不排序，直接断言回调序列就是
+        // 1..=total；计数加一与回调在同一把锁里，顺序才成立。
+        let dones: Vec<usize> = calls.iter().map(|(_, done, _)| *done).collect();
+        assert_eq!(dones, (1..=calls.len()).collect::<Vec<_>>());
+        assert!(calls.iter().all(|(_, _, total)| *total == calls.len()));
+        let agents: HashSet<&str> = calls.iter().map(|(agent, _, _)| agent.as_str()).collect();
+        assert_eq!(agents.len(), calls.len(), "每个 agent 恰回调一次：{calls:?}");
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// fix-57-r1 1：某个 agent 的探测线程 panic 不再作废整次探测，
+    /// 转成该 agent 的一条「线程异常」错误，其余 agent 照常合并、盖时间、写盘。
+    #[test]
+    fn task57_panicking_probe_becomes_one_agent_error() {
+        let prepare = task57_fake_prepare();
+        let panicking = move |agent_id: &str| {
+            if agent_id == "codex" {
+                panic!("注入的探测 panic");
+            }
+            prepare(agent_id)
+        };
+        let path = task57_temp_root("panic").join("resources.json");
+        let operation =
+            detect_all_resources_inner(&path, None, &|_, _, _| {}, &panicking).unwrap();
+        // codex 的探测线程 panic 转成一条线程异常；其余 agent 的错误与
+        // 假探测的基线一致（kimi 未检测与清单读取失败、pi 的 provider 提示）。
+        assert_eq!(
+            operation.errors,
+            vec![
+                "探测 codex 失败：线程异常",
+                "探测 kimi 失败：未检测到 kimi",
+                "探测 kimi 失败：读取 ~/.kimi-code/config.toml 失败",
+                "provider x 读不了",
+            ]
+        );
+        // 其余 agent 照常合并：claude、pi 可用；codex 停在骨架的未检测状态。
+        let detected: Vec<(&str, bool)> = operation
+            .store
+            .agents
+            .iter()
+            .map(|agent| (agent.id.as_str(), agent.detected))
+            .collect();
+        assert_eq!(
+            detected,
+            vec![("claude", true), ("codex", false), ("kimi", false), ("pi", true)]
+        );
+        assert!(operation.store.detected_at.is_some());
+        // 写盘：重新读盘核对结果真的落了盘。
+        let reloaded = get_resources_at(&path).unwrap();
+        assert!(reloaded.detected_at.is_some());
+        let codex = reloaded
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex")
+            .unwrap();
+        assert!(!codex.detected);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -3087,6 +3648,7 @@ exit 2
     fn declared_models_are_not_marked_missing() {
         // 申报 source 的消失条目不标「未在事实源中」（修正轮 R1 补测）。
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent(
                 "codex",
@@ -3188,6 +3750,7 @@ exit 2
         assert_eq!(claude.resolved_id, "claude-fable-5-1");
         claude.verification = VERIFICATION_UNVERIFIED.to_string();
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("claude", vec![claude])],
         };
@@ -3220,6 +3783,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut pi_store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![pi_model])],
         };
@@ -3247,6 +3811,7 @@ exit 2
         existing.resolved_id = "claude-fable-5-1-20260901".to_string();
         existing.resolved_source = RESOLVED_SOURCE_IDENTITY.to_string();
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("claude", vec![existing])],
         };
@@ -3274,6 +3839,7 @@ exit 2
         measured.resolved_id = "claude-sonnet-5-20260901".to_string();
         measured.resolved_source = RESOLVED_SOURCE_IDENTITY.to_string();
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("claude", vec![stale, measured])],
         };
@@ -3313,6 +3879,7 @@ exit 2
             ..ResourceModel::default()
         };
         let original = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![matched, unmatched])],
         };
@@ -3370,6 +3937,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![model])],
         };
@@ -3397,6 +3965,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![model])],
         };
@@ -3416,6 +3985,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("codex", vec![native])],
         };
@@ -3432,6 +4002,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![model])],
         };
@@ -3465,10 +4036,7 @@ exit 2
         let (state, note) = model_state(&model, true, now);
         assert_eq!(state, RESOURCE_STATE_TIMEOUT);
         assert_eq!(state, "冒烟超时");
-        assert_eq!(
-            note,
-            "可重试 aicross resources smoke pi --model glm-5.3；不影响派发"
-        );
+        assert_eq!(note, "连接测试超时，不影响派发");
         let legacy = ResourceModel { verification: "legacy".into(), ..model };
         assert_eq!(model_state(&legacy, true, now).0, RESOURCE_STATE_UNVERIFIED);
     }
@@ -3809,6 +4377,7 @@ exit 2
         );
 
         let mut old_store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![
                 ResourceAgent { id: "kimi".into(), name: "Kimi Code CLI".into(), ..Default::default() },
@@ -4030,7 +4599,7 @@ exit 2
             provider: "deepseek".into(),
             id: "deepseek-v4-flash".into(),
         };
-        let mut store = ResourceStore { version: 1, agents: vec![fixture_agent("pi", vec![model])] };
+        let mut store = ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", vec![model])] };
         apply_smoke_outcome(&mut store, &key, Ok(SmokeSuccess {
             identity: "deepseek/deepseek-flash".into(),
             meta_marker: Some(marker),
@@ -4060,7 +4629,7 @@ exit 2
         assert_eq!(agent_state(false), RESOURCE_STATE_MISSING);
         let mut agent = fixture_agent("kimi", Vec::new());
         agent.detected = false;
-        assert_eq!(agent_state_note(&agent), "安装后运行 aicross resources detect");
+        assert_eq!(agent_state_note(&agent), "安装后重新探测");
         agent.detected = true;
         assert_eq!(agent_state_note(&agent), "");
     }
@@ -4076,7 +4645,7 @@ exit 2
         };
         assert_eq!(
             model_state(&undetected, false, now),
-            (RESOURCE_STATE_MISSING, "安装后运行 aicross resources detect".to_string())
+            (RESOURCE_STATE_MISSING, "安装后重新探测".to_string())
         );
         // 原生：可用，无说明
         let native = detected_model("sonnet", "claude", "", "Anthropic", "官方订阅", "未知", "读:fixture", "");
@@ -4100,14 +4669,14 @@ exit 2
         };
         let (state, note) = model_state(&logged_out, true, now);
         assert_eq!(state, RESOURCE_STATE_LOGGED_OUT);
-        assert_eq!(note, "在 pi 里执行 /login zai；登录后运行 aicross resources detect 刷新");
+        assert_eq!(note, "未登录；在 pi 中运行 /login zai 后重新探测");
         assert_eq!(
             model_state(
                 &ResourceModel { provider: String::new(), ..logged_out.clone() },
                 true,
                 now
             ).1,
-            "在 pi 里执行 /login；登录后运行 aicross resources detect 刷新"
+            "未登录；在 pi 中运行 /login 后重新探测"
         );
         // 额度用尽：未过期显示恢复时间；已过期按验证结果展示。
         // 原生模型也挂额度标记，额度先于原生判（R1-3，与引擎拒源口径一致）。
@@ -4132,6 +4701,183 @@ exit 2
         assert_eq!(model_state(&quota_login, false, now).0, RESOURCE_STATE_MISSING);
     }
 
+
+    /// TASK-48：meta 带「未在事实源中」标记的模型状态为「未发现」，第三方、
+    /// 原生、原为「已验证」都一样；agent 不可用时仍是「未安装」；去掉标记
+    /// （重新探测发现）后恢复原状态。
+    #[test]
+    fn task48_model_state_reports_not_detected() {
+        let now = 2_000_000_000_000_i64;
+        let marked = MISSING_MARKER.to_string();
+        // 第三方带标记：未发现，note 给下一步
+        let mut third = ResourceModel {
+            agent: "pi".into(),
+            provider: "zai".into(),
+            verification: VERIFICATION_VERIFIED.into(),
+            ..ResourceModel::default()
+        };
+        third.meta = marked.clone();
+        assert_eq!(
+            model_state(&third, true, now),
+            (RESOURCE_STATE_NOT_DETECTED, NOT_DETECTED_NOTE.to_string())
+        );
+        // 原生带标记同样适用；额度、验证结果都被压在下面
+        let mut native = detected_model("sonnet", "claude", "", "Anthropic", "官方订阅", "未知", "读:fixture", "");
+        native.verification = VERIFICATION_VERIFIED.into();
+        native.meta = marked.clone();
+        assert_eq!(model_state(&native, true, now).0, RESOURCE_STATE_NOT_DETECTED);
+        // agent 不可用时仍是未安装（状态跟随 agent）
+        assert_eq!(model_state(&third, false, now).0, RESOURCE_STATE_MISSING);
+        // 去掉标记（重新探测发现）后恢复原状态
+        third.meta = String::new();
+        assert_eq!(model_state(&third, true, now).0, RESOURCE_STATE_VERIFIED);
+    }
+
+    /// 复审追加：没给 provider 时，同名模型挂在多个 provider 下，优先取没带
+    /// 「未发现」标记的那条；全部带标记才返回带标记的；给了 provider 只认那条。
+    #[test]
+    fn task48_find_target_model_prefers_detected_entry_without_provider() {
+        let entry = |provider: &str, missing: bool| ResourceModel {
+            agent: "pi".into(),
+            provider: provider.into(),
+            id: "deepseek-v4-flash".into(),
+            meta: if missing { MISSING_MARKER.to_string() } else { String::new() },
+            ..ResourceModel::default()
+        };
+        let models = vec![entry("deepseek", true), entry("opencode-go", false)];
+        let found = find_target_model(&models, "pi", "", "deepseek-v4-flash").unwrap();
+        assert_eq!(found.provider, "opencode-go");
+        let exact = find_target_model(&models, "pi", "deepseek", "deepseek-v4-flash").unwrap();
+        assert!(is_missing_from_detection(exact));
+        let all_missing = vec![entry("deepseek", true), entry("old", true)];
+        let found = find_target_model(&all_missing, "pi", "", "deepseek-v4-flash").unwrap();
+        assert!(is_missing_from_detection(found));
+        assert!(find_target_model(&models, "pi", "", "ghost").is_none());
+    }
+
+    /// TASK-48：合并只改标记不打扰原有规则——先探测到 A、B，再探测只有 A
+    /// 时 B 变「未发现」；再探测到 B 后 B 恢复。
+    #[test]
+    fn task48_merge_marks_missing_then_recovers() {
+        let now = 2_000_000_000_000_i64;
+        let mut store = ResourceStore {
+            detected_at: None,
+            version: 1,
+            agents: vec![fixture_agent(
+                "codex",
+                vec![fixture_model("a"), fixture_model("b")],
+            )],
+        };
+        merge_detected_models(&mut store, "codex", vec![fixture_model("a"), fixture_model("b")]);
+        let state = |store: &ResourceStore, id: &str| {
+            let model = find_model(store, "codex", "", id).expect("model");
+            model_state(model, true, now).0
+        };
+        assert_eq!(state(&store, "b"), RESOURCE_STATE_AVAILABLE);
+
+        merge_detected_models(&mut store, "codex", vec![fixture_model("a")]);
+        assert_eq!(state(&store, "b"), RESOURCE_STATE_NOT_DETECTED);
+
+        merge_detected_models(&mut store, "codex", vec![fixture_model("a"), fixture_model("b")]);
+        assert_eq!(state(&store, "b"), RESOURCE_STATE_AVAILABLE);
+        let b = find_model(&store, "codex", "", "b").expect("b");
+        assert!(!b.meta.contains(MISSING_MARKER), "重新发现后标记应随合并消失");
+    }
+
+    /// TASK-48：按 agent 冒烟跳过未发现的模型，不发请求，逐个给出跳过
+    /// 说明；跳过不算失败。（fix-48-r1 R5：经冒烟函数可注入的入口走生产
+    /// 同一条过滤与跳过说明。）
+    #[test]
+    fn task48_smoke_agent_skips_missing_models() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task48-smoke-skip-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let mut missing = fixture_model("gone");
+        missing.meta = MISSING_MARKER.to_string();
+        save_store(
+            &path,
+            &ResourceStore {
+                detected_at: None,
+                version: 1,
+                agents: vec![fixture_agent("pi", vec![fixture_model("glm-5.3"), missing])],
+            },
+        )
+        .unwrap();
+        let smoked = std::cell::RefCell::new(Vec::<String>::new());
+        let operation = smoke_agent_third_party_with(&path, "pi", |model| {
+            smoked.borrow_mut().push(model.id.clone());
+            Ok(SmokeSuccess { identity: model.id.clone(), meta_marker: None })
+        })
+        .unwrap();
+        assert_eq!(*smoked.borrow(), vec!["glm-5.3".to_string()], "只冒烟未带标记的");
+        assert!(operation.errors.is_empty(), "跳过不算失败");
+        assert_eq!(
+            operation.skipped,
+            vec![format!("跳过 pi/gone：{}", NOT_DETECTED_NOTE)]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-48-r1 R3：某 agent 下第三方模型全部未发现时，可冒烟的清单为空，
+    /// 返回值仍是读到的那个库（含完整条目），跳过说明逐条在案；输出不能
+    /// 变成空库、丢掉这个 agent。
+    #[test]
+    fn task48_smoke_agent_all_missing_keeps_store_entries() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task48-smoke-all-missing-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let mut gone = fixture_model("gone");
+        gone.meta = MISSING_MARKER.to_string();
+        save_store(
+            &path,
+            &ResourceStore {
+                detected_at: None,
+                version: 1,
+                agents: vec![fixture_agent("pi", vec![gone])],
+            },
+        )
+        .unwrap();
+        let operation = smoke_agent_third_party_with(&path, "pi", |_: &ResourceModel| {
+            panic!("全部未发现时不该发请求")
+        })
+        .unwrap();
+        let agent = operation.store.agents.iter().find(|agent| agent.id == "pi").expect("agent 应保留");
+        assert_eq!(agent.models.len(), 1, "完整条目应保留");
+        assert_eq!(agent.models[0].id, "gone");
+        assert_eq!(
+            operation.skipped,
+            vec![format!("跳过 pi/gone：{}", NOT_DETECTED_NOTE)]
+        );
+        assert!(operation.errors.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-48：探测成功写回时更新 detectedAt；旧文件没有该字段时读出 None。
+    #[test]
+    fn task48_detect_updates_detected_at_and_old_files_read_none() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task48-detected-at-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        save_store(&path, &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        let body = r#"#!/bin/sh
+if [ "$1" = --version ]; then printf '%s\n' 'pi test'; exit 0; fi
+if [ "$1" = --list-models ]; then printf '%s\n' 'ready model-a'; exit 0; fi
+if [ "$1" = auth ]; then printf '%s\n' '{"status":"ready","provider":"ready","authType":"api_key","credentials":{"access_token":"do-not-read"}}'; exit 0; fi
+exit 2
+"#;
+        let script = write_fake_pi(&root, body);
+        let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, Some(script)).unwrap();
+        assert!(operation.errors.is_empty(), "{:?}", operation.errors);
+        let stamp = operation.store.detected_at.clone().expect("detectedAt 应写入");
+        chrono::DateTime::parse_from_rfc3339(&stamp).expect("detectedAt 应为 RFC3339");
+        // 落盘的字段名是 detectedAt，旧文件没有该字段时读出 None。
+        let raw: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["detectedAt"].as_str(), Some(stamp.as_str()));
+        fs::write(&path, r#"{"version":1,"agents":[]}"#).unwrap();
+        assert_eq!(load(&path).unwrap().detected_at, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
     /// TASK-39：命令行按 agent 冒烟只挑第三方模型。claude 走官方端点时是
     /// 原生（不冒烟）；挂了 ANTHROPIC_BASE_URL 就是第三方（要冒烟）。
     #[test]
@@ -4147,7 +4893,7 @@ exit 2
         };
         save_store(
             &path,
-            &ResourceStore { version: 1, agents: vec![fixture_agent("claude", vec![claude_model])] },
+            &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("claude", vec![claude_model])] },
         )
         .unwrap();
 
@@ -4157,6 +4903,7 @@ exit 2
             &path,
             "claude",
             |model| !is_native_model(&model.agent),
+            |_| None,
             |_| {
                 calls.set(calls.get() + 1);
                 Ok(SmokeSuccess { identity: "sonnet".into(), meta_marker: None })
@@ -4175,6 +4922,7 @@ exit 2
             &path,
             "claude",
             |model| !is_native_model(&model.agent),
+            |_| None,
             |_| {
                 calls.set(calls.get() + 1);
                 Ok(SmokeSuccess { identity: "claude/sonnet".into(), meta_marker: None })
@@ -4188,6 +4936,144 @@ exit 2
         assert_eq!(smoked.status, STATUS_CONNECTED);
         assert_eq!(smoked.verification, VERIFICATION_VERIFIED);
         set_claude_third_party(false);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-52：prune 只删带「未在事实源中」标记的模型；探测到、用户申报的
+    /// 都保留；删掉的以 `agent/provider/model` 键列在 removed 并落盘。
+    #[test]
+    fn task52_prune_removes_only_missing_models() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task52-prune-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let mut missing = detected_model("gone", "pi", "zai", "Zhipu", "按次", "支持", "读:探测", "");
+        missing.meta = MISSING_MARKER.to_string();
+        let declared = detected_model("mine", "pi", "", "OpenAI", "官方订阅", "支持", "申报(手动添加)", "");
+        save_store(
+            &path,
+            &ResourceStore {
+                detected_at: None,
+                version: 1,
+                agents: vec![fixture_agent("pi", vec![fixture_model("kept"), missing, declared])],
+            },
+        )
+        .unwrap();
+        let outcome = prune_missing_models_at(&path, None, &[]).unwrap();
+        assert_eq!(outcome.removed, vec!["pi/zai/gone".to_string()], "只删带标记的");
+        assert!(outcome.referenced.is_empty());
+        let persisted = load(&path).unwrap();
+        let ids: Vec<&str> = persisted.agents[0]
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["kept", "mine"], "探测到的与用户申报的都保留");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-52：给了 agent 只清这一家（大小写不敏感），别家的未发现模型
+    /// 不动；不给则清全库。
+    #[test]
+    fn task52_prune_with_agent_filter_only_cleans_that_agent() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task52-prune-agent-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let mut pi_missing = detected_model("gone", "pi", "zai", "Zhipu", "按次", "支持", "读:探测", "");
+        pi_missing.meta = MISSING_MARKER.to_string();
+        let mut codex_missing = detected_model("ghost", "codex", "", "OpenAI", "官方订阅", "支持", "读:探测", "");
+        codex_missing.meta = MISSING_MARKER.to_string();
+        save_store(
+            &path,
+            &ResourceStore {
+                detected_at: None,
+                version: 1,
+                agents: vec![
+                    fixture_agent("pi", vec![pi_missing]),
+                    fixture_agent("codex", vec![codex_missing]),
+                ],
+            },
+        )
+        .unwrap();
+        let outcome = prune_missing_models_at(&path, Some("PI"), &[]).unwrap();
+        assert_eq!(outcome.removed, vec!["pi/zai/gone".to_string()]);
+        let persisted = load(&path).unwrap();
+        let codex = persisted.agents.iter().find(|agent| agent.id == "codex").unwrap();
+        assert_eq!(codex.models.len(), 1, "别家的未发现模型不动");
+        let outcome = prune_missing_models_at(&path, None, &[]).unwrap();
+        assert_eq!(outcome.removed, vec!["codex//ghost".to_string()]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-52：被引用的未发现模型照样删除，另列在 referenced；provider
+    /// 空的指向不限 provider；被引用但没带标记的不进这两个列表。
+    #[test]
+    fn task52_prune_lists_referenced_but_still_removes() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task52-prune-ref-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let mut seated = detected_model("gone", "pi", "zai", "Zhipu", "按次", "支持", "读:探测", "");
+        seated.meta = MISSING_MARKER.to_string();
+        let mut roled = detected_model("ghost", "pi", "bigmodel", "Zhipu", "按次", "支持", "读:探测", "");
+        roled.meta = MISSING_MARKER.to_string();
+        let healthy = detected_model("kept", "pi", "zai", "Zhipu", "按次", "支持", "读:探测", "");
+        save_store(
+            &path,
+            &ResourceStore {
+                detected_at: None,
+                version: 1,
+                agents: vec![fixture_agent("pi", vec![seated, roled, healthy])],
+            },
+        )
+        .unwrap();
+        let referenced = vec![
+            ("pi".to_string(), "zai".to_string(), "gone".to_string()),
+            // provider 为空：不限 provider，同一模型挂在哪家都算被引用
+            ("pi".to_string(), String::new(), "ghost".to_string()),
+            ("pi".to_string(), "zai".to_string(), "kept".to_string()),
+        ];
+        let outcome = prune_missing_models_at(&path, None, &referenced).unwrap();
+        assert_eq!(
+            outcome.removed,
+            vec!["pi/zai/gone".to_string(), "pi/bigmodel/ghost".to_string()]
+        );
+        assert_eq!(outcome.referenced, outcome.removed, "删掉的都被引用，单列在 referenced");
+        let persisted = load(&path).unwrap();
+        assert_eq!(persisted.agents[0].models.len(), 1, "只留下没带标记的那条");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-52：prune 删掉的模型，再次探测发现后会重新加入资源库。
+    #[test]
+    fn task52_prune_then_detect_readds_rediscovered_model() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-task52-prune-redetect-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let mut gone = detected_model("gone", "pi", "zai", "Zhipu", "按次", "支持", "读:探测", "");
+        gone.meta = MISSING_MARKER.to_string();
+        save_store(
+            &path,
+            &ResourceStore {
+                detected_at: None,
+                version: 1,
+                agents: vec![fixture_agent("pi", vec![gone])],
+            },
+        )
+        .unwrap();
+        let outcome = prune_missing_models_at(&path, None, &[]).unwrap();
+        assert_eq!(outcome.removed.len(), 1);
+        assert!(load(&path).unwrap().agents[0].models.is_empty());
+
+        // 再次探测发现：merge 把这条重新加回，标记随合并消失。
+        let mut store = load(&path).unwrap();
+        merge_detected_models(
+            &mut store,
+            "pi",
+            vec![detected_model("gone", "pi", "zai", "Zhipu", "按次", "支持", "读:探测", "")],
+        );
+        save_store(&path, &store).unwrap();
+        let reloaded = load(&path).unwrap();
+        let model = find_model(&reloaded, "pi", "zai", "gone").unwrap();
+        assert!(!is_missing_from_detection(model));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4206,13 +5092,14 @@ exit 2
     #[ignore = "真机验收：探测四个内置 agent（内存 store，不写 resources.json）"]
     fn live_detect_four_agents() {
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: Vec::new(),
         };
         ensure_agents(&mut store);
         let mut errors = Vec::new();
         for id in ["claude", "codex", "kimi"] {
-            detect_into(&mut store, id, &mut errors);
+            apply_prepared_detection(&mut store, prepare_agent_detection(id), &mut errors);
         }
         apply_prepared_pi_detection(&mut store, prepare_pi_detection(resolve_cli("pi")), &mut errors);
         for agent in &store.agents {
@@ -4240,6 +5127,7 @@ exit 2
             ..Default::default()
         };
         let mut store = ResourceStore {
+            detected_at: None,
             version: 1,
             agents: vec![fixture_agent(
                 "pi",

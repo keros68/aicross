@@ -34,6 +34,9 @@ serde_json = "1"
 # （修正轮验收查找、遗留节点复用、latest_leaf 平局都按插入序）。
 indexmap = { version = "2", features = ["serde"] }
 serde_yaml = "0.9"
+# TASK-50：skill 内置包（skill-bundle/ai-cross）编进可执行文件；体积影响见
+# tasks/REPORT-50.md。
+include_dir = "0.7"
 # TOML parsing for the kimi resource fact source (~/.kimi-code/config.toml [models])
 toml = "0.9"
 anyhow = "1"
@@ -66,6 +69,9 @@ tauri-plugin-global-shortcut = "2"
 # duplicate. Multi-window users still get there via the existing tab-detach
 # path (same process, no IME conflict).
 tauri-plugin-single-instance = "2"
+# TASK-50：窗口「选目录」对话框，只在 Rust 侧调用（pick_folder 命令），
+# 前端不装 npm 包。
+tauri-plugin-dialog = "2"
 
 # Win32 bindings:
 #   - DWM: force square window corners on Windows 11 (otherwise rounds

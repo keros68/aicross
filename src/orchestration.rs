@@ -218,6 +218,9 @@ pub struct Preset {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    /// TASK-55：模式介绍，一句话；空串不写出。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     #[serde(default)]
     pub builtin: bool,
     #[serde(default)]
@@ -293,6 +296,7 @@ pub(crate) fn builtin_presets() -> Vec<Preset> {
     let shared = Preset {
         id: "builtin-shared".into(),
         name: "共享模式".into(),
+        description: "单个模型执行，可读取完整对话上下文；只读".into(),
         builtin: true,
         stages: vec![Stage {
             nodes: vec![Target {
@@ -307,6 +311,7 @@ pub(crate) fn builtin_presets() -> Vec<Preset> {
     let economy = Preset {
         id: "builtin-economy".into(),
         name: "经济模式".into(),
+        description: "高档模型出方案，低档模型执行，其他厂商的模型验收".into(),
         builtin: true,
         stages: vec![
             Stage {
@@ -356,6 +361,7 @@ pub(crate) fn builtin_presets() -> Vec<Preset> {
     let blind = Preset {
         id: "builtin-blind".into(),
         name: "盲审模式".into(),
+        description: "同一份材料由多个厂商的模型独立审查，结果互不可见".into(),
         builtin: true,
         stages: vec![Stage {
             nodes: ["验收", "验证", "验证"]
@@ -376,6 +382,7 @@ pub(crate) fn builtin_presets() -> Vec<Preset> {
     let arena = Preset {
         id: "builtin-arena".into(),
         name: "擂台模式".into(),
+        description: "多个模型分别完成同一任务，从结果中选定一份采纳".into(),
         builtin: true,
         stages: vec![Stage {
             nodes: (0..3)
@@ -394,6 +401,7 @@ pub(crate) fn builtin_presets() -> Vec<Preset> {
     let jury = Preset {
         id: "builtin-jury".into(),
         name: "评审模式".into(),
+        description: "多个模型分别从安全、性能、需求覆盖角度审查".into(),
         builtin: true,
         stages: vec![Stage {
             nodes: (0..3)
@@ -410,6 +418,7 @@ pub(crate) fn builtin_presets() -> Vec<Preset> {
     let swarm = Preset {
         id: "builtin-swarm".into(),
         name: "蜂群模式".into(),
+        description: "任务拆分为互不重叠的子任务，由多个模型并行完成后合并".into(),
         builtin: true,
         stages: vec![Stage {
             nodes: vec![Target {
@@ -455,8 +464,14 @@ pub(crate) fn roles_from(root: &Path) -> RoleSettings {
 /// 这里文件存在但解析失败或 version != 1 时返回 Err 让调用方拒写（遇损坏
 /// 拒写，避免把其余角色静默丢掉）。文件缺失与 `roles_from` 一致回默认值。
 pub(crate) fn roles_from_strict(root: &Path) -> Result<RoleSettings, String> {
-    let Ok(text) = fs::read_to_string(roles_path(root)) else {
-        return Ok(RoleSettings::default());
+    // fix-46-r1 R2：只有文件缺失回默认值；存在但读不了（非 UTF-8、无权限）
+    // 同样报错拒写，不能当缺失覆盖掉已有人选。
+    let text = match fs::read_to_string(roles_path(root)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RoleSettings::default());
+        }
+        Err(error) => return Err(format!("roles.json 读不了：{error}")),
     };
     match serde_json::from_str::<RoleSettings>(&text) {
         Ok(roles) if roles.version == 1 => Ok(roles),
@@ -473,6 +488,289 @@ pub(crate) fn save_roles_in(root: &Path, settings: &RoleSettings) -> Result<(), 
         ));
     }
     write_json_atomic(&roles_path(root), settings)
+}
+
+// ── TASK-46：modes.json（每个模式的位置人选与默认模式） ───────────────────
+
+/// `thinking` 只认的四个级别；空串（沿用预设默认值）不在列，由调用方区分。
+pub(crate) const THINKING_LEVELS: [&str; 4] = ["关", "低", "中", "高"];
+
+/// 人选来源（TASK-50）：`manual`（窗口或命令行手选）/ `recommended`
+/// （一键推荐填的）。旧文件没有该字段时按 `manual` 处理：只有值恰为
+/// `recommended` 才算推荐填的，其余（含空）都是手选。
+pub(crate) const SEAT_ORIGIN_MANUAL: &str = "manual";
+pub(crate) const SEAT_ORIGIN_RECOMMENDED: &str = "recommended";
+
+/// 一个位置的人选。`tier` / `thinking` 空串表示沿用预设的默认值；
+/// `thinking` 只认 关 / 低 / 中 / 高 / 空串；`fallback` 可缺省，有值时
+/// agent 与 model 必填。字段名 camelCase 是配置文件契约。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SeatChoice {
+    #[serde(default)]
+    pub agent: String,
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub tier: String,
+    #[serde(default)]
+    pub thinking: String,
+    #[serde(default)]
+    pub fallback: Option<FallbackTarget>,
+    /// 人选来源；旧文件缺该字段时为空串，按 `manual` 处理（见上面常量说明）。
+    #[serde(default)]
+    pub origin: String,
+}
+
+impl SeatChoice {
+    /// 该人选是不是一键推荐填的（空串与其它值都按手选）。
+    pub(crate) fn is_recommended(&self) -> bool {
+        self.origin == SEAT_ORIGIN_RECOMMENDED
+    }
+}
+
+/// 一个自定义短命令的定义（modes.json v2 的 `hosts.<id>.slashCommands`，
+/// TASK-53）。`name` 只允许小写字母、数字与 `-`，1–32 位；`mode` 是预设 id
+/// （别名解析同 `--preset`）；`note` 为可选的固定附加说明（单行，≤200 字），
+/// 原样写进命令正文。缺省为空数组。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommand {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// 一个主 agent 的模式配置（modes.json v2 的 `hosts.<id>`，TASK-50）。
+/// `vendor_override` 为空表示不覆盖推定结果。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostModes {
+    #[serde(default)]
+    pub vendor_override: String,
+    #[serde(default)]
+    pub default_mode: String,
+    #[serde(default)]
+    pub seats: IndexMap<String, Vec<Vec<Option<SeatChoice>>>>,
+    /// 自定义短命令（TASK-53）；旧文件没有该字段时按空数组处理。
+    #[serde(default)]
+    pub slash_commands: Vec<SlashCommand>,
+    /// TASK-56：内置模式的位置数量调整，键为内置模式 id，值为可调角色的
+    /// 位置数（范围见 [`count_spec`]）。缺省为空；没有条目或值越界时该
+    /// 模式用默认形状。用户自定义预设不走这里。
+    #[serde(default)]
+    pub counts: IndexMap<String, u32>,
+    /// TASK-59：评审模式各位置的视角，键为模式 id（目前只认
+    /// `builtin-jury`，命令行对其它模式退出 2），值按扁平位置序存视角
+    /// 文字；某项缺失或为空串时该位置用默认表（安全 → 性能 → 需求覆盖）。
+    /// 位置数量调小时多出的项不删，调大后继续生效。
+    #[serde(default)]
+    pub focus: IndexMap<String, Vec<String>>,
+}
+
+/// modes.json（v2）：按主 agent 分组的默认模式与位置人选。`seats` 的下标
+/// 与该预设 `stages[i].nodes[j]` 一一对应，`None` 为未设人选；内置预设与
+/// 用户预设都可以有。与 roles.json 同目录（`AICROSS_HOME` 生效）。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModesFile {
+    pub version: u32,
+    #[serde(default)]
+    pub hosts: IndexMap<String, HostModes>,
+}
+
+impl Default for ModesFile {
+    fn default() -> Self {
+        Self {
+            version: 2,
+            hosts: IndexMap::new(),
+        }
+    }
+}
+
+fn modes_path(root: &Path) -> PathBuf {
+    root.join("modes.json")
+}
+
+/// 宽松读取：派发与展示用。文件缺失、损坏或 version 不认都按空配置处理
+///（与 `roles_from` 同一分法）。version 1 是未发布过的旧格式，不做迁移，
+/// 同样按空配置处理（TASK-50）。
+pub(crate) fn modes_from(root: &Path) -> ModesFile {
+    fs::read_to_string(modes_path(root))
+        .ok()
+        .and_then(|text| serde_json::from_str::<ModesFile>(&text).ok())
+        .filter(|modes| modes.version == MODES_VERSION)
+        .unwrap_or_default()
+}
+
+/// modes.json 现行版本。v1 从未发布过，不做迁移：宽松读取当空配置，
+/// 严格读取报错拒写。
+pub(crate) const MODES_VERSION: u32 = 2;
+
+/// 严格读取：命令行写入用。文件缺失回默认值；损坏或 version 不认时报错，
+/// 调用方拒写（与 `roles_from_strict` 同一分法，避免把已有人选静默丢掉）。
+/// version 1 是旧格式，报「是旧格式」，提示删除后重新设置。
+pub(crate) fn modes_from_strict(root: &Path) -> Result<ModesFile, String> {
+    // fix-46-r1 R2：与 `roles_from_strict` 同一处理——只有文件缺失回默认值，
+    // 存在但读不了（非 UTF-8、无权限）报错拒写。
+    let text = match fs::read_to_string(modes_path(root)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ModesFile::default());
+        }
+        Err(error) => return Err(format!("modes.json 读不了：{error}")),
+    };
+    match serde_json::from_str::<ModesFile>(&text) {
+        Ok(modes) if modes.version == MODES_VERSION => Ok(modes),
+        Ok(_) if modes_file_version(&text) == 1 => Err(
+            "modes.json 是旧格式，删除后重新设置".to_string(),
+        ),
+        _ => Err("modes.json 无法解析".to_string()),
+    }
+}
+
+/// 只探 version 字段，区分 v1 与其它认不得的格式（错误提示不同）。
+fn modes_file_version(text: &str) -> u32 {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| value.get("version").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0) as u32
+}
+
+/// 写入 modes.json；命令行与引擎读同一份。
+pub(crate) fn save_modes_in(root: &Path, modes: &ModesFile) -> Result<(), String> {
+    if modes.version != MODES_VERSION {
+        return Err(format!(
+            "模式配置 version 只支持 {MODES_VERSION}，收到 {}",
+            modes.version
+        ));
+    }
+    write_json_atomic(&modes_path(root), modes)
+}
+
+/// 某个主 agent 的配置；没有该主 agent 的条目时给空配置（不落盘）。
+pub(crate) fn host_section<'a>(modes: &'a ModesFile, host: &str) -> Option<&'a HostModes> {
+    modes.hosts.get(host)
+}
+
+/// 写入前的可变访问：没有该主 agent 的条目时补一个空的（不单独落盘，
+/// 由调用方改完后一并写）。
+pub(crate) fn host_section_mut<'a>(modes: &'a mut ModesFile, host: &str) -> &'a mut HostModes {
+    modes.hosts.entry(host.to_string()).or_default()
+}
+
+/// 写盘前把该模式的 seats 数组整理成预设的形状：阶段数与每阶段位置数都
+/// 与预设一致，缺的补 null，预设改短后多出的旧人选清掉，免得预设以后
+/// 再加长时旧人选对上新节点。set-seat 与一键推荐共用（fix-46-r1 R7）。
+pub(crate) fn shape_seats_to_preset(
+    stages: &mut Vec<Vec<Option<SeatChoice>>>,
+    preset: &Preset,
+) {
+    stages.resize(preset.stages.len(), Vec::new());
+    for (row, stage) in stages.iter_mut().zip(preset.stages.iter()) {
+        row.resize(stage.nodes.len(), None);
+    }
+}
+
+// ── TASK-56：内置模式的位置数量调整 ───────────────────────────────────
+
+/// 一个内置模式可调的位置数量：`stage` 是阶段下标（0 起），该阶段里角色
+/// 等于 `role` 的节点数量可调，其余节点固定不动。共享与蜂群不可调；
+/// 用户自定义预设不走这里。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CountSpec {
+    pub preset_id: &'static str,
+    pub role: &'static str,
+    pub stage: usize,
+    pub min: usize,
+    pub max: usize,
+    pub default: usize,
+}
+
+/// 可调表：数量减少从末尾去掉，增加复制该角色的模板节点。盲审另有
+/// 1 个「验收」固定；经济第 3 阶段「验收」固定、可调到 0（只剩「验收」）。
+pub(crate) const COUNT_SPECS: [CountSpec; 4] = [
+    CountSpec { preset_id: "builtin-economy", role: "验证", stage: 2, min: 0, max: 3, default: 1 },
+    CountSpec { preset_id: "builtin-blind", role: "验证", stage: 0, min: 1, max: 4, default: 2 },
+    CountSpec { preset_id: "builtin-arena", role: "执行", stage: 0, min: 2, max: 4, default: 3 },
+    CountSpec { preset_id: "builtin-jury", role: "验证", stage: 0, min: 1, max: 3, default: 3 },
+];
+
+/// 某个内置模式的位置数量是否可调；不可调返回 None。
+pub(crate) fn count_spec(preset_id: &str) -> Option<&'static CountSpec> {
+    COUNT_SPECS
+        .iter()
+        .find(|spec| spec.preset_id == preset_id)
+}
+
+/// 按设定值重排可调角色的位置：底版与模板节点都从 `builtin_presets()` 的
+/// 原始预设取（传入的可能是已按别的数量整过形的副本，不能当模板）；在
+/// 原始形状里把该角色的整段节点原位换成 `count` 个模板副本——内置模式的
+/// 可调节点都连成一段靠在阶段末尾，等价于「多则从末尾去掉、少则在该角色
+/// 最后一个节点之后追加」，阶段内顺序不打乱。不可调的预设原样返回；
+/// `count` 越出范围时按范围夹取。派发、`config show`、补人、推荐都经
+/// [`shaped_preset`] 取预设形状，不各写一份。
+pub(crate) fn shape_builtin_preset(preset: &Preset, count: usize) -> Preset {
+    let Some(spec) = count_spec(&preset.id) else {
+        return preset.clone();
+    };
+    let original = builtin_presets()
+        .into_iter()
+        .find(|builtin| builtin.id == preset.id);
+    let Some(original) = original else {
+        return preset.clone();
+    };
+    let mut shaped = original;
+    let count = count.clamp(spec.min, spec.max);
+    let Some(stage) = shaped.stages.get_mut(spec.stage) else {
+        return shaped;
+    };
+    let Some(template) = stage
+        .nodes
+        .iter()
+        .find(|node| node.role == spec.role)
+        .cloned()
+    else {
+        return shaped;
+    };
+    let mut nodes: Vec<Target> = Vec::with_capacity(stage.nodes.len());
+    let mut emitted = false;
+    for node in stage.nodes.drain(..) {
+        if node.role == spec.role {
+            // 该角色整段只出现一次：第一处换成 count 个副本，其余略过。
+            if !emitted {
+                nodes.extend(std::iter::repeat_n(template.clone(), count));
+                emitted = true;
+            }
+        } else {
+            nodes.push(node);
+        }
+    }
+    stage.nodes = nodes;
+    shaped
+}
+
+/// 该主 agent 配置下的实际形状：可调模式查 `counts`（缺省或越界用默认
+/// 值），其余预设原样返回。
+pub(crate) fn shaped_preset(preset: &Preset, section: Option<&HostModes>) -> Preset {
+    let Some(spec) = count_spec(&preset.id) else {
+        return preset.clone();
+    };
+    let count = section
+        .and_then(|section| section.counts.get(preset.id.as_str()))
+        .copied()
+        .map(|value| value as usize)
+        .filter(|value| (spec.min..=spec.max).contains(value))
+        .unwrap_or(spec.default);
+    if count == spec.default {
+        preset.clone()
+    } else {
+        shape_builtin_preset(preset, count)
+    }
 }
 
 /// 原子写：先写同目录临时文件（flush + sync）再 rename。Windows 上
@@ -577,6 +875,38 @@ pub(crate) fn raw_presets_from(root: &Path) -> PresetFile {
     }
 }
 
+/// 严格读取 presets.json（TASK-55）：`preset save` / `preset remove` 的读
+/// 改写用。文件缺失回空清单；存在但读不了（非 UTF-8、无权限）、解析失败
+/// 或 version != 1 时报错拒写，避免覆盖丢掉已有用户预设（与 modes.json 的
+/// 严格读取同一分法）。
+pub(crate) fn presets_from_strict(root: &Path) -> Result<PresetFile, String> {
+    let text = match fs::read_to_string(presets_path(root)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(PresetFile {
+                version: 1,
+                presets: Vec::new(),
+            });
+        }
+        Err(error) => return Err(format!("presets.json 读不了：{error}")),
+    };
+    match serde_json::from_str::<PresetFile>(&text) {
+        Ok(file) if file.version == 1 => Ok(file),
+        _ => Err("presets.json 无法解析".to_string()),
+    }
+}
+
+/// 写入 presets.json（TASK-55）：`preset save` 与 `preset remove` 用。
+pub(crate) fn save_presets_in(root: &Path, file: &PresetFile) -> Result<(), String> {
+    if file.version != 1 {
+        return Err(format!(
+            "预设文件 version 只支持 1，收到 {}",
+            file.version
+        ));
+    }
+    write_json_atomic(&presets_path(root), file)
+}
+
 pub(crate) fn save_graph_in(root: &Path, graph: &Graph) -> Result<(), String> {
     if graph.version != 1 {
         return Err(format!("图 version 只支持 1，收到 {}", graph.version));
@@ -620,6 +950,7 @@ mod tests {
         Preset {
             id: id.into(),
             name: format!("预设 {id}"),
+            description: String::new(),
             builtin: false,
             stages: vec![Stage {
                 nodes: vec![Target {
@@ -1064,6 +1395,237 @@ mod tests {
         let plain: GraphNode = serde_json::from_value(serde_json::json!({ "id": "x", "kind": "turn" })).unwrap();
         assert!(plain.leftover.is_none());
         assert_eq!(serde_json::to_value(&plain).unwrap()["leftover"], serde_json::Value::Null);
+    }
+
+    // ── TASK-46：modes.json 的读写 ─────────────────────────────────────
+
+    fn seat(agent: &str, provider: Option<&str>, model: &str) -> SeatChoice {
+        SeatChoice {
+            agent: agent.into(),
+            provider: provider.map(str::to_string),
+            model: model.into(),
+            ..SeatChoice::default()
+        }
+    }
+
+    #[test]
+    fn task46_modes_roundtrip_keeps_camel_case_and_seat_order() {
+        let root = temp_root("modes-roundtrip");
+        let modes = ModesFile {
+            version: MODES_VERSION,
+            hosts: IndexMap::from([(
+                "claude".into(),
+                HostModes {
+                    default_mode: "builtin-blind".into(),
+                    seats: IndexMap::from([(
+                        "builtin-blind".into(),
+                        vec![vec![
+                            Some(SeatChoice {
+                                fallback: Some(FallbackTarget {
+                                    agent: "claude".into(),
+                                    provider: None,
+                                    model: "sonnet".into(),
+                                }),
+                                ..seat("pi", Some("zai-coding-cn"), "glm-5.3-flash")
+                            }),
+                            None,
+                            Some(seat("codex", None, "gpt-5.6-luna")),
+                        ]],
+                    )]),
+                    ..HostModes::default()
+                },
+            )]),
+        };
+        save_modes_in(&root, &modes).unwrap();
+        assert_eq!(modes_from(&root), modes);
+        let text = fs::read_to_string(modes_path(&root)).unwrap();
+        assert!(text.contains("\"defaultMode\": \"builtin-blind\""), "{text}");
+        assert!(text.contains("\"vendorOverride\": \"\""), "{text}");
+        assert!(text.contains("\"fallback\": {"), "{text}");
+    }
+
+    #[test]
+    fn task46_modes_lenient_read_defaults_on_missing_broken_or_wrong_version() {
+        let root = temp_root("modes-lenient");
+        // 缺失
+        assert_eq!(modes_from(&root), ModesFile::default());
+        // 损坏
+        fs::write(modes_path(&root), "{ 损坏").unwrap();
+        assert_eq!(modes_from(&root), ModesFile::default());
+        // version 不认
+        fs::write(modes_path(&root), r#"{"version":9,"hosts":{}}"#).unwrap();
+        assert_eq!(modes_from(&root), ModesFile::default());
+    }
+
+    /// TASK-50：v1 旧格式从未发布过，不做迁移：宽松读当空配置，严格读
+    /// 报「是旧格式」拒写。
+    #[test]
+    fn task50_modes_v1_lenient_read_is_empty_and_strict_read_rejects() {
+        let root = temp_root("modes-v1");
+        let v1 = r#"{"version":1,"defaultMode":"builtin-blind","seats":{"builtin-blind":[[{"agent":"pi","model":"glm-4.7"}]]}}"#;
+        fs::write(modes_path(&root), v1).unwrap();
+        assert_eq!(modes_from(&root), ModesFile::default());
+        assert_eq!(
+            modes_from_strict(&root),
+            Err("modes.json 是旧格式，删除后重新设置".into())
+        );
+        // 严格读取失败后写盘命令不会碰文件：内容原样。
+        assert_eq!(fs::read_to_string(modes_path(&root)).unwrap(), v1);
+    }
+
+    #[test]
+    fn task46_modes_strict_read_rejects_broken_and_wrong_version() {
+        let root = temp_root("modes-strict");
+        // 缺失回默认值（与宽松读取一致）
+        assert_eq!(modes_from_strict(&root), Ok(ModesFile::default()));
+        // 损坏拒写
+        fs::write(modes_path(&root), "{ 损坏").unwrap();
+        assert_eq!(modes_from_strict(&root), Err("modes.json 无法解析".into()));
+        // version 不认拒写
+        fs::write(modes_path(&root), r#"{"version":9}"#).unwrap();
+        assert_eq!(modes_from_strict(&root), Err("modes.json 无法解析".into()));
+        // save 校验 version
+        let mut modes = ModesFile::default();
+        modes.version = 1;
+        assert!(save_modes_in(&root, &modes).is_err());
+    }
+
+    /// fix-46-r1 R2：文件存在但不是 UTF-8 时严格读取报错（不回默认值），
+    /// 缺失仍然回默认值。
+    #[test]
+    fn task46_r1_strict_read_rejects_non_utf8_files() {
+        let root = temp_root("modes-strict-non-utf8");
+        fs::write(modes_path(&root), [0xff, 0xfe, b'{']).unwrap();
+        let error = modes_from_strict(&root).unwrap_err();
+        assert!(error.starts_with("modes.json 读不了："), "{error}");
+        assert_eq!(modes_from(&root), ModesFile::default(), "宽松读仍按空配置");
+
+        fs::write(roles_path(&root), [0xff, 0xfe, b'{']).unwrap();
+        let error = roles_from_strict(&root).unwrap_err();
+        assert!(error.starts_with("roles.json 读不了："), "{error}");
+        assert_eq!(roles_from(&root), RoleSettings::default(), "宽松读仍按默认值");
+    }
+
+    // ── TASK-56：位置数量可调 ─────────────────────────────────────────
+
+    fn preset_by(id: &str) -> Preset {
+        builtin_presets()
+            .into_iter()
+            .find(|preset| preset.id == id)
+            .unwrap()
+    }
+
+    fn roles_of(preset: &Preset, stage: usize) -> Vec<String> {
+        preset.stages[stage].nodes.iter().map(|node| node.role.clone()).collect()
+    }
+
+    /// 可调表：四个可调模式的角色、阶段、范围与默认；共享、蜂群不可调。
+    #[test]
+    fn task56_count_specs_list_adjustable_modes() {
+        let spec_of = |id| count_spec(id).map(|spec| (spec.role, spec.stage, spec.min, spec.max, spec.default));
+        assert_eq!(spec_of("builtin-economy"), Some(("验证", 2, 0, 3, 1)));
+        assert_eq!(spec_of("builtin-blind"), Some(("验证", 0, 1, 4, 2)));
+        assert_eq!(spec_of("builtin-arena"), Some(("执行", 0, 2, 4, 3)));
+        assert_eq!(spec_of("builtin-jury"), Some(("验证", 0, 1, 3, 3)));
+        assert_eq!(spec_of("builtin-shared"), None, "共享不可调");
+        assert_eq!(spec_of("builtin-swarm"), None, "蜂群不可调");
+        // 默认值与内置预设现形状一致。
+        for spec in COUNT_SPECS.iter() {
+            let preset = preset_by(spec.preset_id);
+            let count = preset.stages[spec.stage]
+                .nodes
+                .iter()
+                .filter(|node| node.role == spec.role)
+                .count();
+            assert_eq!(count, spec.default, "{} 的默认位置数", spec.preset_id);
+            assert!((spec.min..=spec.max).contains(&spec.default));
+        }
+    }
+
+    /// 增减后的阶段形状：增加复制该角色的模板节点，减少从末尾去掉；
+    /// 固定节点（盲审 / 经济的「验收」）保持在可调节点之前。
+    #[test]
+    fn task56_shape_builtin_preset_grows_and_shrinks() {
+        // 盲审：1–4 个验证，验收固定在最前。
+        let blind = shape_builtin_preset(&preset_by("builtin-blind"), 4);
+        assert_eq!(roles_of(&blind, 0), ["验收", "验证", "验证", "验证", "验证"]);
+        let blind = shape_builtin_preset(&preset_by("builtin-blind"), 1);
+        assert_eq!(roles_of(&blind, 0), ["验收", "验证"]);
+        // 经济：第 3 阶段 0–3 个验证，0 时只剩验收。
+        let economy = shape_builtin_preset(&preset_by("builtin-economy"), 3);
+        assert_eq!(roles_of(&economy, 2), ["验收", "验证", "验证", "验证"]);
+        let economy = shape_builtin_preset(&preset_by("builtin-economy"), 0);
+        assert_eq!(roles_of(&economy, 2), ["验收"]);
+        assert_eq!(economy.stages.len(), 3, "其余阶段不动");
+        assert_eq!(roles_of(&economy, 0), ["出方案"]);
+        // 擂台 2–4、评审 1–3。
+        let arena = shape_builtin_preset(&preset_by("builtin-arena"), 2);
+        assert_eq!(roles_of(&arena, 0), ["执行", "执行"]);
+        let jury = shape_builtin_preset(&preset_by("builtin-jury"), 3);
+        assert_eq!(roles_of(&jury, 0), ["验证", "验证", "验证"]);
+        // 新增节点复制模板：角色、盲属性与思考强度与原有节点一致。
+        let blind = shape_builtin_preset(&preset_by("builtin-blind"), 4);
+        let first = &blind.stages[0].nodes[1];
+        let added = &blind.stages[0].nodes[4];
+        assert_eq!(
+            (added.role.as_str(), added.visibility.as_str(), added.write.as_str(), added.thinking.as_str()),
+            (first.role.as_str(), first.visibility.as_str(), first.write.as_str(), first.thinking.as_str())
+        );
+        // 不可调的预设原样。
+        let shared = preset_by("builtin-shared");
+        assert_eq!(shape_builtin_preset(&shared, 5), shared);
+        // 越界夹取。
+        let blind = shape_builtin_preset(&preset_by("builtin-blind"), 99);
+        assert_eq!(blind.stages[0].nodes.len(), 5);
+    }
+
+    /// 模板与底版固定从原始内置预设取：把已整过形的副本再整形，结果与
+    /// 从原始预设直接整形一致（模板不丢、阶段内顺序不变）。
+    #[test]
+    fn task56_shape_builtin_preset_is_idempotent_from_any_input() {
+        let blind = preset_by("builtin-blind");
+        let grown = shape_builtin_preset(&blind, 4);
+        assert_eq!(shape_builtin_preset(&grown, 1), shape_builtin_preset(&blind, 1));
+        assert_eq!(shape_builtin_preset(&grown, 4), grown);
+        let economy = preset_by("builtin-economy");
+        let trimmed = shape_builtin_preset(&economy, 0);
+        assert_eq!(shape_builtin_preset(&trimmed, 0), trimmed);
+        assert_eq!(
+            shape_builtin_preset(&trimmed, 2),
+            shape_builtin_preset(&economy, 2)
+        );
+        let jury = preset_by("builtin-jury");
+        assert_eq!(
+            shape_builtin_preset(&shape_builtin_preset(&jury, 1), 3),
+            shape_builtin_preset(&jury, 3)
+        );
+    }
+
+    /// `shaped_preset`：按主 agent 的 counts 取形状；缺省用默认、越界也用
+    /// 默认；不可调模式原样。
+    #[test]
+    fn task56_shaped_preset_reads_counts_and_falls_back_to_default() {
+        let section = |counts: IndexMap<String, u32>| HostModes {
+            counts,
+            ..HostModes::default()
+        };
+        let blind = preset_by("builtin-blind");
+        // 设定值生效。
+        let shaped = shaped_preset(&blind, Some(&section(IndexMap::from([("builtin-blind".into(), 4)]))));
+        assert_eq!(roles_of(&shaped, 0), ["验收", "验证", "验证", "验证", "验证"]);
+        // 越界回默认；缺省同为默认。
+        let shaped = shaped_preset(&blind, Some(&section(IndexMap::from([("builtin-blind".into(), 9)]))));
+        assert_eq!(shaped, blind);
+        assert_eq!(shaped_preset(&blind, None), blind);
+        // 其它模式的 counts 不影响这一个。
+        let shaped = shaped_preset(&blind, Some(&section(IndexMap::from([("builtin-arena".into(), 2)]))));
+        assert_eq!(shaped, blind);
+        // 不可调模式带 counts 也原样。
+        let shared = preset_by("builtin-shared");
+        assert_eq!(
+            shaped_preset(&shared, Some(&section(IndexMap::from([("builtin-shared".into(), 3)])))),
+            shared
+        );
     }
 
 }

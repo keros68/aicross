@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "comment": "一键推荐用的档位与计费方式小表，随版本发布。tier/billing 规则先命中先用：agent 为精确匹配（小写），provider 为前缀匹配（真实 provider 名可带后缀，如 zai-coding-cn 命中 zai），model 为模型名包含匹配（小写），缺省视为通配。表里没有的模型档位为「未知」，排在已知档位之后；计费为「未知」，排在订阅之后、按次之前。",
+  "tiers": [
+    { "agent": "claude", "model": "opus", "tier": "高" },
+    { "agent": "claude", "model": "fable", "tier": "高" },
+    { "agent": "claude", "model": "sonnet", "tier": "中" },
+    { "agent": "claude", "model": "haiku", "tier": "低" },
+    { "agent": "codex", "tier": "中" },
+    { "agent": "kimi", "tier": "中" },
+    { "agent": "pi", "provider": "zai", "model": "flash", "tier": "低" },
+    { "agent": "pi", "provider": "zai", "model": "glm-4", "tier": "中" },
+    { "agent": "pi", "provider": "bigmodel", "tier": "中" },
+    { "agent": "pi", "provider": "deepseek", "tier": "中" },
+    { "agent": "pi", "provider": "opencode", "tier": "中" }
+  ],
+  "billing": [
+    { "agent": "claude", "billing": "订阅" },
+    { "agent": "codex", "billing": "订阅" },
+    { "agent": "kimi", "billing": "订阅" },
+    { "agent": "pi", "provider": "zai", "billing": "订阅" },
+    { "agent": "pi", "provider": "bigmodel", "billing": "订阅" },
+    { "agent": "pi", "provider": "deepseek", "billing": "按次" },
+    { "agent": "pi", "provider": "opencode", "billing": "按次" }
+  ]
+}

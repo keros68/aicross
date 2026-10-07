@@ -5,12 +5,17 @@ mod console_cli;
 mod dispatch;
 mod engine;
 mod git;
+mod hosts;
 mod orchestration;
 mod paths;
+mod preset;
 mod process;
+mod recommend;
 mod resources;
 mod run_view;
 mod server;
+mod skill_install;
+mod slash;
 mod tool_config;
 #[cfg(target_os = "windows")]
 mod windows_path;

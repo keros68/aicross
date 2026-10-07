@@ -16,7 +16,8 @@ use crate::dispatch::{
     DispatchStageRequest, DispatchStageResult, FallbackSpec, PinnedState,
 };
 use crate::orchestration::{
-    self, Graph, GraphNode, Leftover, Message, Preset, Reply, ReplyArtifacts, RoleSettings, Target,
+    self, Graph, GraphNode, Leftover, Message, ModesFile, Preset, Reply, ReplyArtifacts,
+    RoleSettings, SeatChoice, Target,
 };
 use crate::resources::ResourceModel;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -40,6 +41,12 @@ const NO_EXTERNAL_ACTIONS: &str =
     "不得 git push、发布、安装依赖或调用付费接口；这些留给用户在验收之后做。";
 const VERIFICATION_ROUTE_TEXT: &str =
     "盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。";
+/// 每个节点提示词末尾固定追加的如实汇报要求（fix-57-r1 8）：所有角色、
+/// 所有模式、ACP 与一次性 CLI 两条通道都经过 `build_request` 这一处，
+/// 不做开关。出处：Language Models Are "Insecure" Reporters（2026-09），
+/// 英文一句让负面结果披露从 2/200 升到 190/200；中文句是补充，未单独实测。
+const HONEST_REPORTING: &str =
+    "Be honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。";
 /// pid 为 0（父进程已写 run、后台进程尚未报到）的启动宽限。
 const STARTUP_WINDOW_SECS: i64 = 30;
 
@@ -192,6 +199,13 @@ pub struct EngineRun {
     /// 空串（fix-37-r1 R1-4）。旧 run 文件没有该字段，按空处理。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub preset_id: String,
+    /// TASK-48：派发前检查丢掉未发现备选时的说明；空时不写出。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    /// TASK-50：本次派发的主 agent（--host 或 modes.json 单配置推定）；
+    /// 无配置时为空串，不写出。旧 run 文件没有该字段，按空处理。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub host: String,
     pub updated_at: String,
 }
 
@@ -609,29 +623,202 @@ fn preset_node_text(target: &Target, swarm_limit: usize) -> String {
     format!("{text}\n\n本次上限 {} 件。", swarm_limit.max(1))
 }
 
-/// TS `PRESET_NODE_TEXTS`：内置预设按扁平创建序覆盖节点文本；表里没有的位置
-/// 不覆盖（保留 presetNodeText）。
-fn preset_node_texts(preset_id: &str) -> Option<&'static [&'static str]> {
-    match preset_id {
-        "builtin-jury" => Some(&[
-            "安全评审：只从安全视角审查这批材料，指出风险、暴露面与缓释建议。",
-            "性能评审：只从性能视角审查这批材料，指出瓶颈、复杂度与改进建议。",
-            "",
-        ]),
-        "builtin-economy" => Some(&["", "", "", VERIFICATION_ROUTE_TEXT]),
-        "builtin-blind" => Some(&["", VERIFICATION_ROUTE_TEXT, VERIFICATION_ROUTE_TEXT]),
-        _ => None,
+/// 评审模式各位置的默认视角表（走查 #7）：名字给 `config show` 的
+/// `focus` 字段，文本给盖章时的 user.text；两处共用这一张表，顺序即
+/// 没设视角时的扁平位置序（TASK-59 起各位置可另设视角）。
+pub(crate) const JURY_PERSPECTIVES: [(&str, &str); 3] = [
+    ("安全", "安全评审：只从安全视角审查这批材料，指出风险、暴露面与缓释建议。"),
+    ("性能", "性能评审：只从性能视角审查这批材料，指出瓶颈、复杂度与改进建议。"),
+    ("需求覆盖", "需求覆盖评审：只从需求覆盖视角审查这批材料，指出遗漏、偏差与补充建议。"),
+];
+
+/// 内置视角的第二段（TASK-59）：可设到任意位置，但不在默认顺序里。
+const JURY_EXTRA_PERSPECTIVES: [(&str, &str); 3] = [
+    ("规范", "规范评审：只从项目规范视角审查这批材料：对照仓库已有的编码规范与约定（如 AGENTS.md、CONTRIBUTING.md、lint 配置），指出违反之处与修改建议。"),
+    ("正确性", "正确性评审：只从正确性视角审查这批材料，指出逻辑错误、遗漏的边界条件与反例。"),
+    ("可维护性", "可维护性评审：只从可维护性视角审查这批材料，指出重复、命名、耦合与可以简化之处。"),
+];
+
+/// `config show` 里评审模式位置可选的内置视角（TASK-59）：默认三个之外
+/// 另有 规范 / 正确性 / 可维护性；自定义文字不进清单，由用户直接输入。
+pub(crate) const JURY_FOCUS_OPTIONS: [&str; 6] =
+    ["安全", "性能", "需求覆盖", "规范", "正确性", "可维护性"];
+
+/// 评审模式扁平位置序第 index 个位置的视角名；超出表的位置为空串。
+pub(crate) fn jury_focus(index: usize) -> &'static str {
+    JURY_PERSPECTIVES
+        .get(index)
+        .map(|(name, _)| *name)
+        .unwrap_or("")
+}
+
+/// 视角的派发文本（TASK-59）：内置视角查表，其它自定义文字套统一模板。
+pub(crate) fn jury_focus_text(name: &str) -> String {
+    if name.is_empty() {
+        return String::new();
+    }
+    for (key, text) in JURY_PERSPECTIVES.iter().chain(JURY_EXTRA_PERSPECTIVES.iter()) {
+        if *key == name {
+            return (*text).to_string();
+        }
+    }
+    format!("{name}评审：只从{name}视角审查这批材料，指出问题与改进建议。")
+}
+
+/// Unicode Cf 类格式字符（零宽、双向覆盖与隔离、BOM、软连字符等）。std
+/// 不带通用类别表，这里按 Unicode 15 的 Cf 区段列出；新版 Unicode 增补
+/// Cf 字符时需同步。
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x0890..=0x0891
+            | 0x08E2
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x2064
+            | 0x2066..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0001
+            | 0xE0020..=0xE007F
+    )
+}
+
+/// 评审视角文字校验（TASK-59）：写入口（`config set-focus`）与读出口
+///（生效视角）共用。先在原串上拒绝换行与制表，再去首尾空白；空串表示
+/// 该位置用默认；其余须为 1–20 字，且不含控制字符（含 ANSI 转义）与
+/// Unicode 格式字符（零宽、双向覆盖等）。返回规整后的文字或错误说明。
+pub(crate) fn normalize_focus_text(focus: &str) -> Result<String, String> {
+    let shown = || {
+        focus
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t")
+    };
+    if focus.contains(['\n', '\r', '\t']) {
+        return Err(format!("视角不能含换行、制表或其它控制字符：{}", shown()));
+    }
+    let trimmed = focus.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    if trimmed.chars().count() > 20 {
+        return Err(format!(
+            "视角需为去掉首尾空白后 1–20 字，收到 {} 字：{trimmed}",
+            trimmed.chars().count()
+        ));
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err(format!("视角不能含换行、制表或其它控制字符：{}", shown()));
+    }
+    if trimmed.chars().any(is_format_char) {
+        let escaped: String = trimmed
+            .chars()
+            .map(|c| {
+                if is_format_char(c) {
+                    format!("\\u{{{:04X}}}", c as u32)
+                } else {
+                    c.to_string()
+                }
+            })
+            .collect();
+        return Err(format!("视角不能含零宽、双向控制等格式字符：{escaped}"));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// 评审模式扁平位置序第 index 个位置的生效视角（TASK-59）：主 agent 配置
+/// 的 `focus` 里设了的值按 `normalize_focus_text` 校验，合格且非空用设的；
+/// 空串、缺项或不合格（手改 modes.json 写进换行、超长等）回默认表，不
+/// 报错；都取不到为空串。
+pub(crate) fn jury_focus_effective(
+    section: Option<&crate::orchestration::HostModes>,
+    index: usize,
+) -> String {
+    let overridden = section
+        .and_then(|section| section.focus.get("builtin-jury"))
+        .and_then(|list| list.get(index))
+        .and_then(|name| normalize_focus_text(name).ok())
+        .filter(|name| !name.is_empty());
+    match overridden {
+        Some(name) => name,
+        None => jury_focus(index).to_string(),
+    }
+}
+
+/// 盖章用的评审视角名单（TASK-59）：按扁平位置序给每个位置的生效视角；
+/// 非评审模式给空名单。与 counts 同一条路径：都从主 agent 的 host 段取，
+/// `config show` 与派发共用这份解析。
+pub(crate) fn jury_focus_names(
+    section: Option<&crate::orchestration::HostModes>,
+    preset: &Preset,
+) -> Vec<String> {
+    if preset.id != "builtin-jury" {
+        return Vec::new();
+    }
+    let total: usize = preset.stages.iter().map(|stage| stage.nodes.len()).sum();
+    (0..total)
+        .map(|index| jury_focus_effective(section, index))
+        .collect()
+}
+
+/// TS `PRESET_NODE_TEXTS`：内置预设按扁平创建序覆盖节点文本（TASK-56 起
+/// 按传入预设的位置数生成，不再按固定下标）；表里没有的位置不覆盖
+///（保留 presetNodeText）。评审的视角文本按每个位置的生效视角取（TASK-59
+/// 起主 agent 配置可改，focus 名单由调用方传入，缺省回
+/// 「安全 → 性能 → 需求覆盖」，与 config show 的 focus 同一张表）；盲审
+/// 与经济的验证位置都用验证路由文本。
+fn preset_node_texts(preset: &Preset, focus: &[String]) -> Vec<String> {
+    match preset.id.as_str() {
+        "builtin-jury" => preset
+            .stages
+            .iter()
+            .flat_map(|stage| stage.nodes.iter())
+            .enumerate()
+            .map(|(index, _)| {
+                let name = focus
+                    .get(index)
+                    .map(String::as_str)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| jury_focus(index));
+                jury_focus_text(name)
+            })
+            .collect(),
+        // 盲审与经济：验收与其余角色不覆盖，验证位置都套验证路由文本。
+        "builtin-blind" | "builtin-economy" => preset
+            .stages
+            .iter()
+            .flat_map(|stage| stage.nodes.iter())
+            .map(|target| match target.role.as_str() {
+                "验证" => VERIFICATION_ROUTE_TEXT.to_string(),
+                _ => String::new(),
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
 /// TS `stamp`：第 1 阶段每个 Target 成为 node_id 的子节点；第 k 阶段以第 k-1
 /// 阶段全部新节点为父，父节点数 ≥2 时 kind=accept。同层 created_at 按阶段内
-/// 索引递增 1ms。盖章后只有内置预设按扁平序套用 PRESET_NODE_TEXTS。
+/// 索引递增 1ms。盖章后只有内置预设按扁平序套用 PRESET_NODE_TEXTS；评审的
+/// 视角名单由调用方按主 agent 配置算好传入（TASK-59）。
 pub(crate) fn stamp_with(
     graph: &Graph,
     node_id: &str,
     preset: &Preset,
     swarm_limit: usize,
+    focus: &[String],
     ids: &mut dyn FnMut() -> String,
     base: DateTime<Utc>,
 ) -> (Graph, Vec<String>) {
@@ -673,12 +860,11 @@ pub(crate) fn stamp_with(
         previous = level;
     }
     if preset.builtin {
-        if let Some(texts) = preset_node_texts(&preset.id) {
-            for (index, id) in created.iter().enumerate() {
-                if let Some(text) = texts.get(index) {
-                    if let Some(node) = next.nodes.get_mut(id) {
-                        node.user.text = (*text).to_string();
-                    }
+        let texts = preset_node_texts(preset, focus);
+        for (index, id) in created.iter().enumerate() {
+            if let Some(text) = texts.get(index) {
+                if let Some(node) = next.nodes.get_mut(id) {
+                    node.user.text = text.clone();
                 }
             }
         }
@@ -717,6 +903,104 @@ fn apply_role_defaults(mut preset: Preset, roles: &RoleSettings) -> Preset {
         target.thinking.clone_from(&profile.thinking);
     }
     preset
+}
+
+/// 引擎侧的 host 推定（TASK-50 第 2 节）：给了 --host 直接用；没给时
+/// modes.json 里只有一个主 agent 的配置就用它，零或多于一个按无配置处理
+/// （派发走原有 roles.json 行为）。合法性（是否检测到的 agent）由命令行
+/// 入口校验退出 2，引擎不再查资源库。
+fn resolve_engine_host(given: Option<&str>, modes: &ModesFile) -> Option<String> {
+    if let Some(host) = given.map(str::trim).filter(|host| !host.is_empty()) {
+        return Some(host.to_lowercase());
+    }
+    let mut configured = modes.hosts.keys();
+    match (configured.next(), configured.next()) {
+        (Some(only), None) => Some(only.clone()),
+        _ => None,
+    }
+}
+
+/// TASK-46：未给预设 id 时实际采用的预设 id。该主 agent 配置里的
+/// defaultMode 指向存在的预设时用它；为空或指向不存在的预设时仍是经济
+/// 模式（原有行为）。主 agent 无配置时同为经济模式。
+pub(crate) fn default_preset_id(host_modes: Option<&crate::orchestration::HostModes>, presets: &[Preset]) -> String {
+    let wanted = host_modes
+        .map(|section| section.default_mode.trim())
+        .unwrap_or_default();
+    if !wanted.is_empty() && presets.iter().any(|preset| preset.id == wanted) {
+        wanted.to_string()
+    } else {
+        "builtin-economy".to_string()
+    }
+}
+
+/// TASK-46：补人纯函数，派发（plan_dispatch）与展示（`config show` 的 modes
+/// 段）共用同一个，不各写一份。每个位置的来源，按序：
+/// 1.「预设」：节点的 model 非空（用户预设写死的人选），不动；
+/// 2.「位置」：modes.json 里这个位置有人选，写入 agent/provider/model；
+///    tier / thinking 非空时覆盖预设值；fallback 有值时写进 Target.fallback；
+/// 3.「角色」：`apply_role_defaults` 的规则（含它对擂台 / 盲审 / 评审的
+///    整份跳过，直接对照它的结果，不重写一份）；
+/// 4.「未指定」：都没有，保持空，由派发前检查拒绝。
+/// `seat_stages` 与预设的长度对不上时（预设被改过），多出的忽略、缺的按 null。
+/// agent 或 model 为空（trim 后）的人选按未设处理（fix-46-r1 R5），继续走
+/// 规则 3；`thinking` 不在 关 / 低 / 中 / 高 / 空串 内时忽略，不覆盖预设值。
+/// 返回填好的预设与每个位置的来源，两形与 `stages[i].nodes[j]` 同形。
+pub(crate) fn fill_seats(
+    preset: &Preset,
+    roles: &RoleSettings,
+    seat_stages: Option<&Vec<Vec<Option<SeatChoice>>>>,
+) -> (Preset, Vec<Vec<&'static str>>) {
+    let mut filled = preset.clone();
+    // 「角色」这档对照 apply_role_defaults 的结果：整份跳过与角色匹配都由
+    // 它一份口径给出。
+    let role_template = apply_role_defaults(preset.clone(), roles);
+    let mut sources: Vec<Vec<&'static str>> = Vec::with_capacity(filled.stages.len());
+    for (i, stage) in filled.stages.iter_mut().enumerate() {
+        let mut row: Vec<&'static str> = Vec::with_capacity(stage.nodes.len());
+        for (j, target) in stage.nodes.iter_mut().enumerate() {
+            let seat = seat_stages
+                .and_then(|stages| stages.get(i))
+                .and_then(|nodes| nodes.get(j))
+                .and_then(|seat| seat.as_ref())
+                // 空人选（agent 或 model 为空）不算「位置」，继续走后面的来源。
+                .filter(|seat| !seat.agent.trim().is_empty() && !seat.model.trim().is_empty());
+            let source = if !target.model.trim().is_empty() {
+                "预设"
+            } else if let Some(seat) = seat {
+                target.agent.clone_from(&seat.agent);
+                target.provider.clone_from(&seat.provider);
+                target.model.clone_from(&seat.model);
+                if !seat.tier.is_empty() {
+                    target.tier = Some(seat.tier.clone());
+                }
+                if !seat.thinking.is_empty()
+                    && crate::orchestration::THINKING_LEVELS.contains(&seat.thinking.as_str())
+                {
+                    target.thinking.clone_from(&seat.thinking);
+                }
+                if let Some(fallback) = seat.fallback.as_ref().filter(|f| {
+                    !f.agent.trim().is_empty() && !f.model.trim().is_empty()
+                }) {
+                    target.fallback = Some(fallback.clone());
+                }
+                "位置"
+            } else if !role_template.stages[i].nodes[j].model.trim().is_empty() {
+                let template = &role_template.stages[i].nodes[j];
+                target.agent.clone_from(&template.agent);
+                target.provider.clone_from(&template.provider);
+                target.model.clone_from(&template.model);
+                target.tier.clone_from(&template.tier);
+                target.thinking.clone_from(&template.thinking);
+                "角色"
+            } else {
+                "未指定"
+            };
+            row.push(source);
+        }
+        sources.push(row);
+    }
+    (filled, sources)
 }
 
 fn sorted_nodes(graph: &Graph) -> Vec<&GraphNode> {
@@ -1200,6 +1484,10 @@ fn build_request(
                 prompt.push_str("\n\n");
                 prompt.push_str(NO_EXTERNAL_ACTIONS);
             }
+            // 如实汇报要求固定收尾（fix-57-r1 8）：用户原文在 prompt 里
+            // 原样保留，这段只追加在末尾。
+            prompt.push_str("\n\n");
+            prompt.push_str(HONEST_REPORTING);
             let fallback = target
                 .fallback
                 .as_ref()
@@ -1994,6 +2282,11 @@ pub(crate) struct PlanInput<'a> {
     /// 原始预设清单（未填角色默认；角色默认由这里自己套）。
     pub presets: &'a [Preset],
     pub roles: &'a RoleSettings,
+    /// TASK-46：modes.json 的宽松读取结果；TASK-50 起派发改用解析出的
+    /// 主 agent 配置段（`host_modes`），不再拿整份文件。
+    pub host_modes: Option<&'a crate::orchestration::HostModes>,
+    /// 未给预设 id 时实际采用的预设 id（`default_preset_id` 的结果）。
+    pub default_preset: &'a str,
     /// 不含本 run 的在飞 run 数。
     pub active_runs: usize,
     /// 同项目已有图（selectConsoleGraph 的结果）。
@@ -2009,6 +2302,8 @@ pub(crate) enum Plan {
         graph: Graph,
         created: Vec<String>,
         original: String,
+        /// TASK-48：备选未发现被丢掉时的说明，写进 run 文件与 stderr。
+        notes: Vec<String>,
     },
 }
 
@@ -2034,25 +2329,42 @@ pub(crate) fn plan_dispatch(
         Some(Preset {
             id: format!("console-{}", input.run_id),
             name: String::new(),
+            description: String::new(),
             builtin: false,
             stages: vec![orchestration::Stage {
                 nodes: input.targets.to_vec(),
             }],
         })
     } else {
-        let wanted = input.preset.unwrap_or("builtin-economy");
-        input.presets.iter().find(|p| p.id == wanted).cloned()
+        // TASK-46：未给预设 id 时按 modes.json 的默认模式（已在
+        // start_dispatch_with 解析成实际存在的 id，缺省仍是经济模式）。
+        // TASK-56：内置模式按该主 agent 的 counts 调整位置数量。
+        let wanted = input.preset.unwrap_or(input.default_preset);
+        input
+            .presets
+            .iter()
+            .find(|p| p.id == wanted)
+            .map(|p| crate::orchestration::shaped_preset(p, input.host_modes))
     };
     let Some(selected) = selected else {
         return reject(
             format!(
                 "找不到预设：{}",
-                input.preset.unwrap_or("builtin-economy")
+                input.preset.unwrap_or(input.default_preset)
             ),
             String::new(),
         );
     };
-    let preset = apply_role_defaults(selected, input.roles);
+    // TASK-46：位置人选先按主 agent 的 modes.json 配置补，剩下的按角色
+    // 默认补；来源与 `config show` 的展示共用同一个纯函数。
+    let (preset, _) = fill_seats(
+        &selected,
+        input.roles,
+        input.host_modes.and_then(|section| section.seats.get(&selected.id)),
+    );
+    // TASK-59：评审视角与 counts 同一条路径，从该主 agent 的 host 段取
+    //（名单按调整后的形状算），盖章时写进各验证节点的正文。
+    let focus = jury_focus_names(input.host_modes, &selected);
     let existing = input.existing.take();
     // R1-16：只有新建图标「来自控制台」，续写已有图保留原 source（含空）。
     let graph_source = existing
@@ -2093,6 +2405,7 @@ pub(crate) fn plan_dispatch(
         &material_id,
         &preset,
         input.settings.swarm_limit,
+        &focus,
         ids,
         clock(),
     );
@@ -2134,6 +2447,40 @@ pub(crate) fn plan_dispatch(
             .iter()
             .find(|m| m.agent == t.agent && m.id == t.model)
     };
+    // TASK-48：目标模型是「未发现」（最近一次探测没发现）时拒绝，与验证失败
+    // 同一处拦截；状态优先级里未发现压过验证结果，所以判在它前面。查找用
+    // find_target_model：目标给了 provider 时只认那一条，同名模型挂在别的
+    // provider 下带标记不牵连（fix-48-r1 R1）；遍历本次新建的全部带 target
+    // 节点，盲审 / 经济模式后面阶段的人选未发现同样在派发前拒绝，不留到
+    // 执行时才失败（fix-48-r1 R2）。
+    if let Some(id) = created.iter().find(|id| {
+        graph
+            .nodes
+            .get(*id)
+            .and_then(|n| n.target.as_ref())
+            .and_then(|t| {
+                crate::resources::find_target_model(
+                    input.models,
+                    &t.agent,
+                    t.provider.as_deref().unwrap_or_default(),
+                    &t.model,
+                )
+            })
+            .is_some_and(crate::resources::is_missing_from_detection)
+    }) {
+        let t = graph
+            .nodes
+            .get(id)
+            .and_then(|n| n.target.as_ref())
+            .expect("target checked above");
+        return reject(
+            format!(
+                "{}/{} 在最近一次探测中未发现，请重新探测或换人选",
+                t.agent, t.model
+            ),
+            graph.id.clone(),
+        );
+    }
     if let Some(id) = first.iter().find(|id| {
         graph
             .nodes
@@ -2176,6 +2523,39 @@ pub(crate) fn plan_dispatch(
             graph.id.clone(),
         );
     }
+    // TASK-48：备选是「未发现」的模型时把它从该节点移除（本次落图即无
+    // 备选，同 run 重试不再带它），主目标照常；在 run 文件与响应里留一句
+    // 说明。备选在资源库里压根没有时维持原行为，不算未发现。查找用
+    // find_target_model（fix-48-r1 R1），遍历本次新建的全部带 target 节点
+    // （fix-48-r1 R2）。
+    let mut notes = Vec::new();
+    for id in &created {
+        let Some(target) = graph.nodes.get(id).and_then(|n| n.target.as_ref()) else {
+            continue;
+        };
+        let Some(fallback) = target.fallback.as_ref() else {
+            continue;
+        };
+        let missing = crate::resources::find_target_model(
+            input.models,
+            &fallback.agent,
+            fallback.provider.as_deref().unwrap_or_default(),
+            &fallback.model,
+        )
+        .is_some_and(crate::resources::is_missing_from_detection);
+        if !missing {
+            continue;
+        }
+        notes.push(format!(
+            "备选 {}/{} 在最近一次探测中未发现，已从该节点移除",
+            fallback.agent, fallback.model
+        ));
+        if let Some(node) = graph.nodes.get_mut(id) {
+            if let Some(target) = node.target.as_mut() {
+                target.fallback = None;
+            }
+        }
+    }
     if created.len() > input.settings.max_requests {
         return reject(
             format!(
@@ -2207,6 +2587,7 @@ pub(crate) fn plan_dispatch(
         graph,
         created,
         original,
+        notes,
     }
 }
 
@@ -2543,6 +2924,12 @@ pub(crate) struct DispatchInput {
     /// TASK-43：验收条件全文（命令行 `--accept-file` 读入）；空为未提供。
     #[serde(default)]
     pub accept_criteria: String,
+    /// TASK-50：主 agent（命令行 `--host`）。给了就在 modes.json 里取该
+    /// 主 agent 的配置；没给时由 `resolve_engine_host` 推定（单一配置直接
+    /// 用，零或多个配置按无配置处理）。合法性（是否检测到的 agent）由
+    /// 命令行入口校验，引擎不再查资源库。
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 #[derive(Debug)]
@@ -2591,13 +2978,21 @@ fn start_dispatch_with(
     let run_id = Uuid::new_v4().to_string();
     let started = now();
     let settings = load_settings(root);
+    let resources = orchestration::dispatchable_from(root);
+    let presets = orchestration::raw_presets_from(root);
+    let roles = orchestration::roles_from(root);
+    let modes = orchestration::modes_from(root);
+    // TASK-50：主 agent 与它的配置段。给了 host 直接取；没给时 modes.json
+    // 只有一个主 agent 的配置就用它，零或多于一个按无配置处理。
+    let host = resolve_engine_host(input.host.as_deref(), &modes);
+    let host_modes = host.as_ref().and_then(|host| modes.hosts.get(host));
+    let default_preset = default_preset_id(host_modes, &presets.presets);
     // fix-37-r1 R1-4：run 文件记本次所用预设的 id，查看器据此取模式名，
-    // 不再按角色序列推断；targets 直给时为空串，预设缺省按默认经济模式记。
+    // 不再按角色序列推断；targets 直给时为空串。TASK-46：未给 --preset 时
+    // 记实际生效的默认模式（modes.json 的 defaultMode，为空或指向不存在
+    // 的预设时仍是经济模式）。
     let preset_id = if input.targets.is_empty() {
-        input
-            .preset
-            .clone()
-            .unwrap_or_else(|| "builtin-economy".into())
+        input.preset.clone().unwrap_or_else(|| default_preset.clone())
     } else {
         String::new()
     };
@@ -2611,6 +3006,7 @@ fn start_dispatch_with(
             updated_at: now(),
             reason: reason.clone(),
             preset_id: preset_id.clone(),
+            host: host.clone().unwrap_or_default(),
             ..EngineRun::default()
         };
         write_run(root, &run).map_err(StartError::Unavailable)?;
@@ -2622,9 +3018,6 @@ fn start_dispatch_with(
     if !Path::new(&input.project).is_dir() {
         return reject("项目目录不存在".into(), String::new());
     }
-    let resources = orchestration::dispatchable_from(root);
-    let presets = orchestration::raw_presets_from(root);
-    let roles = orchestration::roles_from(root);
     let project = input.project.clone();
     let mut git_dirty_count = move || {
         match crate::git::git_changes(project.clone()) {
@@ -2650,6 +3043,8 @@ fn start_dispatch_with(
         resources_error: resources.error.as_deref(),
         presets: &presets.presets,
         roles: &roles,
+        host_modes,
+        default_preset: &default_preset,
         active_runs: active_runs(root),
         // 每次派发新建一张图，派发之间不共享上下文；追问同一件事时由调用方
         // 把前情写进任务文本。
@@ -2657,13 +3052,14 @@ fn start_dispatch_with(
         git_dirty_count: &mut git_dirty_count,
     };
     let plan = plan_dispatch(&mut plan_input, &mut ids, &mut clock);
-    let (mut graph, created, original) = match plan {
+    let (mut graph, created, original, notes) = match plan {
         Plan::Rejected { reason, graph_id } => return reject(reason, graph_id),
         Plan::Ready {
             graph,
             created,
             original,
-        } => (graph, created, original),
+            notes,
+        } => (graph, created, original, notes),
     };
     graph.updated_at = now();
     orchestration::save_graph_in(root, &graph).map_err(StartError::Unavailable)?;
@@ -2679,6 +3075,8 @@ fn start_dispatch_with(
         pid: 0,
         updated_at: now(),
         preset_id,
+        notes: notes.clone(),
+        host: host.unwrap_or_default(),
         ..EngineRun::default()
     };
     // R1-6：spawn 前写一次（pid 为 0），之后父进程不再整写 run 文件。
@@ -2690,7 +3088,14 @@ fn start_dispatch_with(
     })?;
     spawn(&exe, &["__run".to_string(), run_id.clone()])
         .map(|_| {
-            serde_json::json!({"run_id":run_id,"accepted":true,"graph_id":graph.id,"node_ids":created})
+            let mut response = serde_json::json!(
+                {"run_id":run_id,"accepted":true,"graph_id":graph.id,"node_ids":created}
+            );
+            // TASK-48：丢掉未发现备选的说明随响应回传，命令行写到 stderr。
+            if let Some(map) = response.as_object_mut() {
+                map.insert("notes".into(), Value::Array(notes.clone().into_iter().map(Value::String).collect()));
+            }
+            response
         })
         .map_err(|e| {
             fail_run_before_spawn(root, &run, &e);
