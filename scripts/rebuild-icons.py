@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # aicross 图标流水线（PNG 母版）
 #
-# 两张母版：icons/icon-master.png（1024，全名 aicross，用于 128 及以上）与
-# icons/icon-master-small.png（512，简写 ax，用于 64 及以下，小尺寸更清楚）。
+# 两张母版：icons/icon-master.png（1024，两行 ai / cross，用于 128 及以上）与
+# icons/icon-master-small.png（512，同一图案，用于 64 及以下；需要小尺寸专用图案
+# 时换这张）。字体 Leckerli One（SIL OFL），绿色对角渐变 #5ACE8D → #219E60。
 # 先运行 `npx -p @tauri-apps/cli@2 tauri icon icons/icon-master.png` 生成各平台
 # 文件（icns、Square*Logo、android 等），再运行本脚本覆盖 tauri.conf.json 列出的
-# PNG 与 icon.ico，让小尺寸换成 ax。
+# PNG 与 icon.ico。
 #
 # Run: python scripts/rebuild-icons.py
 
