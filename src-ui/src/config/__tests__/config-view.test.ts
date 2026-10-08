@@ -42,6 +42,7 @@ import {
   seatKey,
   seatOptions,
   seatStatus,
+  SEAT_RULE_BADGE,
   sourceText,
   splitInstalled,
   isConfirmedInstalled,
@@ -95,12 +96,35 @@ describe('人选下拉的选项', () => {
     expect(options).toHaveLength(5);
   });
 
-  it('验证失败、未登录的选项禁用，其余可选', () => {
+  it('只有可用、已验证的选项可选，其余禁用', () => {
     const disabled = Object.fromEntries(seatOptions(resources).map((o) => [`${o.model}@${o.provider}:${o.state}`, o.disabled]));
     expect(disabled['bad@zai:验证失败']).toBe(true);
     expect(disabled['glm-4.7@bigmodel:未登录']).toBe(true);
     expect(disabled['glm-4.7@zai:已验证']).toBe(false);
-    expect(disabled['glm-5.3@zai:未验证']).toBe(false);
+    expect(disabled['sonnet@null:可用']).toBe(false);
+    expect(disabled['glm-5.3@zai:未验证']).toBe(true);
+  });
+
+  it('连接超时、额度用尽、未验证：下拉不列、统计不算，当前人选照常列出（fix-fullcheck C8）', () => {
+    const data: ResourcesOutput = {
+      agents: [{ id: 'pi', name: 'pi', version: '', state: '可用', note: '', models: [
+        { id: 'ok', agent: 'pi', provider: 'zai', resolved_id: '', state: '已验证', note: '' },
+        { id: 'timeout', agent: 'pi', provider: 'zai', resolved_id: '', state: '冒烟超时', note: '' },
+        { id: 'quota', agent: 'pi', provider: 'zai', resolved_id: '', state: '额度用尽', note: '' },
+        { id: 'unverified', agent: 'pi', provider: 'zai', resolved_id: '', state: '未验证', note: '' },
+      ] }],
+      detected_at: '2026-10-08T00:00:00Z',
+    };
+    const all = seatOptions(data);
+    expect(all.filter((o) => !o.disabled).map((o) => o.model)).toEqual(['ok']);
+    expect(optionsWithCurrent(all, '').map((o) => o.model)).toEqual(['ok']);
+    for (const model of ['timeout', 'quota', 'unverified']) {
+      const key = seatKey('pi', 'zai', model);
+      const listed = optionsWithCurrent(all, key);
+      expect(listed.map((o) => o.model)).toEqual(['ok', model]);
+      expect(listed[1].disabled).toBe(true);
+    }
+    expect(resourcesOverview(data)[1]).toEqual({ label: '可用模型', value: '1', alert: false });
   });
 
   it('原生模型 provider 为 null，第三方带 provider，状态照资源', () => {
@@ -238,7 +262,7 @@ describe('模式卡片的位置行（TASK-49、TASK-51、fix-51-r1）', () => {
   );
 
   it('未指定：下拉显示未选择并标异常，没有失效状态', () => {
-    expect(seatRowState(node({ role: '验收' }))).toEqual({ missing: true, invalid: '', recommended: false, presetFixed: false });
+    expect(seatRowState(node({ role: '验收' }))).toEqual({ missing: true, invalid: '', reason: '', recommended: false, presetFixed: false });
   });
 
   it('人选失效：未发现、验证失败、未登录、不在资源库标出状态', () => {
@@ -260,6 +284,29 @@ describe('模式卡片的位置行（TASK-49、TASK-51、fix-51-r1）', () => {
     expect(seatStatus(node())).toEqual({ alert: true, label: '未指定' });
   });
 
+  it('引擎标了 invalid（主选或备选违反位置规则）：标红、给出原因、不算配好（fix-fullcheck C6）', () => {
+    const reasons = [
+      'Antigravity 无头模式下工具全被拒，只能做纯文本盲审：agy 不能放在可见性为「共享」的位置',
+      'Antigravity 无头模式下工具全被拒，只能做纯文本盲审：agy 不能放在可见性为「共享」的位置（备选）',
+    ];
+    const person = { ...glmSeat, agent: 'agy', model: 'gemini-3-pro', state: '已验证' };
+    const fallback = { ...glmSeat, state: '已验证', fallback: { agent: 'agy', provider: null, model: 'gemini-3-pro' } };
+    for (const [index, effective] of [person, fallback].entries()) {
+      const seatNode = node({ visibility: '共享', effective: { ...effective, invalid: reasons[index] }, source: '位置' });
+      expect(seatInvalidState(seatNode)).toBe(reasons[index]);
+      expect(seatStatus(seatNode)).toEqual({ alert: true, label: `人选失效：${reasons[index]}` });
+      expect(seatRowState(seatNode)).toMatchObject({ missing: false, invalid: SEAT_RULE_BADGE, reason: reasons[index] });
+      const mode: ModeEntry = { id: 'custom', name: '自定义', builtin: false, default: false, stages: [[seatNode]] };
+      expect(modeIsReady(mode)).toBe(false);
+      expect(modesOverview({ defaultMode: 'custom', modes: [mode] })[1]).toEqual({ label: '已配好', value: '0 / 1', alert: false });
+    }
+    for (const invalid of [null, '', undefined]) {
+      const seatNode = node({ effective: { ...glmSeat, state: '已验证', invalid }, source: '位置' });
+      expect(seatInvalidState(seatNode)).toBe('');
+      expect(seatRowState(seatNode)).toMatchObject({ invalid: '', reason: '' });
+    }
+  });
+
   it('本模式人选由一键推荐填的带「推荐」标记，手选、旧数据与角色默认的不带（TASK-51）', () => {
     const recommended = node({ effective: effective('haiku'), seat: { ...glmSeat, origin: 'recommended' }, source: '位置' });
     const manual = node({ effective: effective('haiku'), seat: { ...glmSeat, origin: 'manual' }, source: '位置' });
@@ -270,7 +317,7 @@ describe('模式卡片的位置行（TASK-49、TASK-51、fix-51-r1）', () => {
 
   it('预设固定的位置锁定', () => {
     const preset = node({ effective: effective('haiku'), seat: { ...glmSeat, origin: 'recommended' }, source: '预设' });
-    expect(seatRowState(preset)).toEqual({ missing: false, invalid: '', recommended: false, presetFixed: true });
+    expect(seatRowState(preset)).toEqual({ missing: false, invalid: '', reason: '', recommended: false, presetFixed: true });
   });
 });
 
@@ -342,7 +389,7 @@ describe('概览卡（fix-49-r2）', () => {
   it('资源：已安装 agent 数、可用模型（下拉里可选的）、已验证、不可用（非 0 时可点筛选）', () => {
     expect(resourcesOverview(resources)).toEqual([
       { label: 'agent', value: '2', alert: false },
-      { label: '可用模型', value: '3', alert: false },
+      { label: '可用模型', value: '2', alert: false },
       { label: '已验证', value: '1', alert: false },
       { label: '不可用', value: '2', alert: true, filter: 'unavailable' },
     ]);

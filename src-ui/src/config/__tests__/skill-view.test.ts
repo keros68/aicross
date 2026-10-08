@@ -38,9 +38,19 @@ describe('skill 位置的状态文字（TASK-51）', () => {
   });
 
   it('只有我们装的能卸载', () => {
-    expect(canUninstall(loc({ kind: 'ours' }))).toBe(true);
-    expect(canUninstall(loc({ kind: 'external' }))).toBe(false);
-    expect(canUninstall(loc())).toBe(false);
+    expect(canUninstall('codex', loc({ kind: 'ours' }))).toBe(true);
+    expect(canUninstall('codex', loc({ kind: 'external' }))).toBe(false);
+    expect(canUninstall('codex', loc())).toBe(false);
+  });
+
+  it('两处都有我们的安装标记时，只有写入位置能卸载（卸载命令删的是写入位置）', () => {
+    const old = loc({ path: '/home/u/.codex/skills/ai-cross', kind: 'ours', version: BUNDLED, writeTarget: false });
+    const target = loc({ path: '/home/u/.agents/skills/ai-cross', kind: 'ours', version: BUNDLED, writeTarget: true });
+    expect(canUninstall('codex', old)).toBe(false);
+    expect(canUninstall('codex', target)).toBe(true);
+    // 旧版引擎缺 writeTarget 时按路径判断。
+    expect(canUninstall('codex', { ...old, writeTarget: undefined })).toBe(false);
+    expect(canUninstall('codex', { ...target, writeTarget: undefined })).toBe(true);
   });
 });
 

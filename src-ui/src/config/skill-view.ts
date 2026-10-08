@@ -67,9 +67,10 @@ export function outdatedText(location: Pick<SkillLocation, 'kind' | 'outdated'>,
   return bundled === '' ? '旧于内置' : `旧于内置 ${bundled}`;
 }
 
-/** 位置行能否卸载：只有我们装的。 */
-export function canUninstall(location: Pick<SkillLocation, 'kind'>): boolean {
-  return location.kind === 'ours';
+/** 位置行能否卸载：我们装的、且是写入位置。卸载命令只带 host 与 scope，删的是写入位置，
+ *  其它位置即使有我们的安装标记也不给卸载。 */
+export function canUninstall(host: string, location: Pick<SkillLocation, 'kind' | 'path' | 'writeTarget'>): boolean {
+  return location.kind === 'ours' && isWriteTarget(host, location);
 }
 
 /** skill 页概览：内置版本 · 已安装位置 · 待处理（重复安装 + 可更新）。 */

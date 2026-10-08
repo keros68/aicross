@@ -256,7 +256,7 @@ export function SkillPage({
                   )}
                   <span className={`pill skill-state ${state.tone}`}>{state.text}</span>
                   <span className="skill-row-action">
-                    {canUninstall(location) && (
+                    {canUninstall(hostId, location) && (
                       <button
                         type="button"
                         className="icon-btn"

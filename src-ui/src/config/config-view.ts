@@ -59,8 +59,13 @@ export interface SeatOption {
   untested?: boolean;
 }
 
-/** 选人时不能选的状态。 */
-const UNSELECTABLE_STATES = new Set(['验证失败', '未登录', '未发现']);
+/** 选人时能选的状态（引擎状态词）：下拉可选项与「可用模型」统计都按这一组。
+ *  连接超时、额度用尽、未验证等其余状态都不可选。 */
+const SELECTABLE_STATES = new Set(['可用', '已验证']);
+
+export function isSelectableState(state: string): boolean {
+  return SELECTABLE_STATES.has(state);
+}
 
 function normalizeProvider(provider: string | null | undefined): string | null {
   const value = (provider ?? '').trim();
@@ -72,7 +77,7 @@ export function seatKey(agent: string, provider: string | null | undefined, mode
   return JSON.stringify([agent, normalizeProvider(provider) ?? '', model]);
 }
 
-/** 资源里 agent 状态为「可用」的全部模型；验证失败、未登录、未发现的选项禁用。 */
+/** 资源里 agent 状态为「可用」的全部模型；状态不是可用、已验证的选项禁用。 */
 export function seatOptions(resources: ResourcesOutput | null | undefined): SeatOption[] {
   const options: SeatOption[] = [];
   for (const agent of resources?.agents ?? []) {
@@ -85,7 +90,7 @@ export function seatOptions(resources: ResourcesOutput | null | undefined): Seat
         provider: normalizeProvider(model.provider),
         model: model.id,
         state: stateLabel(model.state),
-        disabled: UNSELECTABLE_STATES.has(model.state),
+        disabled: !isSelectableState(model.state),
         untested: isUntested(agent),
       });
     }
@@ -113,8 +118,19 @@ export function seatIsMissing(node: Pick<ModeSeatNode, 'source' | 'effective'>):
 /** effective.state 为这些值时人选派不出去（TASK-48）。 */
 const INVALID_SEAT_STATES = new Set(['未发现', '验证失败', '未登录', '不在资源库']);
 
-/** 人选失效时返回它的状态词，正常（含旧数据缺 state）返回空串。 */
+/** 引擎标出的位置规则违反原因（effective.invalid）；合规或旧版引擎没有时为空串。 */
+export function seatRuleViolation(node: Pick<ModeSeatNode, 'effective'>): string {
+  return (node.effective?.invalid ?? '').trim();
+}
+
+/** 违反位置规则时位置行下拉上的标记；完整原因另行显示。 */
+export const SEAT_RULE_BADGE = '不能放在此位置';
+
+/** 人选失效时返回原因：违反位置规则时为引擎给的原因，否则为失效的状态词；正常（含旧数据缺
+ *  state）返回空串。 */
 export function seatInvalidState(node: Pick<ModeSeatNode, 'effective'>): string {
+  const rule = seatRuleViolation(node);
+  if (rule !== '') return rule;
   const state = node.effective?.state ?? '';
   return INVALID_SEAT_STATES.has(state) ? state : '';
 }
@@ -227,8 +243,10 @@ export function modesOverview(config: Pick<ConfigShow, 'modes' | 'defaultMode'> 
 export interface SeatRowState {
   /** 未指定：模型下拉显示「未选择」并用异常色。 */
   missing: boolean;
-  /** 人选失效时的状态词（下拉里标出并用异常色）；正常为空串。 */
+  /** 人选失效时下拉上的标记（失效的状态词，或违反位置规则的标记），并用异常色；正常为空串。 */
   invalid: string;
+  /** 违反位置规则时引擎给的原因，显示在行下；其余为空串。 */
+  reason: string;
   /** 本模式人选由一键推荐填的（origin 为 recommended），下拉里加「推荐」标记。 */
   recommended: boolean;
   /** 预设写定的位置：下拉禁用，行内标「预设」。 */
@@ -237,9 +255,11 @@ export interface SeatRowState {
 
 export function seatRowState(node: Pick<ModeSeatNode, 'source' | 'seat' | 'effective'>): SeatRowState {
   const missing = seatIsMissing(node);
+  const reason = missing ? '' : seatRuleViolation(node);
   return {
     missing,
-    invalid: missing ? '' : seatInvalidState(node),
+    invalid: missing ? '' : reason !== '' ? SEAT_RULE_BADGE : seatInvalidState(node),
+    reason,
     recommended: node.source === '位置' && node.seat?.origin === 'recommended',
     presetFixed: node.source === '预设',
   };
@@ -503,9 +523,9 @@ export function seatFromDraft(draft: SeatDraft): Seat | null {
 /** 当前值不在可选列表里时（agent 不可用了、模型被移除）补一个禁用项，
  * 让下拉如实显示现值而不是悄悄跳到第一项。 */
 export function optionsWithCurrent(all: SeatOption[], currentKey: string): SeatOption[] {
-  // 下拉只列选得上、已核对的模型；当前人选即使未验证或失效也照常列出。
+  // 下拉只列可选状态（可用、已验证）的模型；当前人选即使不在其中也照常列出。
   const options = all.filter(
-    (option) => option.key === currentKey || (!option.disabled && option.state !== '未验证'),
+    (option) => option.key === currentKey || (!option.disabled && isSelectableState(option.state)),
   );
   if (currentKey === '' || options.some((option) => option.key === currentKey)) return options;
   const current = parseSeatKey(currentKey);
