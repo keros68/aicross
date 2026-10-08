@@ -1,15 +1,41 @@
 // ModelPicker.tsx — 模型选择下拉（fix-51-r1，参照 magpie 的 picker）：触发器是灰色
 // 圆角块（agent 图标 + agent/model），或只有图标的按钮（备选用）；弹出层顶部搜索框，
 // 下面按 agent / provider 分组的列表，每项带图标、模型名与状态，禁用项灰掉。
-// 键盘上下选、回车确定、Esc 与点外部关闭。
+// 键盘上下选、回车确定、Esc、点外部、外部滚动与窗口缩放关闭。
 
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { SeatOption } from './config-view';
-import { filterOptions, firstEnabled, flattenGroups, groupOptions, moveActive, pickerPlacement, PICKER_LIST_MAX } from './picker';
+import {
+  closesOnViewportChange,
+  filterOptions,
+  pickerAccepts,
+  pickerShown,
+  groupOptions,
+  moveActive,
+  openActive,
+  pickerItems,
+  pickerPlacement,
+  visibleBounds,
+  PICKER_LIST_MAX,
+  type VerticalBounds,
+} from './picker';
 import { optionStateText } from './newuser-view';
 import { AgentIcon } from '../components/common/AgentIcon';
 import { Icon, type IconName } from '../components/common/Icon';
 import { useDismiss } from '../components/common/use-dismiss';
+
+/** 会裁切弹出层的祖先（overflow 不是 visible，如滚动的页面正文）的上下边界。 */
+function clipAncestors(element: HTMLElement): VerticalBounds[] {
+  const clips: VerticalBounds[] = [];
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const style = window.getComputedStyle(node);
+    if (style.overflowY !== 'visible' || style.overflowX !== 'visible') {
+      const rect = node.getBoundingClientRect();
+      clips.push({ top: rect.top, bottom: rect.bottom });
+    }
+  }
+  return clips;
+}
 
 export interface PickerExtra {
   key: string;
@@ -54,15 +80,31 @@ export function ModelPicker({
   const [placement, setPlacement] = useState({ up: false, listMax: PICKER_LIST_MAX });
   const rootRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  // 被禁用（本行或其它位置保存中）时已展开的弹层也收起：渲染期间直接改状态，重新启用后不会自己弹出。
+  if (open && !pickerShown(open, disabled === true)) setOpen(false);
+  const shown = pickerShown(open, disabled === true);
   const close = useCallback(() => setOpen(false), []);
-  useDismiss(open, rootRef, close);
+  useDismiss(shown, rootRef, close);
+
+  // 展开期间外部滚动或窗口缩放会让按打开时算好的位置失效，直接关闭。
+  // scroll 不冒泡，在捕获阶段监听以收到页面正文等祖先的滚动。
+  useEffect(() => {
+    if (!shown) return;
+    const onChange = (event: Event) => {
+      const target = event.target;
+      const inside = target instanceof Node && rootRef.current?.contains(target) === true;
+      if (closesOnViewportChange(event.type === 'resize' ? 'resize' : 'scroll', inside)) setOpen(false);
+    };
+    window.addEventListener('scroll', onChange, true);
+    window.addEventListener('resize', onChange);
+    return () => {
+      window.removeEventListener('scroll', onChange, true);
+      window.removeEventListener('resize', onChange);
+    };
+  }, [shown]);
 
   const groups = useMemo(() => groupOptions(filterOptions(options, query)), [options, query]);
-  // 键盘移动的顺序：额外项在最前，其后按分组展示顺序。
-  const items = useMemo(() => {
-    const flat = flattenGroups(groups).map((option) => ({ key: option.key, disabled: option.disabled }));
-    return extra && query.trim() === '' ? [{ key: extra.key, disabled: false }, ...flat] : flat;
-  }, [groups, extra, query]);
+  const items = useMemo(() => pickerItems(options, query, extra), [options, query, extra]);
   const current = options.find((option) => option.key === value);
 
   const toggle = () => {
@@ -72,14 +114,17 @@ export function ModelPicker({
       return;
     }
     setQuery('');
-    const rect = rootRef.current?.getBoundingClientRect();
-    if (rect) setPlacement(pickerPlacement(rect.top, rect.bottom, window.innerHeight));
+    const root = rootRef.current;
+    if (root) {
+      const rect = root.getBoundingClientRect();
+      setPlacement(pickerPlacement(rect.top, rect.bottom, visibleBounds(clipAncestors(root), window.innerHeight)));
+    }
     setOpen(true);
-    const selected = items.findIndex((item) => item.key === value);
-    setActive(selected >= 0 ? selected : firstEnabled(items));
+    setActive(openActive(options, extra, value));
   };
 
-  const choose = (key: string) => {
+  const choose = (key: string, itemDisabled = false) => {
+    if (!pickerAccepts(disabled === true, itemDisabled)) return;
     setOpen(false);
     if (key !== value) onSelect(key);
   };
@@ -93,7 +138,7 @@ export function ModelPicker({
     } else if (event.key === 'Enter') {
       event.preventDefault();
       const item = items[active];
-      if (item && !item.disabled) choose(item.key);
+      if (item) choose(item.key, item.disabled);
     }
   };
 
@@ -108,7 +153,7 @@ export function ModelPicker({
           title={label}
           aria-label={label}
           aria-haspopup="listbox"
-          aria-expanded={open}
+          aria-expanded={shown}
           disabled={disabled}
           onClick={toggle}
         >
@@ -119,7 +164,7 @@ export function ModelPicker({
           type="button"
           className={`picker-trigger${alert ? ' alert' : ''}${empty && !alert ? ' empty' : ''}`}
           aria-haspopup="listbox"
-          aria-expanded={open}
+          aria-expanded={shown}
           disabled={disabled}
           onClick={toggle}
         >
@@ -131,7 +176,7 @@ export function ModelPicker({
           <Icon name="chevron-down" size={14} />
         </button>
       )}
-      {open && (
+      {shown && (
         <div className={`picker-pop${placement.up ? ' up' : ''}`}>
           <div className="picker-search">
             <Icon name="search" />
@@ -152,6 +197,7 @@ export function ModelPicker({
                 type="button"
                 role="option"
                 aria-selected={false}
+                disabled={disabled}
                 data-index={indexOf(extra.key)}
                 className={`picker-item${active === indexOf(extra.key) ? ' active' : ''}`}
                 onMouseEnter={() => setActive(indexOf(extra.key))}
@@ -174,12 +220,12 @@ export function ModelPicker({
                       type="button"
                       role="option"
                       aria-selected={option.key === value}
-                      aria-disabled={option.disabled}
+                      aria-disabled={option.disabled || disabled === true}
                       data-index={index}
-                      disabled={option.disabled}
+                      disabled={option.disabled || disabled === true}
                       className={`picker-item${index === active ? ' active' : ''}`}
                       onMouseEnter={() => { if (!option.disabled) setActive(index); }}
-                      onClick={() => choose(option.key)}
+                      onClick={() => choose(option.key, option.disabled)}
                     >
                       <AgentIcon agent={option.agent} size={16} />
                       <span className="picker-item-name">{option.model}</span>
