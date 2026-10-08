@@ -1476,6 +1476,87 @@ fn plan_dispatch_passes_smoke_timeout_and_still_rejects_failed() {
     }
 }
 
+/// fix-fullcheck B4：验证失败检查按 provider 精确匹配。同一模型挂在两个
+/// provider 下、一条失败一条已验证：选已验证的放行，选失败的拒绝；两种
+/// 排列顺序结果一样。
+#[test]
+fn fullcheck_b4_failed_check_matches_provider_in_both_orders() {
+    let with = |provider: &str, verification: &str| ResourceModel {
+        agent: "pi".into(),
+        id: "glm-5.3".into(),
+        provider: provider.into(),
+        verification: verification.into(),
+        ..ResourceModel::default()
+    };
+    let target = |provider: &str| Target {
+        agent: "pi".into(),
+        provider: Some(provider.into()),
+        model: "glm-5.3".into(),
+        role: "执行".into(),
+        thinking: "中".into(),
+        visibility: "共享".into(),
+        write: "只读".into(),
+        ..Target::default()
+    };
+    let failed = with("bad", crate::resources::VERIFICATION_FAILED);
+    let verified = with("good", crate::resources::VERIFICATION_VERIFIED);
+    for models in [
+        vec![failed.clone(), verified.clone()],
+        vec![verified.clone(), failed.clone()],
+    ] {
+        match task48_plan_with(models.clone(), vec![target("good")]) {
+            Plan::Ready { .. } => {}
+            Plan::Rejected { reason, .. } => panic!("已验证的 provider 不该被拒：{reason}"),
+        }
+        match task48_plan_with(models, vec![target("bad")]) {
+            Plan::Rejected { reason, .. } => assert_eq!(reason, "目标验证失败：pi/glm-5.3"),
+            Plan::Ready { .. } => panic!("验证失败的 provider 应拒绝"),
+        }
+    }
+}
+
+/// fix-fullcheck B2：后面阶段的人选验证失败，派发前同样拒绝（与「未发现」
+/// 同一遍历范围）。
+#[test]
+fn fullcheck_b2_later_stage_failed_target_is_rejected() {
+    let ok = ResourceModel {
+        agent: "pi".into(),
+        id: "glm-5.3".into(),
+        provider: "zai".into(),
+        verification: crate::resources::VERIFICATION_VERIFIED.into(),
+        ..ResourceModel::default()
+    };
+    let bad = ResourceModel {
+        id: "glm-4.7".into(),
+        verification: crate::resources::VERIFICATION_FAILED.into(),
+        ..ok.clone()
+    };
+    let node = |model: &str, role: &str| Target {
+        agent: "pi".into(),
+        provider: Some("zai".into()),
+        model: model.into(),
+        role: role.into(),
+        thinking: "中".into(),
+        visibility: "共享".into(),
+        write: "只读".into(),
+        ..Target::default()
+    };
+    let preset = Preset {
+        id: "p-b2".into(),
+        name: "两阶段".into(),
+        description: String::new(),
+        builtin: false,
+        stages: vec![
+            orchestration::Stage { nodes: vec![node("glm-5.3", "执行")] },
+            orchestration::Stage { nodes: vec![node("glm-4.7", "验收")] },
+        ],
+    };
+    match task48_plan_with_preset(vec![ok, bad], preset) {
+        Plan::Rejected { reason, .. } => assert_eq!(reason, "目标验证失败：pi/glm-4.7"),
+        Plan::Ready { .. } => panic!("后面阶段验证失败的人选应在派发前拒绝"),
+    }
+}
+
 // ── TASK-48：资源库里「未发现」的模型 ────────────────────────────────
 
 /// 派发前检查的注入式小夹具：模型清单与单阶段目标直给，返回 plan。
@@ -2847,6 +2928,67 @@ fn task61_agy_prompt_appends_no_tools_after_honest_reporting() {
             assert!(!node.prompt.contains(no_tools), "{}", node.prompt);
         }
     }
+}
+
+/// 走查 12：盲审 / 评审模式单独派发（第一阶段就是审查位，没有上游产物）
+/// 时，验收位用「独立审查这份原始材料」的模板，所有审查位都不带固定
+/// 关注点；评审的视角句照常。经济模式的验收位（上游是执行节点）仍用
+/// 验收模板并带固定关注点。
+#[test]
+fn walkthrough12_standalone_reviewers_get_independent_template() {
+    let preset_of = |id: &str| {
+        crate::orchestration::builtin_presets()
+            .into_iter()
+            .find(|preset| preset.id == id)
+            .unwrap()
+    };
+    let requests = |preset: &Preset| {
+        let mut graph = Graph {
+            version: 1,
+            id: "g12".into(),
+            root: "root".into(),
+            ..Graph::default()
+        };
+        graph.nodes.insert(
+            "root".into(),
+            GraphNode {
+                id: "root".into(),
+                kind: "material".into(),
+                user: Message {
+                    text: "审查这份方案".into(),
+                    ..Message::default()
+                },
+                ..GraphNode::default()
+            },
+        );
+        let mut seq = 0usize;
+        let mut ids = move || {
+            seq += 1;
+            format!("n{seq}")
+        };
+        let (graph, created) = stamp_with(&graph, "root", preset, 3, &[], &mut ids, Utc::now());
+        build_request("run-12", "D:/p", &EngineSettings::default(), &graph, &created, &[], "审查这份方案")
+    };
+    let independent = include_str!("../../fixtures/prompts/independent-review.txt").trim();
+    let acceptance = include_str!("../../fixtures/prompts/acceptance.txt").trim();
+    let blind = requests(&preset_of("builtin-blind"));
+    for node in &blind.nodes {
+        assert!(!node.prompt.contains("固定关注点"), "{}", node.prompt);
+        if node.role == "验收" {
+            assert!(node.prompt.contains(independent), "{}", node.prompt);
+            assert!(!node.prompt.contains("对照原始需求，是否完整实现"), "{}", node.prompt);
+        }
+    }
+    let jury = requests(&preset_of("builtin-jury"));
+    assert!(!jury.nodes.is_empty());
+    for node in &jury.nodes {
+        assert!(!node.prompt.contains("固定关注点"), "{}", node.prompt);
+        assert!(node.prompt.contains("评审：只从"), "视角句照常：{}", node.prompt);
+    }
+    let economy = requests(&preset_of("builtin-economy"));
+    let accept = economy.nodes.iter().find(|node| node.role == "验收").unwrap();
+    assert!(accept.prompt.contains(acceptance), "{}", accept.prompt);
+    assert!(accept.prompt.contains("固定关注点"), "{}", accept.prompt);
 }
 
 /// fix-61-r1 5：run 摘要里 agy 模型自带档位的节点记实际生效的思考强度；

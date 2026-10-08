@@ -2204,6 +2204,7 @@ fn run_one_with_activity(
         "主",
         // 05B：可写节点非额度失败不切备选，留痕与结果都标原因；额度用尽的情况在下面回滚后切，不标。
         if writable && has_fallback { "可写节点" } else { "" },
+        resource_block(&resource_models, &node.agent, &node.provider, &node.model),
         &activity,
     );
     let main_record = (
@@ -2237,6 +2238,7 @@ fn run_one_with_activity(
     let mut previous_route = route_name(&node.agent, &node.provider, &node.model);
     let mut quota_notes = Vec::new();
     let mut login_skip_notes = Vec::new();
+    let mut blocked_notes: Vec<String> = Vec::new();
     let mut quota_resets = Vec::new();
     let mut attempt_index = 0_u32;
     let mut current_attempt_rolled_back = false;
@@ -2270,6 +2272,12 @@ fn run_one_with_activity(
             }
         }
         let next_route = route_name(&candidate.agent, &candidate.provider, &candidate.model);
+        // fix-fullcheck B2 / B3：显式备选与资源库有序备选同样查资源库，
+        // 已验证失败或未发现的不派，记跳过原因。
+        if let Some(reason) = resource_block(&resource_models, &candidate.agent, &candidate.provider, &candidate.model) {
+            blocked_notes.push(format!("跳过 {next_route}（{reason}）"));
+            continue;
+        }
         if login == crate::resources::ResourceLogin::LoggedOut {
             login_skip_notes.push(format!("跳过 {next_route}（未登录）"));
             continue;
@@ -2310,6 +2318,9 @@ fn run_one_with_activity(
     }
     if !quota_notes.is_empty() {
         append_runner_note(&mut result.runner_note, &quota_notes.join(" → "));
+    }
+    if !blocked_notes.is_empty() {
+        append_result_runner_note(&mut result, &blocked_notes.join(" → "));
     }
     if !login_skip_notes.is_empty() {
         let note = login_skip_notes.join(" → ");
@@ -2423,6 +2434,9 @@ fn run_fallback_attempt(
         }
     }
     let mut retry = node.clone();
+    // 引擎按主目标的 agent 拼了收尾（agy 是两句）：换 agent 之前按主目标摘掉，
+    // 最终外发文本再按备选的 agent 追加（fix-fullcheck 第三轮）。
+    retry.prompt = strip_engine_closing(&node.agent, &node.prompt);
     retry.agent = fallback.agent.clone();
     retry.provider = fallback.provider.clone();
     retry.model = fallback.model.clone();
@@ -2446,7 +2460,8 @@ fn run_fallback_attempt(
     };
     retry.fallback = None; // 备选不再套备选，最多重跑一次
     retry.session_id = String::new(); // 换通道不续接旧会话
-    let mut result = run_one_attempt(run_id, project, run_root, log_dir, settings, accept_criteria, retry, attempt, "", activity);
+    // 资源库拦截由调用方在挑备选时做（被拦的备选不进到这里，记跳过原因）。
+    let mut result = run_one_attempt(run_id, project, run_root, log_dir, settings, accept_criteria, retry, attempt, "", None, activity);
     // R2-1：这个 session 属于备选通道，而节点 target 仍是主目标；写回会让下游
     // 同目标「共享」子节点经 continuationSession 把它续到主通道（-S/-r 一个
     // 主通道不存在的会话）。备选作答 = 另起会话不续聊：结果 session 置空，
@@ -2484,6 +2499,19 @@ fn resource_models_snapshot() -> Vec<crate::resources::ResourceModel> {
     }
     #[cfg(not(test))]
     crate::resources::dispatch_models().unwrap_or_default()
+}
+
+/// 派发尝试前的资源库拦截：按 provider 精确匹配找条目（与引擎同一份
+/// `find_target_model`），已验证失败或未发现时返回原因；资源库里没有的
+/// 不拦（与首次验证的 NotInStore 同口径）。
+fn resource_block(
+    models: &[crate::resources::ResourceModel],
+    agent: &str,
+    provider: &str,
+    model: &str,
+) -> Option<String> {
+    crate::resources::find_target_model(models, agent, provider, model)
+        .and_then(crate::resources::dispatch_block_reason)
 }
 
 fn resource_fallback_models(
@@ -2550,6 +2578,7 @@ fn run_one_attempt(
     mut node: DispatchNodeRequest,
     attempt: &str,
     fallback_skip_reason: &str,
+    blocked: Option<String>,
     activity: &ProcessActivity,
 ) -> DispatchNodeResult {
     activity.reset_attempt();
@@ -2583,9 +2612,15 @@ fn run_one_attempt(
         verify_error = "派发已取消".to_string();
     } else if let Some(reason) = blind_only {
         verify_error = format!("{reason}；本位置可见性为「{}」，请改派到盲位置或换 agent", node.visibility);
+    } else if let Some(reason) = blocked {
+        // fix-fullcheck B2 / B3：资源库里已验证失败或未发现的目标不进通道。
+        verify_error = reason;
     } else {
         match first_use_verification(&node.agent, &node.provider, &node.model, &cancel_key) {
             crate::resources::FirstUseVerification::Skipped => {}
+            crate::resources::FirstUseVerification::Rejected(reason) => {
+                verify_error = reason;
+            }
             crate::resources::FirstUseVerification::NotInStore => {
                 append_runner_note(&mut verify_note, "资源库无此条目，未做首次验证");
             }
@@ -2667,6 +2702,9 @@ fn run_one_attempt(
     let session_dir = dispatch_data_root()
         .map(|root| root.join("sessions").join(safe_name(&node.agent)))
         .ok();
+    // fix-fullcheck B5：引擎拼在末尾的收尾句先摘掉，最终外发文本定下后
+    // 由 with_closing 放回最末尾。
+    node.prompt = strip_engine_closing(&node.agent, &node.prompt);
     // 首次验证没过就不铺材料：REQUEST.md / diff.patch / changed 白铺一份，
     // 节点还是 error。
     let prepared = if verified {
@@ -2705,8 +2743,12 @@ fn run_one_attempt(
             node.session_id.clone()
         };
 
+    // fix-fullcheck B5：固定收尾在最终外发文本上统一处理（材料说明、验证
+    // 输出、内联材料都已拼完；ACP 回退用的完整上下文也取这份）。
     let (prompt, material_names, prepared_redacted, preparation_error) = match prepared {
-        Ok(OutboundPreparation::Materialized(prompt, names, count)) => (prompt, names, count, String::new()),
+        Ok(OutboundPreparation::Materialized(prompt, names, count)) => {
+            (with_closing(&node.agent, &prompt), names, count, String::new())
+        }
         Ok(OutboundPreparation::Unsent) => ("(未发送)".into(), Vec::new(), 0, String::new()),
         Err(error) => ("(未发送)".into(), Vec::new(), 0, error),
     };
@@ -2715,7 +2757,8 @@ fn run_one_attempt(
         if node.current_message.is_empty() {
             (prompt.clone(), prepared_redacted)
         } else {
-            redact_text(&node.current_message, settings.redact)
+            let (message, count) = redact_text(&node.current_message, settings.redact);
+            (with_closing(&node.agent, &message), count)
         }
     } else {
         (prompt.clone(), prepared_redacted)
@@ -3425,6 +3468,49 @@ fn collect_material_files(
         }
     }
     Ok(())
+}
+
+/// 固定收尾（fix-fullcheck B5）：如实汇报要求，agy 另加「不要使用任何工具」。
+fn closing_text(agent: &str) -> String {
+    let honest = crate::engine::HONEST_REPORTING;
+    if channels::normalize_agent(agent) == "agy" {
+        format!("{honest}\n{}", channels::AGY_NO_TOOLS)
+    } else {
+        honest.to_string()
+    }
+}
+
+/// 去掉引擎拼在 node.prompt 末尾的固定收尾（只认末尾那一段，正文里引用的
+/// 同样文字不动）。派发层在铺材料之前调它，最终外发文本定下后再由
+/// [`with_closing`] 放回最末尾。
+fn strip_engine_closing(agent: &str, prompt: &str) -> String {
+    let honest = crate::engine::HONEST_REPORTING;
+    for closing in [closing_text(agent), honest.to_string()] {
+        if let Some(body) = prompt.strip_suffix(&format!("\n\n{closing}")) {
+            return body.to_string();
+        }
+        if prompt == closing {
+            return String::new();
+        }
+    }
+    prompt.to_string()
+}
+
+/// 最终外发文本的固定收尾（fix-fullcheck B5）：引擎拼在 node.prompt 末尾的
+/// 收尾句会被之后追加的材料说明、内联材料挤到中间，续接时整段又换成
+/// current_message。铺材料前先用 [`strip_engine_closing`] 摘掉引擎那一段，
+/// 定下最终外发文本后在这里追加一次；文本已以收尾句结尾时不再追加。
+/// 只在末尾操作，用户原文、diff 与内联源码一个字不改。
+fn with_closing(agent: &str, text: &str) -> String {
+    let closing = closing_text(agent);
+    if text.trim_end().ends_with(&closing) {
+        return text.to_string();
+    }
+    if text.trim().is_empty() {
+        closing
+    } else {
+        format!("{text}\n\n{closing}")
+    }
 }
 
 fn reset_acp_fallback(full_prompt: &str) -> (String, String) {
@@ -5479,9 +5565,14 @@ mod tests {
         assert_eq!(fs::read_to_string(count).unwrap().lines().count(), 1);
         assert!(!second.raw_stdout.contains("'-S'"));
         assert!(!second.raw_stdout.contains("'-r'"));
-        assert_eq!(fs::read_to_string(root.join("runs-2/tasks/node-1.txt")).unwrap(), "完整祖先上下文\n当前追问");
+        // fix-fullcheck B5：最终外发文本末尾固定带如实汇报要求。
+        let honest = crate::engine::HONEST_REPORTING;
+        assert_eq!(
+            fs::read_to_string(root.join("runs-2/tasks/node-1.txt")).unwrap(),
+            format!("完整祖先上下文\n当前追问\n\n{honest}")
+        );
         let record = fs::read_to_string(&second.dispatch_file).unwrap();
-        assert!(record.contains("## 任务全文\n\n完整祖先上下文\n当前追问\n\n## 回复正文"), "{record}");
+        assert!(record.contains(&format!("## 任务全文\n\n完整祖先上下文\n当前追问\n\n{honest}\n\n## 回复正文")), "{record}");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -5507,7 +5598,8 @@ mod tests {
         assert_eq!(second.runner, "acp");
         assert!(!count.exists());
         let record = fs::read_to_string(&second.dispatch_file).unwrap();
-        assert!(record.contains("## 任务全文\n\n当前追问\n\n## 回复正文"), "{record}");
+        let honest = crate::engine::HONEST_REPORTING;
+        assert!(record.contains(&format!("## 任务全文\n\n当前追问\n\n{honest}\n\n## 回复正文")), "{record}");
         channels::acp::shutdown_all();
         let _ = fs::remove_dir_all(root);
     }
@@ -5537,12 +5629,16 @@ mod tests {
         assert_eq!(result.runner, "oneshot");
         assert!(result.runner_note.contains("旧 ACP 会话已重置"));
         assert!(result.session_id.is_empty());
-        assert_eq!(fs::read_to_string(root.join("runs/tasks/node-1.txt")).unwrap(), "完整祖先上下文\n当前追问");
+        let honest = crate::engine::HONEST_REPORTING;
+        assert_eq!(
+            fs::read_to_string(root.join("runs/tasks/node-1.txt")).unwrap(),
+            format!("完整祖先上下文\n当前追问\n\n{honest}")
+        );
         assert!(result.text.contains("stub full context"));
         assert!(result.raw_stdout.contains("--task-file"));
         assert!(!result.raw_stdout.contains("old-acp-session"));
         let record = fs::read_to_string(&result.dispatch_file).unwrap();
-        assert!(record.contains("## 任务全文\n\n完整祖先上下文\n当前追问\n\n## 回复正文"), "{record}");
+        assert!(record.contains(&format!("## 任务全文\n\n完整祖先上下文\n当前追问\n\n{honest}\n\n## 回复正文")), "{record}");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -7763,6 +7859,247 @@ mod tests {
         assert!(records.iter().any(|body| body.contains("attempt: 备\nattempt_index: 1")));
         assert!(records.iter().any(|body| body.contains("attempt: 备\nattempt_index: 2")));
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-fullcheck B2 / B3 夹具：假 cc-switch 记下被调到的 provider；p0 报
+    /// 额度用尽，其余正常作答。返回 (root, project, log_dir, marker, settings)。
+    fn fullcheck_fake_cc_switch(tag: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf, DispatchSettings) {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-{tag}-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let marker = root.join("calls.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, format!(
+            "import pathlib,sys\np=sys.argv[sys.argv.index('--provider')+1]\nf=pathlib.Path(r'{}')\nf.write_text((f.read_text() if f.exists() else '')+p+'\\n')\nif p == 'p0':\n print('session limit; resets at 2099-01-01T00:00:00+08:00', file=sys.stderr)\n sys.exit(1)\nprint('final answer')\n",
+            marker.display()
+        )).unwrap();
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        (root, project, log_dir, marker, settings)
+    }
+
+    fn fullcheck_request(provider: &str, model: &str, fallback: Option<(&str, &str)>) -> DispatchNodeRequest {
+        let mut request = node(Vec::new());
+        request.agent = "cc-switch".into();
+        request.provider = provider.into();
+        request.model = model.into();
+        request.visibility = "共享".into();
+        request.write = "只读".into();
+        request.fallback = fallback.map(|(provider, model)| FallbackSpec {
+            agent: "cc-switch".into(), provider: provider.into(), model: model.into(), vendor: String::new(),
+        });
+        request
+    }
+
+    fn fullcheck_called(marker: &Path) -> Vec<String> {
+        fs::read_to_string(marker).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    /// fix-fullcheck B3：主模型额度用尽，资源库有序备选指向「未发现」的模型
+    /// （此前已验证）：不派它，记跳过原因，继续下一个备选。
+    #[test]
+    fn fullcheck_b3_missing_resource_fallback_is_skipped() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let (root, project, log_dir, marker, settings) = fullcheck_fake_cc_switch("b3-missing-fallback");
+        let mut primary = crate::resources::ResourceModel { agent: "cc-switch".into(), provider: "p0".into(), id: "main".into(), ..Default::default() };
+        primary.fallback_order = vec!["cc-switch/p1/gone".into(), "cc-switch/p2/backup".into()];
+        let gone = crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: "p1".into(), id: "gone".into(),
+            verification: crate::resources::VERIFICATION_VERIFIED.into(),
+            meta: crate::resources::MISSING_MARKER.into(), ..Default::default()
+        };
+        let backup = crate::resources::ResourceModel { agent: "cc-switch".into(), provider: "p2".into(), id: "backup".into(), ..Default::default() };
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![primary, gone, backup]));
+        let result = run_one("b3", &project, &root.join("runs"), &log_dir, &settings, fullcheck_request("p0", "main", None));
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(fullcheck_called(&marker), ["p0", "p2"]);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert!(result.runner_note.contains("跳过 cc-switch/gone（") && result.runner_note.contains("未发现"), "{}", result.runner_note);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-fullcheck B2：资源库里已验证失败的模型——作主目标（任一阶段的节点
+    /// 都走这里）时不进通道；作显式备选时跳过并记原因。冒烟超时（timeout）
+    /// 的照常派发。
+    #[test]
+    fn fullcheck_b2_failed_models_never_enter_channel() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let failed = |provider: &str, id: &str| crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: provider.into(), id: id.into(),
+            verification: crate::resources::VERIFICATION_FAILED.into(),
+            smoke_failure: "403: denied".into(), ..Default::default()
+        };
+        let ok = |provider: &str, id: &str| crate::resources::ResourceModel {
+            agent: "cc-switch".into(), provider: provider.into(), id: id.into(), ..Default::default()
+        };
+        // 主目标验证失败、显式备选可用：主目标不进通道，备选作答。
+        let (root, project, log_dir, marker, settings) = fullcheck_fake_cc_switch("b2-failed-primary");
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![failed("p3", "bad"), ok("p1", "backup")]));
+        let result = run_one("b2a", &project, &root.join("runs"), &log_dir, &settings, fullcheck_request("p3", "bad", Some(("p1", "backup"))));
+        assert_eq!(fullcheck_called(&marker), ["p1"]);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert_eq!(result.fallback_to, "cc-switch/backup");
+        let _ = fs::remove_dir_all(root);
+        // 主目标额度用尽、显式备选验证失败：备选不派，记原因。
+        let (root, project, log_dir, marker, settings) = fullcheck_fake_cc_switch("b2-failed-fallback");
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![ok("p0", "main"), failed("p1", "bad")]));
+        let result = run_one("b2b", &project, &root.join("runs"), &log_dir, &settings, fullcheck_request("p0", "main", Some(("p1", "bad"))));
+        assert_eq!(fullcheck_called(&marker), ["p0"]);
+        assert_eq!(result.status, "quota_exhausted");
+        assert!(result.runner_note.contains("跳过 cc-switch/bad（目标验证失败"), "{}", result.runner_note);
+        let _ = fs::remove_dir_all(root);
+        // 冒烟超时的主目标照常派发。
+        let (root, project, log_dir, marker, settings) = fullcheck_fake_cc_switch("b2-timeout");
+        let mut slow = ok("p4", "slow");
+        slow.verification = crate::resources::VERIFICATION_TIMEOUT.into();
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![slow]));
+        let result = run_one("b2c", &project, &root.join("runs"), &log_dir, &settings, fullcheck_request("p4", "slow", None));
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(fullcheck_called(&marker), ["p4"]);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-fullcheck B5：如实汇报要求在最终外发文本（这里是一次性通道读的
+    /// task-file，ACP 发同一份 outbound）的最末尾、只出现一次——续接时
+    /// 发的是 current_message；盲节点在 prompt 后面追加了材料说明与 diff。
+    #[test]
+    fn fullcheck_b5_final_outbound_ends_with_honest_reporting_once() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let honest = crate::engine::HONEST_REPORTING;
+        let run = |tag: &str, request: DispatchNodeRequest| -> String {
+            let root = crate::paths::test_temp_dir().join(format!("aicross-b5-{tag}-{}", Uuid::new_v4()));
+            let project = root.join("project");
+            let log_dir = root.join("logs");
+            fs::create_dir_all(&project).unwrap();
+            fs::create_dir_all(&log_dir).unwrap();
+            let capture = root.join("sent.txt");
+            let stub = root.join("cc_switch_stub.py");
+            fs::write(&stub, format!(
+                "import pathlib,sys\nt=sys.argv[sys.argv.index('--task-file')+1]\npathlib.Path(r'{}').write_bytes(pathlib.Path(t).read_bytes())\nprint('final answer')\n",
+                capture.display()
+            )).unwrap();
+            let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+            let result = run_one(tag, &project, &root.join("runs"), &log_dir, &settings, request);
+            assert_eq!(result.status, "ok", "{}", result.error);
+            let sent = fs::read_to_string(&capture).unwrap();
+            let _ = fs::remove_dir_all(root);
+            sent
+        };
+        let mut shared = node(Vec::new());
+        shared.agent = "cc-switch".into();
+        shared.provider = "p1".into();
+        shared.model = "m".into();
+        shared.visibility = "共享".into();
+        shared.role = "执行".into();
+        shared.session_id = "s-1".into();
+        shared.prompt = format!("完整上下文\n\n{honest}");
+        shared.current_message = "继续：补一个测试".into();
+        assert_eq!(run("continue", shared), format!("继续：补一个测试\n\n{honest}"));
+
+        let mut blind = node(Vec::new());
+        blind.agent = "cc-switch".into();
+        blind.provider = "p1".into();
+        blind.model = "m".into();
+        blind.prompt = format!("审查这批改动\n\n{honest}");
+        blind.upstream_artifacts = vec![DispatchArtifacts {
+            diff: "diff --git a/x b/x\n+new\n".into(),
+            ..DispatchArtifacts::default()
+        }];
+        let sent = run("blind", blind);
+        assert!(sent.contains(channels::BLIND_ARTIFACT_NOTICE), "{sent}");
+        assert!(sent.ends_with(honest), "{sent}");
+        assert_eq!(sent.matches(honest).count(), 1, "{sent}");
+    }
+
+    /// fix-fullcheck B5：agy 的两句固定收尾在内联材料之后、按顺序各一次。
+    #[test]
+    fn fullcheck_b5_agy_closing_follows_inlined_materials() {
+        let honest = crate::engine::HONEST_REPORTING;
+        let no_tools = channels::AGY_NO_TOOLS;
+        let engine_prompt = format!("审查\n\n{honest}\n{no_tools}");
+        let stripped = strip_engine_closing("agy", &engine_prompt);
+        assert_eq!(stripped, "审查");
+        let inlined = format!("{stripped}\n\n{TEXT_ONLY_INLINE_NOTE}\n\n[材料全文 REQUEST.md]\n正文");
+        let finished = with_closing("agy", &inlined);
+        assert!(finished.ends_with(&format!("[材料全文 REQUEST.md]\n正文\n\n{honest}\n{no_tools}")), "{finished}");
+        assert_eq!(finished.matches(honest).count(), 1);
+        assert_eq!(finished.matches(no_tools).count(), 1);
+        // 再处理一次不变（已在末尾的不重复追加）。
+        assert_eq!(with_closing("agy", &finished), finished);
+    }
+
+    /// fix-fullcheck 第三轮：跨 agent 切备选时，按主目标的 agent 摘掉引擎拼的
+    /// 收尾、按备选的 agent 追加一次。agy 主目标（资源库标验证失败，不进
+    /// 通道）→ 假 cc-switch 备选：实际外发的 task-file 只以如实汇报句收尾一次、
+    /// 不带「不要使用任何工具」，材料里引用的两句原样保留。反方向（非 agy →
+    /// agy）不能真跑 agy，按 run_fallback_attempt 的同一步骤在函数层断言。
+    #[test]
+    fn r3_cross_agent_fallback_swaps_closing() {
+        let honest = crate::engine::HONEST_REPORTING;
+        let no_tools = channels::AGY_NO_TOOLS;
+        let quoted = format!("材料引用：「{honest}」与「{no_tools}」\n+ {honest}\n{no_tools}\n- 结束");
+        // 反方向：非 agy 主目标的 prompt → agy 备选。
+        let from_other = strip_engine_closing("cc-switch", &format!("{quoted}\n\n{honest}"));
+        assert_eq!(from_other, quoted);
+        let to_agy = with_closing("agy", &from_other);
+        assert_eq!(to_agy, format!("{quoted}\n\n{honest}\n{no_tools}"));
+        // agy → 非 agy，函数层。
+        let from_agy = strip_engine_closing("agy", &format!("{quoted}\n\n{honest}\n{no_tools}"));
+        assert_eq!(with_closing("cc-switch", &from_agy), format!("{quoted}\n\n{honest}"));
+
+        // agy → cc-switch，走真实派发路径。
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-r3-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let capture = root.join("sent.txt");
+        let stub = root.join("cc_switch_stub.py");
+        fs::write(&stub, format!(
+            "import pathlib,sys\nt=sys.argv[sys.argv.index('--task-file')+1]\npathlib.Path(r'{}').write_bytes(pathlib.Path(t).read_bytes())\nprint('final answer')\n",
+            capture.display()
+        )).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "agy".into();
+        request.provider = String::new();
+        request.model = "gemini-3.8-flash-low".into();
+        request.prompt = format!("{quoted}\n\n{honest}\n{no_tools}");
+        request.fallback = Some(FallbackSpec {
+            agent: "cc-switch".into(), provider: "p1".into(), model: "m".into(), vendor: String::new(),
+        });
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = Some(vec![crate::resources::ResourceModel {
+            agent: "agy".into(), id: "gemini-3.8-flash-low".into(),
+            verification: crate::resources::VERIFICATION_FAILED.into(), ..Default::default()
+        }]));
+        let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..Default::default() };
+        let result = run_one("r3", &project, &root.join("runs"), &log_dir, &settings, request);
+        RESOURCE_MODELS_STUB.with(|cell| *cell.borrow_mut() = None);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert_eq!(result.fallback_to, "cc-switch/m");
+        let sent = fs::read_to_string(&capture).unwrap();
+        assert_eq!(sent, format!("{quoted}\n\n{honest}"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-fullcheck 第二轮 4：材料里原样引用了收尾句（用户原文、diff、内联
+    /// 源码），收尾处理不改动它们：只摘引擎拼在末尾的那一段、只在末尾追加。
+    #[test]
+    fn r2_closing_does_not_rewrite_quoted_material() {
+        let honest = crate::engine::HONEST_REPORTING;
+        let quoted = format!("请检查这段常量：\n\"{honest}\"\n以及 diff：\n+ {honest}");
+        let engine_prompt = format!("{quoted}\n\n{honest}");
+        let stripped = strip_engine_closing("claude", &engine_prompt);
+        assert_eq!(stripped, quoted, "只摘末尾那一段");
+        let outbound = format!("{stripped}\n\n[diff.patch 全文]\n+ {honest}\n- old");
+        let finished = with_closing("claude", &outbound);
+        assert!(finished.starts_with(&outbound), "材料原样保留：{finished}");
+        assert!(finished.ends_with(&format!("- old\n\n{honest}")), "{finished}");
+        // 续接的当前消息里引用了收尾句：原样保留，末尾追加一次。
+        let message = format!("上次你说「{honest}」，继续");
+        assert_eq!(with_closing("codex", &message), format!("{message}\n\n{honest}"));
     }
 
     #[test]

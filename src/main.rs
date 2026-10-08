@@ -5,6 +5,7 @@ mod channels;
 mod console_cli;
 mod dispatch;
 mod engine;
+mod file_lock;
 mod git;
 mod hosts;
 mod orchestration;

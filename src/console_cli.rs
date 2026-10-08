@@ -1051,7 +1051,8 @@ fn mode_entry(
 ) -> Value {
     let shaped = crate::orchestration::shaped_preset(preset, section);
     let seat_stages = section.and_then(|section| section.seats.get(&preset.id));
-    let (filled, sources) = crate::engine::fill_seats(&shaped, roles, seat_stages);
+    let (filled, sources, unfilled_reasons) =
+        crate::engine::fill_seats_explained(&shaped, roles, seat_stages);
     // 走查 #7：评审模式各位置的视角按扁平序取生效值（TASK-59 起主 agent
     // 配置可改，缺省回安全 / 性能 / 需求覆盖的默认表；超出为空串）；取值
     // 与盖章文本共用 engine 的一张表；其余模式一律空串。
@@ -1132,6 +1133,9 @@ fn mode_entry(
                         "seat": seat,
                         "effective": effective,
                         "source": source,
+                        // fix-fullcheck A5：未指定是因为角色默认违反位置硬规则
+                        // 而未采用时的原因；其余为 null。
+                        "unfilledReason": unfilled_reasons[i][j],
                     });
                     // 评审模式的位置给出可选的内置视角（TASK-59）；自定义
                     // 文字不进清单，由用户直接输入。
@@ -1230,19 +1234,29 @@ pub(crate) fn config_set_default_mode_at(
     host: &str,
     mode: &str,
 ) -> Result<Value, (i32, String)> {
-    let wanted = resolve_preset_name(mode);
-    let presets = crate::orchestration::raw_presets_from(root);
-    if !presets.presets.iter().any(|preset| preset.id == wanted) {
-        return Err((2, unknown_mode_message(mode, &presets.presets)));
-    }
     {
         let _guard = modes_write_lock();
+        // 预设在锁内读（fix-fullcheck A4）：与 preset save / remove 串行。
+        let (wanted, _) = find_preset(root, mode)?;
         let mut modes = strict_modes_for_write(root)?;
         crate::orchestration::host_section_mut(&mut modes, host).default_mode = wanted;
         crate::orchestration::save_modes_in(root, &modes).map_err(|message| (1, message))?;
     }
     let (default_mode, list) = modes_section(root, Some(host));
     Ok(json!({ "defaultMode": default_mode, "modes": list }))
+}
+
+/// 按模式名找预设：别名与 id 都认；找不到退出 2 并列出可选的 id 与名称。
+/// 写 modes.json 的命令在 `modes_write_lock` 内调它（fix-fullcheck A4）：
+/// 预设与 modes 在同一把锁内读，校验与写入用的是同一份快照，不会按
+/// preset save / remove 之前的旧形状写回人选。
+fn find_preset(root: &Path, mode: &str) -> Result<(String, Preset), (i32, String)> {
+    let presets = crate::orchestration::raw_presets_from(root);
+    let wanted = resolve_preset_name(mode);
+    match presets.presets.iter().find(|preset| preset.id == wanted) {
+        Some(found) => Ok((wanted, found.clone())),
+        None => Err((2, unknown_mode_message(mode, &presets.presets))),
+    }
 }
 
 fn run_config_set_default_mode(
@@ -1302,11 +1316,7 @@ pub(crate) fn config_set_count_at(
     mode: &str,
     count: u32,
 ) -> Result<Value, (i32, String)> {
-    let presets = crate::orchestration::raw_presets_from(root);
-    let wanted = resolve_preset_name(mode);
-    let Some(found) = presets.presets.iter().find(|preset| preset.id == wanted) else {
-        return Err((2, unknown_mode_message(mode, &presets.presets)));
-    };
+    let (wanted, found) = find_preset(root, mode)?;
     let name = found.name.clone();
     let Some(spec) = crate::orchestration::count_spec(&wanted) else {
         return Err((2, format!("{name} 的位置数量不可调")));
@@ -1323,12 +1333,14 @@ pub(crate) fn config_set_count_at(
     }
     {
         let _guard = modes_write_lock();
+        // 预设在锁内重读（fix-fullcheck A4），整理人选按锁内的形状。
+        let (_, found) = find_preset(root, mode)?;
         let mut modes = strict_modes_for_write(root)?;
         let section = crate::orchestration::host_section_mut(&mut modes, host);
         section.counts.insert(wanted.clone(), count as u32);
         // 已有人选按调整后的形状整理：减少时裁掉超出的，增加时补空位。
         if let Some(stages) = section.seats.get_mut(&wanted) {
-            let shaped = crate::orchestration::shape_builtin_preset(found, count);
+            let shaped = crate::orchestration::shape_builtin_preset(&found, count);
             crate::orchestration::shape_seats_to_preset(stages, &shaped);
         }
         crate::orchestration::save_modes_in(root, &modes).map_err(|message| (1, message))?;
@@ -1404,21 +1416,18 @@ pub(crate) fn config_set_focus_at(
     focus: &str,
 ) -> Result<Value, (i32, String)> {
     let focus = validate_focus_text(focus)?;
-    let presets = crate::orchestration::raw_presets_from(root);
-    let wanted = resolve_preset_name(mode);
-    let Some(found) = presets.presets.iter().find(|preset| preset.id == wanted) else {
-        return Err((2, unknown_mode_message(mode, &presets.presets)));
-    };
+    let _guard = modes_write_lock();
+    // 预设与 modes 在同一把锁内读（fix-fullcheck A4）。
+    let (wanted, found) = find_preset(root, mode)?;
     if wanted != "builtin-jury" {
         return Err((
             2,
             format!("{}的视角不可设置，目前只认评审模式", found.name),
         ));
     }
-    let _guard = modes_write_lock();
     let mut modes = strict_modes_for_write(root)?;
     let shaped = crate::orchestration::shaped_preset(
-        found,
+        &found,
         crate::orchestration::host_section(&modes, host),
     );
     let total: usize = shaped.stages.iter().map(|stage| stage.nodes.len()).sum();
@@ -2079,11 +2088,9 @@ pub(crate) fn config_set_seat_at(
     index: usize,
     seat: SeatChoice,
 ) -> Result<Value, (i32, String)> {
-    let presets = crate::orchestration::raw_presets_from(root);
-    let wanted = resolve_preset_name(mode);
-    let Some(found) = presets.presets.iter().find(|preset| preset.id == wanted) else {
-        return Err((2, unknown_mode_message(mode, &presets.presets)));
-    };
+    // 锁外先查一次，模式不存在时最先报（校验顺序不变）；写入用的预设在
+    // 锁内重读（fix-fullcheck A4）。
+    let (wanted, _) = find_preset(root, mode)?;
     // TASK-56：阶段与位置按该主 agent 调整后的形状算。形状在写入锁内按
     // 严格读到的 modes 重取并重新校验范围：counts 与人选在同一次读改写里
     // 保持一致，不被并发的 set-count 改动隔开。
@@ -2121,10 +2128,11 @@ pub(crate) fn config_set_seat_at(
     };
     {
         let _guard = modes_write_lock();
+        let (_, found) = find_preset(root, mode)?;
         let mut modes = strict_modes_for_write(root)?;
         let preset = {
             let section = crate::orchestration::host_section(&modes, host);
-            crate::orchestration::shaped_preset(found, section)
+            crate::orchestration::shaped_preset(&found, section)
         };
         if stage == 0 || stage > preset.stages.len() {
             return Err((
@@ -2295,20 +2303,17 @@ pub(crate) fn config_clear_seat_at(
     stage: Option<usize>,
     index: Option<usize>,
 ) -> Result<Value, (i32, String)> {
-    let presets = crate::orchestration::raw_presets_from(root);
-    let wanted = resolve_preset_name(mode);
-    let Some(found) = presets.presets.iter().find(|preset| preset.id == wanted) else {
-        return Err((2, unknown_mode_message(mode, &presets.presets)));
-    };
+    let _guard = modes_write_lock();
+    // 预设与 modes 在同一把锁内读（fix-fullcheck A4）。
+    let (wanted, found) = find_preset(root, mode)?;
     if let Some(stage) = stage {
         let index = index.expect("调用方保证成对");
         // TASK-56：范围按调整后的形状算，与 set-seat 同一说法；形状在写入
         // 锁内按严格读到的 modes 取，counts 与人选同一次读改写保持一致。
-        let _guard = modes_write_lock();
         let mut modes = strict_modes_for_write(root)?;
         let preset = {
             let section = crate::orchestration::host_section(&modes, host);
-            crate::orchestration::shaped_preset(found, section)
+            crate::orchestration::shaped_preset(&found, section)
         };
         if stage == 0 || stage > preset.stages.len() {
             return Err((
@@ -2334,7 +2339,6 @@ pub(crate) fn config_clear_seat_at(
             crate::orchestration::save_modes_in(root, &modes).map_err(|message| (1, message))?;
         }
     } else {
-        let _guard = modes_write_lock();
         let mut modes = strict_modes_for_write(root)?;
         if crate::orchestration::host_section_mut(&mut modes, host)
             .seats
@@ -2344,6 +2348,8 @@ pub(crate) fn config_clear_seat_at(
             crate::orchestration::save_modes_in(root, &modes).map_err(|message| (1, message))?;
         }
     }
+    // 读回要再拿这把锁，先放掉。
+    drop(_guard);
     seat_entry_after_write(root, host, &wanted)
 }
 
@@ -4753,7 +4759,8 @@ mod tests {
             &acp,
         );
         assert_eq!(code, 0, "{stderr}");
-        // 旧 roles.json 里留下的非法执行角色默认：config show 标出原因
+        // 旧 roles.json 里留下的非法执行角色默认：不补位（fix-fullcheck A5），
+        // config show 显示未指定并给原因。
         let mut roles = crate::orchestration::roles_from_strict(&root).unwrap();
         roles.execution = RoleProfile {
             agent: "agy".into(),
@@ -4770,11 +4777,114 @@ mod tests {
             .iter()
             .find(|mode| mode["id"] == "builtin-shared")
             .unwrap();
-        let effective = &shared["stages"][0][0]["effective"];
-        assert_eq!(effective["agent"], "agy");
-        assert!(effective["invalid"].as_str().unwrap().contains("纯文本盲审"), "{effective}");
-        assert_eq!(effective["thinking"], "由模型决定：low");
+        let node = &shared["stages"][0][0];
+        assert_eq!(node["effective"], Value::Null, "{node}");
+        assert_eq!(node["source"], "未指定");
+        let reason = node["unfilledReason"].as_str().unwrap();
+        assert!(reason.contains("agy/gemini-3.8-flash-low") && reason.contains("纯文本盲审"), "{reason}");
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-fullcheck A5：验收角色默认设成 agy（只看得到文字，不填验收位），
+    /// 推荐凑不出合规的验收人选：保存后 `config show` 里验收位是未指定并
+    /// 给原因，派发计划里验收节点也没有退回 agy。
+    #[test]
+    fn a5_illegal_role_default_not_used_after_recommend() {
+        let root = fixture_root("a5-role-default");
+        let home = fixture_root("a5-home");
+        fs::write(
+            root.join("resources.json"),
+            r#"{"version":1,"detectedAt":"2026-10-07T09:00:00+08:00","agents":[
+                {"id":"claude","name":"Claude Code","kind":"内置","detected":true,"models":[
+                    {"id":"sonnet","agent":"claude","provider":"","vendor":"Anthropic","verification":"native"}
+                ]},
+                {"id":"agy","name":"Antigravity","kind":"内置","detected":true,"version":"1.3.1","models":[
+                    {"id":"gemini-3.8-flash-low","agent":"agy","provider":"","vendor":"Google","verification":"native"}
+                ]}
+            ]}"#,
+        )
+        .unwrap();
+        let (code, _, stderr) = run_config_acp(
+            &root,
+            &["aicross", "config", "set-role", "acceptance", "--agent", "agy", "--model", "gemini-3.8-flash-low"],
+            &AcpOps::production(),
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let recommended =
+            crate::recommend::recommend_at_home(&root, &home, Some("claude"), Some("economy"), true, None)
+                .unwrap();
+        let notes = recommended["notes"].as_array().unwrap();
+        assert!(
+            notes.iter().any(|note| note.as_str().unwrap().contains("不合规")),
+            "{notes:?}"
+        );
+        // 保存后的 config show：验收位未指定，附原因。
+        let show = config_show_value(&root, Some("claude"), &[]);
+        let economy = show["modes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|mode| mode["id"] == "builtin-economy")
+            .unwrap();
+        let acceptance = &economy["stages"][2][0];
+        assert_eq!(acceptance["role"], "验收");
+        assert_eq!(acceptance["source"], "未指定", "{acceptance}");
+        assert_eq!(acceptance["effective"], Value::Null);
+        assert!(
+            acceptance["unfilledReason"].as_str().unwrap().contains("读不到项目副本"),
+            "{acceptance}"
+        );
+        // 派发计划：与派发同一份补人，验收节点的人选不是 agy。
+        let modes = crate::orchestration::modes_from(&root);
+        let presets = crate::orchestration::raw_presets_from(&root).presets;
+        let roles = crate::orchestration::roles_from(&root);
+        let models: Vec<_> = resources::get_resources_at(&store_file(&root))
+            .unwrap()
+            .agents
+            .into_iter()
+            .flat_map(|agent| agent.models)
+            .collect();
+        let settings = crate::engine::EngineSettings::default();
+        let mut git_dirty_count = || None;
+        let mut seq = 0usize;
+        let mut ids = move || {
+            seq += 1;
+            format!("00000000-0000-4000-8000-{seq:012}")
+        };
+        let mut clock = chrono::Utc::now;
+        let mut input = crate::engine::PlanInput {
+            run_id: "a5",
+            project: "D:/a5",
+            text: "任务",
+            preset: Some("builtin-economy"),
+            attachments: &[],
+            targets: &[],
+            settings: &settings,
+            models: &models,
+            resources_error: None,
+            presets: &presets,
+            roles: &roles,
+            host_modes: modes.hosts.get("claude"),
+            default_preset: "builtin-economy",
+            active_runs: 0,
+            existing: None,
+            git_dirty_count: &mut git_dirty_count,
+        };
+        match crate::engine::plan_dispatch(&mut input, &mut ids, &mut clock) {
+            crate::engine::Plan::Ready { graph, .. } => {
+                let acceptance = graph
+                    .nodes
+                    .values()
+                    .filter_map(|node| node.target.as_ref())
+                    .find(|target| target.role == "验收")
+                    .expect("验收节点");
+                assert_ne!(acceptance.agent, "agy", "{acceptance:?}");
+                assert!(acceptance.model.trim().is_empty(), "{acceptance:?}");
+            }
+            crate::engine::Plan::Rejected { reason, .. } => panic!("{reason}"),
+        }
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(home);
     }
 
     /// 窗口命令背后的函数：返回结构与命令行一致。
@@ -5369,6 +5479,71 @@ mod tests {
             assert!(stderr.contains("modes.json"), "{args:?} → {stderr}");
             assert!(stdout.is_empty(), "{args:?} → {stdout}");
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-fullcheck A4：set-seat 在锁外先读到的预设里该位置是盲位，等锁
+    /// 期间 preset save 把它改成共享位；拿到锁后按锁内重读的预设校验，
+    /// agy（只接盲位）被拒，modes.json 不写。测试持有 modes 写锁、在锁内
+    /// 改 presets.json，等同并发的 preset save。
+    #[test]
+    fn a4_set_seat_rechecks_preset_inside_lock() {
+        let root = fixture_root("a4-preset-race");
+        fs::write(
+            root.join("resources.json"),
+            r#"{"version":1,"agents":[
+                {"id":"agy","name":"Antigravity","kind":"内置","detected":true,"version":"1.3.1","models":[
+                    {"id":"gemini-3.8-flash-low","agent":"agy","provider":"","vendor":"Google","verification":"native"}
+                ]}
+            ]}"#,
+        )
+        .unwrap();
+        let preset_with = |visibility: &str| crate::orchestration::PresetFile {
+            version: 1,
+            presets: vec![Preset {
+                id: "u-a4".into(),
+                name: "A4".into(),
+                description: String::new(),
+                builtin: false,
+                stages: vec![crate::orchestration::Stage {
+                    nodes: vec![Target {
+                        role: "验证".into(),
+                        thinking: "中".into(),
+                        visibility: visibility.into(),
+                        write: "只读".into(),
+                        ..Target::default()
+                    }],
+                }],
+            }],
+        };
+        crate::orchestration::save_presets_in(&root, &preset_with("盲")).unwrap();
+        let guard = modes_write_lock();
+        let worker_root = root.clone();
+        let worker = std::thread::spawn(move || {
+            config_set_seat_at(
+                &worker_root,
+                "claude",
+                "u-a4",
+                1,
+                1,
+                SeatChoice {
+                    agent: "agy".into(),
+                    model: "gemini-3.8-flash-low".into(),
+                    ..SeatChoice::default()
+                },
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        crate::orchestration::save_presets_in(&root, &preset_with("共享")).unwrap();
+        drop(guard);
+        let (code, message) = worker.join().unwrap().unwrap_err();
+        assert_eq!(code, 2, "{message}");
+        assert!(message.contains("共享"), "{message}");
+        let modes = crate::orchestration::modes_from(&root);
+        assert!(
+            modes.hosts.get("claude").is_none_or(|section| section.seats.get("u-a4").is_none()),
+            "被拒时不写人选"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

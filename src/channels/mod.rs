@@ -1214,6 +1214,24 @@ mod tests {
         assert!(sent.is_char_boundary(sent.len()));
     }
 
+    /// fix-fullcheck 第二轮 3：超长提示词裁剪后，Kimi 实际收到的文本仍以
+    /// 如实汇报收尾句结尾，且不超过 30000 字节。
+    #[test]
+    fn kimi_crop_keeps_honest_closing_at_end() {
+        let honest = crate::engine::HONEST_REPORTING;
+        for body in ["中".repeat(20_000), "a".repeat(60_000)] {
+            let prompt = format!("{body}\n\n{honest}");
+            let invocation = build_invocation_spec(
+                "kimi", "", "kimi-code/k", "中", "中", true, None, &prompt, None, None, None, false,
+            )
+            .unwrap();
+            let sent = &invocation.args[1];
+            assert!(sent.len() <= 30_000, "{}", sent.len());
+            assert!(sent.ends_with(honest), "{}", &sent[sent.len().saturating_sub(200)..]);
+            assert_eq!(sent.matches(honest).count(), 1);
+        }
+    }
+
     #[test]
     fn codex_resume_follows_parent_options() {
         let invocation = build_invocation_spec(

@@ -208,6 +208,19 @@ pub(crate) fn seat_violation(agent: &str, visibility: &str) -> Option<&'static s
     (visibility != "盲").then(|| blind_only_reason(agent)).flatten()
 }
 
+/// 与资源库无关的位置硬规则：[`seat_violation`]，加上只看得到文字的
+/// agent 不填验收位（验收要读项目副本）。推荐挑人与补人（`fill_seats`
+/// 的角色默认补位）共用这一条。
+pub(crate) fn position_violation(agent: &str, role: &str, visibility: &str) -> Option<String> {
+    if let Some(reason) = seat_violation(agent, visibility) {
+        return Some(reason.to_string());
+    }
+    if is_text_only(agent) && role == "验收" {
+        return Some(format!("{} 读不到项目副本，不填验收位", agent.trim()));
+    }
+    None
+}
+
 /// 用支持清单登记的兜底路径与 PATH 找 agent 的可执行文件：兜底存在就用它，
 /// 否则走 PATH。探测、冒烟、派发都经这一处，结果一致（fix-61-r1 4）。
 pub(crate) fn resolve_program(id: &str) -> Option<PathBuf> {
