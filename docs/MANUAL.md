@@ -17,6 +17,8 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 
 ## 命令行
 
+`aicross --help` 列子命令一览，`aicross --version` 看版本；两者打印后即退出，不起窗口。不带参数运行 aicross 是打开窗口。
+
 | 命令 | 用途 |
 |---|---|
 | `aicross dispatch --project <目录> --preset <模式> --text-file <文件> [--accept-file <文件>]` | 派发一次；多行任务文本走文件，不进 argv |

@@ -17,6 +17,13 @@ use std::time::{Duration, Instant};
 
 pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
     let command = args.get(1).map(String::as_str);
+    // 顶层 `--help` / `-h` / `--version` / `-V`：命令行打印后退出 0，
+    // 不落到窗口；无参数双击照旧起窗口。
+    if let Some(flag @ ("--help" | "-h" | "--version" | "-V")) = command {
+        attach_parent_console();
+        let mut stdout = std::io::stdout();
+        return Some(top_level_info(flag, &mut stdout));
+    }
     if !matches!(
         command,
         Some("dispatch" | "status" | "adopt" | "cancel" | "recover" | "propose" | "resources" | "config" | "hosts" | "skill" | "slash" | "preset" | "__run")
@@ -35,6 +42,42 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
 /// 是否挂接父进程控制台：面向用户的子命令要，后台 `__run` 不要。
 fn attaches_parent_console(command: Option<&str>) -> bool {
     command.is_some_and(|command| command != "__run")
+}
+
+/// 顶层 `--help` 与 `--version` 的输出，打印后退出 0。子命令一览与
+/// docs/MANUAL.md 的命令表一致；`propose` 已删除、`__run` 是后台引擎
+/// 内部入口，都不列。
+fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
+    if matches!(flag, "--version" | "-V") {
+        let _ = writeln!(out, "aicross {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
+    let _ = write!(
+        out,
+        "aicross {} —— 多厂商 agent 的派发引擎与结果查看器\n\
+         \n\
+         用法：\n\
+         \x20 aicross                打开窗口\n\
+         \x20 aicross <子命令> [参数]\n\
+         \n\
+         子命令：\n\
+         \x20 dispatch    派发一次；多行任务文本走 --text-file，不进 argv\n\
+         \x20 status      看一次 run 的状态；--wait 等到结束\n\
+         \x20 adopt       采纳某一路的结果\n\
+         \x20 cancel      叫停一次派发\n\
+         \x20 recover     崩溃后核对；--rollback 恢复单写者改动的项目文件\n\
+         \x20 open        打开该 run 的查看页\n\
+         \x20 resources   看资源库 / 重新探测 / 冒烟验证\n\
+         \x20 config      看与改角色、派发设置、模式人选\n\
+         \x20 hosts       看与改主 agent\n\
+         \x20 skill       skill status / install / uninstall\n\
+         \x20 slash       斜杠命令写入各家宿主，可自定义短命令\n\
+         \x20 preset      自定义模式的保存与删除\n\
+         \n\
+         使用说明见 docs/MANUAL.md，契约全文见 docs/CONSOLE-CHANNEL.md。\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    0
 }
 
 /// 引擎根目录不可确定（例如没有用户目录）时所有子命令一律退出码 3。
@@ -2913,6 +2956,43 @@ fn positional(args: &[String], index: usize) -> Option<String> {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    #[test]
+    fn top_level_help_and_version_print_and_exit_0() {
+        // `aicross --help` / `--version`（含短形式）：命令行打印后退出 0。
+        // 子命令一览不含已删除的 propose 与内部的 __run。
+        for flag in ["--help", "-h"] {
+            let mut out = Vec::new();
+            assert_eq!(top_level_info(flag, &mut out), 0);
+            let text = String::from_utf8(out).unwrap();
+            for word in ["dispatch", "status", "open", "resources", "preset"] {
+                assert!(text.contains(word), "{word} 不在帮助里：{text}");
+            }
+            assert!(!text.contains("propose"), "{text}");
+            assert!(!text.contains("__run"), "{text}");
+        }
+        for flag in ["--version", "-V"] {
+            let mut out = Vec::new();
+            assert_eq!(top_level_info(flag, &mut out), 0);
+            let text = String::from_utf8(out).unwrap();
+            assert_eq!(text, format!("aicross {}\n", env!("CARGO_PKG_VERSION")));
+        }
+    }
+
+    #[test]
+    fn help_flags_route_through_cli_not_the_window() {
+        // 路由：--help 系列在 run_if_subcommand 短路；空 argv 与未知参数
+        // 照旧返回 None 落到窗口。
+        for flag in ["--help", "-h", "--version", "-V"] {
+            let args = vec!["aicross".into(), flag.into()];
+            assert_eq!(run_if_subcommand(&args), Some(0), "{flag}");
+        }
+        assert_eq!(run_if_subcommand(&["aicross".into()]), None);
+        assert_eq!(
+            run_if_subcommand(&["aicross".into(), "--no-such-flag".into()]),
+            None
+        );
+    }
 
     #[test]
     fn propose_is_recognized_as_removed_and_exits_2() {
