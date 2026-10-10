@@ -42,7 +42,7 @@ aicross 改做「编排配置器」：窗口里定编排，宿主里执行。参
 
 - 配置写在 `$AICROSS_HOME/modes.json`：默认模式，以及每个模式每个位置的人选（agent、provider、模型、档位、思考强度、一个备选）。派发时位置上有人选就用它；没有再按 `roles.json` 的三个角色补（现有行为）。不加 `--preset` 的派发用默认模式，没设默认模式时仍是经济模式。
 - 资源以 aicross 的资源库为准。装了 aicross 的用户，skill 读 `aicross resources` 与 `aicross config show`；没装的用户沿用 skill 的盘点清单。两份不合并。
-- 安装包在配置器完成后恢复发布，发布时再定渠道；开发期间不影响 skill 用户。
+- 安装包恢复发布（2026-10-10 起，v0.1.0）：渠道定为 GitHub Release，随版本附 Windows x64 的 NSIS setup.exe 与 MSI；macOS 与 Linux 只保证能编译。
 - 配置是长期默认，切一次一直生效。单次例外在宿主对话里说（如「这次换 Kimi 审」），skill 只对这一次改派，不回写配置。
 - 第一版只写 aicross 自己的配置文件，不写宿主的配置（如 Claude Code 的 `agents/*.md`、`settings.json`）。
 
