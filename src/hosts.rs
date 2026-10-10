@@ -475,7 +475,7 @@ pub(crate) fn set_vendor_override_at_home(
     };
     {
         // 与 modes.json 其它写命令同一把锁，覆盖「严格读 → 改 → 写盘」。
-        let _guard = crate::console_cli::modes_write_lock();
+        let _guard = crate::console_cli::modes_write_lock(root)?;
         let mut modes = crate::orchestration::modes_from_strict(root).map_err(|message| {
             (
                 1,

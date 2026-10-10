@@ -1235,7 +1235,7 @@ pub(crate) fn config_set_default_mode_at(
     mode: &str,
 ) -> Result<Value, (i32, String)> {
     {
-        let _guard = modes_write_lock();
+        let _guard = modes_write_lock(root)?;
         // 预设在锁内读（fix-fullcheck A4）：与 preset save / remove 串行。
         let (wanted, _) = find_preset(root, mode)?;
         let mut modes = strict_modes_for_write(root)?;
@@ -1332,7 +1332,7 @@ pub(crate) fn config_set_count_at(
         ));
     }
     {
-        let _guard = modes_write_lock();
+        let _guard = modes_write_lock(root)?;
         // 预设在锁内重读（fix-fullcheck A4），整理人选按锁内的形状。
         let (_, found) = find_preset(root, mode)?;
         let mut modes = strict_modes_for_write(root)?;
@@ -1416,7 +1416,7 @@ pub(crate) fn config_set_focus_at(
     focus: &str,
 ) -> Result<Value, (i32, String)> {
     let focus = validate_focus_text(focus)?;
-    let _guard = modes_write_lock();
+    let _guard = modes_write_lock(root)?;
     // 预设与 modes 在同一把锁内读（fix-fullcheck A4）。
     let (wanted, found) = find_preset(root, mode)?;
     if wanted != "builtin-jury" {
@@ -2064,14 +2064,29 @@ pub(crate) fn strict_modes_for_write(root: &Path) -> Result<ModesFile, (i32, Str
     })
 }
 
-/// fix-46-r1 R6：modes.json 写命令共用的进程内锁，覆盖「严格读 →
-/// 修改 → 写盘」，窗口与命令行在同一进程里并发写不互相覆盖（一键推荐
-/// 同用这把锁）。跨进程不加锁：同时从窗口和命令行改人选，后写的为准。
-pub(crate) fn modes_write_lock() -> std::sync::MutexGuard<'static, ()> {
+/// 等 modes.json 写锁的上限；锁内只有读改写本地小文件，与资源库同取 40 秒。
+const MODES_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// modes.json 写锁：进程内互斥加跨进程文件锁（常驻的 `modes.json.lock`）。
+/// 覆盖「严格读 → 修改 → 写盘」，窗口、命令行与不同主 agent 里的 skill
+/// 是不同进程，同时改配置时互相等待，不覆盖对方的改动（一键推荐、预设、
+/// 短命令同用这把锁）。presets.json 的写入也在这把锁内。
+pub(crate) struct ModesGuard {
+    // 字段按声明顺序释放：先放进程内互斥，再关锁文件句柄。
+    _mutex: std::sync::MutexGuard<'static, ()>,
+    _file: crate::file_lock::FileLock,
+}
+
+/// 先拿文件锁再拿进程内互斥：等别的进程放锁期间不占着进程内互斥。
+pub(crate) fn modes_write_lock(root: &Path) -> Result<ModesGuard, (i32, String)> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    let file = crate::file_lock::FileLock::acquire(&root.join("modes.json.lock"), MODES_LOCK_TIMEOUT)
+        .map_err(|message| (1, message))?;
+    let mutex = LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Ok(ModesGuard { _mutex: mutex, _file: file })
 }
 
 /// fix-46-r1 R7：写入前把该模式的 seats 数组整理成预设的形状（实现已
@@ -2127,7 +2142,7 @@ pub(crate) fn config_set_seat_at(
         None => None,
     };
     {
-        let _guard = modes_write_lock();
+        let _guard = modes_write_lock(root)?;
         let (_, found) = find_preset(root, mode)?;
         let mut modes = strict_modes_for_write(root)?;
         let preset = {
@@ -2303,7 +2318,7 @@ pub(crate) fn config_clear_seat_at(
     stage: Option<usize>,
     index: Option<usize>,
 ) -> Result<Value, (i32, String)> {
-    let _guard = modes_write_lock();
+    let _guard = modes_write_lock(root)?;
     // 预设与 modes 在同一把锁内读（fix-fullcheck A4）。
     let (wanted, found) = find_preset(root, mode)?;
     if let Some(stage) = stage {
@@ -5517,7 +5532,7 @@ mod tests {
             }],
         };
         crate::orchestration::save_presets_in(&root, &preset_with("盲")).unwrap();
-        let guard = modes_write_lock();
+        let guard = modes_write_lock(&root).unwrap();
         let worker_root = root.clone();
         let worker = std::thread::spawn(move || {
             config_set_seat_at(
@@ -5544,6 +5559,31 @@ mod tests {
             modes.hosts.get("claude").is_none_or(|section| section.seats.get("u-a4").is_none()),
             "被拒时不写人选"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// modes.json 写入跨进程互斥：测试直接持有锁文件（等同另一个主 agent
+    /// 里的 aicross 进程正在写），写入要等它释放才落盘。
+    #[test]
+    fn modes_writes_wait_for_cross_process_lock() {
+        let root = fixture_root("modes-xlock");
+        let held = crate::file_lock::FileLock::acquire(
+            &root.join("modes.json.lock"),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap();
+        let worker_root = root.clone();
+        let worker =
+            std::thread::spawn(move || config_set_default_mode_at(&worker_root, "codex", "blind"));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            crate::orchestration::modes_from(&root).hosts.get("codex").is_none(),
+            "别的进程持锁时不写"
+        );
+        drop(held);
+        worker.join().unwrap().unwrap();
+        let modes = crate::orchestration::modes_from(&root);
+        assert!(modes.hosts.get("codex").is_some(), "放锁后写入");
         let _ = fs::remove_dir_all(root);
     }
 

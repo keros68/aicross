@@ -464,7 +464,7 @@ fn builtin_mode_items(
 /// `slash list` 的实现体；窗口命令同此结构。
 pub(crate) fn slash_list_at(root: &Path, home: &Path, host: &str) -> Result<Value, (i32, String)> {
     validate_host(host)?;
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     list_locked(root, home, host)
 }
 
@@ -503,7 +503,7 @@ pub(crate) fn slash_add_at(
     validate_host(host)?;
     validate_name(name)?;
     validate_note(note)?;
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     slash_add_locked(root, home, host, name, mode, note)
 }
 
@@ -582,7 +582,7 @@ pub(crate) fn slash_add_all_at(
     for (_, slug, _) in MODE_SHORTNAMES {
         validate_name(&format!("{prefix}{slug}"))?;
     }
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     crate::console_cli::strict_modes_for_write(root)?;
     let presets = orchestration::raw_presets_from(root);
     let mut added: Vec<String> = Vec::new();
@@ -680,7 +680,7 @@ pub(crate) fn slash_remove_at(
 ) -> Result<Value, (i32, String)> {
     validate_host(host)?;
     validate_name(name)?;
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     let mut modes = crate::console_cli::strict_modes_for_write(root)?;
     let index = modes
         .hosts

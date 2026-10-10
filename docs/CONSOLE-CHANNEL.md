@@ -433,7 +433,8 @@ version 1 的旧格式不做迁移（从未发布过）：宽松读取当空配�
 - `config recommend [--host <h>] [--mode <模式>] [--all]`：一键推荐，见下一节。
 - 这些写命令遇 `modes.json` 损坏、旧格式、版本不认或读不了（如非 UTF-8）退
   出 1、不覆盖；`config show` 与派发按宽松读取，文件缺失、损坏或版本不认都
-  按空配置处理。写盘没有跨进程锁：同时从窗口和命令行改人选，后写的为准。
+  按空配置处理。读改写全程持有 `modes.json.lock` 跨进程文件锁：窗口、命令行与不同主
+  agent 同时改配置时依次写入，不互相覆盖；等锁超过 40 秒退出 1。
   `set-seat`、`clear-seat`、`set-count`、`set-focus`、`set-default-mode` 与
   一键推荐在同一把进程内锁里重新读取预设与 modes.json 再校验和写入，不按
   锁外读到的旧预设形状写回人选（与 `preset save` / `preset remove` 串行）。

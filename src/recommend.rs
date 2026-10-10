@@ -876,7 +876,7 @@ pub(crate) fn recommend_at_home(
     let detected = crate::hosts::detected_host_ids(&store);
     let roles = orchestration::roles_from(root);
     let (host, notes) = {
-        let _guard = crate::console_cli::modes_write_lock();
+        let _guard = crate::console_cli::modes_write_lock(root)?;
         // 预设在锁内读（fix-fullcheck A4）：按 preset save / remove 之后的
         // 形状推荐与写盘，不拿锁外的旧快照。
         let presets = orchestration::raw_presets_from(root).presets;
