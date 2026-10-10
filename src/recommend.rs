@@ -299,14 +299,11 @@ fn participates_in_vendor_rules(vendor: &str) -> bool {
 /// - 只看得到文字的 agent（agy）不填验收位（验收要读项目副本、跑验证）；
 /// - 厂商「未知」的模型只当执行位（出方案 / 拆分 / 顾问 / 审查位都不进）。
 fn seat_rule_violation(agent: &str, vendor: &str, role: &str, visibility: &str) -> Option<String> {
-    if let Some(reason) = crate::agent_catalog::seat_violation(agent, visibility) {
-        return Some(reason.to_string());
+    if let Some(reason) = crate::agent_catalog::position_violation(agent, role, visibility) {
+        return Some(reason);
     }
     if crate::agent_catalog::is_untested(agent) {
         return Some(format!("{agent} 是未实测通道，不进推荐"));
-    }
-    if crate::agent_catalog::is_text_only(agent) && role == "验收" {
-        return Some(format!("{agent} 读不到项目副本，不填验收位"));
     }
     if normalized_vendor(vendor) == resources::VENDOR_UNKNOWN && role != "执行" {
         return Some("厂商未知，只当执行位".to_string());
@@ -381,7 +378,10 @@ pub(crate) fn recommend_into(
             crate::engine::fill_seats(preset, roles, section.and_then(|s| s.seats.get(&preset.id)));
         // 角色默认模板：推荐后仍空着的位置若它会补位，那个人照样跑，
         // 厂商要占位并在 notes 写明。
-        let (role_template, _) = crate::engine::fill_seats(preset, roles, None);
+        // 违反位置硬规则的角色默认不进模板（与派发同一份补人），原因在
+        // role_reasons。
+        let (role_template, _, role_reasons) =
+            crate::engine::fill_seats_explained(preset, roles, None);
         let old_seats = section.and_then(|s| s.seats.get(&preset.id));
         let seat_at = |i: usize, j: usize| -> Option<&SeatChoice> {
             old_seats
@@ -550,27 +550,20 @@ pub(crate) fn recommend_into(
                         // （同阶段其它审查者与执行厂商的判断把它算进去），并在
                         // notes 写明（fix-50-r1：空位不再预先当作占位）。
                         // 角色默认本身违反位置硬规则时不退回它（fix-61-r1 2）：
-                        // 不占位、不写「使用角色默认」，写明需手动指定。
-                        let default_violation = {
-                            let default_target = &role_template.stages[i].nodes[j];
-                            (!default_target.model.trim().is_empty())
-                                .then(|| {
-                                    seat_rule_violation(
-                                        &default_target.agent,
-                                        &effective_vendor(store, default_target),
-                                        &target.role,
-                                        &target.visibility,
-                                    )
-                                })
-                                .flatten()
-                        };
-                        if let Some(reason) = &default_violation {
-                            notes.push(format!(
-                                "角色默认 {} 不合规（{reason}），未采用；该位置需手动指定",
-                                target_desc(&role_template.stages[i].nodes[j]),
-                            ));
+                        // 补人的共同路径 fill_seats 已不补（fix-fullcheck A5），
+                        // 模板里这一位为空、附原因；不占位，写明需手动指定。
+                        if let Some(reason) = &role_reasons[i][j] {
+                            notes.push(reason.clone());
                         } else if !role_template.stages[i].nodes[j].model.trim().is_empty() {
                             let default_target = &role_template.stages[i].nodes[j];
+                            // 推荐自己的挑人规则（未实测、厂商未知等）只管推荐
+                            // 不选它；派发时角色默认照样补位，照实写明。
+                            let soft = seat_rule_violation(
+                                &default_target.agent,
+                                &effective_vendor(store, default_target),
+                                &target.role,
+                                &target.visibility,
+                            );
                             let vendor = normalized_vendor(&comparison_vendor_of_target(
                                 store, default_target, host, host_vendor, host_vendor_known,
                             ));
@@ -605,10 +598,13 @@ pub(crate) fn recommend_into(
                             if target.role == "执行" && participates_in_vendor_rules(&vendor) {
                                 execution_vendors.insert(vendor);
                             }
-                            notes.push(format!(
-                                "使用角色默认 {}",
-                                target_desc(default_target),
-                            ));
+                            notes.push(match soft {
+                                Some(reason) => format!(
+                                    "使用角色默认 {}（不在推荐范围：{reason}）",
+                                    target_desc(default_target),
+                                ),
+                                None => format!("使用角色默认 {}", target_desc(default_target)),
+                            });
                         }
                         if seats[i][j].is_some() {
                             changed = true;
@@ -878,20 +874,22 @@ pub(crate) fn recommend_at_home(
     let store = resources::get_resources_at(&crate::console_cli::store_file(root))
         .map_err(|message| (3, message))?;
     let detected = crate::hosts::detected_host_ids(&store);
-    let presets = orchestration::raw_presets_from(root).presets;
-    let wanted = match mode {
-        Some(mode) => {
-            let wanted = crate::console_cli::resolve_preset_name(mode);
-            if !presets.iter().any(|preset| preset.id == wanted) {
-                return Err((2, crate::console_cli::unknown_mode_message(mode, &presets)));
-            }
-            Some(wanted)
-        }
-        None => None,
-    };
     let roles = orchestration::roles_from(root);
     let (host, notes) = {
-        let _guard = crate::console_cli::modes_write_lock();
+        let _guard = crate::console_cli::modes_write_lock(root)?;
+        // 预设在锁内读（fix-fullcheck A4）：按 preset save / remove 之后的
+        // 形状推荐与写盘，不拿锁外的旧快照。
+        let presets = orchestration::raw_presets_from(root).presets;
+        let wanted = match mode {
+            Some(mode) => {
+                let wanted = crate::console_cli::resolve_preset_name(mode);
+                if !presets.iter().any(|preset| preset.id == wanted) {
+                    return Err((2, crate::console_cli::unknown_mode_message(mode, &presets)));
+                }
+                Some(wanted)
+            }
+            None => None,
+        };
         let modes = orchestration::modes_from_strict(root).map_err(|message| {
             (
                 1,

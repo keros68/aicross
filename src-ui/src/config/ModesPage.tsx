@@ -19,6 +19,7 @@ import {
   type HostEntry,
   type ModeEntry,
   type ModeSeatNode,
+  type PresetPayload,
   type SkillStatus,
 } from '../tauri';
 import {
@@ -38,6 +39,7 @@ import { findHostStatus, modesPrompt, recommendNotes } from './skill-view';
 import { ModelPicker } from './ModelPicker';
 import { PresetEditor } from './PresetEditor';
 import { seatRoleText, unverifiedLines } from './newuser-view';
+import { createSnapshotSync } from './snapshot-sync';
 import { FOCUS_CUSTOM, FOCUS_MAX, focusChoices, focusError, focusIndex } from './focus-view';
 import { canDecrease, canIncrease, decreaseConfirmText, seatsLostOnDecrease } from './mode-count';
 import {
@@ -157,7 +159,7 @@ function SeatRow({
   }, []);
 
   const draft = seatDraft(node);
-  const { missing, invalid, recommended, presetFixed } = seatRowState(node);
+  const { missing, invalid, reason, recommended, presetFixed } = seatRowState(node);
 
   const run = async (action: () => Promise<ModeEntry>) => {
     setSaving(true);
@@ -249,6 +251,7 @@ function SeatRow({
         />
       </div>
       {saving && <span className="seat-row-saving">保存中…</span>}
+      {reason !== '' && <p className="cfg-error seat-row-error">{reason}</p>}
       {error !== '' && <p className="cfg-error seat-row-error">{error}</p>}
     </div>
   );
@@ -310,13 +313,19 @@ export function ModesPage({
   const [countBusy, setCountBusy] = useState('');
   const [countAsk, setCountAsk] = useState<{ mode: ModeEntry; next: number; text: string } | null>(null);
   const closeCount = useCallback(() => setCountAsk(null), []);
-  // 保存或删除自定义模式后加一，重读快照。
-  const [reloadKey, setReloadKey] = useState(0);
+  // 配置写入排队执行中或写完后的重读还没结束：整页编辑锁定。
+  const [syncBusy, setSyncBusy] = useState(false);
   // skill 是否装好，供首次使用提示用；读不到时不提示。
   const [skillState, setSkillState] = useState<{ loaded: boolean; status: SkillStatus | null }>({ loaded: false, status: null });
-  // 快照请求序号：刷新、设为默认、保存 / 清除人选、一键推荐都会改快照，各自发起时
-  // 取号，结果落地前核对，不是最新一次的结果丢弃，避免旧结果盖掉新结果。
-  const snapshotSeq = useRef(0);
+  // 快照的读写协调：写入排队执行，写入期间读取推迟，写完统一重读（snapshot-sync.ts）。
+  const [sync] = useState(() => createSnapshotSync<ConfigSnapshot>({
+    apply: (next) => {
+      setSnapshot(next);
+      setLoadError('');
+    },
+    fail: (err) => setLoadError(String(err)),
+    busy: setSyncBusy,
+  }));
 
   useEffect(() => {
     if (!active) return;
@@ -325,18 +334,7 @@ export function ModesPage({
       return;
     }
     let cancelled = false;
-    const seq = ++snapshotSeq.current;
-    const snapshotLoad = commands.configSnapshot(hostId)
-      .then((snapshot) => {
-        if (cancelled || seq !== snapshotSeq.current) return true;
-        setSnapshot(snapshot);
-        setLoadError('');
-        return true;
-      })
-      .catch((err) => {
-        if (!cancelled) setLoadError(String(err));
-        return false;
-      });
+    const snapshotLoad = sync.read(() => commands.configSnapshot(hostId));
     const skillLoad = commands.skillStatus()
       .then((status) => {
         if (!cancelled) setSkillState({ loaded: true, status });
@@ -350,7 +348,7 @@ export function ModesPage({
       if (refreshKey > 0) onRefreshDone(refreshKey, a && b);
     });
     return () => { cancelled = true; };
-  }, [active, hostId, refreshKey, reloadKey, onRefreshDone]);
+  }, [active, hostId, refreshKey, onRefreshDone, sync]);
 
   const options = useMemo(() => seatOptions(snapshot?.resources), [snapshot]);
 
@@ -383,29 +381,23 @@ export function ModesPage({
   const defaultMode = config?.defaultMode ?? '';
 
   const submitSeat = async (action: () => Promise<ModeEntry>) => {
-    const seq = ++snapshotSeq.current;
-    const updated = await action();
-    if (seq !== snapshotSeq.current) return;
-    setSnapshot((current) => current && {
+    await sync.write(action, (updated) => setSnapshot((current) => current && {
       ...current,
       config: {
         ...current.config,
         modes: current.config.modes.map((item) => (item.id === updated.id ? updated : item)),
       },
-    });
+    }));
   };
 
   const setDefault = async (id: string) => {
     setDefaultBusy(true);
     setHeadError('');
-    const seq = ++snapshotSeq.current;
     try {
-      const result = await commands.configSetDefaultMode(hostId, id);
-      if (seq !== snapshotSeq.current) return;
-      setSnapshot((current) => current && {
+      await sync.write(() => commands.configSetDefaultMode(hostId, id), (result) => setSnapshot((current) => current && {
         ...current,
         config: { ...current.config, defaultMode: result.defaultMode, modes: result.modes },
-      });
+      }));
     } catch (err) {
       setHeadError(String(err));
     } finally {
@@ -418,15 +410,11 @@ export function ModesPage({
     setMenuOpen(false);
     setRecommendBusy(true);
     setHeadError('');
-    const seq = ++snapshotSeq.current;
     try {
-      const result = await commands.configRecommend(hostId, null, all);
-      if (seq === snapshotSeq.current) {
-        setSnapshot((current) => current && {
-          ...current,
-          config: { ...current.config, defaultMode: result.defaultMode, modes: result.modes },
-        });
-      }
+      const result = await sync.write(() => commands.configRecommend(hostId, null, all), (value) => setSnapshot((current) => current && {
+        ...current,
+        config: { ...current.config, defaultMode: value.defaultMode, modes: value.modes },
+      }));
       setNotes(recommendNotes(result.notes));
       setUnverified(unverifiedLines(result.unverified));
     } catch (err) {
@@ -436,7 +424,7 @@ export function ModesPage({
     }
   };
 
-  const editing = seatBusy || recommendBusy || removingPreset || countBusy !== '' || countingImpact;
+  const editing = syncBusy || seatBusy || defaultBusy || recommendBusy || removingPreset || countBusy !== '' || countingImpact;
 
   const applyCount = async (mode: ModeEntry, next: number) => {
     setCountAsk(null);
@@ -486,18 +474,21 @@ export function ModesPage({
     setRemovingPreset(true);
     setHeadError('');
     try {
-      await commands.presetRemove(mode.id);
+      await sync.write(() => commands.presetRemove(mode.id), () => undefined);
     } catch (err) {
       setHeadError(String(err));
     } finally {
       setRemovingPreset(false);
-      setReloadKey((value) => value + 1);
     }
   };
 
-  const onPresetSaved = () => {
+  /** 编辑器保存：经同一个写入入口，结果里的 modes 先落地，写完统一重读。失败时抛给编辑器显示。 */
+  const savePreset = async (preset: PresetPayload) => {
+    await sync.write(() => commands.presetSave(hostId, preset), (result) => setSnapshot((current) => current && {
+      ...current,
+      config: { ...current.config, modes: result.modes },
+    }));
     setEditorDraft(null);
-    setReloadKey((value) => value + 1);
   };
   const prompt = snapshot === null ? null : modesPrompt({
     resources: snapshot.resources,
@@ -751,7 +742,7 @@ export function ModesPage({
         ))}
       </div>
       {editorDraft && (
-        <PresetEditor initial={editorDraft} others={modes} onSaved={onPresetSaved} onClose={closeEditor} />
+        <PresetEditor initial={editorDraft} others={modes} onSave={savePreset} onClose={closeEditor} />
       )}
       {removeAsk && (
         <ConfirmDialog

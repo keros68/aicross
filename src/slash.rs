@@ -191,11 +191,33 @@ fn has_managed_marker(text: &str) -> bool {
     false
 }
 
-/// 磁盘实际状态：文件存在且带标记 = 已写入；存在无标记（读不了同）= 被占用；
-/// 不存在 = 未写入。
+/// 路径本身是不是链接（symlink 或 Windows junction）；不跟随链接。
+/// 不存在返回 Ok(false)，其它读不到元数据的情况原样返回错误。
+fn is_link(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => Ok(meta.file_type().is_symlink() || std::fs::read_link(path).is_ok()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// 磁盘实际状态，也是写入与删除共用的归属检查（list、add、remove 与
+/// preset remove 的级联删除都经这里）：命令文件是普通文件且带标记 =
+/// 已写入；不存在 = 未写入；其余一律被占用——存在无标记或读不了、命令
+/// 目录（kimi 是 `<名>/`，其余家是 commands / prompts 目录）或文件本身是
+/// symlink / junction（含悬空链接，链接指向的是外部管理的位置）、元数据
+/// 读不到（除确实不存在）。更上层的祖先目录不查。
 pub(crate) fn file_state(path: &Path) -> &'static str {
-    if std::fs::metadata(path).is_err() {
-        return STATE_ABSENT;
+    let directory_linked = path.parent().map(is_link).unwrap_or(Ok(false));
+    if !matches!(directory_linked, Ok(false)) {
+        return STATE_OCCUPIED;
+    }
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return STATE_ABSENT,
+        Err(_) => return STATE_OCCUPIED,
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => return STATE_OCCUPIED,
+        Ok(_) if std::fs::read_link(path).is_ok() => return STATE_OCCUPIED,
+        Ok(_) => {}
     }
     match std::fs::read_to_string(path) {
         Ok(text) if has_managed_marker(&text) => STATE_WRITTEN,
@@ -216,7 +238,8 @@ fn command_occupancy(home: &Path, host: &str, name: &str) -> (&'static str, Path
     }
     if host == "kimi" {
         let agents_dir = home.join(".agents").join("skills").join(name);
-        if agents_dir.exists() {
+        // 不跟随链接：悬空链接也算存在。
+        if std::fs::symlink_metadata(&agents_dir).is_ok() {
             return (STATE_OCCUPIED, agents_dir);
         }
         let directory = target.parent().expect("command_path 必有父目录");
@@ -287,6 +310,10 @@ fn write_command_file(
     note: &str,
 ) -> Result<PathBuf, (i32, String)> {
     let target = command_path(home, host, name);
+    // 与删除同一份归属检查：链接与别人的文件一律不写。
+    if file_state(&target) == STATE_OCCUPIED {
+        return Err((1, format!("已存在同名命令（非 aicross 管理）：{}", target.display())));
+    }
     let directory = target
         .parent()
         .ok_or_else(|| (1, format!("无法定位写入目录：{}", target.display())))?;
@@ -437,7 +464,7 @@ fn builtin_mode_items(
 /// `slash list` 的实现体；窗口命令同此结构。
 pub(crate) fn slash_list_at(root: &Path, home: &Path, host: &str) -> Result<Value, (i32, String)> {
     validate_host(host)?;
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     list_locked(root, home, host)
 }
 
@@ -476,7 +503,7 @@ pub(crate) fn slash_add_at(
     validate_host(host)?;
     validate_name(name)?;
     validate_note(note)?;
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     slash_add_locked(root, home, host, name, mode, note)
 }
 
@@ -555,7 +582,7 @@ pub(crate) fn slash_add_all_at(
     for (_, slug, _) in MODE_SHORTNAMES {
         validate_name(&format!("{prefix}{slug}"))?;
     }
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     crate::console_cli::strict_modes_for_write(root)?;
     let presets = orchestration::raw_presets_from(root);
     let mut added: Vec<String> = Vec::new();
@@ -653,7 +680,7 @@ pub(crate) fn slash_remove_at(
 ) -> Result<Value, (i32, String)> {
     validate_host(host)?;
     validate_name(name)?;
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     let mut modes = crate::console_cli::strict_modes_for_write(root)?;
     let index = modes
         .hosts
@@ -1645,5 +1672,132 @@ mod tests {
         slash_add_at(&root, &home, "kimi", "ax-shared", "builtin-shared", "").unwrap();
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 建目录链接：Windows 用 junction（mklink /J），Unix 用 symlink；
+    /// 建不了返回 false，调用方跳过用例并注明。
+    #[cfg(windows)]
+    fn create_dir_link(link: &Path, target: &Path) -> bool {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J", &link.to_string_lossy(), &target.to_string_lossy()])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(windows))]
+    fn create_dir_link(link: &Path, target: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    /// 建文件 symlink；Windows 没有开发者模式 / 权限时建不了，返回 false。
+    fn create_file_link(link: &Path, target: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(target, link).is_ok()
+        }
+        #[cfg(not(windows))]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+    }
+
+    const MARKED: &str = "---\ndescription: 外部\naicross-managed: true\n---\n外部正文\n";
+
+    /// fix-fullcheck A2：kimi 的 `~/.kimi-code/skills/<名>/` 是指向外部目录的
+    /// junction / symlink，外部目录里的 SKILL.md 带我们的标记：list 报被
+    /// 占用，add 拒绝且不覆盖，remove 与 preset remove 共用的删除不删外部
+    /// 文件。建不了目录链接的平台跳过。
+    #[test]
+    fn a2_kimi_linked_command_dir_is_external() {
+        let root = temp_dir("a2-kimi-root");
+        let home = temp_dir("a2-kimi-home");
+        let outside = temp_dir("a2-kimi-outside");
+        std::fs::write(outside.join("SKILL.md"), MARKED).unwrap();
+        let skills = home.join(".kimi-code").join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        if !create_dir_link(&skills.join("x"), &outside) {
+            eprintln!("跳过：建不了目录链接");
+            for dir in [root, home, outside] {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            return;
+        }
+        let target = command_path(&home, "kimi", "x");
+        assert_eq!(file_state(&target), STATE_OCCUPIED);
+        let error = slash_add_at(&root, &home, "kimi", "x", "blind", "").unwrap_err();
+        assert_eq!(error.0, 1, "{}", error.1);
+        assert_eq!(std::fs::read_to_string(outside.join("SKILL.md")).unwrap(), MARKED);
+        let error = slash_remove_at(&root, &home, "kimi", "x").unwrap_err();
+        assert_eq!(error.0, 2, "{}", error.1);
+        assert_eq!(remove_marked_command_file(&home, "kimi", "x"), Ok(false));
+        assert_eq!(std::fs::read_to_string(outside.join("SKILL.md")).unwrap(), MARKED);
+        let _ = std::fs::remove_dir(skills.join("x"));
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    /// fix-fullcheck A2：悬空的目录链接（指向已不存在的目录）也按占用处理，
+    /// add 不沿链接新建外部目录与文件。建不了目录链接的平台跳过。
+    #[test]
+    fn a2_dangling_command_dir_link_is_occupied() {
+        let root = temp_dir("a2-dangling-root");
+        let home = temp_dir("a2-dangling-home");
+        let outside = temp_dir("a2-dangling-outside");
+        let skills = home.join(".kimi-code").join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        if !create_dir_link(&skills.join("x"), &outside) {
+            eprintln!("跳过：建不了目录链接");
+            for dir in [root, home, outside] {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            return;
+        }
+        std::fs::remove_dir_all(&outside).unwrap();
+        let target = command_path(&home, "kimi", "x");
+        assert_eq!(file_state(&target), STATE_OCCUPIED);
+        let error = slash_add_at(&root, &home, "kimi", "x", "blind", "").unwrap_err();
+        assert_eq!(error.0, 1, "{}", error.1);
+        assert!(!outside.exists(), "不沿悬空链接建外部目录");
+        // claude 的命令目录本身是悬空链接时同样按占用。
+        let commands = home.join(".claude").join("commands");
+        std::fs::create_dir_all(commands.parent().unwrap()).unwrap();
+        let gone = temp_dir("a2-dangling-gone");
+        assert!(create_dir_link(&commands, &gone));
+        std::fs::remove_dir_all(&gone).unwrap();
+        assert_eq!(file_state(&command_path(&home, "claude", "y")), STATE_OCCUPIED);
+        let _ = std::fs::remove_dir(skills.join("x"));
+        let _ = std::fs::remove_dir(&commands);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// fix-fullcheck A2：命令文件本身是指向外部带标记文件的 symlink：
+    /// 按占用处理，add 不覆盖、remove 不删。Windows 无 symlink 权限时跳过。
+    #[test]
+    fn a2_symlinked_command_file_is_external() {
+        let root = temp_dir("a2-file-root");
+        let home = temp_dir("a2-file-home");
+        let outside = temp_dir("a2-file-outside");
+        let external = outside.join("cross.md");
+        std::fs::write(&external, MARKED).unwrap();
+        let target = command_path(&home, "claude", "cross");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        if !create_file_link(&target, &external) {
+            eprintln!("跳过：建不了文件 symlink");
+            for dir in [root, home, outside] {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            return;
+        }
+        assert_eq!(file_state(&target), STATE_OCCUPIED);
+        let error = slash_add_at(&root, &home, "claude", "cross", "blind", "").unwrap_err();
+        assert_eq!(error.0, 1, "{}", error.1);
+        assert_eq!(remove_marked_command_file(&home, "claude", "cross"), Ok(false));
+        assert_eq!(std::fs::read_to_string(&external).unwrap(), MARKED);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(outside);
     }
 }

@@ -42,10 +42,12 @@ const NO_EXTERNAL_ACTIONS: &str =
 const VERIFICATION_ROUTE_TEXT: &str =
     "盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。";
 /// 每个节点提示词末尾固定追加的如实汇报要求（fix-57-r1 8）：所有角色、
-/// 所有模式、ACP 与一次性 CLI 两条通道都经过 `build_request` 这一处，
-/// 不做开关。出处：Language Models Are "Insecure" Reporters（2026-09），
+/// 所有模式都在 `build_request` 拼进 node.prompt，不做开关；派发层在定下
+/// 最终外发文本（续接的 current_message、材料说明与内联材料之后）再把它
+/// 挪到最末尾、只留一次（`dispatch::with_closing`，fix-fullcheck B5）。
+/// 出处：Language Models Are "Insecure" Reporters（2026-09），
 /// 英文一句让负面结果披露从 2/200 升到 190/200；中文句是补充，未单独实测。
-const HONEST_REPORTING: &str =
+pub(crate) const HONEST_REPORTING: &str =
     "Be honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。";
 /// pid 为 0（父进程已写 run、后台进程尚未报到）的启动宽限。
 const STARTUP_WINDOW_SECS: i64 = 30;
@@ -961,20 +963,47 @@ pub(crate) fn default_preset_id(host_modes: Option<&crate::orchestration::HostMo
 /// `seat_stages` 与预设的长度对不上时（预设被改过），多出的忽略、缺的按 null。
 /// agent 或 model 为空（trim 后）的人选按未设处理（fix-46-r1 R5），继续走
 /// 规则 3；`thinking` 不在 关 / 低 / 中 / 高 / 空串 内时忽略，不覆盖预设值。
+/// 规则 3 的角色默认违反位置硬规则（`agent_catalog::position_violation`：
+/// 只接盲的 agent 落在非盲位置、只看得到文字的 agent 落在验收位）时不补，
+/// 该位置按「未指定」，原因见 [`fill_seats_explained`]。
 /// 返回填好的预设与每个位置的来源，两形与 `stages[i].nodes[j]` 同形。
 pub(crate) fn fill_seats(
     preset: &Preset,
     roles: &RoleSettings,
     seat_stages: Option<&Vec<Vec<Option<SeatChoice>>>>,
 ) -> (Preset, Vec<Vec<&'static str>>) {
+    let (filled, sources, _) = fill_seats_explained(preset, roles, seat_stages);
+    (filled, sources)
+}
+
+/// 同 [`fill_seats`]，另返回每个位置「未指定」的原因（角色默认因位置
+/// 硬规则未采用时有值，其余为 None），与 sources 同形。
+pub(crate) fn fill_seats_explained(
+    preset: &Preset,
+    roles: &RoleSettings,
+    seat_stages: Option<&Vec<Vec<Option<SeatChoice>>>>,
+) -> (Preset, Vec<Vec<&'static str>>, Vec<Vec<Option<String>>>) {
     let mut filled = preset.clone();
     // 「角色」这档对照 apply_role_defaults 的结果：整份跳过与角色匹配都由
     // 它一份口径给出。
     let role_template = apply_role_defaults(preset.clone(), roles);
     let mut sources: Vec<Vec<&'static str>> = Vec::with_capacity(filled.stages.len());
+    let mut reasons: Vec<Vec<Option<String>>> = Vec::with_capacity(filled.stages.len());
     for (i, stage) in filled.stages.iter_mut().enumerate() {
         let mut row: Vec<&'static str> = Vec::with_capacity(stage.nodes.len());
+        let mut reason_row: Vec<Option<String>> = Vec::with_capacity(stage.nodes.len());
         for (j, target) in stage.nodes.iter_mut().enumerate() {
+            let template = &role_template.stages[i].nodes[j];
+            let role_violation = (!template.model.trim().is_empty())
+                .then(|| {
+                    crate::agent_catalog::position_violation(
+                        &template.agent,
+                        &target.role,
+                        &target.visibility,
+                    )
+                })
+                .flatten();
+            let mut reason = None;
             let seat = seat_stages
                 .and_then(|stages| stages.get(i))
                 .and_then(|nodes| nodes.get(j))
@@ -1001,8 +1030,13 @@ pub(crate) fn fill_seats(
                     target.fallback = Some(fallback.clone());
                 }
                 "位置"
-            } else if !role_template.stages[i].nodes[j].model.trim().is_empty() {
-                let template = &role_template.stages[i].nodes[j];
+            } else if let Some(violation) = role_violation {
+                reason = Some(format!(
+                    "角色默认 {}/{} 不合规（{violation}），未采用；该位置需手动指定",
+                    template.agent, template.model
+                ));
+                "未指定"
+            } else if !template.model.trim().is_empty() {
                 target.agent.clone_from(&template.agent);
                 target.provider.clone_from(&template.provider);
                 target.model.clone_from(&template.model);
@@ -1013,10 +1047,12 @@ pub(crate) fn fill_seats(
                 "未指定"
             };
             row.push(source);
+            reason_row.push(reason);
         }
         sources.push(row);
+        reasons.push(reason_row);
     }
-    (filled, sources)
+    (filled, sources, reasons)
 }
 
 fn sorted_nodes(graph: &Graph) -> Vec<&GraphNode> {
@@ -1280,11 +1316,14 @@ fn serialize_context(graph: &Graph, node_id: &str) -> (String, Vec<String>) {
         }
     }
     let prompt = if visibility == "盲" {
-        std::iter::once(
-            include_str!("../../fixtures/prompts/blind-prefix.txt")
-                .trim()
-                .to_string(),
-        )
+        // 固定关注点只在有上游产物时附（走查 12）。
+        let prefix = include_str!("../../fixtures/prompts/blind-prefix.txt").trim();
+        let prefix = if has_upstream_product(graph, node_id) {
+            prefix.to_string()
+        } else {
+            without_fixed_focus(prefix)
+        };
+        std::iter::once(prefix)
         .chain(blocks)
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -1452,9 +1491,35 @@ fn is_fix_round_execution(graph: &Graph, node_id: &str) -> bool {
         && parts.next().is_none()
 }
 
-fn role_prompt(role: &str, prompt: &str) -> String {
+/// 节点有没有上游产物可审（走查 12）：直接父节点里有模型节点（带 target）。
+/// 第一阶段就是审查位（盲审 / 评审模式单独派发）时父节点只有材料节点，
+/// 审查对象是原始材料本身。
+fn has_upstream_product(graph: &Graph, node_id: &str) -> bool {
+    graph.nodes.get(node_id).is_some_and(|node| {
+        node.parents
+            .iter()
+            .any(|id| graph.nodes.get(id).is_some_and(|parent| parent.target.is_some()))
+    })
+}
+
+/// 去掉审查模板里的「固定关注点」行（契约变没变、回退修复后测试红不红）：
+/// 这两条只对审查别人的产物有意义，没有上游产物时不附。
+fn without_fixed_focus(template: &str) -> String {
+    template
+        .lines()
+        .filter(|line| !line.starts_with("固定关注点："))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 角色模板。`upstream` 为假（没有上游产物）时，验收位改用「独立审查这份
+/// 原始材料」的模板（走查 12）。
+fn role_prompt(role: &str, prompt: &str, upstream: bool) -> String {
     let template = match role {
         "执行" => Some(include_str!("../../fixtures/prompts/execution.txt").trim()),
+        "验收" if !upstream => {
+            Some(include_str!("../../fixtures/prompts/independent-review.txt").trim())
+        }
         "验收" => Some(include_str!("../../fixtures/prompts/acceptance.txt").trim()),
         "出方案" => Some(include_str!("../../fixtures/prompts/planning.txt").trim()),
         "顾问" => Some(include_str!("../../fixtures/prompts/advisor.txt").trim()),
@@ -1495,7 +1560,8 @@ fn build_request(
                 m.agent == target.agent && m.id == target.model && m.provider == provider
             });
             let (context, materials) = serialize_context(graph, id);
-            let mut prompt = role_prompt(&target.role, &context);
+            let mut prompt =
+                role_prompt(&target.role, &context, has_upstream_product(graph, id));
             if target.write != "只读" && !prompt.contains(NO_EXTERNAL_ACTIONS) {
                 prompt.push_str("\n\n");
                 prompt.push_str(NO_EXTERNAL_ACTIONS);
@@ -2461,12 +2527,15 @@ pub(crate) fn plan_dispatch(
     {
         return reject(hint, graph.id.clone());
     }
-    // 目标验证失败与恢复时间都用 agent+id 严格匹配（不看 provider）。
-    let strict = |t: &Target| {
-        input
-            .models
-            .iter()
-            .find(|m| m.agent == t.agent && m.id == t.model)
+    // 验证失败按 provider 精确匹配（fix-fullcheck B4，与「未发现」同一份
+    // find_target_model）：同一模型挂在两个 provider 下时各认各的。
+    let exact = |t: &Target| {
+        crate::resources::find_target_model(
+            input.models,
+            &t.agent,
+            t.provider.as_deref().unwrap_or_default(),
+            &t.model,
+        )
     };
     // TASK-48：目标模型是「未发现」（最近一次探测没发现）时拒绝，与验证失败
     // 同一处拦截；状态优先级里未发现压过验证结果，所以判在它前面。查找用
@@ -2502,12 +2571,15 @@ pub(crate) fn plan_dispatch(
             graph.id.clone(),
         );
     }
-    if let Some(id) = first.iter().find(|id| {
+    // 与「未发现」同样遍历本次新建的全部带 target 节点（fix-fullcheck B2）：
+    // 后面阶段的人选验证失败也在派发前拒绝；执行时派发层每次尝试（含备选）
+    // 另有同一口径的拦截。
+    if let Some(id) = created.iter().find(|id| {
         graph
             .nodes
             .get(*id)
             .and_then(|n| n.target.as_ref())
-            .and_then(|t| strict(t))
+            .and_then(|t| exact(t))
             .is_some_and(|m| m.verification == "failed")
     }) {
         let t = graph
@@ -2534,7 +2606,7 @@ pub(crate) fn plan_dispatch(
             .get(id)
             .and_then(|n| n.target.as_ref())
             .expect("target checked above");
-        let reset = strict(t)
+        let reset = find_model_two_level(input.models, t)
             .and_then(|m| m.quota_exhausted_until.as_ref())
             .filter(|s| !s.is_empty())
             .map(|s| format!("；恢复时间 {s}"))

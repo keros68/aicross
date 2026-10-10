@@ -230,7 +230,7 @@ pub(crate) fn preset_save_at(
     host: Option<&str>,
     input: &PresetInput,
 ) -> Result<Value, (i32, String)> {
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     let wanted = input.id.trim().to_string();
     let explicit = !wanted.is_empty();
     let id = if explicit {
@@ -323,7 +323,7 @@ pub(crate) fn preset_remove_at(root: &Path, home: &Path, id: &str) -> Result<Val
     {
         return Err((2, format!("内置模式不可删除：{id}")));
     }
-    let _guard = crate::console_cli::modes_write_lock();
+    let _guard = crate::console_cli::modes_write_lock(root)?;
     let mut file = crate::orchestration::presets_from_strict(root).map_err(|message| (1, message))?;
     let Some(position) = file.presets.iter().position(|preset| preset.id == id) else {
         return Err((2, format!("未找到预设：{id}")));

@@ -1,11 +1,11 @@
 // PresetEditor.tsx — 自定义模式编辑器（TASK-55，应用内对话框）：名称、介绍，阶段列表
 // （阶段之间「→」），每个位置一行：角色、可见性、写权限、思考、删除；可添加位置与阶段。
-// 前端先按与引擎一致的规则校验并就地显示（名称在输入后或点保存时才校验），保存调 preset_save，
+// 前端先按与引擎一致的规则校验并就地显示（名称在输入后或点保存时才校验），保存经模式页调 preset_save，
 // 引擎的错误显示在底部。每个阶段的位置上方有列名；新阶段默认「验证 · 盲」（TASK-58）。
 // Esc 或点背景关闭（保存中不关）。
 
 import { useEffect, useState } from 'react';
-import { commands, type ModeEntry } from '../tauri';
+import type { ModeEntry, PresetPayload } from '../tauri';
 import {
   PRESET_NAME_MAX,
   PRESET_THINKING_OPTIONS,
@@ -25,13 +25,14 @@ import { Icon } from '../components/common/Icon';
 export function PresetEditor({
   initial,
   others,
-  onSaved,
+  onSave,
   onClose,
 }: {
   initial: PresetDraft;
   /** 用来查重名的全部模式（含内置）。 */
   others: Pick<ModeEntry, 'id' | 'name'>[];
-  onSaved: () => void;
+  /** 保存（由模式页经写入协调发出，带当前主 agent）；失败时抛出 stderr 那行说明。 */
+  onSave: (preset: PresetPayload) => Promise<void>;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<PresetDraft>(initial);
@@ -94,8 +95,7 @@ export function PresetEditor({
     setSaving(true);
     setError('');
     try {
-      await commands.presetSave(toPresetPayload(draft));
-      onSaved();
+      await onSave(toPresetPayload(draft));
     } catch (err) {
       setError(String(err));
       setSaving(false);

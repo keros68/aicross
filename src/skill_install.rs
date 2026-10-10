@@ -28,15 +28,27 @@ pub(crate) const KIND_OURS: &str = "ours";
 pub(crate) const KIND_EXTERNAL: &str = "external";
 const INSTALL_SOURCE: &str = "aicross";
 
-/// 安装临时目录与备份目录名前缀。两个目录都放在 skills 目录之外的同卷
-/// 位置（skills 目录的上一级），残留不会被 agent 当成第二份 skill；status
-/// 扫描时按前缀忽略并清理（fix-50-r2）。
+/// 安装临时目录与备份目录名前缀。两者都建在暂存目录（见 [`staging_dir`]）
+/// 里，目录下一层才是 `ai-cross/`，残留不会被 agent 当成第二份 skill。
+/// 早期版本把它们直接放在 skills 目录或其上一级、目录本身就是 skill，
+/// 恢复与清理时这两处也一并认（旧格式）。
 const TEMP_PREFIX: &str = ".aicross-install-tmp-";
 const BACKUP_PREFIX: &str = ".aicross-install-bak-";
+/// 暂存目录名前缀，后接 skills 目录的真实名字（`.aicross-install-skills`）。
+const STAGING_PREFIX: &str = ".aicross-install-";
+/// 暂存目录里的跨进程锁文件名（系统文件锁，文件常驻）。
+const INSTALL_LOCK_FILE: &str = "install.lock";
+/// 新格式残留根目录里的操作记录：写明这份临时 / 备份属于哪个目标，
+/// 清理与恢复只认记录里目标与本次一致的。
+const OPERATION_RECORD: &str = ".aicross-op.json";
+/// 安装锁的等待上限：一次安装 / 卸载只写几百 KB，正常持锁在秒级以内；
+/// 内置包大到写入要几十秒时同步调大。
+const INSTALL_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 
-/// skill 写入与状态清理共用的进程内锁（fix-50-r2）：codex、kimi、pi 的
-/// 写入位置同为 `.agents/skills`，窗口与命令行在同一进程里并发 install /
-/// uninstall / status 会互相踩。跨进程不加锁，后写的为准。
+/// skill 写入的进程内锁（fix-50-r2）：codex、kimi、pi 的写入位置同为
+/// `.agents/skills`，窗口与命令行在同一进程里并发 install / uninstall 会
+/// 互相踩。跨进程由暂存目录里的锁文件互斥（[`INSTALL_LOCK_FILE`]）；状态
+/// 查询只读，两把锁都不拿。
 pub(crate) fn skill_write_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
@@ -379,20 +391,10 @@ fn host_status_at(
     // writeTarget 不再算错。
     let global_target = install_path(host, home, None);
     let project_target = project.map(|dir| install_path(host, home, Some(dir)));
+    // 只读：残留的临时 / 备份目录可能属于另一个进程正在进行的安装，或是
+    // 中断更新后唯一能恢复的旧安装，状态查询一律不动，由下一次安装 /
+    // 卸载在锁内处理（[`recover_leftovers`]）。
     let paths = read_paths(host, home, project);
-    // status 扫描时顺手清掉残留的临时 / 备份目录（fix-50-r2）。
-    let mut swept: HashSet<PathBuf> = HashSet::new();
-    for (_, path) in &paths {
-        let Some(skills_dir) = path.parent() else {
-            continue;
-        };
-        if swept.insert(skills_dir.to_path_buf()) {
-            sweep_temp_dirs(skills_dir);
-            if let Some(outside) = skills_dir.parent() {
-                sweep_temp_dirs(outside);
-            }
-        }
-    }
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let locations = paths
         .into_iter()
@@ -438,25 +440,209 @@ fn dedupe_key(path: &Path) -> PathBuf {
     }
 }
 
-/// 清掉目录里残留的安装临时 / 备份目录（此前版本中断或备份还原失败留下
-/// 的，可能在 skills 目录里——旧版位置——也可能在其上一级）；清不掉不报
-/// 错（可能正被别的进程使用）。调用方持有 skill 写锁。
-fn sweep_temp_dirs(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with(TEMP_PREFIX) || name.starts_with(BACKUP_PREFIX) {
-            let _ = std::fs::remove_dir_all(entry.path());
+/// 路径解析成真实位置：从自身往上找第一个能规范化的祖先（沿 symlink /
+/// junction 解析），再接上还不存在的尾段。整条都不存在时原样返回。
+fn resolve_existing(path: &Path) -> PathBuf {
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(current) {
+            return tail.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (current.parent(), current.file_name()) {
+            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+                tail.push(name.to_os_string());
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
         }
     }
 }
 
-/// `skill status` 的实现体；输出 `{ bundledVersion, hosts: [...] }`。
+/// 一个写入位置的真实 skills 目录与暂存目录。暂存目录建在真实 skills 目录
+/// 的上一级（父目录被 junction 重定向到别的盘时按解析后的路径），与目标
+/// 同卷，换名不跨卷；名字带隐藏前缀与 skills 目录名，不在 skills 目录里，
+/// 宿主不会扫描到。真实 skills 目录已是卷根时退到它自身里面。
+fn staging_dir(target: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let skills_dir = target
+        .parent()
+        .ok_or_else(|| format!("无法定位安装目录：{}", target.display()))?;
+    let real_skills = resolve_existing(skills_dir);
+    let name = real_skills
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    let staging = match (real_skills.parent(), name) {
+        (Some(parent), Some(name)) => parent.join(format!("{STAGING_PREFIX}{name}")),
+        _ => real_skills.join(format!("{STAGING_PREFIX}staging")),
+    };
+    Ok((real_skills, staging))
+}
+
+/// 一份残留：所在目录与 skill 内容目录（新格式是其下的 `ai-cross/`，
+/// 旧格式就是目录本身）。`nested` 为真是暂存目录里的新格式。
+struct Leftover {
+    root: PathBuf,
+    content: PathBuf,
+    backup: bool,
+    nested: bool,
+}
+
+/// 路径本身是不是链接（symlink 或 Windows junction）；不跟随链接，不存在为假。
+fn is_link_path(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .is_ok_and(|meta| meta.file_type().is_symlink() || std::fs::read_link(path).is_ok())
+}
+
+/// 写操作记录（新格式残留根目录里）：目标路径与操作令牌。
+fn write_operation_record(root: &Path, target: &Path, token: &str) -> Result<(), String> {
+    std::fs::create_dir_all(root)
+        .map_err(|error| format!("创建目录 {} 失败：{error}", root.display()))?;
+    let record = json!({
+        "target": target.to_string_lossy(),
+        "token": token,
+    });
+    std::fs::write(root.join(OPERATION_RECORD), record.to_string())
+        .map_err(|error| format!("写入操作记录失败：{error}"))
+}
+
+/// 残留是不是本次目标的、可以清理或恢复：链接一律不动；新格式要有操作
+/// 记录且记录里的目标与本次一致；旧格式要有我们的安装标记。不归属时
+/// 返回保留原因。
+fn leftover_owner_check(item: &Leftover, target: &Path) -> Result<(), String> {
+    if is_link_path(&item.root) || is_link_path(&item.content) {
+        return Err("是链接，可能指向别处".to_string());
+    }
+    if item.nested {
+        let recorded = std::fs::read_to_string(item.root.join(OPERATION_RECORD))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|value| value["target"].as_str().map(PathBuf::from));
+        match recorded {
+            Some(path) if dedupe_key(&path) == dedupe_key(target) => Ok(()),
+            Some(_) => Err("操作记录里的目标不是本次位置".to_string()),
+            None => Err("没有操作记录".to_string()),
+        }
+    } else if item.content.join(MARKER_FILE).is_file() {
+        Ok(())
+    } else {
+        Err("没有安装标记".to_string())
+    }
+}
+
+/// 列出与这个写入位置有关的残留临时 / 备份目录：暂存目录里的新格式，
+/// 以及 skills 目录与其上一级里的旧格式。
+fn find_leftovers(target: &Path, staging: &Path) -> Vec<Leftover> {
+    let mut found = Vec::new();
+    let mut scanned: HashSet<PathBuf> = HashSet::new();
+    let skills_dir = target.parent();
+    let legacy = skills_dir
+        .into_iter()
+        .chain(skills_dir.and_then(Path::parent))
+        .map(|dir| (dir.to_path_buf(), false));
+    for (dir, nested) in std::iter::once((staging.to_path_buf(), true)).chain(legacy) {
+        if !scanned.insert(dedupe_key(&dir)) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let backup = name.starts_with(BACKUP_PREFIX);
+            if !backup && !name.starts_with(TEMP_PREFIX) {
+                continue;
+            }
+            let root = entry.path();
+            let content = if nested { root.join("ai-cross") } else { root.clone() };
+            found.push(Leftover { root, content, backup, nested });
+        }
+    }
+    found
+}
+
+/// 处理上一次中断的安装 / 更新留下的残留。调用方持有进程内写锁与暂存
+/// 目录的跨进程锁，此刻不会有别的安装在进行。只动归属本次目标的残留
+/// （[`leftover_owner_check`]），其余原样保留，原因作为说明返回。
+/// `restore` 为真（安装 / 更新）且目标缺失时，先把最新一份带标记文件的
+/// 备份改回目标（中断的更新只剩这份旧安装）；恢复失败返回错误，备份原样
+/// 保留。其余归属本次的残留删掉。`literal_target` 用来找旧格式残留
+/// （skills 目录与其上一级），`target` 是解析后的真实路径。
+fn recover_leftovers(
+    target: &Path,
+    literal_target: &Path,
+    staging: &Path,
+    restore: bool,
+) -> Result<Vec<String>, String> {
+    let mut notes = Vec::new();
+    let leftovers: Vec<Leftover> = find_leftovers(literal_target, staging)
+        .into_iter()
+        .filter(|item| match leftover_owner_check(item, target) {
+            Ok(()) => true,
+            Err(reason) => {
+                notes.push(format!("保留残留目录 {}：{reason}", item.root.display()));
+                false
+            }
+        })
+        .collect();
+    if leftovers.is_empty() {
+        return Ok(notes);
+    }
+    let target_missing = matches!(
+        std::fs::symlink_metadata(target),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    );
+    let mut restored: Option<PathBuf> = None;
+    if restore && target_missing {
+        let newest = leftovers
+            .iter()
+            .filter(|item| item.backup && item.content.join(MARKER_FILE).is_file())
+            .max_by_key(|item| {
+                std::fs::metadata(&item.root)
+                    .and_then(|meta| meta.modified())
+                    .ok()
+            });
+        if let Some(item) = newest {
+            std::fs::rename(&item.content, target).map_err(|error| {
+                format!(
+                    "恢复上次中断更新的备份 {} 失败：{error}；备份原样保留",
+                    item.content.display()
+                )
+            })?;
+            restored = Some(item.root.clone());
+        }
+    }
+    for item in &leftovers {
+        // 旧格式的备份目录就是被恢复的内容本身，改名后已不在原处。
+        if restored.as_deref() == Some(item.root.as_path()) && item.root == item.content {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(&item.root);
+    }
+    Ok(notes)
+}
+
+/// 拿安装 / 卸载的跨进程锁（暂存目录里常驻的锁文件，系统文件锁）。
+fn acquire_install_lock(staging: &Path) -> Result<crate::file_lock::FileLock, (i32, String)> {
+    crate::file_lock::FileLock::acquire(&staging.join(INSTALL_LOCK_FILE), INSTALL_LOCK_TIMEOUT)
+        .map_err(|message| (1, message))
+}
+
+/// 安装 / 卸载的输出：该 host 的 status，保留了不归属本次的残留时另附 `notes`。
+fn write_result(host: &str, home: &Path, project: Option<&Path>, notes: Vec<String>) -> Value {
+    let status = host_status(host, home, project);
+    let mut value = json!({
+        "bundledVersion": bundled_version(),
+        "hosts": [status],
+    });
+    if !notes.is_empty() {
+        value["notes"] = json!(notes);
+    }
+    value
+}
+
+/// `skill status` 的实现体；输出 `{ bundledVersion, hosts: [...] }`。只读，
+/// 不拿锁、不清理残留。
 pub(crate) fn status_at(home: &Path, project: Option<&Path>) -> Result<Value, (i32, String)> {
-    let _guard = skill_write_lock();
     let project = project.map(native_separators);
     if let Some(project) = project.as_deref() {
         if !project.is_dir() {
@@ -484,19 +670,32 @@ pub(crate) fn install_at(
     let _guard = skill_write_lock();
     let project = validate_target(host, scope, project)?;
     let target = install_path(host, home, project.as_deref());
-    let location = inspect_location(&target, "", true);
-    if location.kind == KIND_EXTERNAL {
+    // 先判一次：别人管理的位置不建目录、不拿锁。
+    if inspect_location(&target, "", true).kind == KIND_EXTERNAL {
         return Err((
             1,
             format!("由其他软件管理：{}", target.display()),
         ));
     }
-    write_bundle(&target).map_err(|message| (1, message))?;
-    let status = host_status(host, home, project.as_deref());
-    Ok(json!({
-        "bundledVersion": bundled_version(),
-        "hosts": [status],
-    }))
+    // 新装时 skills 目录可能还不存在，先建好，暂存目录才能按真实位置定。
+    let skills_dir = target
+        .parent()
+        .ok_or_else(|| (1, format!("无法定位安装目录：{}", target.display())))?;
+    std::fs::create_dir_all(skills_dir)
+        .map_err(|error| (1, format!("创建目录 {} 失败：{error}", skills_dir.display())))?;
+    let (real_skills, staging) = staging_dir(&target).map_err(|message| (1, message))?;
+    let real_target = real_skills.join("ai-cross");
+    let lock = acquire_install_lock(&staging)?;
+    let outcome = recover_leftovers(&real_target, &target, &staging, true).and_then(|notes| {
+        // 锁内再判一次：等锁期间别的进程可能已换掉这个位置。
+        if inspect_location(&target, "", true).kind == KIND_EXTERNAL {
+            return Err(format!("由其他软件管理：{}", target.display()));
+        }
+        write_bundle(&real_target, &staging).map(|()| notes)
+    });
+    drop(lock);
+    let notes = outcome.map_err(|message| (1, message))?;
+    Ok(write_result(host, home, project.as_deref(), notes))
 }
 
 /// `skill uninstall` 的实现体：只删我们装的那份；external 退出 1 不动；
@@ -510,25 +709,30 @@ pub(crate) fn uninstall_at(
     let _guard = skill_write_lock();
     let project = validate_target(host, scope, project)?;
     let target = install_path(host, home, project.as_deref());
-    let location = inspect_location(&target, "", true);
-    match location.kind.as_str() {
-        KIND_EXTERNAL => {
-            return Err((
-                1,
-                format!("由其他软件管理：{}", target.display()),
-            ))
-        }
-        KIND_OURS => {
-            std::fs::remove_dir_all(&target)
-                .map_err(|error| (1, format!("删除失败：{error}")))?;
-        }
-        _ => {}
+    let external = || Err((1, format!("由其他软件管理：{}", target.display())));
+    if inspect_location(&target, "", true).kind == KIND_EXTERNAL {
+        return external();
     }
-    let status = host_status(host, home, project.as_deref());
-    Ok(json!({
-        "bundledVersion": bundled_version(),
-        "hosts": [status],
-    }))
+    // skills 目录都不存在时既没有安装也没有残留，不建目录、不拿锁。
+    let mut notes = Vec::new();
+    if target.parent().is_some_and(Path::is_dir) {
+        let (real_skills, staging) = staging_dir(&target).map_err(|message| (1, message))?;
+        let real_target = real_skills.join("ai-cross");
+        let lock = acquire_install_lock(&staging)?;
+        let outcome =
+            recover_leftovers(&real_target, &target, &staging, false).and_then(|kept| {
+                match inspect_location(&target, "", true).kind.as_str() {
+                    KIND_EXTERNAL => Err(format!("由其他软件管理：{}", target.display())),
+                    KIND_OURS => std::fs::remove_dir_all(&target)
+                        .map_err(|error| format!("删除失败：{error}")),
+                    _ => Ok(()),
+                }
+                .map(|()| kept)
+            });
+        drop(lock);
+        notes = outcome.map_err(|message| (1, message))?;
+    }
+    Ok(write_result(host, home, project.as_deref(), notes))
 }
 
 /// host / scope / project 的公共校验：host 只认四家；scope 只认
@@ -560,43 +764,44 @@ fn validate_target(
 
 /// 把内置包写到目标位置，并放标记文件（fix-50-r2：旧目录先改名成备份，
 /// 临时目录换名到位，成功后删备份；换名失败时把备份改回原名——更新中途
-/// 失败旧安装原样保留，不留半成品）。临时目录与备份目录放在 skills 目录
-/// 之外的同卷位置（skills 目录的上一级），残留不会被 agent 当成第二份
-/// skill；名字带 uuid，进程内并发与跨进程都不重名。调用方持有 skill 写锁。
-fn write_bundle(target: &Path) -> Result<(), String> {
-    let skills_dir = target
-        .parent()
-        .ok_or_else(|| format!("无法定位安装目录：{}", target.display()))?;
-    let outside = skills_dir
-        .parent()
-        .ok_or_else(|| format!("无法定位安装目录：{}", target.display()))?;
+/// 失败旧安装原样保留，不留半成品）。`target` 是解析后的真实路径，临时
+/// 目录与备份目录建在 [`staging_dir`] 给的同卷暂存目录里，内容在其下一层
+/// `ai-cross/`；名字带 uuid，不重名。备份改不回原名时保留备份，下一次
+/// 安装先恢复它。调用方持有进程内写锁与跨进程安装锁。
+fn write_bundle(target: &Path, staging: &Path) -> Result<(), String> {
     let token = uuid::Uuid::new_v4();
-    let temp = outside.join(format!("{TEMP_PREFIX}{token}"));
-    let backup = outside.join(format!("{BACKUP_PREFIX}{token}"));
-    let _ = std::fs::remove_dir_all(&temp);
-    // 新装时 skills 目录可能还不存在，先建好，末尾的换名才有落点。
-    std::fs::create_dir_all(skills_dir)
-        .map_err(|error| format!("创建目录 {} 失败：{error}", skills_dir.display()))?;
+    let temp_root = staging.join(format!("{TEMP_PREFIX}{token}"));
+    let backup_root = staging.join(format!("{BACKUP_PREFIX}{token}"));
+    let temp = temp_root.join("ai-cross");
+    let backup = backup_root.join("ai-cross");
     let had_old = std::fs::symlink_metadata(target).is_ok();
-    let outcome = write_bundle_into(&temp).and_then(|()| {
+    let mut keep_backup = false;
+    // 两个根目录先写操作记录再放内容：中断后残留也认得出属于哪个目标。
+    let token_text = token.to_string();
+    let outcome = write_operation_record(&temp_root, target, &token_text)
+        .and_then(|()| write_bundle_into(&temp))
+        .and_then(|()| {
         if had_old {
+            write_operation_record(&backup_root, target, &token_text)?;
             std::fs::rename(target, &backup)
                 .map_err(|error| format!("备份旧安装失败：{error}"))?;
         }
         if let Err(error) = std::fs::rename(&temp, target) {
             // 换名失败：把备份改回原名，旧安装保持原样。
-            if had_old {
-                let _ = std::fs::rename(&backup, target);
+            if had_old && std::fs::rename(&backup, target).is_err() {
+                keep_backup = true;
+                return Err(format!(
+                    "替换安装目录失败：{error}；旧安装暂存在 {}，下次安装时自动恢复",
+                    backup.display()
+                ));
             }
             return Err(format!("替换安装目录失败：{error}"));
         }
-        if had_old {
-            let _ = std::fs::remove_dir_all(&backup);
-        }
         Ok(())
     });
-    if outcome.is_err() {
-        let _ = std::fs::remove_dir_all(&temp);
+    let _ = std::fs::remove_dir_all(&temp_root);
+    if !keep_backup {
+        let _ = std::fs::remove_dir_all(&backup_root);
     }
     outcome
 }
@@ -1189,17 +1394,23 @@ mod tests {
         std::fs::write(target.join("leftover.txt"), "旧文件").unwrap();
         install_at(&home, "claude", "global", None).unwrap();
         assert!(!target.join("leftover.txt").exists(), "更新要替换整份目录");
+        // 暂存目录（常驻锁文件）以外不留 .aicross 开头的条目，暂存目录里
+        // 只剩锁文件。
         let leftovers: Vec<_> = std::fs::read_dir(target.parent().unwrap())
             .unwrap()
             .chain(std::fs::read_dir(target.parent().unwrap().parent().unwrap()).unwrap())
             .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".aicross"))
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.starts_with(".aicross") && name != ".aicross-install-skills"
+            })
             .collect();
         assert!(
             leftovers.is_empty(),
             "skills 目录内外都不残留临时 / 备份目录：{:?}",
             leftovers
         );
+        assert!(staged_names(&home.join(".claude").join(".aicross-install-skills")).is_empty());
         // external（无标记）拒绝，文件原样保留。
         std::fs::remove_dir_all(&target).unwrap();
         write_fake_skill(&target, "9.9.9");
@@ -1290,20 +1501,215 @@ mod tests {
         let _ = std::fs::remove_dir_all(project);
     }
 
-    /// status 扫描时清理残留的临时 / 备份目录（fix-50-r2）：skills 目录里
-    /// （旧版位置）与其上一级（现行位置）都清，无关目录不动。
+    /// fix-fullcheck A1：状态查询只读，残留的临时 / 备份目录（可能是中断
+    /// 更新后唯一的旧安装，或别的进程正在用）一个都不删；下一次安装在锁内
+    /// 清理，旧格式（skills 目录里与其上一级）与新格式（暂存目录）都认，
+    /// 无关目录不动。
     #[test]
-    fn status_sweeps_leftover_temp_and_backup_dirs() {
+    fn a1_status_is_read_only_and_install_cleans_leftovers() {
         let home = temp_home("sweep");
         let skills = home.join(".claude/skills");
-        std::fs::create_dir_all(skills.join(".aicross-install-tmp-4242")).unwrap();
-        std::fs::create_dir_all(home.join(".claude/.aicross-install-bak-old")).unwrap();
+        let legacy_temp = skills.join(".aicross-install-tmp-4242");
+        let legacy_backup = home.join(".claude/.aicross-install-bak-old");
+        let (real_skills, staging) = staging_dir(&skills.join("ai-cross")).unwrap();
+        let staged_temp = staging.join(".aicross-install-tmp-x/ai-cross");
+        write_fake_skill(&legacy_temp, "0.1.0");
+        std::fs::write(legacy_temp.join(MARKER_FILE), "{}").unwrap();
+        write_fake_skill(&legacy_backup, "0.1.0");
+        std::fs::write(legacy_backup.join(MARKER_FILE), "{}").unwrap();
+        write_fake_skill(&staged_temp, "0.1.0");
+        write_operation_record(staged_temp.parent().unwrap(), &real_skills.join("ai-cross"), "x").unwrap();
         std::fs::create_dir_all(skills.join("other-skill")).unwrap();
         let _ = status_at(&home, None).unwrap();
-        assert!(!skills.join(".aicross-install-tmp-4242").exists());
-        assert!(!home.join(".claude/.aicross-install-bak-old").exists());
+        assert!(legacy_temp.is_dir(), "status 不删临时目录");
+        assert!(legacy_backup.join(MARKER_FILE).is_file(), "status 不删备份");
+        assert!(staged_temp.join("SKILL.md").is_file(), "status 不删暂存目录内容");
+        // 安装：目标缺失、旧格式备份在 → 先恢复再更新；残留全部清掉。
+        install_at(&home, "claude", "global", None).unwrap();
+        let target = skills.join("ai-cross");
+        assert_eq!(
+            skill_version_from_text(&std::fs::read_to_string(target.join("SKILL.md")).unwrap()),
+            bundled_version()
+        );
+        assert!(!legacy_temp.exists());
+        assert!(!legacy_backup.exists());
+        assert!(staged_names(&staging).is_empty(), "暂存目录里只剩锁文件");
         assert!(skills.join("other-skill").is_dir(), "无关目录不受影响");
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// fix-fullcheck A1：更新在「旧安装已改名成备份、新目录还没换到位」时
+    /// 中断，目标缺失、只剩备份；下一次安装 / 更新先把备份改回目标，备份
+    /// 恢复失败时不删备份。卸载不恢复，直接清掉。
+    #[test]
+    fn a1_interrupted_update_backup_is_restored_before_install() {
+        let home = temp_home("recover");
+        let target = home.join(".agents/skills/ai-cross");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let (real_skills, staging) = staging_dir(&target).unwrap();
+        let real_target = real_skills.join("ai-cross");
+        let backup = staging.join(format!("{BACKUP_PREFIX}crash/ai-cross"));
+        let plant_backup = || {
+            write_fake_skill(&backup, "0.0.1");
+            std::fs::write(backup.join(MARKER_FILE), "{}").unwrap();
+            write_operation_record(backup.parent().unwrap(), &real_target, "crash").unwrap();
+        };
+        plant_backup();
+        std::fs::write(backup.join("user-note.txt"), "旧安装里的文件").unwrap();
+        let temp = staging.join(format!("{TEMP_PREFIX}crash/ai-cross"));
+        write_fake_skill(&temp, "9.9.9");
+        write_operation_record(temp.parent().unwrap(), &real_target, "crash").unwrap();
+        let notes = recover_leftovers(&real_target, &target, &staging, true).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(std::fs::read_to_string(target.join("user-note.txt")).unwrap(), "旧安装里的文件");
+        assert!(find_leftovers(&target, &staging).is_empty(), "恢复后残留清干净");
+        // 卸载路径不恢复：目标缺失 + 备份在 → 备份删掉，目标仍缺失。
+        std::fs::remove_dir_all(&target).unwrap();
+        plant_backup();
+        uninstall_at(&home, "codex", "global", None).unwrap();
+        assert!(!target.exists());
+        assert!(!backup.exists());
+        // 完整一轮：中断后的安装成功，结果是内置版本。
+        plant_backup();
+        install_at(&home, "codex", "global", None).unwrap();
+        assert_eq!(
+            skill_version_from_text(&std::fs::read_to_string(target.join("SKILL.md")).unwrap()),
+            bundled_version()
+        );
+        assert!(staged_names(&staging).is_empty());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 暂存目录里除锁文件以外的条目名。
+    fn staged_names(staging: &Path) -> Vec<String> {
+        std::fs::read_dir(staging)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name != INSTALL_LOCK_FILE)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// fix-fullcheck 第二轮 2：只凭名称前缀的残留不动——暂存目录里没有操作
+    /// 记录或记录目标不符的、旧位置里没有安装标记的都保留并在输出 notes
+    /// 里说明；残留根目录或内容目录是链接的不恢复、不删（链接目标原样）。
+    #[test]
+    fn r2_unowned_and_linked_leftovers_are_kept() {
+        let home = temp_home("r2-keep");
+        let outside = temp_home("r2-keep-outside");
+        let target = home.join(".agents").join("skills").join("ai-cross");
+        let skills = target.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&skills).unwrap();
+        let (real_skills, staging) = staging_dir(&target).unwrap();
+        // 旧位置里同名前缀、没有安装标记：别人的目录。
+        let foreign_legacy = skills.join(format!("{TEMP_PREFIX}mine"));
+        write_fake_skill(&foreign_legacy, "1.0.0");
+        // 暂存目录里没有操作记录、记录目标不是本次位置的。
+        let no_record = staging.join(format!("{BACKUP_PREFIX}norecord")).join("ai-cross");
+        write_fake_skill(&no_record, "1.0.0");
+        std::fs::write(no_record.join(MARKER_FILE), "{}").unwrap();
+        let other_target = staging.join(format!("{BACKUP_PREFIX}other")).join("ai-cross");
+        write_fake_skill(&other_target, "1.0.0");
+        std::fs::write(other_target.join(MARKER_FILE), "{}").unwrap();
+        write_operation_record(other_target.parent().unwrap(), &outside.join("ai-cross"), "o").unwrap();
+        // 链接残留：带记录的备份根目录里，内容目录是指向外部带标记目录的链接。
+        let external = outside.join("external-skill");
+        write_fake_skill(&external, "2.0.0");
+        std::fs::write(external.join(MARKER_FILE), "{}").unwrap();
+        let linked_root = staging.join(format!("{BACKUP_PREFIX}linked"));
+        write_operation_record(&linked_root, &real_skills.join("ai-cross"), "l").unwrap();
+        let linked = create_dir_link(&linked_root.join("ai-cross"), &external);
+        let value = install_at(&home, "codex", "global", None).unwrap();
+        // 目标缺失时也没有恢复任何不归属的备份：装上的是内置版本。
+        assert_eq!(
+            skill_version_from_text(&std::fs::read_to_string(target.join("SKILL.md")).unwrap()),
+            bundled_version()
+        );
+        assert!(foreign_legacy.join("SKILL.md").is_file(), "无标记的同名前缀目录不删");
+        assert!(no_record.join("SKILL.md").is_file(), "没有操作记录的不删");
+        assert!(other_target.join("SKILL.md").is_file(), "记录目标不符的不删");
+        let notes = value["notes"].as_array().expect("保留时输出 notes");
+        assert!(notes.len() >= 3, "{notes:?}");
+        if linked {
+            assert!(linked_root.join("ai-cross").join("SKILL.md").is_file(), "链接残留不删");
+            assert!(external.join(MARKER_FILE).is_file(), "链接目标原样");
+            assert!(notes.iter().any(|note| note.as_str().unwrap().contains("链接")), "{notes:?}");
+            let _ = std::fs::remove_dir(linked_root.join("ai-cross"));
+        } else {
+            eprintln!("跳过链接部分：建不了目录链接");
+        }
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    /// fix-fullcheck A1：安装 / 卸载跨进程互斥。测试直接持有暂存目录里的
+    /// 锁文件（等同另一个进程正在安装），安装要等它释放才动手。
+    #[test]
+    fn a1_install_waits_for_cross_process_lock() {
+        let home = temp_home("xlock");
+        let target = home.join(".claude/skills/ai-cross");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let (_, staging) = staging_dir(&target).unwrap();
+        let held = crate::file_lock::FileLock::acquire(
+            &staging.join(INSTALL_LOCK_FILE),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap();
+        let worker_home = home.clone();
+        let worker = std::thread::spawn(move || install_at(&worker_home, "claude", "global", None));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!target.exists(), "别的进程持锁时不写");
+        drop(held);
+        worker.join().unwrap().unwrap();
+        assert!(target.join(MARKER_FILE).is_file());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// fix-fullcheck A6：skills 目录被 junction / symlink 重定向到别处时，
+    /// 暂存目录按解析后的真实位置建（与目标同卷），不建在字面父目录；
+    /// 新装与更新都成功，两边都不留残留。建不了目录链接的平台跳过。
+    #[test]
+    fn a6_staging_follows_redirected_skills_dir() {
+        let home = temp_home("redirect");
+        let elsewhere = temp_home("redirect-real");
+        let real_skills = elsewhere.join("RealSkills");
+        std::fs::create_dir_all(&real_skills).unwrap();
+        std::fs::create_dir_all(home.join(".agents")).unwrap();
+        if !create_dir_link(&home.join(".agents").join("skills"), &real_skills) {
+            eprintln!("跳过：建不了目录链接");
+            let _ = std::fs::remove_dir_all(&home);
+            let _ = std::fs::remove_dir_all(&elsewhere);
+            return;
+        }
+        let target = home.join(".agents/skills/ai-cross");
+        let (resolved, staging) = staging_dir(&target).unwrap();
+        let real_parent = std::fs::canonicalize(&elsewhere).unwrap();
+        assert_eq!(resolved, real_parent.join("RealSkills"));
+        assert_eq!(staging, real_parent.join(".aicross-install-RealSkills"));
+        install_at(&home, "codex", "global", None).unwrap();
+        install_at(&home, "codex", "global", None).unwrap();
+        assert!(real_skills.join("ai-cross").join(MARKER_FILE).is_file());
+        // 字面父目录与 skills 目录里都没有 .aicross 开头的条目；真实父目录
+        // 里只有暂存目录，暂存目录里只剩锁文件。
+        let stray: Vec<_> = std::fs::read_dir(home.join(".agents"))
+            .unwrap()
+            .chain(std::fs::read_dir(&elsewhere).unwrap())
+            .chain(std::fs::read_dir(&real_skills).unwrap())
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.starts_with(".aicross") && name != ".aicross-install-RealSkills"
+            })
+            .collect();
+        assert!(stray.is_empty(), "{stray:?}");
+        assert!(staged_names(&staging).is_empty());
+        assert!(!home.join(".agents").join(".aicross-install-skills").exists());
+        let _ = std::fs::remove_dir(home.join(".agents").join("skills"));
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(elsewhere);
     }
 
     #[test]

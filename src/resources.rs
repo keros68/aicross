@@ -338,7 +338,7 @@ pub(crate) fn resource_model_key(agent: &str, provider: &str, model: &str) -> St
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn dispatch_models() -> Result<Vec<ResourceModel>, String> {
     let path = store_path()?;
-    let _guard = store_lock();
+    let _guard = store_lock(&path)?;
     let mut store = load_or_default(&path)?;
     clear_expired_quota(&mut store);
     Ok(store
@@ -358,7 +358,7 @@ fn mark_quota_exhausted_at(
     let Some(resets_at) = resets_at.filter(|value| DateTime::parse_from_rfc3339(value).is_ok()) else {
         return Ok(());
     };
-    let _guard = store_lock();
+    let _guard = store_lock(path)?;
     let mut store = load_or_default(path)?;
     let item = find_model_mut(&mut store, agent, provider, model)?;
     item.quota_exhausted_until = Some(resets_at.to_string());
@@ -645,12 +645,38 @@ pub(crate) fn save_store(path: &Path, store: &ResourceStore) -> Result<(), Strin
     write_json_atomic(path, store)
 }
 
-/// 进程级写锁：所有 load → 改 → save 序列都必须持有它，防止并发命令的
-/// 读改写互相覆盖（前端按钮 busy 只是 UI 纪律，不是后端保证）。
-fn store_lock() -> MutexGuard<'static, ()> {
-    store_mutex()
+/// 资源库锁的等待上限（fix-fullcheck B1）。持锁区段只做读 → 改 → 原子写，
+/// 毫秒级；冒烟、探测、cc-switch 提示等外部进程一律在锁外跑。持锁区段里
+/// 加入秒级操作时同步调大。
+const STORE_LOCK_TIMEOUT: Duration = Duration::from_secs(40);
+
+/// 资源库写锁：进程内互斥加跨进程系统文件锁（锁住常驻的
+/// `resources.json.lock`）。窗口、命令行与后台 `__run` 是不同进程，所有
+/// load → 改 → save 序列都必须持有它，防止读改写互相覆盖（前端按钮 busy
+/// 只是 UI 纪律，不是后端保证）。
+struct StoreGuard {
+    // 字段按声明顺序释放：先放进程内互斥，再关锁文件句柄。
+    _mutex: MutexGuard<'static, ()>,
+    _file: crate::file_lock::FileLock,
+}
+
+/// 先拿文件锁再拿进程内互斥：等别的进程放锁期间不占着进程内互斥。
+fn store_lock(path: &Path) -> Result<StoreGuard, String> {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "resources.json".into());
+    let file = crate::file_lock::FileLock::acquire(
+        &path.with_file_name(format!("{name}.lock")),
+        STORE_LOCK_TIMEOUT,
+    )?;
+    let mutex = store_mutex()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Ok(StoreGuard {
+        _file: file,
+        _mutex: mutex,
+    })
 }
 
 fn store_mutex() -> &'static Mutex<()> {
@@ -1018,10 +1044,19 @@ fn parse_codex_cache(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
         return Err("模型缓存清单为空".to_string());
     }
     let fetched_at = cache.fetched_at.unwrap_or_default();
-    let mut listed = cache
+    let named = cache
         .models
         .into_iter()
-        .filter(|model| !model.slug.trim().is_empty() && model.visibility.trim() != "hide")
+        .filter(|model| !model.slug.trim().is_empty())
+        .collect::<Vec<_>>();
+    if named.is_empty() {
+        return Err("模型缓存没有有效模型".to_string());
+    }
+    // 隐藏的不列；全部隐藏时是成功读出的空清单（fix-fullcheck B6），合并时
+    // 旧条目标未发现，不当解析失败保留旧清单。
+    let mut listed = named
+        .into_iter()
+        .filter(|model| model.visibility.trim() != "hide")
         .collect::<Vec<_>>();
     listed.sort_by_key(|model| model.priority.unwrap_or(i64::MAX));
     let models = listed
@@ -1066,11 +1101,7 @@ fn parse_codex_cache(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
             )
         })
         .collect::<Vec<_>>();
-    if models.is_empty() {
-        Err("模型缓存没有有效模型".to_string())
-    } else {
-        Ok(models)
-    }
+    Ok(models)
 }
 
 fn detect_kimi() -> Result<Vec<ResourceModel>, String> {
@@ -2132,17 +2163,14 @@ fn apply_smoke_outcome(
     Ok(())
 }
 
-fn smoke_one_in_place(store: &mut ResourceStore, request: &ResourceModelKey) -> Result<(), String> {
-    let model = find_model(store, &request.agent_id, &request.provider, &request.id)?.clone();
-    let outcome = run_smoke(&model);
-    apply_smoke_outcome(store, request, outcome)
-}
-
 /// 首次派发自动验证的结果（引擎按它决定继续派发还是直接判失败）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FirstUseVerification {
-    /// 不需要动手：原生模型、验过的、验失败过的。
+    /// 不需要动手：原生模型、验过的、验证超时过的。
     Skipped,
+    /// 资源库里这一条已验证失败或最近一次探测未发现：不验证、不派发，附原因
+    /// （[`dispatch_block_reason`]，fix-fullcheck B2 / B3）。
+    Rejected(String),
     /// 资源库里没有这一条（或库读不出来）：本次不验证，留痕写明，不挡派发。
     /// 与 `Skipped` 分开，事后才分得清「原生跳过」和「库里没这条所以没验」。
     NotInStore,
@@ -2236,12 +2264,19 @@ fn resolve_first_use_target(
         0 => FirstUseTarget::Missing,
         1 => FirstUseTarget::Hit(key_of(candidates[0])),
         _ => {
-            // 全都不是「未验证」时不需要动手，随便挑一条走到 Skipped 就行。
+            // 全都不是「未验证」时不需要动手：与 find_target_model 同一优先序
+            // 挑一条（没未发现、没验证失败的在前），一条失败的同名条目不牵连
+            // 可用的。
             if candidates
                 .iter()
                 .all(|model| model.verification != VERIFICATION_UNVERIFIED)
             {
-                return FirstUseTarget::Hit(key_of(candidates[0]));
+                let preferred = candidates
+                    .iter()
+                    .find(|m| !is_missing_from_detection(m) && m.verification != VERIFICATION_FAILED)
+                    .or_else(|| candidates.iter().find(|m| !is_missing_from_detection(m)))
+                    .unwrap_or(&candidates[0]);
+                return FirstUseTarget::Hit(key_of(preferred));
             }
             FirstUseTarget::Ambiguous(
                 candidates
@@ -2283,7 +2318,8 @@ fn verify_on_first_use_at(
 ) -> FirstUseVerification {
     // 读一次拿目标就放锁：一次冒烟最长 180 秒，整段持锁会把界面的读资源也堵住。
     let key = {
-        let _guard = store_lock();
+        // 只读：原子写保证读到整份文件，拿不到锁也照读。
+        let _guard = store_lock(path).ok();
         let Ok(store) = load_or_default(path) else {
             return FirstUseVerification::NotInStore;
         };
@@ -2302,7 +2338,7 @@ fn verify_on_first_use_at(
     let gate = first_use_gate(&key);
     let _inflight = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let target = {
-        let _guard = store_lock();
+        let _guard = store_lock(path).ok();
         let Ok(store) = load_or_default(path) else {
             return FirstUseVerification::NotInStore;
         };
@@ -2311,6 +2347,9 @@ fn verify_on_first_use_at(
             Err(_) => return FirstUseVerification::NotInStore,
         }
     };
+    if let Some(reason) = dispatch_block_reason(&target) {
+        return FirstUseVerification::Rejected(reason);
+    }
     if target.verification != VERIFICATION_UNVERIFIED {
         return FirstUseVerification::Skipped;
     }
@@ -2326,14 +2365,11 @@ fn verify_on_first_use_at(
         }
     }
     let failure = outcome.as_ref().err().map(|error| safe_summary(error));
-    let persisted = {
-        let _guard = store_lock();
-        match load_or_default(path) {
-            Ok(mut store) => apply_smoke_outcome(&mut store, &key, outcome)
-                .and_then(|()| save_store(path, &store)),
-            Err(error) => Err(error),
-        }
-    };
+    let persisted = store_lock(path).and_then(|_guard| match load_or_default(path) {
+        Ok(mut store) => apply_smoke_outcome(&mut store, &key, outcome)
+            .and_then(|()| save_store(path, &store)),
+        Err(error) => Err(error),
+    });
     // 写回失败不吞：库里还是 unverified，下次派发会再冒一次烟，「失败不自动
     // 重试」在这条路径上就不成立了。让这次派发失败并写明原因。
     if let Err(error) = persisted {
@@ -2555,7 +2591,10 @@ pub(crate) fn is_missing_from_detection(model: &ResourceModel) -> bool {
 /// 匹配——同一模型 id 可以挂在多个 provider 下，其中一个带「未在事实源中」
 /// 标记时，按 agent+id 取第一条会看错条目。provider 为空时实际派发由 agent
 /// 自己选端点，这里优先取没带「未发现」标记的那条，全部带标记才返回带标记
-/// 的，避免一个已撤掉的同名条目把可用的人选判成未发现。
+/// 的，避免一个已撤掉的同名条目把可用的人选判成未发现；没带标记的里面
+/// 再优先没验证失败的（fix-fullcheck B4），一条失败的同名条目不牵连可用的。
+/// 派发前检查（引擎的第一阶段检查与派发层每次尝试的 [`dispatch_block_reason`]）
+/// 都经这里，provider 精确匹配。
 pub(crate) fn find_target_model<'a>(
     models: &'a [ResourceModel],
     agent: &str,
@@ -2563,17 +2602,42 @@ pub(crate) fn find_target_model<'a>(
     id: &str,
 ) -> Option<&'a ResourceModel> {
     if provider.trim().is_empty() {
-        let mut same_id = models.iter().filter(|m| m.agent == agent && m.id == id);
-        let first = same_id.next()?;
-        if !is_missing_from_detection(first) {
-            return Some(first);
-        }
-        Some(same_id.find(|m| !is_missing_from_detection(m)).unwrap_or(first))
+        let same_id = || models.iter().filter(|m| m.agent == agent && m.id == id);
+        let first = same_id().next()?;
+        same_id()
+            .find(|m| !is_missing_from_detection(m) && m.verification != VERIFICATION_FAILED)
+            .or_else(|| same_id().find(|m| !is_missing_from_detection(m)))
+            .or(Some(first))
     } else {
         models
             .iter()
             .find(|m| m.agent == agent && m.provider == provider && m.id == id)
     }
+}
+
+/// 派发前的资源库拦截（fix-fullcheck B2 / B3）：最近一次探测未发现、或已
+/// 验证失败的模型不派发，返回原因；`timeout` 与其它状态放行。派发层每次
+/// 尝试（任一阶段的主目标、显式备选、资源库有序备选）与首次验证入口共用。
+pub(crate) fn dispatch_block_reason(model: &ResourceModel) -> Option<String> {
+    if is_missing_from_detection(model) {
+        return Some(format!(
+            "{}/{} 在最近一次探测中未发现，请重新探测或换人选",
+            model.agent, model.id
+        ));
+    }
+    if model.verification == VERIFICATION_FAILED {
+        let detail = model.smoke_failure.trim();
+        let detail = if detail.is_empty() {
+            String::new()
+        } else {
+            format!("（{detail}）")
+        };
+        return Some(format!(
+            "目标验证失败：{}/{}{detail}；用 aicross resources smoke 重验后再派发",
+            model.agent, model.id
+        ));
+    }
+    None
 }
 
 /// 探测成功写回前盖时间戳（fix-48-r1 R4）：生产与测试两个探测入口共用，
@@ -2649,12 +2713,12 @@ fn pi_login_note(provider: &str) -> String {
 }
 
 // ── Tauri 命令 ────────────────────────────────────────────────────────────
-// 所有写命令都按「持 store_lock() → load → 改 → 原子写」的序列执行，
+// 所有写命令都按「持 store_lock(path) → load → 改 → 原子写」的序列执行，
 // 锁保证并发命令不互相覆盖（审查 2.4）。命令体拆成 *_at(path, …) 自由函数，
 // 方便测试用临时目录钉住行为。
 
 pub(crate) fn get_resources_at(path: &Path) -> Result<ResourceStore, String> {
-    let _guard = store_lock();
+    let _guard = store_lock(path)?;
     let mut store = load_or_default(path)?;
     ensure_agents(&mut store);
     if clear_expired_quota(&mut store) && path.is_file() {
@@ -2695,7 +2759,7 @@ fn detect_all_resources_inner(
     // agent 清单先在锁内取齐（ensure_agents 可能补内置骨架），探测全部
     // 放到锁外，不把其他写方挡在锁外几十秒。
     let ids = {
-        let _guard = store_lock();
+        let _guard = store_lock(path)?;
         let mut store = load_or_default(path)?;
         ensure_agents(&mut store);
         store
@@ -2748,7 +2812,9 @@ fn merge_prepared_detections(
     ids: &[String],
     mut prepared: Vec<PreparedDetection>,
 ) -> Result<ResourceOperation, String> {
-    let _guard = store_lock();
+    // cc-switch 提示要拉起 Python（最长 20 秒），放在锁外。
+    let (cc_switch_hints, hint_error) = detect_cc_switch_hints(cc_switch_path);
+    let _guard = store_lock(path)?;
     let mut store = load_or_default(path)?;
     ensure_agents(&mut store);
     let mut errors = Vec::new();
@@ -2760,7 +2826,6 @@ fn merge_prepared_detections(
         let item = prepared.swap_remove(index);
         apply_prepared_detection(&mut store, item, &mut errors);
     }
-    let (cc_switch_hints, hint_error) = detect_cc_switch_hints(cc_switch_path);
     if let Some(error) = hint_error {
         errors.push(error);
     }
@@ -2782,7 +2847,7 @@ fn detect_all_resources_sequential_with(
     prepare: &(dyn Fn(&str) -> PreparedDetection + Sync),
 ) -> Result<ResourceOperation, String> {
     let ids = {
-        let _guard = store_lock();
+        let _guard = store_lock(path)?;
         let mut store = load_or_default(path)?;
         ensure_agents(&mut store);
         store
@@ -2806,7 +2871,7 @@ pub(crate) fn prune_missing_models_at(
     agent_filter: Option<&str>,
     referenced: &[ModelReference],
 ) -> Result<PruneOutcome, String> {
-    let _guard = store_lock();
+    let _guard = store_lock(path)?;
     let mut store = load_or_default(path)?;
     ensure_agents(&mut store);
     let mut removed = Vec::new();
@@ -2859,7 +2924,7 @@ fn detect_resource_agent_at_with_pi_binary(
     pi_binary: Option<PathBuf>,
 ) -> Result<ResourceOperation, String> {
     let prepared_pi = (agent_id == "pi").then(|| prepare_pi_detection(pi_binary));
-    let _guard = store_lock();
+    let _guard = store_lock(path)?;
     let mut store = load_or_default(path)?;
     ensure_agents(&mut store);
     let mut errors = Vec::new();
@@ -2883,9 +2948,27 @@ fn detect_resource_agent_at_with_pi_binary(
 }
 
 pub(crate) fn smoke_resource_model_at(path: &Path, request: ResourceModelKey) -> Result<ResourceStore, String> {
-    let _guard = store_lock();
+    smoke_resource_model_with(path, &request, run_smoke)
+}
+
+/// 单模型冒烟（fix-fullcheck B1）：锁内取目标即放锁，冒烟（最长 180 秒）
+/// 在锁外跑；写回时重新加锁、重读最新库，只合并这一条的结果，期间别的
+/// 进程写入的额度标记、验证结果、探测结果都保留。冒烟期间目标被删掉时
+/// 报错，不写回。
+fn smoke_resource_model_with(
+    path: &Path,
+    request: &ResourceModelKey,
+    smoke: impl FnOnce(&ResourceModel) -> Result<SmokeSuccess, String>,
+) -> Result<ResourceStore, String> {
+    let target = {
+        let _guard = store_lock(path)?;
+        let store = load_or_default(path)?;
+        find_model(&store, &request.agent_id, &request.provider, &request.id)?.clone()
+    };
+    let outcome = smoke(&target);
+    let _guard = store_lock(path)?;
     let mut store = load_or_default(path)?;
-    smoke_one_in_place(&mut store, &request)?;
+    apply_smoke_outcome(&mut store, request, outcome)?;
     save_store(path, &store)?;
     Ok(store)
 }
@@ -2949,7 +3032,7 @@ fn smoke_agent_models_filtered_at(
     // 第一次加锁读到的库作为返回值；全部条目被跳过时循环体不执行，
     // 不能落回空库，否则命令行与窗口的输出会丢掉这个 agent（fix-48-r1 R3）。
     let (keys, skipped, latest) = {
-        let _guard = store_lock();
+        let _guard = store_lock(path)?;
         let mut store = load_or_default(path)?;
         ensure_agents(&mut store);
         let Some(agent) = store.agents.iter().find(|agent| agent.id == agent_id) else {
@@ -2981,12 +3064,25 @@ fn smoke_agent_models_filtered_at(
     let mut errors = Vec::new();
     let mut latest = latest;
     for key in &keys {
-        let _guard = store_lock();
+        // 同 smoke_resource_model_with（fix-fullcheck B1）：冒烟在锁外跑，
+        // 写回时重读最新库、只合并这一条。
+        let target = {
+            let _guard = store_lock(path)?;
+            let store = load_or_default(path)?;
+            find_model(&store, &key.agent_id, &key.provider, &key.id).cloned()
+        };
+        let model = match target {
+            Ok(model) => model,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+        let outcome = smoke(&model);
+        let _guard = store_lock(path)?;
         let mut store = load_or_default(path)?;
-        match find_model(&store, &key.agent_id, &key.provider, &key.id) {
-            Ok(model) => {
-                let outcome = smoke(&model.clone());
-                apply_smoke_outcome(&mut store, key, outcome)?;
+        match apply_smoke_outcome(&mut store, key, outcome) {
+            Ok(()) => {
                 save_store(path, &store)?;
                 let model = find_model(&store, &key.agent_id, &key.provider, &key.id)?;
                 if model.status == STATUS_FAILED {
@@ -3320,6 +3416,45 @@ exit 2
             .collect::<Vec<_>>();
         assert_eq!(merged, ["gpt-a", "gpt-b", "gpt-c", "codex-auto-review"]);
         assert!(store.agents[0].models[3].meta.contains(MISSING_MARKER));
+    }
+
+    /// fix-fullcheck B6：缓存解析成功、但模型全部 `visibility: "hide"`：这是
+    /// 「过滤后为空」，不是解析失败——返回空清单，合并后旧条目标未发现，
+    /// 派发前检查据此拦下；缓存解析失败与没有任何带 slug 的模型仍报错。
+    #[test]
+    fn fullcheck_b6_codex_cache_all_hidden_marks_old_models_missing() {
+        let cache = r#"{"models":[
+            {"slug":"gpt-old","visibility":"hide","priority":1},
+            {"slug":"codex-auto-review","visibility":"hide","priority":2}
+        ]}"#;
+        let models = parse_codex_cache(cache, "读:fixture").expect("全部隐藏是空清单，不是失败");
+        assert!(models.is_empty());
+        let mut old = fixture_model("gpt-old");
+        old.agent = "codex".into();
+        let mut store = ResourceStore {
+            detected_at: None,
+            version: 1,
+            agents: vec![fixture_agent("codex", vec![old])],
+        };
+        let mut errors = Vec::new();
+        apply_prepared_plain_detection(
+            &mut store,
+            PreparedAgentDetection {
+                agent_id: "codex".into(),
+                detected: true,
+                version: "0.2.0".into(),
+                missing_error: None,
+                models: Some(Ok(models)),
+            },
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        let old = &store.agents[0].models[0];
+        assert!(is_missing_from_detection(old), "{}", old.meta);
+        assert!(dispatch_block_reason(old).is_some());
+        // 解析失败与没有任何带 slug 的模型照旧报错，旧条目不动。
+        assert!(parse_codex_cache("{ not json", "读:fixture").is_err());
+        assert!(parse_codex_cache(r#"{"models":[{"slug":" ","visibility":"list"}]}"#, "读:fixture").is_err());
     }
 
     #[test]
@@ -4460,10 +4595,153 @@ exit 2
         let model = find_model(&stored, "pi", "zai", "glm-4.7").expect("model");
         assert_eq!(model.verification, VERIFICATION_FAILED);
         assert_eq!(model.status, STATUS_FAILED);
+        // fix-fullcheck B2：验证失败过的不重试，也不放行，按 Rejected 拒绝派发。
         let second = verify_on_first_use_at(&path, "pi", "zai", "glm-4.7", smoke, || false);
-        assert_eq!(second, FirstUseVerification::Skipped);
+        assert!(
+            matches!(second, FirstUseVerification::Rejected(ref reason) if reason.contains("目标验证失败") && reason.contains("401")),
+            "{second:?}"
+        );
         assert_eq!(calls.get(), 1);
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// fix-fullcheck B2 / B3 / B4：首次验证入口按资源库状态拦截——验证失败与
+    /// 未发现返回 Rejected，冒烟超时放行（Skipped），都不调冒烟；provider
+    /// 精确匹配，同名模型挂两个 provider（一失败一已验证）时各认各的，
+    /// 不给 provider 时两种排列顺序都取可用的那条。
+    #[test]
+    fn fullcheck_first_use_rejects_failed_and_missing_by_exact_provider() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-first-use-block-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let never = |_: &ResourceModel| -> Result<SmokeSuccess, String> { panic!("不该冒烟") };
+        let write = |models: &str| {
+            fs::write(
+                &path,
+                format!(r#"{{"version":1,"agents":[{{"id":"pi","name":"pi","models":[{models}]}}]}}"#),
+            )
+            .unwrap();
+        };
+        let failed = r#"{"id":"glm","agent":"pi","provider":"bad","verification":"failed","smoke_failure":"403: denied"}"#;
+        let verified = r#"{"id":"glm","agent":"pi","provider":"good","verification":"verified"}"#;
+        for order in [format!("{failed},{verified}"), format!("{verified},{failed}")] {
+            write(&order);
+            assert!(matches!(
+                verify_on_first_use_at(&path, "pi", "bad", "glm", never, || false),
+                FirstUseVerification::Rejected(ref reason) if reason.contains("403")
+            ));
+            assert_eq!(
+                verify_on_first_use_at(&path, "pi", "good", "glm", never, || false),
+                FirstUseVerification::Skipped,
+                "{order}"
+            );
+            assert_eq!(
+                verify_on_first_use_at(&path, "pi", "", "glm", never, || false),
+                FirstUseVerification::Skipped,
+                "{order}"
+            );
+        }
+        write(r#"{"id":"slow","agent":"pi","provider":"zai","verification":"timeout"}"#);
+        assert_eq!(
+            verify_on_first_use_at(&path, "pi", "zai", "slow", never, || false),
+            FirstUseVerification::Skipped
+        );
+        write(&format!(
+            r#"{{"id":"gone","agent":"pi","provider":"zai","verification":"verified","meta":"{MISSING_MARKER}"}}"#
+        ));
+        assert!(matches!(
+            verify_on_first_use_at(&path, "pi", "zai", "gone", never, || false),
+            FirstUseVerification::Rejected(ref reason) if reason.contains("未发现")
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn b1_store(tag: &str) -> PathBuf {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-b1-{tag}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        fs::write(
+            &path,
+            r#"{"version":1,"agents":[{"id":"pi","name":"pi","models":[
+                {"id":"a","agent":"pi","provider":"zai","verification":"unverified"},
+                {"id":"b","agent":"pi","provider":"zai","verification":"unverified"},
+                {"id":"c","agent":"pi","provider":"zai","verification":"unverified"}]}]}"#,
+        )
+        .unwrap();
+        path
+    }
+
+    /// fix-fullcheck B1：冒烟在锁外跑，期间另一个写方（这里在冒烟回调里
+    /// 直接写，等同另一个进程交错写入）给别的模型打的额度标记与验证结果，
+    /// 冒烟写回后都还在；写回只合并目标模型。单模型冒烟与按 agent 批量冒烟
+    /// 同一口径。旧实现冒烟时持锁，回调里的写入会卡死在同一把锁上。
+    #[test]
+    fn fullcheck_b1_smoke_write_back_keeps_interleaved_writes() {
+        let path = b1_store("single");
+        let key = ResourceModelKey { agent_id: "pi".into(), id: "a".into(), provider: "zai".into() };
+        let store = smoke_resource_model_with(&path, &key, |_| {
+            mark_quota_exhausted_at(&path, "pi", "zai", "b", Some("2099-01-01T00:00:00+08:00")).unwrap();
+            let _guard = store_lock(&path).unwrap();
+            let mut store = load_or_default(&path).unwrap();
+            find_model_mut(&mut store, "pi", "zai", "c").unwrap().verification = VERIFICATION_FAILED.into();
+            save_store(&path, &store).unwrap();
+            Ok(SmokeSuccess { identity: "zai/a".into(), meta_marker: None })
+        })
+        .unwrap();
+        let stored = load(&path).unwrap();
+        for view in [&store, &stored] {
+            assert_eq!(find_model(view, "pi", "zai", "a").unwrap().verification, VERIFICATION_VERIFIED);
+            assert_eq!(
+                find_model(view, "pi", "zai", "b").unwrap().quota_exhausted_until.as_deref(),
+                Some("2099-01-01T00:00:00+08:00")
+            );
+            assert_eq!(find_model(view, "pi", "zai", "c").unwrap().verification, VERIFICATION_FAILED);
+        }
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+
+        let path = b1_store("batch");
+        let mut round = 0;
+        smoke_agent_third_party_with(&path, "pi", |model| {
+            round += 1;
+            if round == 1 {
+                // 冒烟 a 的期间，另一个写方把 c 标成额度用尽。
+                mark_quota_exhausted_at(&path, "pi", "zai", "c", Some("2099-01-01T00:00:00+08:00")).unwrap();
+            }
+            Ok(SmokeSuccess { identity: format!("zai/{}", model.id), meta_marker: None })
+        })
+        .unwrap();
+        let stored = load(&path).unwrap();
+        assert_eq!(
+            find_model(&stored, "pi", "zai", "c").unwrap().quota_exhausted_until.as_deref(),
+            Some("2099-01-01T00:00:00+08:00")
+        );
+        assert_eq!(find_model(&stored, "pi", "zai", "a").unwrap().verification, VERIFICATION_VERIFIED);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// fix-fullcheck B1：资源库写入跨进程互斥。测试直接持有锁文件（等同另
+    /// 一个进程正在写），写入要等它释放才落盘。
+    #[test]
+    fn fullcheck_b1_store_writes_wait_for_cross_process_lock() {
+        let path = b1_store("xlock");
+        let held = crate::file_lock::FileLock::acquire(
+            &path.with_file_name("resources.json.lock"),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let worker_path = path.clone();
+        let worker = std::thread::spawn(move || {
+            mark_quota_exhausted_at(&worker_path, "pi", "zai", "a", Some("2099-01-01T00:00:00+08:00"))
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            find_model(&load(&path).unwrap(), "pi", "zai", "a").unwrap().quota_exhausted_until.is_none(),
+            "别的进程持锁时不写"
+        );
+        drop(held);
+        worker.join().unwrap().unwrap();
+        assert!(find_model(&load(&path).unwrap(), "pi", "zai", "a").unwrap().quota_exhausted_until.is_some());
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -5397,7 +5675,8 @@ exit 2
                 id: id.to_string(),
                 provider: provider.to_string(),
             };
-            smoke_one_in_place(&mut store, &key).expect("smoke_one_in_place");
+            let target = find_model(&store, "pi", provider, id).expect("model").clone();
+            apply_smoke_outcome(&mut store, &key, run_smoke(&target)).expect("apply_smoke_outcome");
             let model = find_model(&store, "pi", provider, id).expect("model");
             println!(
                 "smoke pi/{provider}/{id}: status={} smoke_model={} failure={}",
