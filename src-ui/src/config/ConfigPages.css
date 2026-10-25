@@ -1105,6 +1105,7 @@ button.card-toggle-inner:hover {
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
+  text-align: left;
 }
 
 .start-note {
@@ -1116,6 +1117,7 @@ button.card-toggle-inner:hover {
 
 .start-note-actions {
   display: flex;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 8px;
 }
