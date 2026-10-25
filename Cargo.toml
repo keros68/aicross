@@ -1,6 +1,6 @@
 [package]
 name = "aicross"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "多厂商 agent CLI 的桌面派发控制台"
 license = "AGPL-3.0-or-later"
