@@ -1,10 +1,5 @@
-// server.rs — 窗口外壳（TASK-40 下线其余界面后的最小形态）。
-//
-// 窗口只承载三样东西：自绘标题栏（最小化 / 最大化 / 关闭、拖动）与缩放边条、
-// 首页「最近的派发」、TASK-37 的查看页。其余旧界面（终端、文件树、控制台对话、
-// 对话图、编排、接入页、设置页）已删除，功能由命令行承接：
-// 派发 `aicross dispatch/status/adopt/cancel`，资源 `aicross resources`，
-// 配置 `aicross config`，查看 `aicross open`。
+// server.rs — 窗口：启动、窗口按钮，以及各页调用的命令。命令的实现体在
+// console_cli 与 run_view，与命令行共用。
 
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -16,29 +11,39 @@ pub struct AppState {
     pub pending_open: Mutex<Option<String>>,
 }
 
+/// 自绘标题栏的三个按钮。
 #[tauri::command]
-fn window_minimize(window: tauri::Window) {
-    let _ = window.minimize();
+fn window_action(app: tauri::AppHandle, window: tauri::Window, action: String) -> Result<(), String> {
+    let result = match action.as_str() {
+        "minimize" => window.minimize(),
+        "toggle-maximize" => match window.is_maximized() {
+            Ok(true) => window.unmaximize(),
+            _ => window.maximize(),
+        },
+        "close" => {
+            app.exit(0);
+            Ok(())
+        }
+        other => return Err(format!("未知的窗口操作：{other}")),
+    };
+    result.map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn window_maximize(window: tauri::Window) {
-    let is_max = window.is_maximized().unwrap_or(false);
-    if is_max { let _ = window.unmaximize(); } else { let _ = window.maximize(); }
-}
-
-#[tauri::command]
-fn window_close(app: tauri::AppHandle) {
-    app.exit(0);
-}
-
+/// 前端首帧画完后调用；窗口创建时是隐藏的，避免先露出空白窗口。
 #[tauri::command]
 fn show_main_window(app: tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
+    bring_main_window_to_front(&app);
+}
+
+fn bring_main_window_to_front<R: tauri::Runtime>(app: &impl Manager<R>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_minimized().unwrap_or(false) {
         let _ = window.unminimize();
-        let _ = window.set_focus();
     }
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 /// TASK-37：取走冷启动携带的查看页请求（`aicross open <run_id>` 的 run id），
@@ -481,51 +486,23 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
 pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
     let builder = tauri::Builder::default();
 
-    // Single-instance plugin MUST be the first plugin registered (per
-    // Tauri docs) so its argv-forwarding hook runs before any other
-    // plugin's init touches state. A second process forwards its argv to
-    // this callback and exits; the first process refocuses the window.
-    //
-    // Release-only: in debug builds we skip the lock so a dev `cargo tauri
-    // dev` window can run side-by-side with an installed production build.
-    // Both builds otherwise share the bundle identifier, and the lock
-    // would silently redirect the dev launch to the production process.
-    //
-    // `aicross open <run_id>` 的热启动转发：第二个进程已校验参数与 run
-    // 存在性，这里把 run id 发给前端切到查看页。事件带递增序号
-    // （fix-37-r1 R1-9）；emit 要求载荷 Clone——这段只在发布构建编译
-    // （R1-1：开发构建不编它，漏了 derive 会 `cargo check` 过、--release 失败）。
+    // 单实例只在发布构建启用，开发窗口可以与已安装的版本同时开。插件要求
+    // 第一个注册。第二个进程把命令行转给这里后退出：这里把已开的窗口带到
+    // 前台；命令行是 `open <run_id>` 时再发 `open-run-request` 让前端进查看页，
+    // seq 逐次加一，前端据此区分两次相同 run id 的请求。
     #[cfg(not(debug_assertions))]
-    // 热启动 open 事件的递增序号（fix-37-r1 R1-9）。
-    let open_request_seq = std::sync::atomic::AtomicU32::new(0);
-    #[cfg(not(debug_assertions))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
-        use tauri::Emitter;
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.unminimize();
-            let _ = w.show();
-            let _ = w.set_focus();
-        }
-        let open_seq = open_request_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        if let crate::run_view::OpenParse::Valid(run_id) = crate::run_view::parse_open_args(&args) {
-            #[derive(Clone, serde::Serialize)]
-            #[serde(rename_all = "camelCase")]
-            struct OpenRunRequest<'a> {
-                run_id: &'a str,
-                seq: u32,
+    let builder = {
+        let seq = std::sync::atomic::AtomicU32::new(0);
+        builder.plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
+            use tauri::Emitter;
+            bring_main_window_to_front(app);
+            let seq = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if let crate::run_view::OpenParse::Valid(run_id) = crate::run_view::parse_open_args(&args) {
+                let _ = app.emit("open-run-request", serde_json::json!({ "runId": run_id, "seq": seq }));
             }
-            let _ = app.emit(
-                "open-run-request",
-                OpenRunRequest {
-                    run_id: &run_id,
-                    seq: open_seq,
-                },
-            );
-        }
-    }));
+        }))
+    };
 
-    // TASK-50：选目录对话框，只在 Rust 侧调用（pick_folder 命令）。
-    // 注册在单实例插件之后：单实例必须第一个注册。
     let builder = builder.plugin(tauri_plugin_dialog::init());
 
     builder
@@ -533,9 +510,7 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
             pending_open: Mutex::new(pending_open),
         })
         .invoke_handler(tauri::generate_handler![
-            window_minimize,
-            window_maximize,
-            window_close,
+            window_action,
             show_main_window,
             take_pending_open,
             list_runs,
@@ -565,116 +540,69 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
             crate::run_view::adopt_run_node,
         ])
         .setup(|app| {
-            // ── Bulletproof window-reveal fallback ──────────────────
-            // The window is created with `visible: false` so the user
-            // never sees the platform's chrome flash — main.tsx
-            // invokes `show_main_window` after the first paint via
-            // double-RAF and the window appears already-themed.
-            //
-            // BUT: if the WebView never paints (Gatekeeper rejection
-            // on adhoc-signed macOS bundles, WebKit2GTK Wayland blank
-            // window on Ubuntu 24.04, or any JS error before
-            // ReactDOM mount), the `invoke` never fires and the
-            // window stays hidden forever. Force a reveal after 3s
-            // as a safety net. Healthy startups call show_main_window
-            // in ~50ms, well before this fires.
-            {
-                use tauri::Manager;
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                    if let Some(window) = handle.get_webview_window("main") {
-                        if !window.is_visible().unwrap_or(false) {
-                            eprintln!(
-                                "[main-window] frontend never called show_main_window after 3s — forcing reveal (likely WebView render failure)"
-                            );
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                });
-            }
-
-            // Force square corners + no shadow on the borderless window.
-            // Windows 11's DWM rounds borderless windows by default and adds
-            // a subtle drop-shadow; both create the visible "edge ring" we
-            // want gone for the flat look.
-            #[cfg(target_os = "windows")]
-            {
-                use tauri::Manager;
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_shadow(false);
-                    if let Ok(hwnd) = window.hwnd() {
-                        unsafe {
-                            use windows::Win32::Foundation::HWND;
-                            use windows::Win32::Graphics::Dwm::{
-                                DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
-                                DWMWCP_DONOTROUND,
-                            };
-                            let pref: i32 = DWMWCP_DONOTROUND.0;
-                            let _ = DwmSetWindowAttribute(
-                                HWND(hwnd.0 as *mut _),
-                                DWMWA_WINDOW_CORNER_PREFERENCE,
-                                &pref as *const _ as *const _,
-                                std::mem::size_of_val(&pref) as u32,
-                            );
-                        }
-                    }
+            // 前端出错画不出首帧时 show_main_window 不会被调用，3 秒后照样显示窗口。
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let hidden = handle
+                    .get_webview_window("main")
+                    .is_some_and(|window| !window.is_visible().unwrap_or(true));
+                if hidden {
+                    eprintln!("窗口 3 秒内未显示，前端可能加载失败，改为直接显示");
+                    bring_main_window_to_front(&handle);
                 }
-            }
+            });
 
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                square_corners(&window);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
-            // On macOS a reflexive Cmd+W / red traffic-light click should
-            // hide the main window instead of quitting the app (standard
-            // Mac convention). The app stays alive; clicking the Dock icon
-            // restores it via the Reopen event in `.run()` below.
-            // Cmd+Q still terminates normally because NSApplication
-            // terminate does not dispatch CloseRequested, so this prevent
-            // is never reached on a real quit.
+            // macOS 习惯：关窗只隐藏，程序留在 Dock；Cmd+Q 照常退出。
             #[cfg(target_os = "macos")]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
+                api.prevent_close();
+                let _ = window.hide();
             }
             #[cfg(not(target_os = "macos"))]
-            {
-                let _ = (window, event);
-            }
+            let _ = (window, event);
         })
         .build(tauri::generate_context!())
-        .map_err(|e| anyhow::anyhow!("Error while building tauri application: {}", e))?
-        .run(|app_handle, event| {
-            // ── macOS: restore the hidden main window on Dock click ──────
-            // Pairs with the CloseRequested handler in `.on_window_event`:
-            // Cmd+W hides the main window rather than quitting, so on
-            // applicationShouldHandleReopen (Dock icon click) we must bring
-            // it back ourselves - macOS does not auto-unhide a hidden window
-            // on reopen.
+        .map_err(|error| anyhow::anyhow!("窗口初始化失败：{error}"))?
+        .run(|app, event| match event {
+            // macOS 点 Dock 图标时把隐藏的窗口显示回来。
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = &event {
-                use tauri::Manager;
-                if let Some(w) = app_handle.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.unminimize();
-                    let _ = w.set_focus();
-                }
-            }
-
-            // 非 macOS 分支不用这个句柄；参数名保持 `app_handle`，因为
-            // 上面的 Reopen 分支只在 macOS 编译（fix-40-r1 R1-1）。
-            #[cfg(not(target_os = "macos"))]
-            let _ = &app_handle;
-
-            // ACP 池里可能还挂着引擎拉起的适配器子进程，退出时全部终止，
-            // 不留孤儿进程。
-            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            tauri::RunEvent::Reopen { .. } => bring_main_window_to_front(app),
+            // 退出时终止 ACP 池里引擎拉起的适配器子进程。
+            tauri::RunEvent::ExitRequested { .. } => {
+                let _ = app;
                 crate::channels::acp::shutdown_all();
             }
+            _ => {}
         });
 
     Ok(())
+}
+
+/// Windows 11 默认给无边框窗口加圆角和阴影，这里改成直角、去掉阴影。
+#[cfg(target_os = "windows")]
+fn square_corners(window: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND};
+
+    let _ = window.set_shadow(false);
+    let Ok(handle) = window.hwnd() else {
+        return;
+    };
+    let preference = DWMWCP_DONOTROUND;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            HWND(handle.0 as _),
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            std::ptr::addr_of!(preference).cast(),
+            std::mem::size_of_val(&preference) as u32,
+        );
+    }
 }

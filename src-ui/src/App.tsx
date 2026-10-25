@@ -10,8 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { commands, isTauri, type HostEntry } from './tauri';
 import { HostMenu } from './components/common/HostMenu';
 import { Icon } from './components/common/Icon';
-import { ResizeEdges } from './components/common/ResizeEdges';
-import { WindowControls } from './components/common/TitleBar';
+import { ResizeHandles, WindowButtons } from './components/common/WindowFrame';
 import { Home } from './viewer/Home';
 import { RunViewer } from './viewer/RunViewer';
 import { ModesPage } from './config/ModesPage';
@@ -174,7 +173,7 @@ export function App() {
           >
             <Icon name="refresh" />
           </button>
-          <WindowControls />
+          <WindowButtons />
         </div>
       </header>
       <main className="app-content">
@@ -262,7 +261,7 @@ export function App() {
           />
         )}
       </main>
-      <ResizeEdges />
+      <ResizeHandles />
     </>
   );
 }

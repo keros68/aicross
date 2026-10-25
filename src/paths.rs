@@ -1,8 +1,4 @@
-//! Shared filesystem path helpers.
-//!
-//! `home()` resolves the user's home directory. `aicross_root()` is the
-//! canonical root for data owned by this fork; callers must never fall back to
-//! Coffee CLI's `~/.coffee-cli/` tree.
+//! 路径工具：`home()` 取用户目录，`aicross_root()` 取 aicross 的数据目录。
 
 use std::path::{Path, PathBuf};
 

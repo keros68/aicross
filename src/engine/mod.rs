@@ -3112,16 +3112,7 @@ fn start_dispatch_with(
         return reject("项目目录不存在".into(), String::new());
     }
     let project = input.project.clone();
-    let mut git_dirty_count = move || {
-        match crate::git::git_changes(project.clone()) {
-            crate::git::GitChanges::Ok {
-                uncommitted,
-                untracked,
-                ..
-            } => Some(uncommitted.len() + untracked.len()),
-            _ => None,
-        }
-    };
+    let mut git_dirty_count = move || crate::dispatch::git_dirty_count(Path::new(&project));
     let mut ids = || Uuid::new_v4().to_string();
     let mut clock = Utc::now;
     let mut plan_input = PlanInput {

@@ -891,11 +891,22 @@ fn prepare_agent_detection(agent_id: &str) -> PreparedDetection {
     PreparedDetection::Plain(prepare_plain_detection(agent_id))
 }
 
+/// 手动 agent 的可执行文件：`~/.aicross/tools.json` 里该 agent 的 `command`
+/// 按空白切开后的第一段。文件或字段缺失时为 None。
+fn manual_agent_binary(agent_id: &str) -> Option<String> {
+    let path = crate::paths::aicross_root().ok()?.join("tools.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    first_command_token(&serde_json::from_str::<serde_json::Value>(&text).ok()?, agent_id)
+}
+
+fn first_command_token(tools: &serde_json::Value, agent_id: &str) -> Option<String> {
+    tools.get(agent_id)?.get("command")?.as_str()?.split_whitespace().next().map(str::to_string)
+}
+
 fn prepare_plain_detection(agent_id: &str) -> PreparedAgentDetection {
     // 手动 agent：二进制来自 tools.json 里的手动配置，没有事实源可读。
     if agent_id.starts_with("manual-") {
-        let entry = crate::tool_config::get(agent_id);
-        let (binary, _) = crate::tool_config::parse_command(&entry.command);
+        let binary = manual_agent_binary(agent_id);
         let resolved = binary.as_deref().and_then(resolve_cli);
         let (detected, version) = detect_version(resolved.as_ref());
         return PreparedAgentDetection {
@@ -3745,6 +3756,19 @@ exit 2
             pi_login_from_check(Ok(result(include_str!("../fixtures/resources/pi_auth_check_not_ready.json"), 1))),
             ResourceLogin::LoggedOut
         );
+    }
+
+    #[test]
+    fn manual_agent_binary_takes_first_word_of_command() {
+        let tools = serde_json::json!({
+            "manual-local": { "command": "  docker exec box claude " },
+            "manual-empty": { "command": "" },
+            "manual-none": {}
+        });
+        assert_eq!(first_command_token(&tools, "manual-local").as_deref(), Some("docker"));
+        assert_eq!(first_command_token(&tools, "manual-empty"), None);
+        assert_eq!(first_command_token(&tools, "manual-none"), None);
+        assert_eq!(first_command_token(&tools, "manual-missing"), None);
     }
 
     #[test]

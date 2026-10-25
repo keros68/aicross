@@ -4,29 +4,18 @@
 
 ## 项目是什么
 
-aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常用的宿主（Claude Code / Codex / Kimi Code / pi agent 等，装 ai-cross skill）里说话，模型提议派发、用户采纳；aicross 以命令行拉起各家 CLI、隔离盲审、核对真身、留痕，并在查看器里把各路结果并排交给用户裁决。现行产品说明在 `docs/PRODUCT.md`；08-30 至 09-30 的定案原文在 `docs/history/PRODUCT-0830-0930.md`，只作追溯。`docs/proto/index.html` 是 09-30 之前的界面原型，只作历史参考。
+aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常用的宿主（Claude Code / Codex / Kimi Code / pi agent 等，装 ai-cross skill）里说话，模型提议派发、用户采纳；aicross 以命令行拉起各家 CLI、隔离盲审、核对真身、留痕，并在查看器里把各路结果并排交给用户裁决。现行产品说明在 `docs/PRODUCT.md`；08-30 至 09-30 的定案原文在 `docs/history/PRODUCT-0830-0930.md`，只作追溯。`docs/history/proto/index.html` 是 09-30 之前的界面原型，只作历史参考。
 
 ## 技术栈
 
 - Tauri 2（Rust 后端）+ React 19 + TypeScript + Vite 前端。窗口是自绘标题栏加五页：开始、资源、skill、模式、派发记录（含查看页）；终端、PTY、xterm 已随 TASK-40 下线。
-- 目录（fork 之后）：`src/`（Rust，`Cargo.toml` 在根目录）、`src-ui/`（前端）、`tasks/`（任务书与完成报告）、`docs/`、`port/`（第 0/1 期的旧代码，不参与编译，第 3 期并回）。
+- 目录：`src/`（Rust，`Cargo.toml` 在根目录）、`src-ui/`（前端）、`skills/ai-cross/`（ai-cross skill 源码）、`skill-bundle/`（由 `scripts/sync-skill.py` 从 `skills/ai-cross` 生成、编进可执行文件的内置包）、`windows/`（安装器的 PATH 处理）、`tasks/`（任务书与完成报告）、`docs/`。
 - Windows 优先（开发机是 Windows 11），macOS/Linux 不能破坏但不强求验证。
-- 现有 Python 脚本（`D:\work\skill\xiaoyu-skill\skills\ai-cross\references\cc_switch.py` / `verify_model.py` / `usage_probe.py`）当子进程调用，不重写。
+- 现有 Python 脚本（`skills/ai-cross/references/cc_switch.py` / `verify_model.py` / `usage_probe.py`）当子进程调用，不重写。
 
-## 与 coffeecli 的关系（必须遵守）
+## 许可与来源
 
-**2026-08-31 推翻原规则：本仓库现在是 Coffee CLI 的 fork。** 原来写的「不得复制它的任何文件或函数，每个文件都自己写」已作废，别再照它办事。
-
-上游是 `D:\work\coffeecli`（github.com/edison7009/Coffee-CLI，AGPL-3.0）。桌面外壳（自绘标题栏、无边框窗口、单实例转发）来自上游代码；上游的终端、工作区、会话与修改记录已随 TASK-40 下线。
-
-按上游 `TRADEMARKS.md` 的方案 B（完全重新品牌化）执行，四条义务：
-
-1. **保留 AGPL-3.0**（`LICENSE` 与上游同一份）。
-2. **保留 `NOTICE` 与 `TRADEMARKS.md` 原貌**——`NOTICE` 里上游那段是逐字复制的，不许改、不许删；aicross 自己的说明加在它前面。
-3. **改名换标**：产品名 aicross，图标换掉。`Coffee CLI` / `Gambit` / `Pitch` / `VibeID` / `Vibetype` / `Hyper-Agent` / `Sentinel Protocol` / `哨兵协议` 都是上游主张的商标，**不在 AGPL 授权范围内**，界面与文档里不得用它们当本产品的名字。
-4. **不冒充原创**：不删任何版权头，不声称上游代码是自己写的。`README.md` 显著位置写明 fork 自 Coffee CLI。
-
-上游代码里的既有毛病可以顺手记到 `docs/coffeecli-notes.md`，也可以直接改——这是我们自己的分支。
+MIT（`LICENSE`）。仓库代码均为本项目自写；10-25（TASK-64）起不含 Coffee CLI 的代码，`D:\work\coffeecli` 只作历史参考，不从中复制文件或函数。早期提交里有它的代码（AGPL-3.0），只存在于历史中。
 
 ## 纪律
 

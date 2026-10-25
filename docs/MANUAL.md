@@ -8,7 +8,7 @@ aicross 时，ai-cross skill（1.23.0 起）按窗口里设的默认模式与人
 
 ## 安装
 
-Windows 用 `aicross_0.1.2_x64-setup.exe` 或 `aicross_0.1.2_x64_zh-CN.msi`，
+Windows 用 `aicross_0.2.0_x64-setup.exe` 或 `aicross_0.2.0_x64_zh-CN.msi`，
 两个装的是同一个程序，装一个就行。运行需要 WebView2，缺失时安装器会补装。
 安装包把安装目录加入当前用户 PATH，卸载时只删除这一项。程序数据都在
 `~/.aicross/`（资源库、预设、图、run 摘要、配置），卸载不删。设了环境变量

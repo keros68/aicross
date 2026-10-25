@@ -3,60 +3,38 @@
 /* 字体：界面用 IBM Plex Sans（随系统安装提供），中文回退到各系统自带字体；
    等宽用 IBM Plex Mono，回退 Cascadia / 系统等宽。安装包不再带字体文件。 */
 
-/* ─── Base Reset ─────────────────────────────────────── */
-*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-
-/* 指针：其余（含顶栏可拖动的空白）为箭头；能点的为手形；文字输入为 I 形；
-   禁用的为禁止。窗口按钮沿用系统窗口的箭头（见 .titlebar-btn）。 */
-body {
-    cursor: default;
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
 }
 
-button,
-[role='button'],
-a[href],
-select,
-summary,
-.home-table tbody tr {
-    cursor: pointer;
-}
+/* 指针：默认箭头（含顶栏可拖动的空白）；可点的手形；文字输入 I 形；禁用的禁止。
+   窗口按钮用箭头，与系统窗口一致（见 .window-button）。 */
+body { cursor: default; }
 
-input:not([type='checkbox']):not([type='radio']):not([type='button']):not([type='submit']):not([type='range']):not([type='color']):not([type='file']),
+button, [role='button'], a[href], select, summary, .home-table tbody tr { cursor: pointer; }
+
 textarea,
 [contenteditable='true'],
-[contenteditable='']
-{
+[contenteditable=''],
+input:is([type='text'], [type='search'], [type='number'], [type='email'], [type='url'], [type='password'], :not([type])) {
     cursor: text;
 }
 
-button:disabled,
-select:disabled,
-input:disabled,
-textarea:disabled,
+:is(button, select, input, textarea):disabled,
 [aria-disabled='true'] {
     cursor: not-allowed;
 }
 
-/* ─── Scrollbars: completely hidden, app-wide ──────────
-   WebView2 会随机漏出原生 Windows 11 滚动条；全局隐藏，滚动靠滚轮 /
-   触控板 / PageUp+PageDown。 */
-*::-webkit-scrollbar {
-    display: none !important;
-    width: 0 !important;
-    height: 0 !important;
-}
-* {
-    scrollbar-width: none !important; /* Firefox */
-    -ms-overflow-style: none !important; /* legacy Edge / IE11 */
-}
+/* WebView2 偶尔露出 Windows 11 原生滚动条，全局隐藏；滚动用滚轮、触控板或翻页键。 */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; }
 
 :root {
-    /* Local-first Sans stack with system fallbacks for every UI language. */
-    --font: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
-        'PingFang SC', 'PingFang TC', 'Hiragino Sans', 'Hiragino Sans GB', 'Apple SD Gothic Neo',
-        'Microsoft YaHei', 'Microsoft JhengHei', 'Yu Gothic UI', 'Malgun Gothic',
-        Helvetica, Arial, sans-serif,
-        'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+    /* 英文用 IBM Plex Sans，中文依次回退 Windows、macOS 自带字体。 */
+    --font: "IBM Plex Sans", system-ui, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+        "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif;
     --font-sans: var(--font);
     --mono: "IBM Plex Mono", ui-monospace, 'Cascadia Code', 'Cascadia Mono', 'SF Mono', Menlo, Monaco, Consolas, monospace;
     --font-mono: var(--mono);
@@ -175,12 +153,6 @@ body {
 #root {
     display: flex;
     flex-direction: column;
-}
-
-/* macOS：原生窗口装饰接管四角，去掉自绘圆角裁切。 */
-html.is-macos #root {
-    border-radius: 0 !important;
-    clip-path: none !important;
 }
 
 .icon {
@@ -919,36 +891,45 @@ html.is-macos .topbar {
     font-family: var(--font-mono);
 }
 
-/* ─── 窗口按钮（在顶栏右上） ────────────────────────── */
-.titlebar-controls {
+/* ─── 窗口按钮（顶栏右上）与缩放手柄 ─── */
+.window-buttons {
     display: flex;
-    align-items: center;
-    gap: 2px;
-    height: 32px;
     flex-shrink: 0;
+    gap: 2px;
 }
 
-.titlebar-btn {
-    display: inline-flex;
-    justify-content: center;
-    align-items: center;
+.window-button {
+    display: grid;
+    place-items: center;
     width: 40px;
     height: 32px;
-    background: transparent;
-    border: none;
+    border: 0;
     border-radius: var(--radius-sm);
+    background: none;
     color: var(--text-2);
     cursor: default;
-    transition: background 0.1s, color 0.1s;
     outline: none;
 }
 
-.titlebar-btn:hover {
+.window-button:hover {
     background: var(--bg-control);
     color: var(--text-1);
 }
 
-.titlebar-btn.close:hover {
+.window-button-close:hover {
     background: var(--close-bg);
     color: var(--close-fg);
+}
+
+/* 手柄层盖满窗口但不接收点击，只有手柄本身接收；层级低于弹层。 */
+.resize-handles {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    pointer-events: none;
+}
+
+.resize-handle {
+    position: absolute;
+    pointer-events: auto;
 }

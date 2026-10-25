@@ -27,5 +27,5 @@ export async function onWindowDragMouseDown(e: React.MouseEvent<HTMLElement>): P
 
 export function onWindowDragDoubleClick(e: React.MouseEvent<HTMLElement>): void {
   if (!startsWindowDrag(e.target as Element)) return;
-  if (isTauri) commands.windowMaximize().catch(() => {});
+  if (isTauri) commands.windowAction('toggle-maximize').catch(() => {});
 }

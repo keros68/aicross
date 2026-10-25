@@ -1,54 +1,35 @@
-// main.tsx — Entry point
-
-import React from 'react';
-import ReactDOM from 'react-dom/client';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { invoke } from './tauri';
-import { IS_MACOS } from './lib/platform';
+import { IS_MACOS } from './lib/os';
 import { followSystemTheme } from './lib/theme';
 import './styles/global.css';
 
-// macOS uses native window decorations + traffic lights (titleBarStyle:
-// "Overlay" in tauri.macos.conf.json). Tag <html> before first paint so the
-// titlebar renders without our custom min/max/close and the #root corner clip
-// is dropped — the OS owns the corners there. Win/Linux keep the frameless
-// shell with custom controls on the right.
+// macOS 由系统画窗口按钮与圆角，样式里按这个类名让位。
 if (IS_MACOS) document.documentElement.classList.add('is-macos');
 
-// 浅色 / 深色跟随系统设置，窗口开着时切换系统配色也会实时跟上。
 followSystemTheme();
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
     <App />
-  </React.StrictMode>
+  </StrictMode>,
 );
 
-// Window starts with `visible: false` (see tauri.conf.json) to hide the
-// Windows-default chrome flash. Reveal it only after the first paint so
-// the first frame the user sees is the final themed UI. Rust 侧另有 3 秒
-// 兜底：前端起不来时强制显示窗口（server.rs setup）。
-requestAnimationFrame(() => {
-  requestAnimationFrame(() => {
-    invoke('show_main_window').catch(() => {});
-  });
-});
+// 窗口创建时隐藏，等第一帧画完再显示，避免先看到空白窗口。
+// 前端加载失败时 Rust 侧 3 秒后照样显示。
+requestAnimationFrame(() => requestAnimationFrame(() => {
+  invoke('show_main_window').catch(() => {});
+}));
 
-// Suppress the WebView's built-in context menu (Back / Reload / Save As /
-// Print / Inspect…). In `npm run dev` we leave it alone so the native
-// context menu can reach "Inspect Element".
+// 安装版不弹浏览器右键菜单，也不让 F12 等快捷键打开开发者工具；开发时照常。
 if (!import.meta.env.DEV) {
-  window.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-  });
-
-  // Production: block F12 / Ctrl+Shift+I / Ctrl+Shift+J / Ctrl+Shift+C to
-  // prevent users from opening the WebView devtools on a shipped build.
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'F12') { e.preventDefault(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
-      const k = e.key.toUpperCase();
-      if (k === 'I' || k === 'J' || k === 'C') { e.preventDefault(); }
-    }
+  const devtoolKeys = new Set(['I', 'J', 'C']);
+  window.addEventListener('contextmenu', (event) => event.preventDefault());
+  window.addEventListener('keydown', (event) => {
+    const devtools = event.key === 'F12'
+      || ((event.ctrlKey || event.metaKey) && event.shiftKey && devtoolKeys.has(event.key.toUpperCase()));
+    if (devtools) event.preventDefault();
   });
 }

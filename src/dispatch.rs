@@ -451,6 +451,22 @@ fn existing_project_files(root: &Path) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
+/// 项目里未提交的改动与未跟踪文件共几处（每个文件算一处）。不是 git 仓库、
+/// 没装 git 或命令失败时为 None。
+pub(crate) fn git_dirty_count(project: &Path) -> Option<usize> {
+    let result = git_result_with_timeout(
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+        project,
+        None,
+        Duration::from_secs(30),
+    )
+    .ok()?;
+    if !process_succeeded(&result) {
+        return None;
+    }
+    Some(result.stdout.lines().filter(|line| !line.trim().is_empty()).count())
+}
+
 fn git_result(
     args: &[&str],
     cwd: &Path,
@@ -3986,14 +4002,7 @@ fn request_commit_header(
     };
     let mut lines: Vec<String> = Vec::new();
     if let Some(sha) = short_head(project) {
-        let dirty = match crate::git::git_changes(project.to_string_lossy().into_owned()) {
-            crate::git::GitChanges::Ok {
-                uncommitted,
-                untracked,
-                ..
-            } => !uncommitted.is_empty() || !untracked.is_empty(),
-            _ => false,
-        };
+        let dirty = git_dirty_count(project).is_some_and(|count| count > 0);
         lines.push(if dirty {
             format!("项目提交：{sha}（含未提交改动）")
         } else {

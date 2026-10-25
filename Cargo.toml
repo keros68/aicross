@@ -1,11 +1,11 @@
 [package]
 name = "aicross"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
-description = "多厂商 agent CLI 的桌面派发控制台"
-license = "AGPL-3.0-or-later"
+description = "ai-cross skill 的桌面面板与多厂商 agent 派发引擎"
+license = "MIT"
 repository = "https://github.com/keros68/aicross"
-keywords = ["ai", "prompt", "coding", "llm", "tree-sitter"]
+keywords = ["ai", "agent", "llm", "code-review"]
 categories = ["command-line-utilities", "development-tools"]
 build = "build.rs"
 
@@ -20,14 +20,9 @@ tauri-build = { version = "2", features = [] }
 # Regex（dispatch / channels / resources 的文本判定与脱敏）
 regex = "1"
 
-# Tauri
-# `devtools` feature dropped: it only enables WebView devtools in *release*
-# builds, and our shipped UI explicitly blocks F12 / Ctrl+Shift+I and the
-# context menu (see src-ui/src/main.tsx). Dev builds get devtools
-# automatically without the feature flag.
+# 不开 devtools 特性：安装版不提供开发者工具，开发构建自带。
 tauri = { version = "2", features = [] }
 
-# Utilities
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Graph.nodes 用 IndexMap 保持插入序，与前端 JS 对象的键序语义一致
@@ -37,7 +32,7 @@ serde_yaml = "0.9"
 # TASK-50：skill 内置包（skill-bundle/ai-cross）编进可执行文件；体积影响见
 # tasks/REPORT-50.md。
 include_dir = "0.7"
-# TOML parsing for the kimi resource fact source (~/.kimi-code/config.toml [models])
+# 读 kimi 的模型清单（~/.kimi-code/config.toml 的 [models]）
 toml = "0.9"
 anyhow = "1"
 chrono = { version = "0.4", features = ["clock"] }
@@ -54,40 +49,20 @@ serde_json = { version = "1", features = ["preserve_order"] }
 opt-level = "z"
 lto = true
 strip = true
-# Drop unwinding tables. Panics terminate the process directly — fine for
-# a desktop app where panics are bugs anyway, and Tauri's command boundary
-# catches plugin errors via Result<_, _> rather than catch_unwind.
+# panic 直接结束进程，不带展开表，减小体积；命令错误一律走 Result。
 panic = "abort"
 codegen-units = 1
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-global-shortcut = "2"
-# Prevents two Coffee CLI processes from running side-by-side. Without this,
-# launching twice spawns two WebView2 instances that fight over the OS IME
-# context, parking the candidate popup at primary-monitor (0,0). The plugin
-# detects an existing instance, forwards the activation, and exits the
-# duplicate. Multi-window users still get there via the existing tab-detach
-# path (same process, no IME conflict).
+# 同一时间只开一个窗口：再次启动时把已开的窗口带到前台，并转发 `aicross open <run_id>`。
 tauri-plugin-single-instance = "2"
 # TASK-50：窗口「选目录」对话框，只在 Rust 侧调用（pick_folder 命令），
 # 前端不装 npm 包。
 tauri-plugin-dialog = "2"
 
-# Win32 bindings:
-#   - DWM: force square window corners on Windows 11 (otherwise rounds
-#     borderless windows by default).
-#   - System_Console: AttachConsole for the `mcp-status` CLI subcommand
-#     so its stdout reaches the parent terminal in release builds
-#     (which link with windows_subsystem = "windows").
-#   - System_Threading: process-liveness probe for the manifest reader,
-#     plus OpenProcess for Job Object assignment.
-#   - System_JobObjects: bind every PTY child (claude/codex/etc.) to a
-#     kill-on-close job so orphan `claude.exe` / `node.exe` can't outlive
-#     a closed Coffee CLI and lock `~/.claude/` session files.
-#   - System_Registry: read the real PATH (HKCU+HKLM) so a GUI-launched
-#     process finds CLIs installed via scoop/volta/nvm/mise/native-
-#     installer etc. — replaces the old 5-dir hardcoded PATH repair
-#     (src/windows_path.rs).
+# Windows 接口：Dwm 设窗口直角；Console 让命令行子命令输出到父终端；
+# Threading 与 JobObjects 查进程存活、把派发拉起的子进程绑到随引擎退出的作业；
+# Registry 启动时从注册表补齐 PATH（src/startup_env.rs）。
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -100,6 +75,6 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
 ] }
 
-# `libc::kill(pid, 0)` for process-liveness probe in cli::mcp_status.
+# 进程存活检查与结束子进程（libc::kill）。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

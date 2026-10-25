@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="100%" height="100%">
   <style>
-    /* currentColor follows the launchpad text color so the monochrome
-       Pi mark stays visible across light and dark Coffee CLI themes. */
+    /* 单色 currentColor，随浅色、深色配色变化。 */
     .logo-mark { fill: currentColor; }
   </style>
   <!-- P shape: outer boundary clockwise, inner hole counter-clockwise -->

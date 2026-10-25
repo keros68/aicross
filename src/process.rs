@@ -17,79 +17,62 @@ mod windows_job {
     use std::sync::OnceLock;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-    };
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
 
-    // Win32 HANDLE is a raw pointer wrapper; not Send/Sync by default. The
-    // Job Object handle is a kernel handle, safe to use from any thread —
-    // the OS owns serialization. Wrap it so OnceLock can hold it.
-    struct JobHandle(HANDLE);
-    unsafe impl Send for JobHandle {}
-    unsafe impl Sync for JobHandle {}
+    /// 整个进程共用一个 job，第一次用到时创建，句柄到进程结束才由系统关闭。
+    /// 句柄本身可跨线程使用，包一层让它能放进 static。
+    struct SharedJob(HANDLE);
+    unsafe impl Send for SharedJob {}
+    unsafe impl Sync for SharedJob {}
 
-    static JOB: OnceLock<Option<JobHandle>> = OnceLock::new();
-
-    fn get_or_create_job() -> Option<HANDLE> {
-        JOB.get_or_init(|| unsafe {
-            let job = match CreateJobObjectW(None, None) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("[process] CreateJobObjectW failed: {:?}", e);
-                    return None;
-                }
-            };
-            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            let info_ptr = &info as *const _ as *const _;
-            let info_size =
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
-            if let Err(e) = SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                info_ptr,
-                info_size,
-            ) {
-                eprintln!("[process] SetInformationJobObject failed: {:?}", e);
-                let _ = CloseHandle(job);
-                return None;
-            }
-            Some(JobHandle(job))
-        })
-        .as_ref()
-        .map(|h| h.0)
+    fn shared_job() -> Option<HANDLE> {
+        static SHARED: OnceLock<Option<SharedJob>> = OnceLock::new();
+        SHARED.get_or_init(create_kill_on_close_job).as_ref().map(|job| job.0)
     }
 
-    pub fn assign_pid(pid: u32) {
-        let Some(job) = get_or_create_job() else { return };
-        unsafe {
-            let proc = match OpenProcess(
-                PROCESS_SET_QUOTA | PROCESS_TERMINATE,
-                false,
-                pid,
-            ) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!(
-                        "[process] OpenProcess(pid={}) failed: {:?}",
-                        pid, e
-                    );
-                    return;
-                }
-            };
-            if let Err(e) = AssignProcessToJobObject(job, proc) {
-                // Nested-job conflicts can fail here on older Windows; not
-                // fatal — the kill-on-close job still covers normal shutdowns.
-                eprintln!(
-                    "[process] AssignProcessToJobObject(pid={}) failed: {:?}",
-                    pid, e
-                );
+    fn create_kill_on_close_job() -> Option<SharedJob> {
+        let job = unsafe { CreateJobObjectW(None, None) }
+            .map_err(|error| eprintln!("创建 Job Object 失败：{error}"))
+            .ok()?;
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let set = unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        };
+        if let Err(error) = set {
+            eprintln!("设置 Job Object 失败：{error}");
+            unsafe {
+                let _ = CloseHandle(job);
             }
-            let _ = CloseHandle(proc);
+            return None;
+        }
+        Some(SharedJob(job))
+    }
+
+    /// 绑定失败（如老系统上已在别的 job 里）只记一行，不影响派发；正常退出时
+    /// 引擎仍会自己结束子进程。
+    pub fn assign_pid(pid: u32) {
+        let Some(job) = shared_job() else { return };
+        let process = match unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid) } {
+            Ok(process) => process,
+            Err(error) => {
+                eprintln!("打开子进程 {pid} 失败：{error}");
+                return;
+            }
+        };
+        if let Err(error) = unsafe { AssignProcessToJobObject(job, process) } {
+            eprintln!("子进程 {pid} 绑定 Job Object 失败：{error}");
+        }
+        unsafe {
+            let _ = CloseHandle(process);
         }
     }
 
@@ -101,7 +84,7 @@ mod windows_job {
         use windows::Win32::System::Threading::{
             OpenProcess, PROCESS_QUERY_INFORMATION,
         };
-        let Some(job) = get_or_create_job() else { return false };
+        let Some(job) = shared_job() else { return false };
         unsafe {
             let proc = match OpenProcess(PROCESS_QUERY_INFORMATION, false, pid) {
                 Ok(h) => h,
