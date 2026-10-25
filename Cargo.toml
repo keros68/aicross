@@ -1,6 +1,6 @@
 [package]
 name = "aicross"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "ai-cross skill 的桌面面板与多厂商 agent 派发引擎"
 license = "MIT"
@@ -56,6 +56,8 @@ codegen-units = 1
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # 同一时间只开一个窗口：再次启动时把已开的窗口带到前台，并转发 `aicross open <run_id>`。
 tauri-plugin-single-instance = "2"
+# 软件自动更新：查 GitHub Release 的 latest.json，下载安装包、校验签名后安装并重启。
+tauri-plugin-updater = "2"
 # TASK-50：窗口「选目录」对话框，只在 Rust 侧调用（pick_folder 命令），
 # 前端不装 npm 包。
 tauri-plugin-dialog = "2"

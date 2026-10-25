@@ -477,6 +477,62 @@ async fn skill_change(
     })?
 }
 
+/// 有新版本时的说明；没有新版本时 `app_update_check` 返回 null。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdate {
+    version: String,
+    current: String,
+    notes: String,
+}
+
+/// 查 GitHub Release 上的最新版本（latest.json）。网络不通等错误原样返回，
+/// 前端不打扰用户。
+#[tauri::command]
+async fn app_update_check(app: tauri::AppHandle) -> Result<Option<AppUpdate>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app
+        .updater()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| format!("检查更新失败：{error}"))?;
+    Ok(update.map(|update| AppUpdate {
+        version: update.version.clone(),
+        current: update.current_version.clone(),
+        notes: update.body.clone().unwrap_or_default(),
+    }))
+}
+
+/// 下载新版本、校验签名后安装。下载进度经 `app-update-progress` 事件发出
+/// （downloaded / total 字节，total 未知时为 null）。Windows 上安装包启动后
+/// 本进程随即退出，装完由安装包重新打开；其它平台装完后重启。
+#[tauri::command]
+async fn app_update_install(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Emitter;
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app
+        .updater()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| format!("检查更新失败：{error}"))?
+        .ok_or_else(|| "已是最新版本".to_string())?;
+    let mut downloaded: u64 = 0;
+    let progress = app.clone();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded += chunk as u64;
+                let _ = progress.emit("app-update-progress", serde_json::json!({ "downloaded": downloaded, "total": total }));
+            },
+            || {},
+        )
+        .await
+        .map_err(|error| format!("更新失败：{error}"))?;
+    app.restart();
+}
+
 /// 弹出系统选目录对话框（TASK-51 的项目范围安装用）；取消返回 null。
 /// 只在 Rust 侧调用（tauri-plugin-dialog），前端不装 npm 包。对话框在
 /// 阻塞线程上弹出，不占窗口主线程。
@@ -514,7 +570,9 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
         }))
     };
 
-    let builder = builder.plugin(tauri_plugin_dialog::init());
+    let builder = builder
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build());
 
     builder
         .manage(AppState {
@@ -548,6 +606,8 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
             skill_upgrade,
             skill_uninstall,
             pick_folder,
+            app_update_check,
+            app_update_install,
             crate::run_view::load_run_view,
             crate::run_view::adopt_run_node,
         ])

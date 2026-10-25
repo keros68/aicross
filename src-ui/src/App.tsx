@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { commands, isTauri, type HostEntry } from './tauri';
+import { AppUpdateButton } from './components/common/AppUpdate';
 import { HostMenu } from './components/common/HostMenu';
 import { Icon } from './components/common/Icon';
 import { ResizeHandles, WindowButtons } from './components/common/WindowFrame';
@@ -172,6 +173,7 @@ export function App() {
           ))}
         </nav>
         <div className="topbar-right">
+          <AppUpdateButton />
           {refreshNote !== '' && (
             <span className={`topbar-refresh-note${refreshNote === 'fail' ? ' alert' : ''}`} role="status">
               {refreshNote === 'ok' ? '已刷新' : '刷新失败'}

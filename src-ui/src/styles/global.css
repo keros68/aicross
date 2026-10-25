@@ -933,3 +933,18 @@ html.is-macos .topbar {
     position: absolute;
     pointer-events: auto;
 }
+
+/* 顶栏「更新到 X」：比主按钮矮一档，与刷新按钮同高。 */
+.topbar-update {
+    height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
+}
+
+.update-notes {
+    margin-top: 8px;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    color: var(--text-2);
+}

@@ -1,15 +1,20 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "aicross",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "com.aicross.desktop",
   "build": {
     "frontendDist": "./src-ui/dist",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": { "script": "npm run build", "cwd": "./src-ui" },
-    "beforeDevCommand": { "script": "npm run dev", "cwd": "./src-ui" }
+    "beforeBuildCommand": {
+      "script": "npm run build",
+      "cwd": "./src-ui"
+    },
+    "beforeDevCommand": {
+      "script": "npm run dev",
+      "cwd": "./src-ui"
+    }
   },
-
   "app": {
     "windows": [
       {
@@ -38,7 +43,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm", "dmg", "app", "msi", "nsis"],
+    "targets": [
+      "deb",
+      "rpm",
+      "dmg",
+      "app",
+      "msi",
+      "nsis"
+    ],
     "publisher": "aicross",
     "resources": [],
     "icon": [
@@ -53,14 +65,32 @@
     ],
     "windows": {
       "wix": {
-        "fragmentPaths": ["./windows/fragments/path.wxs"],
-        "componentRefs": ["AicrossConsolePath"],
+        "fragmentPaths": [
+          "./windows/fragments/path.wxs"
+        ],
+        "componentRefs": [
+          "AicrossConsolePath"
+        ],
         "language": "zh-CN"
       },
       "nsis": {
         "installerHooks": "./windows/nsis-hooks.nsh",
         "installerIcon": "icons/icon.ico",
-        "languages": ["SimpChinese"]
+        "languages": [
+          "SimpChinese"
+        ]
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUzNzY4RkU3MDQxNkU1MzQKUldRMDVSWUU1NDkyVThabUpEYTNHWTV3NnFGMkhPbDNWVzFobERZb21rTitWUzdsSDBjQ1BjSC8K",
+      "endpoints": [
+        "https://github.com/keros68/aicross/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

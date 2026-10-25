@@ -19,8 +19,16 @@ export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<
 
 export type WindowAction = 'minimize' | 'toggle-maximize' | 'close';
 
+export interface AppUpdateInfo {
+  version: string;
+  current: string;
+  notes: string;
+}
+
 export const commands = {
   windowAction: (action: WindowAction) => invoke<void>('window_action', { action }),
+  appUpdateCheck: () => invoke<AppUpdateInfo | null>('app_update_check'),
+  appUpdateInstall: () => invoke<void>('app_update_install'),
 
   // TASK-37 查看器：冷启动时 `aicross open <run_id>` 随 argv 带进来的 run id，
   // 挂载后取一次；热启动走 'open-run-request' 事件。
