@@ -9,6 +9,7 @@ import { needsFirstDetect } from './config-view';
 import { canUpgradeHere, findHostStatus, managerText, outdatedText, recommendNotes, staleExternal } from './skill-view';
 import {
   foundAgents,
+  hostOnlyNames,
   invokeText,
   needsSkillInstall,
   reviewMode,
@@ -101,6 +102,7 @@ export function StartPage({
   const resources = snapshot?.resources ?? null;
   const detected = resources !== null && !needsFirstDetect(resources);
   const found = foundAgents(resources);
+  const hostOnly = hostOnlyNames(hosts, found.names);
   const bundled = skill?.bundledVersion ?? '';
   const skillHost = findHostStatus(skill, hostId);
   const modes = snapshot?.config.modes ?? [];
@@ -217,8 +219,9 @@ export function StartPage({
             <div className="start-head-text">
               <div className="card-title">本机的 AI</div>
               {detected && (
-                <div className="card-sub">
-                  {found.names.length === 0 ? '没有找到' : `${found.names.join('、')} · 可用模型 ${found.models} 个`}
+                <div className="card-sub start-found">
+                  {found.names.length === 0 ? '没有找到能派发的 agent' : `能派发：${found.names.join('、')} · 可用模型 ${found.models} 个`}
+                  {hostOnly.length > 0 && <div>也可在这些软件里用：{hostOnly.join('、')}</div>}
                 </div>
               )}
             </div>

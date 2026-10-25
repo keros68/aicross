@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   foundAgents,
+  hostOnlyNames,
   invokeText,
   needsSkillInstall,
   reviewMode,
@@ -180,5 +181,13 @@ describe('缺人提示', () => {
 
   it('同一个模式出现两次只算一次；没有说明时原因为空', () => {
     expect(setupHint([emptyBlind, emptyBlind], [])).toEqual({ missing: 2, reasons: [], unverified: 0 });
+  });
+});
+
+describe('只能当主 agent 的软件', () => {
+  it('主 agent 里不在派发清单的单独列出', () => {
+    const hosts = [{ name: 'Claude Code' }, { name: 'WorkBuddy' }, { name: 'OpenCode' }];
+    expect(hostOnlyNames(hosts, ['Claude Code', 'Codex'])).toEqual(['WorkBuddy', 'OpenCode']);
+    expect(hostOnlyNames(null, [])).toEqual([]);
   });
 });

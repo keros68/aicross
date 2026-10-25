@@ -13,6 +13,11 @@ export function foundAgents(resources: ResourcesOutput | null | undefined): { na
   return { names: agents.map((agent) => agent.name), models };
 }
 
+/** 只能当主 agent、不在派发清单里的软件（WorkBuddy、OpenCode 等）的名称。 */
+export function hostOnlyNames(hosts: Array<{ name: string }> | null | undefined, dispatchNames: string[]): string[] {
+  return (hosts ?? []).map((host) => host.name).filter((name) => !dispatchNames.includes(name));
+}
+
 const REVIEW_KINDS = new Set(['blind', 'jury']);
 const WORK_KINDS = new Set(['shared', 'economy', 'arena', 'swarm']);
 
