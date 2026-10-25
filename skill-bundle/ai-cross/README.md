@@ -51,12 +51,12 @@
 
 ## 安装
 
-任选一种，同一台电脑只装一份。
+任选一种，同一台电脑只装一份。装了 [aicross 桌面面板](https://github.com/keros68/aicross/releases) 的，在面板「开始」页点「一键配好」即可装好本 skill。之前从 `keros68/xiaoyu-skill` 装的，先 `npx skills remove ai-cross -g` 再按下面重装。
 
 **skills.sh（推荐，需要 Node.js）**
 
 ```bash
-npx skills add keros68/xiaoyu-skill --skill ai-cross -g
+npx skills add keros68/aicross --skill ai-cross -g
 ```
 
 用 `-a claude-code -a codex -a kimi-code-cli -a pi` 指定 Agent；更新用 `npx skills update -g`。
@@ -64,8 +64,8 @@ npx skills add keros68/xiaoyu-skill --skill ai-cross -g
 **交给 Agent 安装**：把下面这段发给正在用的 Agent：
 
 ```text
-用 skills.sh 安装 keros68/xiaoyu-skill 里的 ai-cross：运行
-npx skills add keros68/xiaoyu-skill --skill ai-cross -g -a <你自己对应的 agent 名，如 claude-code、codex、kimi-code-cli、pi>
+用 skills.sh 安装 keros68/aicross 里的 ai-cross：运行
+npx skills add keros68/aicross --skill ai-cross -g -a <你自己对应的 agent 名，如 claude-code、codex、kimi-code-cli、pi>
 不要手动复制文件。如果你是 Claude Code，再把装好的 ai-cross/agents/ 下的 *.md 复制到 ~/.claude/agents/。
 装完提醒我新开会话，然后说"使用 ai-cross 盘点模型"。
 ```
@@ -73,8 +73,8 @@ npx skills add keros68/xiaoyu-skill --skill ai-cross -g -a <你自己对应的 a
 **克隆后复制**（以 Claude Code 为例）
 
 ```bash
-git clone https://github.com/keros68/xiaoyu-skill.git ~/xiaoyu-skill
-cp -R ~/xiaoyu-skill/skills/ai-cross ~/.claude/skills/ai-cross
+git clone https://github.com/keros68/aicross.git ~/aicross
+cp -R ~/aicross/skills/ai-cross ~/.claude/skills/ai-cross
 ```
 
 Claude Code 的内部 subagent 分层需另把 `agents/*.md` 复制到 `~/.claude/agents/`，skills.sh 不会自动复制。装完新开会话。其他宿主放入各自的 skills 目录（Qoder 见 `qoder/HOWTO.md`）；不支持 skill loader 的把 `SKILL.md` 作项目规则使用。
@@ -124,7 +124,7 @@ Claude Code 的内部 subagent 分层需另把 `agents/*.md` 复制到 `~/.claud
 
 ## Attribution and Redistribution
 
-This is the ai-cross skill maintained in the [xiaoyu-skill](https://github.com/keros68/xiaoyu-skill) repository by keros68.
+This is the ai-cross skill maintained in the [aicross](https://github.com/keros68/aicross) repository by keros68, alongside its desktop panel.
 
 Released under the MIT License. Redistributions, forks and modified versions must keep the copyright notice and license text, and must not be presented as the original project or imply endorsement by the original author.
 
@@ -133,7 +133,7 @@ Released under the MIT License. Redistributions, forks and modified versions mus
 ai-cross is an AI-agent skill that routes tasks to model tiers by task type, has a model from a different vendor cross-check important outputs, and logs every dispatch to `.dispatch/`. It does not use majority voting: checkable facts are verified by running code or tests, and unresolved disagreements are shown side by side. Cross-vendor review needs at least two vendors; with one, tiered dispatch still works.
 
 ```bash
-npx skills add keros68/xiaoyu-skill --skill ai-cross -g
+npx skills add keros68/aicross --skill ai-cross -g
 ```
 
 Then run `Use $ai-cross to inventory my available models.` The first run detects installed CLIs, model lists and cc-switch providers read-only (no login, no model calls, no keys printed), asks you to confirm, smoke-tests each entry, and saves `~/.aicross/skill/manifest.json`, shared by all hosts on the machine.

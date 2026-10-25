@@ -1,7 +1,7 @@
-"""把 ai-cross skill 源仓同步进 skill-bundle/ai-cross/（随版本内置进可执行文件）。
+"""把 ai-cross skill 源码同步进 skill-bundle/ai-cross/（随版本内置进可执行文件）。
 
 用法：python scripts/sync-skill.py [源目录]
-源目录缺省为 D:\\work\\skill\\xiaoyu-skill\\skills\\ai-cross。同步是整份替换：
+源目录缺省为本仓库的 skills/ai-cross。同步是整份替换：
 目标目录先删后建；源目录只读，不会被改动。排除项：任何层级的 tests/ 目录
 与以 .git 开头的文件或目录。
 """
@@ -11,7 +11,7 @@ import shutil
 import sys
 from pathlib import Path
 
-DEFAULT_SOURCE = r"D:\work\skill\xiaoyu-skill\skills\ai-cross"
+DEFAULT_SOURCE = str(Path(__file__).resolve().parent.parent / "skills" / "ai-cross")
 EXCLUDED_DIR_NAMES = {"tests", "__pycache__", ".pytest_cache"}
 EXCLUDED_NAME_PREFIXES = (".git",)
 EXCLUDED_SUFFIXES = (".pyc",)
