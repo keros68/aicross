@@ -64,7 +64,19 @@ export function globalInstallAction(hostStatus: SkillHostStatus | null | undefin
 export function outdatedText(location: Pick<SkillLocation, 'kind' | 'outdated'>, bundledVersion: string): string {
   if (location.kind !== 'external' || location.outdated !== true) return '';
   const bundled = bundledVersion.trim();
-  return bundled === '' ? '旧于内置' : `旧于内置 ${bundled}`;
+  return bundled === '' ? '需要升级' : `需要升级到 ${bundled}`;
+}
+
+/** 主 agent 读得到、由其他软件装的旧版 skill；没有时为 null。 */
+export function staleExternal(skillHost: SkillHostStatus | null | undefined): SkillLocation | null {
+  return skillHost?.locations.find(
+    (location) => location.kind === 'external' && location.outdated === true && location.readByThisHost !== false,
+  ) ?? null;
+}
+
+/** aicross 能否直接替换升级：skills-manager 管理的不接管，它同步时会改回去。 */
+export function canUpgradeHere(location: Pick<SkillLocation, 'manager'>): boolean {
+  return (location.manager ?? '').trim() !== 'skills-manager';
 }
 
 /** 位置行能否卸载：我们装的、且是写入位置。卸载命令只带 host 与 scope，删的是写入位置，
@@ -140,4 +152,15 @@ export function modesPrompt(input: {
 export function recommendNotes(notes: string[] | string | null | undefined): string[] {
   const list = Array.isArray(notes) ? notes : typeof notes === 'string' ? notes.split('\n') : [];
   return list.map((note) => note.trim()).filter((note) => note !== '');
+}
+
+/** 启动时自动更新的主 agent：全局写入位置是我们装的、版本与内置不同。别人装的不动，
+ *  由页面提示用户确认后升级。 */
+export function autoUpdateHosts(status: SkillStatus | null | undefined): string[] {
+  const bundled = status?.bundledVersion.trim() ?? '';
+  if (bundled === '') return [];
+  return (status?.hosts ?? [])
+    .filter((host) => host.locations.some((location) =>
+      location.scope === 'global' && isWriteTarget(host.host, location) && isOutdated(location, bundled)))
+    .map((host) => host.host);
 }

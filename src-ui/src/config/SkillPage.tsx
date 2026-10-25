@@ -17,6 +17,7 @@ import {
 import { needsFirstDetect } from './config-view';
 import {
   canUninstall,
+  canUpgradeHere,
   duplicatePaths,
   findHostStatus,
   globalInstallAction,
@@ -35,7 +36,7 @@ import { PageHeader } from '../components/common/PageHeader';
 import { StatCards } from '../components/common/StatCards';
 import './ConfigPages.css';
 
-type Busy = { kind: 'install' | 'update'; scope: SkillScope } | { kind: 'uninstall'; path: string } | null;
+type Busy = { kind: 'install' | 'update'; scope: SkillScope } | { kind: 'uninstall' | 'upgrade'; path: string } | null;
 
 /** active：导航切到「skill」时为 true；每次切回重新读状态（安装进行中不读）。
  *  host 为空表示还没有可作主 agent 的 agent。 */
@@ -74,6 +75,8 @@ export function SkillPage({
   };
   const [confirm, setConfirm] = useState<SkillLocation | null>(null);
   const closeConfirm = useCallback(() => setConfirm(null), []);
+  const [upgradeConfirm, setUpgradeConfirm] = useState<SkillLocation | null>(null);
+  const closeUpgradeConfirm = useCallback(() => setUpgradeConfirm(null), []);
 
   const load = useCallback(async (projectDir: string) => {
     const next = await commands.skillStatus(projectDir === '' ? undefined : projectDir);
@@ -191,7 +194,12 @@ export function SkillPage({
     );
   };
 
-  const globalBusy = busy?.kind !== 'uninstall' && busy?.scope === 'global';
+  const upgrade = (location: SkillLocation) => {
+    setUpgradeConfirm(null);
+    void run({ kind: 'upgrade', path: location.path }, () => commands.skillUpgrade(hostId, location.path), project);
+  };
+
+  const globalBusy = (busy?.kind === 'install' || busy?.kind === 'update') && busy.scope === 'global';
   const projectBusy = busy?.kind === 'install' && busy.scope === 'project';
 
   return (
@@ -242,6 +250,8 @@ export function SkillPage({
             {hostLocations(hostStatus).map((location) => {
               const state = locationStatus(location, bundled);
               const removing = busy?.kind === 'uninstall' && busy.path === location.path;
+              const upgrading = busy?.kind === 'upgrade' && busy.path === location.path;
+              const stale = outdatedText(location, bundled) !== '';
               return (
                 <div key={`${location.scope}:${location.path}`} className="card-row skill-row">
                   <span className="pill skill-scope">{scopeText(location.scope)}</span>
@@ -251,11 +261,19 @@ export function SkillPage({
                       <span className="card-sub cfg-mono" title={location.linkTarget}>指向 {location.linkTarget}</span>
                     )}
                   </div>
-                  {outdatedText(location, bundled) !== '' && (
-                    <span className="pill warn">{outdatedText(location, bundled)}</span>
-                  )}
+                  {stale && <span className="pill warn">{outdatedText(location, bundled)}</span>}
                   <span className={`pill skill-state ${state.tone}`}>{state.text}</span>
                   <span className="skill-row-action">
+                    {stale && location.scope === 'global' && canUpgradeHere(location) && (
+                      <button
+                        type="button"
+                        className="btn primary"
+                        disabled={busy !== null}
+                        onClick={() => setUpgradeConfirm(location)}
+                      >
+                        {upgrading ? '升级中…' : '升级'}
+                      </button>
+                    )}
                     {canUninstall(hostId, location) && (
                       <button
                         type="button"
@@ -294,6 +312,18 @@ export function SkillPage({
           onCancel={closeConfirm}
         >
           <span className="cfg-mono">{confirm.path}</span>
+        </ConfirmDialog>
+      )}
+      {upgradeConfirm && (
+        <ConfirmDialog
+          title="升级 ai-cross skill"
+          confirmLabel="升级"
+          onConfirm={() => upgrade(upgradeConfirm)}
+          onCancel={closeUpgradeConfirm}
+        >
+          这份 skill 是 {upgradeConfirm.version || '旧版'}，由其他软件安装。升级会换成 {bundled}，原来的文件备份到同一配置目录下的
+          .aicross-skill-backup，之后随 aicross 更新。
+          <div className="cfg-mono">{upgradeConfirm.path}</div>
         </ConfirmDialog>
       )}
     </div>

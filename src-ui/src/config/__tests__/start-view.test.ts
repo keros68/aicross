@@ -5,6 +5,7 @@ import {
   needsSkillInstall,
   reviewMode,
   seatLines,
+  setupHint,
   setupState,
   usageExamples,
   workMode,
@@ -125,6 +126,11 @@ describe('配好没有', () => {
     expect(setupState({ ...base, skillHost })).toBe('done');
   });
 
+  it('其他软件装的旧版算未完成', () => {
+    const skillHost = hostStatus([loc(), loc({ kind: 'external', version: '1.12.1', outdated: true, path: 'C:/x', writeTarget: false })]);
+    expect(setupState({ ...base, skillHost })).toBe('todo');
+  });
+
   it('有位置没人选算未完成', () => {
     const emptyBlind = mode('builtin-blind', '盲审模式', [[node('验收', null)]]);
     expect(setupState({ ...base, modes: [economy, emptyBlind] })).toBe('todo');
@@ -153,5 +159,26 @@ describe('示例输入', () => {
     const examples = usageExamples('/ai-cross');
     expect(examples.map((example) => example.label)).toEqual(['审', '干活']);
     expect(examples.every((example) => example.text.startsWith('/ai-cross '))).toBe(true);
+  });
+});
+
+describe('缺人提示', () => {
+  const emptyBlind = mode('builtin-blind', '盲审模式', [[node('验收', seat('gpt')), node('验证', null), node('验证', null)]]);
+  const notes = [
+    '「盲审模式」第 1 阶段第 2 个位置（验证）：无可用人选：需不同于主 agent 厂商 DeepSeek，且同阶段不重复；另有 8 个未验证模型，测试连接后可参与推荐',
+    '「盲审模式」第 1 阶段第 3 个位置（验证）：无可用人选：需不同于主 agent 厂商 DeepSeek，且同阶段不重复；另有 8 个未验证模型，测试连接后可参与推荐',
+    '「评审模式」第 1 阶段第 1 个位置（验证）：候选池为空：先探测资源，第三方模型要先冒烟通过',
+  ];
+
+  it('只算开始页上的两个模式，原因去重并改成读者能懂的话', () => {
+    expect(setupHint([emptyBlind, economy], notes)).toEqual({
+      missing: 2,
+      reasons: ['审查要用和主 agent（DeepSeek）不同厂商的模型，可用的不够'],
+      unverified: 8,
+    });
+  });
+
+  it('同一个模式出现两次只算一次；没有说明时原因为空', () => {
+    expect(setupHint([emptyBlind, emptyBlind], [])).toEqual({ missing: 2, reasons: [], unverified: 0 });
   });
 });

@@ -432,6 +432,17 @@ async fn skill_install(
     skill_change(host, scope, project, true).await
 }
 
+/// 把一份旧的外部安装换成内置版本（备份原文件，之后由 aicross 管理）。
+#[tauri::command]
+async fn skill_upgrade(host: String, path: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = crate::paths::home()?;
+        crate::skill_install::upgrade_at(&home, &host, std::path::Path::new(&path)).map_err(|(_, message)| message)
+    })
+    .await
+    .map_err(|error| format!("skill 升级任务失败：{error}"))?
+}
+
 /// 卸 skill（只删我们装的那份）。
 #[tauri::command]
 async fn skill_uninstall(
@@ -534,6 +545,7 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
             preset_remove,
             skill_status,
             skill_install,
+            skill_upgrade,
             skill_uninstall,
             pick_folder,
             crate::run_view::load_run_view,

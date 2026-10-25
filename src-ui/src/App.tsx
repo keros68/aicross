@@ -17,6 +17,7 @@ import { ModesPage } from './config/ModesPage';
 import { ResourcesPage } from './config/ResourcesPage';
 import { SkillPage } from './config/SkillPage';
 import { StartPage } from './config/StartPage';
+import { autoUpdateHosts } from './config/skill-view';
 import { PAGE_TABS, keepsMounted, pageTabStorage, readPageTab, writePageTab, type PageTab } from './config/page-tabs';
 import { onWindowDragDoubleClick, onWindowDragMouseDown } from './lib/window-drag';
 import { readHost, writeHost } from './lib/host-select';
@@ -78,6 +79,19 @@ export function App() {
   }, []);
 
   useEffect(() => { loadHosts(); }, [loadHosts]);
+
+  // 启动时把 aicross 自己装的旧版 skill 更新到内置版本（别人装的由页面提示确认后升级），
+  // 更新过就让各页重读一次。
+  useEffect(() => {
+    if (!isTauri) return;
+    void (async () => {
+      try {
+        const hostsToUpdate = autoUpdateHosts(await commands.skillStatus());
+        for (const host of hostsToUpdate) await commands.skillInstall(host, 'global');
+        if (hostsToUpdate.length > 0) setRefreshKey((key) => key + 1);
+      } catch { /* 更新失败时 skill 页照常显示「需要升级」 */ }
+    })();
+  }, []);
 
   const currentHost = hosts?.find((host) => host.id === hostId) ?? null;
 

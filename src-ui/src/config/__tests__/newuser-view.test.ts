@@ -11,7 +11,7 @@ import {
 } from '../newuser-view';
 import { agentStats, stateTone } from '../config-view';
 import { newStageNode } from '../preset-edit';
-import { outdatedText } from '../skill-view';
+import { autoUpdateHosts, canUpgradeHere, outdatedText, staleExternal } from '../skill-view';
 import type { ResourceModelEntry, SkillLocation } from '../../tauri';
 
 function model(id: string, provider: string, state: string): ResourceModelEntry {
@@ -90,9 +90,9 @@ describe('skill 页（TASK-58 #10、#11）', () => {
     scope: 'global', path: 'C:\\Users\\u\\.agents\\skills\\ai-cross', kind: 'external', version: '1.21.0', ...overrides,
   });
 
-  it('其他软件装的且低于内置时标「旧于内置 <内置版本>」，其余不标', () => {
-    expect(outdatedText(loc({ outdated: true }), '1.21.1')).toBe('旧于内置 1.21.1');
-    expect(outdatedText(loc({ outdated: true }), '')).toBe('旧于内置');
+  it('其他软件装的且低于内置时标「需要升级到 <内置版本>」，其余不标', () => {
+    expect(outdatedText(loc({ outdated: true }), '1.21.1')).toBe('需要升级到 1.21.1');
+    expect(outdatedText(loc({ outdated: true }), '')).toBe('需要升级');
     expect(outdatedText(loc({ outdated: false }), '1.21.1')).toBe('');
     expect(outdatedText(loc({}), '1.21.1')).toBe('');
     expect(outdatedText(loc({ kind: 'ours', outdated: true }), '1.21.1')).toBe('');
@@ -134,5 +134,34 @@ describe('已存在的命令文件（TASK-58 #14）', () => {
   it('都没有（含旧版引擎没有 existing）：「生成」建议名', () => {
     expect(slashRowAction(base)).toEqual({ kind: 'generate', name: 'ax-blind' });
     expect(slashRowAction({ ...base, existing: null })).toEqual({ kind: 'generate', name: 'ax-blind' });
+  });
+});
+
+describe('skill 升级', () => {
+  const external = (overrides: Partial<SkillLocation>): SkillLocation => ({
+    scope: 'global', path: 'C:/u/.codex/skills/ai-cross', kind: 'external', version: '1.12.1',
+    outdated: true, manager: '', linkTarget: null, readByThisHost: true, writeTarget: false, ...overrides,
+  });
+
+  it('主 agent 读得到的别人装的旧版要升级；skills-manager 管理的不在这里替换', () => {
+    const host = { host: 'codex', locations: [external({})], duplicate: false, updateAvailable: false };
+    expect(staleExternal(host)?.version).toBe('1.12.1');
+    expect(staleExternal({ ...host, locations: [external({ outdated: false })] })).toBeNull();
+    expect(canUpgradeHere(external({}))).toBe(true);
+    expect(canUpgradeHere(external({ manager: 'skills-manager' }))).toBe(false);
+  });
+
+  it('启动时只自动更新我们装在全局写入位置的旧版', () => {
+    const ours = (version: string): SkillLocation => external({ kind: 'ours', version, outdated: false, writeTarget: true, path: 'C:/u/.claude/skills/ai-cross' });
+    const status = {
+      bundledVersion: '1.23.0',
+      hosts: [
+        { host: 'claude', locations: [ours('1.22.0')], duplicate: false, updateAvailable: true },
+        { host: 'codex', locations: [external({})], duplicate: false, updateAvailable: false },
+        { host: 'kimi', locations: [ours('1.23.0')], duplicate: false, updateAvailable: false },
+      ],
+    };
+    expect(autoUpdateHosts(status)).toEqual(['claude']);
+    expect(autoUpdateHosts({ ...status, bundledVersion: '' })).toEqual([]);
   });
 });

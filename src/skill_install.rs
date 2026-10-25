@@ -698,6 +698,61 @@ pub(crate) fn install_at(
     Ok(write_result(host, home, project.as_deref(), notes))
 }
 
+/// `skill upgrade` 的实现体：把一份旧的外部安装换成内置版本。`location`
+/// 必须是该主 agent 读取的全局位置之一。skills-manager 管理的不接管（它
+/// 同步时会把链接改回去），提示到 skills-manager 里更新。链接只删链接本身，
+/// 指向的目录不动；普通目录整份移到同级配置目录下的
+/// `.aicross-skill-backup/ai-cross-<时间>`（不在 skills 目录里，宿主不会把
+/// 备份当成第二份 skill 加载）。之后按 install 写入全局写入位置，此后由
+/// aicross 管理。位置本来就是我们装的或不存在时，等同 install。
+pub(crate) fn upgrade_at(home: &Path, host: &str, location: &Path) -> Result<Value, (i32, String)> {
+    validate_target(host, "global", None)?;
+    let wanted = dedupe_key(&native_separators(location));
+    let found = host_status(host, home, None)
+        .locations
+        .into_iter()
+        .find(|item| item.scope == "global" && dedupe_key(Path::new(&item.path)) == wanted)
+        .ok_or_else(|| (2, format!("不是 {host} 读取的 skill 位置：{}", location.display())))?;
+    let mut notes = Vec::new();
+    if found.kind == KIND_EXTERNAL {
+        if found.manager == "skills-manager" {
+            return Err((1, "由 skills-manager 管理：请在 skills-manager 里更新".to_string()));
+        }
+        let path = PathBuf::from(&found.path);
+        let _guard = skill_write_lock();
+        if is_link_path(&path) {
+            std::fs::remove_dir(&path)
+                .or_else(|_| std::fs::remove_file(&path))
+                .map_err(|error| (1, format!("移除旧链接失败 {}：{error}", path.display())))?;
+            notes.push(format!("已移除指向旧版本的链接：{}", path.display()));
+        } else {
+            let backup = backup_path(&path)
+                .ok_or_else(|| (1, format!("无法确定备份位置：{}", path.display())))?;
+            if let Some(parent) = backup.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| (1, format!("创建备份目录失败 {}：{error}", parent.display())))?;
+            }
+            std::fs::rename(&path, &backup)
+                .map_err(|error| (1, format!("备份旧版本失败 {}：{error}", path.display())))?;
+            notes.push(format!("旧版本已备份到 {}", backup.display()));
+        }
+    }
+    let mut value = install_at(home, host, "global", None)?;
+    if !notes.is_empty() {
+        let mut all = value["notes"].as_array().cloned().unwrap_or_default();
+        all.extend(notes.into_iter().map(Value::String));
+        value["notes"] = Value::Array(all);
+    }
+    Ok(value)
+}
+
+/// `~/.codex/skills/ai-cross` → `~/.codex/.aicross-skill-backup/ai-cross-<时间>`。
+fn backup_path(location: &Path) -> Option<PathBuf> {
+    let config_dir = location.parent()?.parent()?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    Some(config_dir.join(".aicross-skill-backup").join(format!("ai-cross-{stamp}")))
+}
+
 /// `skill uninstall` 的实现体：只删我们装的那份；external 退出 1 不动；
 /// none 幂等成功。
 pub(crate) fn uninstall_at(
@@ -1006,6 +1061,40 @@ mod tests {
         let target = location.link_target.as_deref().unwrap();
         assert!(!target.contains('/'), "linkTarget 应统一反斜杠：{target}");
         assert_eq!(location.version, "3.0.0");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn upgrade_replaces_old_external_copy_and_keeps_a_backup() {
+        let home = temp_home("upgrade");
+        let bundled = bundled_version();
+        // codex 的旧位置 .codex/skills 有一份别人装的旧版；写入位置还没有。
+        let old = home.join(".codex/skills/ai-cross");
+        write_fake_skill(&old, "1.12.1");
+        let value = upgrade_at(&home, "codex", &old).unwrap();
+        assert!(!old.exists(), "旧位置应移走");
+        let backups: Vec<_> = std::fs::read_dir(home.join(".codex/.aicross-skill-backup"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert!(backups[0].join("SKILL.md").is_file());
+        let status = host_status("codex", &home, None);
+        let installed: Vec<_> = status.locations.iter().filter(|item| item.kind != KIND_NONE).collect();
+        assert_eq!(installed.len(), 1, "{:?}", status.locations);
+        assert_eq!(installed[0].kind, KIND_OURS);
+        assert_eq!(installed[0].version, bundled);
+        assert!(value["notes"].to_string().contains("已备份到"), "{value}");
+
+        // 写入位置本身是别人装的旧版：原地换成我们的。
+        let target = home.join(".claude/skills/ai-cross");
+        write_fake_skill(&target, "1.0.0");
+        upgrade_at(&home, "claude", &target).unwrap();
+        assert_eq!(inspect_location(&target, "", true).kind, KIND_OURS);
+
+        // 不是该主 agent 读取的位置：参数错。
+        let elsewhere = home.join("somewhere/ai-cross");
+        assert_eq!(upgrade_at(&home, "claude", &elsewhere).unwrap_err().0, 2);
         let _ = std::fs::remove_dir_all(home);
     }
 

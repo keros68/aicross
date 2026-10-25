@@ -70,7 +70,7 @@ fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
          \x20 resources   看资源库 / 重新探测 / 冒烟验证\n\
          \x20 config      看与改角色、派发设置、模式人选\n\
          \x20 hosts       看与改主 agent\n\
-         \x20 skill       skill status / install / uninstall\n\
+         \x20 skill       skill status / install / upgrade / uninstall\n\
          \x20 slash       斜杠命令写入各家宿主，可自定义短命令\n\
          \x20 preset      自定义模式的保存与删除\n\
          \n\
@@ -1770,6 +1770,28 @@ fn run_skill_at(
                 Ok(value) => {
                     let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
                     let _ = writeln!(stderr, "已读取 skill 安装状态");
+                    0
+                }
+                Err((code, message)) => {
+                    let _ = writeln!(stderr, "{message}");
+                    code
+                }
+            }
+        }
+        Some("upgrade") => {
+            if let Some(message) = unknown_option_error(args, 3, &["--host", "--path"]) {
+                let _ = writeln!(stderr, "{message}");
+                return 2;
+            }
+            let host = option_value(args, "--host").unwrap_or_default();
+            let Some(path) = option_value(args, "--path") else {
+                let _ = writeln!(stderr, "缺少 --path：要升级的 skill 位置");
+                return 2;
+            };
+            match crate::skill_install::upgrade_at(home, &host, Path::new(&path)) {
+                Ok(value) => {
+                    let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
+                    let _ = writeln!(stderr, "升级完成");
                     0
                 }
                 Err((code, message)) => {

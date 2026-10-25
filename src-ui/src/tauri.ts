@@ -73,6 +73,8 @@ export const commands = {
   skillStatus: (project?: string) => invoke<SkillStatus>('skill_status', { project: project ?? null }),
   skillInstall: (host: string, scope: SkillScope, project?: string) =>
     invoke<SkillHostStatus>('skill_install', { host, scope, project: project ?? null }),
+  /** 把一份旧的外部安装换成内置版本；原文件备份，之后由 aicross 管理。 */
+  skillUpgrade: (host: string, path: string) => invoke<unknown>('skill_upgrade', { host, path }),
   skillUninstall: (host: string, scope: SkillScope, project?: string) =>
     invoke<unknown>('skill_uninstall', { host, scope, project: project ?? null }),
   /** 从资源库删除最近一次探测未发现的模型；给了 agent 只清这一家（TASK-52 第 1 节）。 */
