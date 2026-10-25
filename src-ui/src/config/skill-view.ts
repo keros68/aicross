@@ -164,3 +164,8 @@ export function autoUpdateHosts(status: SkillStatus | null | undefined): string[
       location.scope === 'global' && isWriteTarget(host.host, location) && isOutdated(location, bundled)))
     .map((host) => host.host);
 }
+
+/** 只有 Claude Code、Codex、Kimi Code、pi agent 支持装到项目目录；其余主 agent 只装全局。 */
+export function supportsProjectInstall(host: string): boolean {
+  return ['claude', 'codex', 'kimi', 'pi'].includes(host);
+}

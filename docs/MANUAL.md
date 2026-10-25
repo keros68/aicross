@@ -117,6 +117,26 @@ claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，真身记在
    进模式页。
 3. **怎么用**：回到主 agent 里输入的两条示例，可复制。
 
+### 主 agent
+
+Claude Code、Codex、Kimi Code、pi agent 之外，OpenCode、Gemini CLI、Antigravity、
+Hermes Agent、ZCode、CodeBuddy、WorkBuddy、Qoder、Qoder CN 也可当主 agent：「探测」时
+按配置目录或命令是否存在发现，记在资源库的 `extraHosts`。它们只是说话的地方，派发
+仍由资源页里的 agent 承担；skill 只装全局，没有短命令，示例输入用「用 ai-cross …」
+（Hermes、Qoder 用 `/ai-cross`）。除 Gemini CLI（Google）外，这些软件能换用不同厂商的
+模型，厂商在模式页设定后推荐才能避开同厂商。
+
+| 主 agent | skill 位置 |
+|---|---|
+| OpenCode | `~/.config/opencode/skills` |
+| Gemini CLI | `~/.gemini/skills` |
+| Antigravity | `~/.gemini/antigravity/skills` |
+| Hermes Agent | `~/.hermes/skills` |
+| ZCode | `~/.agents/skills` |
+| CodeBuddy | `~/.codebuddy/skills` |
+| WorkBuddy | `~/.workbuddy/skills` |
+| Qoder / Qoder CN | `~/.qoder/skills` / `~/.qoder-cn/skills` |
+
 ### skill 升级
 
 - aicross 自己装的 skill 随软件更新：启动时发现版本与内置不同，自动换成内置版本。
@@ -124,6 +144,13 @@ claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，真身记在
   换成内置版本，原文件移到同一配置目录下的 `.aicross-skill-backup/`，之后由 aicross
   管理。命令行：`aicross skill upgrade --host <主 agent> --path <位置>`。
 - skills-manager 管理的不在这里替换（它同步时会改回去），到 skills-manager 里更新。
+
+## 软件更新
+
+启动时查 GitHub 最新一版的 `latest.json`，有新版时顶栏出现「更新到 X」；确认后下载安装包、
+校验签名并安装，装完自动重新打开，数据目录不动。查不到（离线等）时不提示。0.3.0 起有此
+功能，更早的版本需手动安装一次新版。发布时用 `scripts/build-release.ps1` 打包并生成
+`latest.json`，与安装包一起上传。
 
 ## 派发记录
 

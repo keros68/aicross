@@ -158,6 +158,8 @@ export interface SlashList {
   commands: SlashCommand[];
   /** 旧版引擎没有这个字段。 */
   modes?: SlashModeEntry[];
+  /** 为 false 时这个软件没有短命令（扩展主 agent）。 */
+  supported?: boolean;
 }
 
 export interface SlashAddAllResult extends SlashList {

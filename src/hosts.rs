@@ -17,6 +17,86 @@ use std::path::Path;
 
 pub(crate) const HOST_IDS: [&str; 4] = ["claude", "codex", "kimi", "pi"];
 
+/// 只当主 agent 用的软件：不在派发通道里，派发仍由四家与支持清单里的 agent
+/// 承担。点「探测」时按配置目录或命令是否存在记进资源库（`extraHosts`），
+/// 之后与四家一样可选为主 agent、各存一份配置。skill 目录取各家官方文档或本机
+/// 实测；显式调用写法核实不了的用自然语言，靠 skill 描述触发。
+pub(crate) struct ExtraHost {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// 任一命令在 PATH 里即算装了。
+    pub commands: &'static [&'static str],
+    /// 任一目录（相对家目录，`/` 分隔）存在即算装了。
+    pub markers: &'static [&'static str],
+    /// 全局 skill 目录（相对家目录），ai-cross 装在它下面。
+    pub skills_dir: &'static str,
+    /// 调用 ai-cross 的写法，用在示例输入开头。
+    pub invoke: &'static str,
+    /// 只用一家模型的软件写厂商；能换模型的为 None，由用户在模式页设定。
+    pub vendor: Option<(&'static str, &'static str)>,
+}
+
+pub(crate) const EXTRA_HOSTS: &[ExtraHost] = &[
+    ExtraHost { id: "opencode", name: "OpenCode", commands: &["opencode"], markers: &[".config/opencode"],
+        skills_dir: ".config/opencode/skills", invoke: "用 ai-cross", vendor: None },
+    ExtraHost { id: "gemini", name: "Gemini CLI", commands: &["gemini"], markers: &[],
+        skills_dir: ".gemini/skills", invoke: "用 ai-cross",
+        vendor: Some(("Google", "Gemini CLI 只用 Google 的模型")) },
+    ExtraHost { id: "agy", name: "Antigravity", commands: &["agy", "antigravity"],
+        markers: &[".gemini/antigravity", ".gemini/antigravity-cli"],
+        skills_dir: ".gemini/antigravity/skills", invoke: "用 ai-cross", vendor: None },
+    ExtraHost { id: "hermes", name: "Hermes Agent", commands: &["hermes"], markers: &[".hermes"],
+        skills_dir: ".hermes/skills", invoke: "/ai-cross", vendor: None },
+    // ZCode 读 ~/.agents/skills，不读 ~/.zcode/skills（skillmanager 08-16 本机实测）。
+    ExtraHost { id: "zcode", name: "ZCode", commands: &[], markers: &[".zcode"],
+        skills_dir: ".agents/skills", invoke: "用 ai-cross", vendor: None },
+    ExtraHost { id: "codebuddy", name: "CodeBuddy", commands: &["codebuddy"], markers: &[".codebuddy"],
+        skills_dir: ".codebuddy/skills", invoke: "用 ai-cross", vendor: None },
+    ExtraHost { id: "workbuddy", name: "WorkBuddy", commands: &[], markers: &[".workbuddy"],
+        skills_dir: ".workbuddy/skills", invoke: "用 ai-cross", vendor: None },
+    ExtraHost { id: "qoder", name: "Qoder", commands: &["qodercli"], markers: &[".qoder"],
+        skills_dir: ".qoder/skills", invoke: "/ai-cross", vendor: None },
+    ExtraHost { id: "qoder-cn", name: "Qoder CN", commands: &["qoderclicn"], markers: &[".qoder-cn"],
+        skills_dir: ".qoder-cn/skills", invoke: "/ai-cross", vendor: None },
+];
+
+pub(crate) fn extra_host(id: &str) -> Option<&'static ExtraHost> {
+    EXTRA_HOSTS.iter().find(|host| host.id == id)
+}
+
+/// 四家与扩展主 agent 的全部 id（固定顺序）。
+pub(crate) fn all_host_ids() -> Vec<&'static str> {
+    HOST_IDS.iter().copied().chain(EXTRA_HOSTS.iter().map(|host| host.id)).collect()
+}
+
+pub(crate) fn is_host_id(id: &str) -> bool {
+    HOST_IDS.contains(&id) || extra_host(id).is_some()
+}
+
+/// 本机装了哪些扩展主 agent：配置目录存在或命令在 PATH 里。只查文件系统，
+/// 不起进程；`path_var` 由调用方给（生产传 PATH 环境变量，测试注入）。
+pub(crate) fn detect_extra_hosts(home: &Path, path_var: Option<&str>) -> Vec<String> {
+    EXTRA_HOSTS
+        .iter()
+        .filter(|host| {
+            host.markers.iter().any(|marker| home.join(marker).is_dir())
+                || host.commands.iter().any(|command| on_path(command, path_var))
+        })
+        .map(|host| host.id.to_string())
+        .collect()
+}
+
+fn on_path(command: &str, path_var: Option<&str>) -> bool {
+    let Some(path_var) = path_var else { return false };
+    let names: Vec<String> = if cfg!(windows) {
+        ["exe", "cmd", "bat", "ps1"].iter().map(|ext| format!("{command}.{ext}")).collect()
+    } else {
+        vec![command.to_string()]
+    };
+    std::env::split_paths(path_var)
+        .any(|dir| names.iter().any(|name| dir.join(name).is_file()))
+}
+
 /// 推定来源：默认按官方端点猜的。
 pub(crate) const VENDOR_SOURCE_INFERRED: &str = "推定";
 /// 推定来源：按第三方端点 / provider 名称对出来的。
@@ -116,21 +196,24 @@ fn host_display_name(id: &str) -> &'static str {
         "claude" => resources::AGENT_NAME_CLAUDE,
         "codex" => resources::AGENT_NAME_CODEX,
         "kimi" => resources::AGENT_NAME_KIMI,
-        _ => resources::AGENT_NAME_PI,
+        "pi" => resources::AGENT_NAME_PI,
+        other => extra_host(other).map_or("未知软件", |host| host.name),
     }
 }
 
-/// 资源库里检测到的主 agent id（保持 HOST_IDS 的固定顺序）。
+/// 资源库里检测到的主 agent id：四家看 agent 的 detected，扩展主 agent 看最近
+/// 一次探测记下的 `extraHosts`；顺序同 [`all_host_ids`]。
 pub(crate) fn detected_host_ids(store: &ResourceStore) -> Vec<String> {
-    HOST_IDS
-        .iter()
+    all_host_ids()
+        .into_iter()
         .filter(|id| {
-            store
-                .agents
-                .iter()
-                .any(|agent| agent.id == **id && agent.detected)
+            if HOST_IDS.contains(id) {
+                store.agents.iter().any(|agent| agent.id == *id && agent.detected)
+            } else {
+                store.extra_hosts.iter().any(|host| host == id)
+            }
         })
-        .map(|id| id.to_string())
+        .map(str::to_string)
         .collect()
 }
 
@@ -155,13 +238,10 @@ pub(crate) fn collect_hosts(
     home: &Path,
     claude_base_url_env: Option<&str>,
 ) -> Vec<HostInfo> {
-    HOST_IDS
+    detected_host_ids(store)
         .iter()
-        .filter_map(|id| {
-            let agent = store.agents.iter().find(|agent| agent.id == *id)?;
-            if !agent.detected {
-                return None;
-            }
+        .map(String::as_str)
+        .map(|id| {
             let (vendor, source, basis) = infer_vendor(id, home, store, claude_base_url_env);
             let mut info = HostInfo {
                 id: id.to_string(),
@@ -170,10 +250,10 @@ pub(crate) fn collect_hosts(
                 vendor_source: source,
                 vendor_basis: basis,
             };
-            if let Some(section) = modes.hosts.get(*id) {
+            if let Some(section) = modes.hosts.get(id) {
                 apply_override(&mut info, &section.vendor_override);
             }
-            Some(info)
+            info
         })
         .collect()
 }
@@ -205,7 +285,15 @@ pub(crate) fn infer_vendor(
         "claude" => infer_claude(home, claude_base_url_env),
         "codex" => infer_codex(home),
         "kimi" => infer_kimi(home),
-        _ => infer_pi(home, store),
+        "pi" => infer_pi(home, store),
+        other => match extra_host(other).and_then(|host| host.vendor) {
+            Some((vendor, basis)) => (vendor.to_string(), VENDOR_SOURCE_INFERRED.to_string(), basis.to_string()),
+            None => (
+                VENDOR_SOURCE_UNKNOWN.to_string(),
+                VENDOR_SOURCE_UNKNOWN.to_string(),
+                "这个软件可以换用不同厂商的模型，请在模式页设定".to_string(),
+            ),
+        },
     }
 }
 
@@ -552,6 +640,7 @@ mod tests {
 
     fn store_with(detected: &[&str]) -> ResourceStore {
         ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: HOST_IDS
                 .iter()
@@ -815,6 +904,32 @@ mod tests {
             vec!["kimi", "pi"]
         );
         assert_eq!(hosts[0].name, "Kimi Code");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn extra_hosts_detected_by_config_dir_or_command() {
+        let home = crate::paths::test_temp_dir().join(format!("extra-hosts-{}", uuid::Uuid::new_v4()));
+        let bin = home.join("bin");
+        std::fs::create_dir_all(home.join(".config/opencode")).unwrap();
+        std::fs::create_dir_all(home.join(".gemini/antigravity-cli")).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let hermes = if cfg!(windows) { "hermes.cmd" } else { "hermes" };
+        std::fs::write(bin.join(hermes), "").unwrap();
+        // 只有 ~/.gemini（Antigravity 也用它）不算装了 Gemini CLI。
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        let path_var = bin.to_string_lossy().into_owned();
+        assert_eq!(detect_extra_hosts(&home, Some(&path_var)), vec!["opencode", "agy", "hermes"]);
+        assert_eq!(detect_extra_hosts(&home, None), vec!["opencode", "agy"]);
+
+        // 记进资源库后进主 agent 清单，排在四家之后；Gemini CLI 以外厂商未知。
+        let mut store = store_with(&["claude"]);
+        store.extra_hosts = vec!["hermes".into(), "gemini".into()];
+        assert_eq!(detected_host_ids(&store), vec!["claude", "gemini", "hermes"]);
+        let hosts = collect_hosts(&store, &ModesFile::default(), &home, None);
+        assert_eq!(hosts[1].name, "Gemini CLI");
+        assert_eq!(hosts[1].vendor, "Google");
+        assert_eq!(hosts[2].vendor, VENDOR_SOURCE_UNKNOWN);
         let _ = std::fs::remove_dir_all(home);
     }
 }

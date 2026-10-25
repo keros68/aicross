@@ -1050,6 +1050,7 @@ mod tests {
         ];
         let codex_models = vec![model("codex", "", "exec", "OpenAI", "native")];
         ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![
                 ResourceAgent {
@@ -1294,6 +1295,7 @@ mod tests {
         // 夹具：deepseek（按次，中档）排在 glm（订阅，中档）前面；
         // 主 agent 厂商未知，两家都可选。共享模式只有一个执行位置。
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![ResourceAgent {
                 id: "pi".into(),
@@ -1407,6 +1409,7 @@ mod tests {
     #[test]
     fn task50_recommend_kimi_host_excludes_moonshot_reviewers() {
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![
                 ResourceAgent {
@@ -1463,6 +1466,7 @@ mod tests {
     fn task50_recommend_role_default_not_placeholder_until_final() {
         // 夹具只有两家：claude 原生（主 agent 厂商）与 pi 的 Zhipu 模型。
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![
                 ResourceAgent {
@@ -1530,6 +1534,7 @@ mod tests {
     fn task50_recommend_planning_prefers_high_tier() {
         // sonnet（中档）在前，opus（高档）在后。
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![ResourceAgent {
                 id: "claude".into(),
@@ -1590,6 +1595,7 @@ mod tests {
     #[test]
     fn task50_recommend_pi_host_models_keep_resource_vendors() {
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![ResourceAgent {
                 id: "pi".into(),
@@ -1639,6 +1645,7 @@ mod tests {
     #[test]
     fn task50_recommend_unrecognized_vendors_do_not_block_reviewers() {
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![ResourceAgent {
                 id: "pi".into(),
@@ -1706,6 +1713,7 @@ mod tests {
     fn task50_recommend_stage_conflict_note_when_role_default_kept() {
         // 夹具只有两家：claude 原生（主 agent 厂商 Anthropic）与 pi 的智谱。
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![
                 ResourceAgent {
@@ -1884,6 +1892,7 @@ mod tests {
     #[test]
     fn task57_arena_positions_repeat_when_pool_has_single_model() {
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![ResourceAgent {
                 id: "pi".into(),
@@ -1921,6 +1930,7 @@ mod tests {
     #[test]
     fn task57_unverified_models_counted_and_unfilled_reason_points_the_way() {
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![ResourceAgent {
                 id: "pi".into(),
@@ -1982,6 +1992,7 @@ mod tests {
     #[test]
     fn task61_recommend_skips_untested_unknown_vendor_reviewers_and_blind_only_shared() {
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![
                 ResourceAgent {
@@ -2065,6 +2076,7 @@ mod tests {
     #[test]
     fn task61_r1_unknown_vendor_skips_planning_seat_in_custom_mode() {
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![ResourceAgent {
                 id: "pi".into(),
@@ -2113,6 +2125,7 @@ mod tests {
     #[test]
     fn task61_r1_recommend_does_not_fall_back_to_illegal_role_default() {
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             version: 1,
             agents: vec![ResourceAgent {
                 id: "agy".into(),

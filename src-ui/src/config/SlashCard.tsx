@@ -295,6 +295,9 @@ export function SlashCard({
   const nameInvalid = nameError !== '';
   const draftMode = modes.find((mode) => mode.id === draft?.mode);
 
+  // 这个软件没有短命令（扩展主 agent），不显示卡片。
+  if (list?.supported === false) return null;
+
   return (
     <section className="card slash-card">
       <div className="card-row card-head">

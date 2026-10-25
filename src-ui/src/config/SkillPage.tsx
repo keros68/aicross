@@ -18,6 +18,7 @@ import { needsFirstDetect } from './config-view';
 import {
   canUninstall,
   canUpgradeHere,
+  supportsProjectInstall,
   duplicatePaths,
   findHostStatus,
   globalInstallAction,
@@ -206,10 +207,12 @@ export function SkillPage({
     <div className="page">
       {header(
         <>
-          <button type="button" className="btn" disabled={busy !== null} onClick={() => void installProject()}>
-            <Icon name="folder" />
-            {projectBusy ? '安装中…' : '安装到项目'}
-          </button>
+          {supportsProjectInstall(hostId) && (
+            <button type="button" className="btn" disabled={busy !== null} onClick={() => void installProject()}>
+              <Icon name="folder" />
+              {projectBusy ? '安装中…' : '安装到项目'}
+            </button>
+          )}
           {action.disabled && status !== null ? (
             <span className={`pill skill-global-state ${action.kind === 'installed' ? 'ok' : ''}`}>{action.label}</span>
           ) : (

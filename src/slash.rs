@@ -463,6 +463,16 @@ fn builtin_mode_items(
 
 /// `slash list` 的实现体；窗口命令同此结构。
 pub(crate) fn slash_list_at(root: &Path, home: &Path, host: &str) -> Result<Value, (i32, String)> {
+    // 扩展主 agent 没有短命令：只给调用写法，界面据 supported 隐藏短命令卡片。
+    if let Some(extra) = crate::hosts::extra_host(host) {
+        return Ok(json!({
+            "host": host,
+            "invoke": extra.invoke,
+            "commands": [],
+            "modes": [],
+            "supported": false,
+        }));
+    }
     validate_host(host)?;
     let _guard = crate::console_cli::modes_write_lock(root)?;
     list_locked(root, home, host)
@@ -1799,5 +1809,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(home);
         let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn extra_hosts_have_invoke_but_no_short_commands() {
+        let root = temp_dir("extra-root");
+        let home = temp_dir("extra-home");
+        let value = slash_list_at(&root, &home, "qoder").unwrap();
+        assert_eq!(value["invoke"], "/ai-cross");
+        assert_eq!(value["supported"], false);
+        assert_eq!(slash_list_at(&root, &home, "workbuddy").unwrap()["invoke"], "用 ai-cross");
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(home);
     }
 }

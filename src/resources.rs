@@ -107,6 +107,9 @@ pub struct ResourceStore {
     /// 该字段时为 None，`aicross resources` 的 `detected_at` 输出 null。
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "detectedAt")]
     pub detected_at: Option<String>,
+    /// 最近一次探测发现的扩展主 agent（`hosts::EXTRA_HOSTS` 的 id）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "extraHosts")]
+    pub extra_hosts: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -590,6 +593,7 @@ fn load_or_default(path: &Path) -> Result<ResourceStore, String> {
         load(path)
     } else {
         Ok(ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: Vec::new(),
@@ -2752,7 +2756,10 @@ pub(crate) fn detect_all_resources_with_progress(
     cc_switch_path: Option<&str>,
     on_done: &(dyn Fn(&str, usize, usize) + Sync),
 ) -> Result<ResourceOperation, String> {
-    detect_all_resources_inner(path, cc_switch_path, on_done, &|agent_id| {
+    let extra_hosts = crate::paths::home()
+        .ok()
+        .map(|home| crate::hosts::detect_extra_hosts(&home, std::env::var("PATH").ok().as_deref()));
+    detect_all_resources_inner(path, cc_switch_path, on_done, extra_hosts, &|agent_id| {
         prepare_agent_detection(agent_id)
     })
 }
@@ -2765,6 +2772,7 @@ fn detect_all_resources_inner(
     path: &Path,
     cc_switch_path: Option<&str>,
     on_done: &(dyn Fn(&str, usize, usize) + Sync),
+    extra_hosts: Option<Vec<String>>,
     prepare: &(dyn Fn(&str) -> PreparedDetection + Sync),
 ) -> Result<ResourceOperation, String> {
     // agent 清单先在锁内取齐（ensure_agents 可能补内置骨架），探测全部
@@ -2812,7 +2820,7 @@ fn detect_all_resources_inner(
             })
             .collect()
     });
-    merge_prepared_detections(path, cc_switch_path, &ids, prepared)
+    merge_prepared_detections(path, cc_switch_path, &ids, prepared, extra_hosts)
 }
 
 /// 锁内合并：按 agent 清单顺序应用全部探测结果，查 cc-switch 发现提示，
@@ -2822,6 +2830,7 @@ fn merge_prepared_detections(
     cc_switch_path: Option<&str>,
     ids: &[String],
     mut prepared: Vec<PreparedDetection>,
+    extra_hosts: Option<Vec<String>>,
 ) -> Result<ResourceOperation, String> {
     // cc-switch 提示要拉起 Python（最长 20 秒），放在锁外。
     let (cc_switch_hints, hint_error) = detect_cc_switch_hints(cc_switch_path);
@@ -2839,6 +2848,9 @@ fn merge_prepared_detections(
     }
     if let Some(error) = hint_error {
         errors.push(error);
+    }
+    if let Some(extra_hosts) = extra_hosts {
+        store.extra_hosts = extra_hosts;
     }
     stamp_detected_at(&mut store);
     save_store(path, &store)?;
@@ -2868,7 +2880,7 @@ fn detect_all_resources_sequential_with(
             .collect::<Vec<_>>()
     };
     let prepared = ids.iter().map(|agent_id| prepare(agent_id)).collect();
-    merge_prepared_detections(path, cc_switch_path, &ids, prepared)
+    merge_prepared_detections(path, cc_switch_path, &ids, prepared, None)
 }
 
 /// TASK-52：删除最近一次探测未发现（meta 带「未在事实源中」标记）的模型。
@@ -3196,7 +3208,7 @@ exit 2
 "#;
         let script = write_fake_pi(&root, body);
         let path = root.join("resources.json");
-        save_store(&path, &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        save_store(&path, &ResourceStore { extra_hosts: Vec::new(), detected_at: None, version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
         let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, Some(script)).unwrap();
         assert!(operation.errors.is_empty(), "{:?}", operation.errors);
         let persisted = load(&path).unwrap();
@@ -3220,7 +3232,7 @@ exit 2
             id: "m".into(), agent: "pi".into(), provider: "p".into(),
             login: ResourceLogin::LoggedIn, ..Default::default()
         };
-        save_store(&path, &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", vec![model])] }).unwrap();
+        save_store(&path, &ResourceStore { extra_hosts: Vec::new(), detected_at: None, version: 1, agents: vec![fixture_agent("pi", vec![model])] }).unwrap();
         let operation = detect_resource_agent_at_with_pi_binary(&path, "pi", None, None).unwrap();
         let pi = operation.store.agents.iter().find(|agent| agent.id == "pi").unwrap();
         assert!(!pi.detected);
@@ -3263,7 +3275,7 @@ exit 2
 "#;
         let script = write_fake_pi(&root, body);
         let path = root.join("resources.json");
-        save_store(&path, &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        save_store(&path, &ResourceStore { extra_hosts: Vec::new(), detected_at: None, version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
         let thread_path = path.clone();
         let handle = std::thread::spawn(move || {
             detect_resource_agent_at_with_pi_binary(&thread_path, "pi", None, Some(script))
@@ -3300,6 +3312,7 @@ exit 2
         primary.provider = "p0".into();
         primary.quota_exhausted_until = Some("2000-01-01T00:00:00+08:00".into());
         let store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![primary])],
@@ -3415,6 +3428,7 @@ exit 2
 
         // 合并后资源库保持事实源顺序，而不是按 id 字母序；事实源里没有的排最后。
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("codex", vec![fixture_model("codex-auto-review")])],
@@ -3443,6 +3457,7 @@ exit 2
         let mut old = fixture_model("gpt-old");
         old.agent = "codex".into();
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("codex", vec![old])],
@@ -3610,6 +3625,7 @@ exit 2
     #[test]
     fn merge_preserves_user_fields_adds_pending_and_marks_missing() {
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent(
@@ -3679,6 +3695,7 @@ exit 2
         assert!(legacy.quota_exhausted_until.is_none());
 
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent(
@@ -3841,7 +3858,7 @@ exit 2
         let parallel_path = task57_temp_root("parallel").join("resources.json");
         let sequential_path = task57_temp_root("sequential").join("resources.json");
         let parallel =
-            detect_all_resources_inner(&parallel_path, None, &|_, _, _| {}, &prepare).unwrap();
+            detect_all_resources_inner(&parallel_path, None, &|_, _, _| {}, None, &prepare).unwrap();
         let sequential = detect_all_resources_sequential_with(&sequential_path, None, &prepare).unwrap();
         assert_eq!(parallel.errors, sequential.errors);
         assert!(parallel.store.detected_at.is_some());
@@ -3879,7 +3896,7 @@ exit 2
         let calls = std::sync::Mutex::new(Vec::<(String, usize, usize)>::new());
         let operation = detect_all_resources_inner(&path, None, &|agent, done, total| {
             calls.lock().unwrap().push((agent.to_string(), done, total));
-        }, &prepare).unwrap();
+        }, None, &prepare).unwrap();
         let calls = calls.into_inner().unwrap();
         assert_eq!(calls.len(), operation.store.agents.len());
         // done 严格递增（fix-57-r1 2）：不排序，直接断言回调序列就是
@@ -3905,7 +3922,7 @@ exit 2
         };
         let path = task57_temp_root("panic").join("resources.json");
         let operation =
-            detect_all_resources_inner(&path, None, &|_, _, _| {}, &panicking).unwrap();
+            detect_all_resources_inner(&path, None, &|_, _, _| {}, None, &panicking).unwrap();
         // codex 的探测线程 panic 转成一条线程异常；其余 agent 的错误与
         // 假探测的基线一致（kimi 未检测与清单读取失败、pi 的 provider 提示）。
         assert_eq!(
@@ -4054,6 +4071,7 @@ exit 2
     fn declared_models_are_not_marked_missing() {
         // 申报 source 的消失条目不标「未在事实源中」（修正轮 R1 补测）。
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent(
@@ -4156,6 +4174,7 @@ exit 2
         assert_eq!(claude.resolved_id, "claude-fable-5-1");
         claude.verification = VERIFICATION_UNVERIFIED.to_string();
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("claude", vec![claude])],
@@ -4189,6 +4208,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut pi_store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![pi_model])],
@@ -4217,6 +4237,7 @@ exit 2
         existing.resolved_id = "claude-fable-5-1-20260901".to_string();
         existing.resolved_source = RESOLVED_SOURCE_IDENTITY.to_string();
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("claude", vec![existing])],
@@ -4245,6 +4266,7 @@ exit 2
         measured.resolved_id = "claude-sonnet-5-20260901".to_string();
         measured.resolved_source = RESOLVED_SOURCE_IDENTITY.to_string();
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("claude", vec![stale, measured])],
@@ -4285,6 +4307,7 @@ exit 2
             ..ResourceModel::default()
         };
         let original = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![matched, unmatched])],
@@ -4343,6 +4366,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![model])],
@@ -4371,6 +4395,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![model])],
@@ -4391,6 +4416,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("codex", vec![native])],
@@ -4408,6 +4434,7 @@ exit 2
             ..ResourceModel::default()
         };
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent("pi", vec![model])],
@@ -4930,6 +4957,7 @@ exit 2
         }
 
         let mut old_store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![
@@ -5152,7 +5180,7 @@ exit 2
             provider: "deepseek".into(),
             id: "deepseek-v4-flash".into(),
         };
-        let mut store = ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", vec![model])] };
+        let mut store = ResourceStore { extra_hosts: Vec::new(), detected_at: None, version: 1, agents: vec![fixture_agent("pi", vec![model])] };
         apply_smoke_outcome(&mut store, &key, Ok(SmokeSuccess {
             identity: "deepseek/deepseek-flash".into(),
             meta_marker: Some(marker),
@@ -5314,6 +5342,7 @@ exit 2
     fn task48_merge_marks_missing_then_recovers() {
         let now = 2_000_000_000_000_i64;
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent(
@@ -5350,6 +5379,7 @@ exit 2
         save_store(
             &path,
             &ResourceStore {
+                extra_hosts: Vec::new(),
                 detected_at: None,
                 version: 1,
                 agents: vec![fixture_agent("pi", vec![fixture_model("glm-5.3"), missing])],
@@ -5384,6 +5414,7 @@ exit 2
         save_store(
             &path,
             &ResourceStore {
+                extra_hosts: Vec::new(),
                 detected_at: None,
                 version: 1,
                 agents: vec![fixture_agent("pi", vec![gone])],
@@ -5411,7 +5442,7 @@ exit 2
         let root = crate::paths::test_temp_dir().join(format!("aicross-task48-detected-at-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("resources.json");
-        save_store(&path, &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
+        save_store(&path, &ResourceStore { extra_hosts: Vec::new(), detected_at: None, version: 1, agents: vec![fixture_agent("pi", Vec::new())] }).unwrap();
         let body = r#"#!/bin/sh
 if [ "$1" = --version ]; then printf '%s\n' 'pi test'; exit 0; fi
 if [ "$1" = --list-models ]; then printf '%s\n' 'ready model-a'; exit 0; fi
@@ -5446,7 +5477,7 @@ exit 2
         };
         save_store(
             &path,
-            &ResourceStore { detected_at: None, version: 1, agents: vec![fixture_agent("claude", vec![claude_model])] },
+            &ResourceStore { extra_hosts: Vec::new(), detected_at: None, version: 1, agents: vec![fixture_agent("claude", vec![claude_model])] },
         )
         .unwrap();
 
@@ -5505,6 +5536,7 @@ exit 2
         save_store(
             &path,
             &ResourceStore {
+                extra_hosts: Vec::new(),
                 detected_at: None,
                 version: 1,
                 agents: vec![fixture_agent("pi", vec![fixture_model("kept"), missing, declared])],
@@ -5538,6 +5570,7 @@ exit 2
         save_store(
             &path,
             &ResourceStore {
+                extra_hosts: Vec::new(),
                 detected_at: None,
                 version: 1,
                 agents: vec![
@@ -5572,6 +5605,7 @@ exit 2
         save_store(
             &path,
             &ResourceStore {
+                extra_hosts: Vec::new(),
                 detected_at: None,
                 version: 1,
                 agents: vec![fixture_agent("pi", vec![seated, roled, healthy])],
@@ -5606,6 +5640,7 @@ exit 2
         save_store(
             &path,
             &ResourceStore {
+                extra_hosts: Vec::new(),
                 detected_at: None,
                 version: 1,
                 agents: vec![fixture_agent("pi", vec![gone])],
@@ -5645,6 +5680,7 @@ exit 2
     #[ignore = "真机验收：探测四个内置 agent（内存 store，不写 resources.json）"]
     fn live_detect_four_agents() {
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: Vec::new(),
@@ -5680,6 +5716,7 @@ exit 2
             ..Default::default()
         };
         let mut store = ResourceStore {
+            extra_hosts: Vec::new(),
             detected_at: None,
             version: 1,
             agents: vec![fixture_agent(

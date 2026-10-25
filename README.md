@@ -1,7 +1,7 @@
 # aicross
 
-多 agent 协作的入门面板。平时用 Claude Code、Codex、Kimi Code 还是 pi agent
-都可以：打开面板点两下，本机已有的各家模型就分好了谁出方案、谁执行、谁审查，
+多 agent 协作的入门面板。平时用 Claude Code、Codex、Kimi Code、OpenCode、
+Qoder、CodeBuddy 还是别的 agent 都可以：打开面板点两下，本机已有的各家模型就分好了谁出方案、谁执行、谁审查，
 回到原来的软件里说一句话就开始协作。
 
 本仓库同时包含面板（`src/`、`src-ui/`）与 ai-cross skill 源码
@@ -13,8 +13,11 @@
 - **新人快速上手**：「开始」页三步完成：探测本机装了哪些 agent 和模型，选平时用的
   软件后「一键配好」（装 skill、按推荐分好人选），复制示例回去说一句。不用写配置
   文件，不用记命令；之后改人选也在面板里点选。
-- **不挑主 agent**：Claude Code、Codex、Kimi Code、pi agent 都能当主 agent，换着用时
-  各自一份配置，互不影响。
+- **不挑主 agent**：Claude Code、Codex、Kimi Code、pi agent、OpenCode、Gemini CLI、
+  Antigravity、Hermes Agent、ZCode、CodeBuddy、WorkBuddy、Qoder（含国内版）都能当
+  主 agent，探测时自动发现，换着用时各自一份配置，互不影响。
+- **自动更新**：软件有新版时顶栏提示，点一下下载、校验签名并安装；aicross 装的 skill
+  随软件一起更新，别的软件装的旧版 skill 点「升级」即可换成新版。
 - **多种协作方式**：六种模式可选，也能自建：
 
   | 模式 | 做法 |

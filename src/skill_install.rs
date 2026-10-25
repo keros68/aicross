@@ -210,6 +210,9 @@ fn read_paths(host: &str, home: &Path, project: Option<&Path>) -> Vec<(String, P
                 push(&mut paths, "project", dir.join(".agents").join("skills").join("ai-cross"));
             }
         }
+        other if crate::hosts::extra_host(other).is_some() => {
+            push(&mut paths, "global", extra_skill_path(other, home));
+        }
         _ => {
             push(&mut paths, "global", home.join(".pi").join("agent").join("skills").join("ai-cross"));
             push(&mut paths, "global", home.join(".agents").join("skills").join("ai-cross"));
@@ -226,6 +229,9 @@ fn read_paths(host: &str, home: &Path, project: Option<&Path>) -> Vec<(String, P
 /// kimi、pi 写 `.agents/skills/ai-cross`（全局在家目录下，项目在项目
 /// 目录下）。拼路径逐段 join，Windows 上输出不混用正反斜杠（走查 #11）。
 fn install_path(host: &str, home: &Path, project: Option<&Path>) -> PathBuf {
+    if crate::hosts::extra_host(host).is_some() {
+        return extra_skill_path(host, home);
+    }
     let relative = match host {
         "claude" => Path::new(".claude").join("skills").join("ai-cross"),
         _ => Path::new(".agents").join("skills").join("ai-cross"),
@@ -234,6 +240,15 @@ fn install_path(host: &str, home: &Path, project: Option<&Path>) -> PathBuf {
         Some(dir) => dir.join(relative),
         None => home.join(relative),
     }
+}
+
+/// 扩展主 agent 的全局安装位置：`<家目录>/<skills_dir>/ai-cross`，逐段 join。
+fn extra_skill_path(host: &str, home: &Path) -> PathBuf {
+    let dir = crate::hosts::extra_host(host).map_or("", |extra| extra.skills_dir);
+    dir.split('/')
+        .filter(|part| !part.is_empty())
+        .fold(home.to_path_buf(), |path, part| path.join(part))
+        .join("ai-cross")
 }
 
 /// 判定一个位置（TASK-50 第 4 节）。链接（symlink / junction）按
@@ -649,7 +664,7 @@ pub(crate) fn status_at(home: &Path, project: Option<&Path>) -> Result<Value, (i
             return Err((2, format!("项目目录不存在：{}", project.display())));
         }
     }
-    let hosts: Vec<HostSkillStatus> = crate::hosts::HOST_IDS
+    let hosts: Vec<HostSkillStatus> = crate::hosts::all_host_ids()
         .iter()
         .map(|host| host_status(host, home, project.as_deref()))
         .collect();
@@ -798,11 +813,14 @@ fn validate_target(
     scope: &str,
     project: Option<&Path>,
 ) -> Result<Option<PathBuf>, (i32, String)> {
-    if !crate::hosts::HOST_IDS.contains(&host) {
-        return Err((2, format!("未知 host：{host}；可选：{}", crate::hosts::HOST_IDS.join("、"))));
+    if !crate::hosts::is_host_id(host) {
+        return Err((2, format!("未知 host：{host}；可选：{}", crate::hosts::all_host_ids().join("、"))));
     }
     match scope {
         "global" => Ok(None),
+        "project" if crate::hosts::extra_host(host).is_some() => {
+            Err((2, format!("{host} 只支持全局安装")))
+        }
         "project" => {
             let Some(project) = project else {
                 return Err((2, "项目范围需要 --project".to_string()));
@@ -1807,13 +1825,30 @@ mod tests {
         let value = status_at(&home, None).unwrap();
         assert_eq!(value["bundledVersion"], bundled_version());
         let hosts = value["hosts"].as_array().unwrap();
-        assert_eq!(hosts.len(), 4);
+        assert_eq!(hosts.len(), crate::hosts::all_host_ids().len());
         for host in hosts {
             assert!(host["locations"].as_array().unwrap().len() >= 1);
             assert_eq!(host["locations"][0]["readByThisHost"], true);
             // writeTarget 每个位置都带，前端据此决定按钮状态。
             assert!(host["locations"][0]["writeTarget"].is_boolean());
         }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn extra_hosts_install_into_their_own_skill_dirs() {
+        let home = temp_home("extra-host");
+        let value = install_at(&home, "hermes", "global", None).unwrap();
+        assert!(home.join(".hermes/skills/ai-cross/SKILL.md").is_file(), "{value}");
+        install_at(&home, "agy", "global", None).unwrap();
+        assert!(home.join(".gemini/antigravity/skills/ai-cross/SKILL.md").is_file());
+        // ZCode 读 ~/.agents/skills。
+        let status = host_status("zcode", &home, None);
+        assert!(ends_with_path(&status.locations[0].path, ".agents/skills/ai-cross"));
+        // 扩展主 agent 只支持全局安装。
+        let project = home.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        assert_eq!(install_at(&home, "hermes", "project", Some(&project)).unwrap_err().0, 2);
         let _ = std::fs::remove_dir_all(home);
     }
 }
