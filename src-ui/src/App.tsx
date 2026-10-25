@@ -1,5 +1,5 @@
 // App.tsx — 窗口外壳（TASK-49、TASK-51；fix-51-r1 改为 magpie 式顶栏）：顶栏左边是
-// 应用名与「主 agent」标签 + 下拉（所有页都显示，只有 skill、模式页随它变化），正中是分段导航（资源 / skill /
+// 应用名与「主 agent」标签 + 下拉（所有页都显示，只有 skill、模式页随它变化），正中是分段导航（开始 / 资源 / skill /
 // 模式 / 派发记录），右边是刷新（重新读取当前页）与窗口按钮；顶栏空白处可拖动窗口。
 // 下面是内容区，查看页也在内容区里，导航保留。`aicross open <run_id>` 的冷启动请求
 // 随 argv 走（takePendingOpen 取一次），热启动走单实例插件转发的 'open-run-request'
@@ -17,6 +17,7 @@ import { RunViewer } from './viewer/RunViewer';
 import { ModesPage } from './config/ModesPage';
 import { ResourcesPage } from './config/ResourcesPage';
 import { SkillPage } from './config/SkillPage';
+import { StartPage } from './config/StartPage';
 import { PAGE_TABS, keepsMounted, pageTabStorage, readPageTab, writePageTab, type PageTab } from './config/page-tabs';
 import { onWindowDragDoubleClick, onWindowDragMouseDown } from './lib/window-drag';
 import { readHost, writeHost } from './lib/host-select';
@@ -183,6 +184,19 @@ export function App() {
           const visible = viewerRequest === null && id === tab;
           return (keepsMounted(id) || visible) && (
             <div key={id} hidden={!visible}>
+              {id === 'start' && (
+                <StartPage
+                  active={visible}
+                  host={currentHost}
+                  hosts={hosts}
+                  onSelectHost={selectHost}
+                  refreshKey={refreshKey}
+                  onRefreshDone={onRefreshDone}
+                  onDetected={loadHosts}
+                  onGoModes={() => selectTab('modes')}
+                  onGoResources={() => selectTab('resources')}
+                />
+              )}
               {id === 'resources' && (
                 <ResourcesPage
                   active={visible}

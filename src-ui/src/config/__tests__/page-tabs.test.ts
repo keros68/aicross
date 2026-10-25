@@ -23,9 +23,9 @@ const throwing = {
 };
 
 describe('页签', () => {
-  it('依次是资源、skill、模式、派发记录，首次打开进资源', () => {
-    expect(PAGE_TABS.map((tab) => tab.label)).toEqual(['资源', 'skill', '模式', '派发记录']);
-    expect(DEFAULT_PAGE_TAB).toBe('resources');
+  it('依次是开始、资源、skill、模式、派发记录，首次打开进开始', () => {
+    expect(PAGE_TABS.map((tab) => tab.label)).toEqual(['开始', '资源', 'skill', '模式', '派发记录']);
+    expect(DEFAULT_PAGE_TAB).toBe('start');
   });
 
   it('写入后读回同一页签', () => {
@@ -38,12 +38,14 @@ describe('页签', () => {
   });
 
   it('没存过或值不认时用默认', () => {
-    expect(readPageTab(memoryStorage())).toBe('resources');
-    expect(readPageTab(memoryStorage({ [PAGE_TAB_STORAGE_KEY]: 'terminal' }))).toBe('resources');
-    expect(readPageTab(null)).toBe('resources');
+    expect(readPageTab(memoryStorage())).toBe('start');
+    expect(readPageTab(memoryStorage({ [PAGE_TAB_STORAGE_KEY]: 'terminal' }))).toBe('start');
+    expect(readPageTab(null)).toBe('start');
+    expect(readPageTab(memoryStorage({ [PAGE_TAB_STORAGE_KEY]: 'resources' }))).toBe('resources');
   });
 
   it('各页都常驻（派发记录只在可见时轮询）', () => {
+    expect(keepsMounted('start')).toBe(true);
     expect(keepsMounted('resources')).toBe(true);
     expect(keepsMounted('modes')).toBe(true);
     expect(keepsMounted('skill')).toBe(true);
@@ -51,7 +53,7 @@ describe('页签', () => {
   });
 
   it('读写抛错时回默认，不向外抛', () => {
-    expect(readPageTab(throwing)).toBe('resources');
+    expect(readPageTab(throwing)).toBe('start');
     expect(() => writePageTab(throwing, 'resources')).not.toThrow();
     expect(() => writePageTab(null, 'resources')).not.toThrow();
   });

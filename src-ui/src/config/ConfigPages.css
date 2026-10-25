@@ -993,3 +993,135 @@ button.card-toggle-inner:hover {
   white-space: nowrap;
   user-select: text;
 }
+
+/* ── 开始页（TASK-63）：三张步骤卡，序号圆点 + 标题；配好后序号换成对勾。 ── */
+
+.start-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.start-num {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--bg-control);
+  color: var(--text-2);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.start-num.done {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.start-head-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.start-label {
+  flex-shrink: 0;
+  width: 110px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.start-host-row,
+.start-skill-row {
+  flex-wrap: wrap;
+}
+
+.start-hosts {
+  flex-wrap: wrap;
+}
+
+.start-hosts .segmented-item {
+  font-size: 14px;
+}
+
+.start-mode-row {
+  align-items: flex-start;
+}
+
+.start-mode-row .start-label {
+  padding-top: 2px;
+}
+
+.start-mode-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.start-mode-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.start-seats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.start-seat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-control);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.start-seat.alert {
+  background: transparent;
+  border: 1px dashed var(--red);
+  color: var(--red);
+}
+
+.start-seat-role {
+  color: var(--text-3);
+}
+
+.start-notes {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.start-note {
+  white-space: normal;
+}
+
+.start-example-label {
+  min-width: 44px;
+  justify-content: center;
+}
+
+.start-example-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  user-select: text;
+}
