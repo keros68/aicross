@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 DEFAULT_SOURCE = r"D:\work\skill\xiaoyu-skill\skills\ai-cross"
-EXCLUDED_DIR_NAMES = {"tests", "__pycache__"}
+EXCLUDED_DIR_NAMES = {"tests", "__pycache__", ".pytest_cache"}
 EXCLUDED_NAME_PREFIXES = (".git",)
 EXCLUDED_SUFFIXES = (".pyc",)
 
