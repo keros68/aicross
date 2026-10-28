@@ -349,7 +349,7 @@ fn build_invocation_spec(
             }
             Ok(InvocationSpec {
                 binary: "claude",
-                fallback: None,
+                fallback: crate::agent_catalog::desktop_bundled("claude"),
                 args,
                 input: Some(prompt.into()),
             })
@@ -380,7 +380,7 @@ fn build_invocation_spec(
             }
             Ok(InvocationSpec {
                 binary: "codex",
-                fallback: None,
+                fallback: crate::agent_catalog::desktop_bundled("codex"),
                 args,
                 input: Some(prompt.into()),
             })

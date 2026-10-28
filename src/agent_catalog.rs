@@ -228,7 +228,157 @@ pub(crate) fn resolve_program(id: &str) -> Option<PathBuf> {
     if let Some(fallback) = fallback_path(entry.id).filter(|path| path.is_file()) {
         return Some(fallback);
     }
-    crate::channels::resolve_binary(entry.command, None).ok()
+    crate::channels::resolve_binary(entry.command, desktop_bundled(entry.id)).ok()
+}
+
+/// 桌面端自带的命令行程序：只装了 Codex 或 Claude 桌面端、没装 CLI 时用它。
+/// PATH 里的 CLI 优先，这里只作最后的兜底。路径里带版本号，每次现查目录，
+/// 取版本最高且文件存在的一份。
+pub(crate) fn desktop_bundled(id: &str) -> Option<PathBuf> {
+    let candidates = match id {
+        "codex" => codex_desktop_candidates(),
+        "claude" => claude_desktop_candidates(),
+        _ => Vec::new(),
+    };
+    candidates
+        .into_iter()
+        .filter(|path| path.is_file())
+        .max_by(|a, b| version_key(a).cmp(&version_key(b)))
+}
+
+/// Codex 桌面端（Windows 商店包 OpenAI.Codex）把 codex.exe 放在
+/// `<包目录>\app\resources\` 下。包目录先查注册表里登记的位置，再试直接
+/// 列 WindowsApps（普通用户常常没有列目录权限）。
+fn codex_desktop_candidates() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut roots = win_packages::package_roots("OpenAI.Codex_");
+        if let Some(apps) = std::env::var_os("ProgramFiles").map(|dir| PathBuf::from(dir).join("WindowsApps")) {
+            roots.extend(child_dirs_with_prefix(&apps, "OpenAI.Codex_"));
+        }
+        roots.into_iter().map(|root| root.join("app").join("resources").join("codex.exe")).collect()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+/// Claude 桌面端把 Claude Code 下载到 `<配置目录>\Claude\claude-code\<版本>\`；
+/// 商店版的写入被重定向到 `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude`。
+/// 位置按公开资料写，未在装了 Claude 桌面端的机器上实测。
+fn claude_desktop_candidates() -> Vec<PathBuf> {
+    let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let mut bases: Vec<PathBuf> = dirs::config_dir().into_iter().map(|dir| dir.join("Claude")).collect();
+    if cfg!(windows) {
+        if let Some(packages) = dirs::data_local_dir().map(|dir| dir.join("Packages")) {
+            bases.extend(
+                child_dirs_with_prefix(&packages, "Claude_")
+                    .into_iter()
+                    .map(|dir| dir.join("LocalCache").join("Roaming").join("Claude")),
+            );
+        }
+    }
+    bases
+        .iter()
+        .flat_map(|base| child_dirs_with_prefix(&base.join("claude-code"), ""))
+        .map(|dir| dir.join(exe))
+        .collect()
+}
+
+fn child_dirs_with_prefix(dir: &std::path::Path, prefix: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+/// 路径里的数字段（`OpenAI.Codex_26.1023.6123.0_x64__…`、`claude-code\2.1.3\`）
+/// 按顺序取出，用来比新旧。
+fn version_key(path: &std::path::Path) -> Vec<u64> {
+    path.to_string_lossy()
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|part| part.parse().ok())
+        .collect()
+}
+
+#[cfg(windows)]
+mod win_packages {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use std::path::PathBuf;
+
+    use ::windows::core::{w, PCWSTR, PWSTR};
+    use ::windows::Win32::System::Registry::{
+        RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ, RRF_RT_REG_SZ,
+    };
+
+    /// 当前用户已装的商店包里，包全名以 `prefix` 开头的安装目录
+    /// （注册表 AppModel\Repository\Packages 下各包的 PackageRootFolder）。
+    pub(super) fn package_roots(prefix: &str) -> Vec<PathBuf> {
+        let mut key = HKEY::default();
+        let opened = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                w!("Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages"),
+                0,
+                KEY_READ,
+                &mut key,
+            )
+        };
+        if opened.is_err() {
+            return Vec::new();
+        }
+        let mut roots = Vec::new();
+        for index in 0.. {
+            let mut name = vec![0u16; 512];
+            let mut len = name.len() as u32;
+            let status = unsafe {
+                RegEnumKeyExW(key, index, PWSTR(name.as_mut_ptr()), &mut len, None, PWSTR::null(), None, None)
+            };
+            if status.is_err() {
+                break;
+            }
+            let package = OsString::from_wide(&name[..len as usize]).to_string_lossy().into_owned();
+            if !package.starts_with(prefix) {
+                continue;
+            }
+            name.truncate(len as usize);
+            name.push(0);
+            if let Some(root) = read_string(key, PCWSTR(name.as_ptr())) {
+                roots.push(PathBuf::from(root));
+            }
+        }
+        unsafe {
+            let _ = RegCloseKey(key);
+        }
+        roots
+    }
+
+    fn read_string(key: HKEY, subkey: PCWSTR) -> Option<String> {
+        let mut buffer = vec![0u16; 1024];
+        let mut bytes = (buffer.len() * 2) as u32;
+        let status = unsafe {
+            RegGetValueW(
+                key,
+                subkey,
+                w!("PackageRootFolder"),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buffer.as_mut_ptr().cast()),
+                Some(&mut bytes),
+            )
+        };
+        if status.is_err() {
+            return None;
+        }
+        let text = &buffer[..(bytes as usize / 2).min(buffer.len())];
+        let end = text.iter().position(|&unit| unit == 0).unwrap_or(text.len());
+        Some(OsString::from_wide(&text[..end]).to_string_lossy().into_owned())
+    }
 }
 
 /// 表里登记的绝对路径兜底（不检查文件是否存在）。
@@ -244,6 +394,15 @@ pub(crate) fn fallback_path(id: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_bundled_prefers_newest_version_dir() {
+        let older = std::path::Path::new(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.923.100.0_x64__2p2nqsd0c76g0\app\resources\codex.exe");
+        let newer = std::path::Path::new(r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1023.6123.0_x64__2p2nqsd0c76g0\app\resources\codex.exe");
+        assert!(version_key(newer) > version_key(older));
+        assert!(version_key(std::path::Path::new("claude-code/2.10.0/claude")) > version_key(std::path::Path::new("claude-code/2.9.9/claude")));
+        assert_eq!(desktop_bundled("kimi"), None);
+    }
 
     #[test]
     fn task61_catalog_lists_core_four_then_new_agents() {
