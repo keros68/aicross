@@ -6,7 +6,7 @@
 // 数字条「不可用」可点，筛出不可用的模型。单个第三方模型可测试连接。数据取
 // config_snapshot 的 resources，操作结束后重新取一次。探测、测试连接、清理同一时间
 // 只跑一个。TASK-58：从未探测时顶部空态条与「探测」；探测中按进度事件显示「探测中 2/4」与
-// 各卡片转圈；有未验证第三方模型的卡片可「全部测试」（并发 3，可取消）；模式页「去测试」
+// 各卡片转圈；有待测第三方模型（未验证、验证失败、连接超时）的卡片可「全部测试」（并发 3，可取消）；模式页「去测试」
 // 跳来时展开对应卡片。TASK-62：没装的 agent 折叠成末尾一行「未安装 N 个」，展开后每行图标、
 // 名称与官网地址（可复制）；未实测的 agent 卡片标题旁标「未实测」。
 
@@ -517,7 +517,7 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
                   ) : (
                     <div className="card-toggle-inner static">{headContent}</div>
                   )}
-                  {targets.length > 0 && (
+                  {(targets.length > 0 || running !== null) && (
                     <span className="batch-actions">
                       <button
                         type="button"

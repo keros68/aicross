@@ -49,7 +49,7 @@ describe('探测进度（TASK-58 #3）', () => {
 });
 
 describe('全部测试（TASK-58 #4）', () => {
-  it('目标是未验证的第三方模型，原生与其他状态不算', () => {
+  it('目标是未验证、验证失败、连接超时的第三方模型，原生与其他状态不算', () => {
     const targets = batchSmokeTargets({
       models: [
         model('a', 'zai', '未验证'),
@@ -57,9 +57,11 @@ describe('全部测试（TASK-58 #4）', () => {
         model('c', 'zai', '已验证'),
         model('d', 'qwen', '验证失败'),
         model('e', 'opencode-go', '未验证'),
+        model('f', 'anthropic', '冒烟超时'),
+        model('g', 'zai', '额度用尽'),
       ],
     });
-    expect(targets.map((item) => item.id)).toEqual(['a', 'e']);
+    expect(targets.map((item) => item.id)).toEqual(['a', 'd', 'e', 'f']);
   });
 
   it('按钮文字：未运行「全部测试」，运行中「测试中 12/33」', () => {

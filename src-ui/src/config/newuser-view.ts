@@ -3,6 +3,7 @@
 // 引擎字段见 tasks/TASK-58-newuser-ui.md「引擎契约」。
 
 import type { ResourceAgentEntry, ResourceModelEntry, SlashModeEntry } from '../tauri';
+import { canSmoke } from './config-view';
 
 /** 从未探测时 agent 与模型的状态（中性，不算异常）。 */
 export const NOT_DETECTED_STATE = '未探测';
@@ -28,9 +29,10 @@ export function detectButtonLabel(input: {
   return input.everDetected ? '重新探测' : '探测';
 }
 
-/** 「全部测试」的目标：这个 agent 下未验证的第三方模型（provider 不为空）。 */
+/** 「全部测试」的目标：这个 agent 下有「测试连接」按钮的第三方模型（provider 不为空），
+ *  即未验证、验证失败、连接超时的，与单条测试一致。 */
 export function batchSmokeTargets(agent: Pick<ResourceAgentEntry, 'models'>): ResourceModelEntry[] {
-  return agent.models.filter((model) => model.state === '未验证' && model.provider.trim() !== '');
+  return agent.models.filter((model) => canSmoke(model) && model.provider.trim() !== '');
 }
 
 export function batchSmokeLabel(running: { done: number; total: number } | null): string {
