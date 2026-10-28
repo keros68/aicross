@@ -1,6 +1,7 @@
-// StartPage.tsx — 「开始」页（TASK-63）：新人一页走完三步。① 探测本机的 AI；② 选主 agent、
-// 一键配好（装 skill + 一键推荐，不动手选人选），显示审与干活各派给谁；③ 回到主 agent 里
-// 输入什么。数据取 config_snapshot(host)、skill_status、slash_list；写入只有 skill_install
+// StartPage.tsx — 「开始」页（TASK-63）：新人一页走完。① 主 agent：探测、选在哪个软件里
+// 对话、skill 状态；② 副 agent：被派去干活、审查的各家与其模型；③ 一键配好（装 skill +
+// 一键推荐，不动手选人选），显示审与干活各派给谁；④ 回到主 agent 里输入什么。一次探测
+// 同时得出主 agent 与副 agent（TASK-68）。数据取 config_snapshot(host)、skill_status、slash_list；写入只有 skill_install
 // 与 config_recommend，同一时间只跑一个。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -8,8 +9,6 @@ import { commands, isTauri, type ConfigSnapshot, type DetectProgress, type HostE
 import { needsFirstDetect } from './config-view';
 import { canUpgradeHere, findHostStatus, managerText, outdatedText, recommendNotes, staleExternal } from './skill-view';
 import {
-  foundAgents,
-  hostOnlyNames,
   invokeText,
   needsSkillInstall,
   reviewMode,
@@ -18,6 +17,8 @@ import {
   setupState,
   usageExamples,
   workMode,
+  workerAgents,
+  workerText,
 } from './start-view';
 import { CopyButton } from './SlashCard';
 import { Icon } from '../components/common/Icon';
@@ -101,8 +102,7 @@ export function StartPage({
 
   const resources = snapshot?.resources ?? null;
   const detected = resources !== null && !needsFirstDetect(resources);
-  const found = foundAgents(resources);
-  const hostOnly = hostOnlyNames(hosts, found.names);
+  const workers = workerAgents(resources, hostId);
   const bundled = skill?.bundledVersion ?? '';
   const skillHost = findHostStatus(skill, hostId);
   const modes = snapshot?.config.modes ?? [];
@@ -215,49 +215,23 @@ export function StartPage({
 
         <section className="card start-step">
           <div className="card-row card-head">
-            <span className={`start-num${detected ? ' done' : ''}`}>{detected ? <Icon name="check" /> : '1'}</span>
+            <span className={`start-num${detected && hostId !== '' ? ' done' : ''}`}>
+              {detected && hostId !== '' ? <Icon name="check" /> : '1'}
+            </span>
             <div className="start-head-text">
-              <div className="card-title">本机的 AI</div>
-              {detected && (
-                <div className="card-sub start-found">
-                  {found.names.length === 0 ? '没有找到能派发的 agent' : `能派发：${found.names.join('、')} · 可用模型 ${found.models} 个`}
-                  {hostOnly.length > 0 && <div>也可在这些软件里用：{hostOnly.join('、')}</div>}
-                </div>
-              )}
+              <div className="card-title">主 agent</div>
+              <div className="card-sub">你和 AI 对话的软件，ai-cross skill 装在这里</div>
             </div>
-            {detected && <button type="button" className="icon-btn" onClick={onGoResources}>详情</button>}
             <button
               type="button"
               className={`btn${detected ? '' : ' primary'}`}
               disabled={busy !== null}
+              title="一次探测同时找出主 agent 与副 agent"
               onClick={() => void detect()}
             >
               <Icon name={detected ? 'refresh' : 'search'} />
               {detectLabel}
             </button>
-          </div>
-        </section>
-
-        <section className="card start-step">
-          <div className="card-row card-head">
-            <span className={`start-num${state === 'done' ? ' done' : ''}`}>{state === 'done' ? <Icon name="check" /> : '2'}</span>
-            <div className="start-head-text">
-              <div className="card-title">配好</div>
-              {state === 'need-detect' && <div className="card-sub">探测后可配</div>}
-              {state === 'need-host' && <div className="card-sub">没有找到可用的主 agent</div>}
-            </div>
-            {state === 'done' && <button type="button" className="btn" onClick={onGoModes}>改人选</button>}
-            {(state === 'todo' || state === 'done') && (
-              <button
-                type="button"
-                className={`btn${state === 'done' ? '' : ' primary'}`}
-                disabled={busy !== null || skill === null}
-                onClick={setup}
-              >
-                <Icon name="sparkles" />
-                {busy === 'setup' ? '配置中…' : state === 'done' ? '重新推荐' : '一键配好'}
-              </button>
-            )}
           </div>
           {detected && hosts !== null && hosts.length > 0 && (
             <div className="card-row start-host-row">
@@ -278,6 +252,9 @@ export function StartPage({
               </div>
             </div>
           )}
+          {detected && (hosts === null || hosts.length === 0) && (
+            <div className="card-row"><span className="card-sub">没有找到可用的主 agent</span></div>
+          )}
           {detected && hostId !== '' && skill !== null && (
             <div className="card-row start-skill-row">
               <span className="start-label">ai-cross skill</span>
@@ -291,16 +268,64 @@ export function StartPage({
               />
             </div>
           )}
+          {upgradeNote !== '' && (
+            <div className="card-row start-notes">
+              <div className="card-sub start-note">{upgradeNote}</div>
+            </div>
+          )}
+        </section>
+
+        <section className="card start-step">
+          <div className="card-row card-head">
+            <span className={`start-num${workers.length > 0 ? ' done' : ''}`}>
+              {workers.length > 0 ? <Icon name="check" /> : '2'}
+            </span>
+            <div className="start-head-text">
+              <div className="card-title">副 agent</div>
+              <div className="card-sub">
+                {detected ? '被派去干活、审查的；同一家的模型可能经几个 agent 都能用' : '被派去干活、审查的；探测后列出'}
+              </div>
+            </div>
+            {detected && <button type="button" className="btn" onClick={onGoResources}>详情</button>}
+          </div>
+          {workers.map((worker) => (
+            <div key={worker.id} className="card-row start-worker-row">
+              <span className="start-label">{worker.name}</span>
+              <span className="card-sub">{workerText(worker)}</span>
+              {worker.isHost && <span className="pill muted">当前主 agent</span>}
+            </div>
+          ))}
+          {detected && workers.length === 0 && (
+            <div className="card-row"><span className="card-sub">没有找到能派发的 agent</span></div>
+          )}
+        </section>
+
+        <section className="card start-step">
+          <div className="card-row card-head">
+            <span className={`start-num${state === 'done' ? ' done' : ''}`}>{state === 'done' ? <Icon name="check" /> : '3'}</span>
+            <div className="start-head-text">
+              <div className="card-title">配好</div>
+              {state === 'need-detect' && <div className="card-sub">探测后可配</div>}
+              {state === 'need-host' && <div className="card-sub">先选主 agent</div>}
+            </div>
+            {state === 'done' && <button type="button" className="btn" onClick={onGoModes}>改人选</button>}
+            {(state === 'todo' || state === 'done') && (
+              <button
+                type="button"
+                className={`btn${state === 'done' ? '' : ' primary'}`}
+                disabled={busy !== null || skill === null}
+                onClick={setup}
+              >
+                <Icon name="sparkles" />
+                {busy === 'setup' ? '配置中…' : state === 'done' ? '重新推荐' : '一键配好'}
+              </button>
+            )}
+          </div>
           {detected && hostId !== '' && snapshot !== null && (
             <>
               <ModeLine label="审" mode={review} />
               <ModeLine label="干活" mode={work} />
             </>
-          )}
-          {upgradeNote !== '' && (
-            <div className="card-row start-notes">
-              <div className="card-sub start-note">{upgradeNote}</div>
-            </div>
           )}
           {detected && hostId !== '' && hint.missing > 0 && (
             <div className="card-row start-notes">
@@ -335,7 +360,7 @@ export function StartPage({
 
         <section className="card start-step">
           <div className="card-row card-head">
-            <span className="start-num">3</span>
+            <span className="start-num">4</span>
             <div className="start-head-text">
               <div className="card-title">怎么用</div>
               <div className="card-sub">

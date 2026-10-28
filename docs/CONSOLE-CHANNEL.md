@@ -251,7 +251,8 @@ copilot、qoder），没装的也列（`state` 未安装、`models` 为空）。
 另带 `untested`（布尔：命令模板只照官方文档写、没在真机跑通，一键推荐不选）
 与 `homepage`（官网链接）、`custom_path`（用户指定的可执行文件路径，没指定为空串）。
 未安装的 agent 的 note 写明找的是哪个命令（「没找到 pi；安装后重新探测，或指定路径」），
-指定的路径不存在时为「指定的路径不存在：<路径>」。
+指定的路径不存在时为「指定的路径不存在：<路径>」。每个模型带 `vendor`（厂商，如
+Anthropic、OpenAI，认不出为「其他」），开始页据此写出副 agent 含哪几家的模型。
 `resources detect` 重新探测全部 agent（含 pi provider 登录检查）并写
 回资源库，同时更新 `detected_at`；各 agent 的探测在资源库锁外并行跑，
 全部完成后一次合并写盘。窗口命令 `resources_detect` 同一实现体，每个

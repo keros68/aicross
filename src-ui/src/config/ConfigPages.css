@@ -1138,8 +1138,10 @@ button.card-toggle-inner:hover {
   text-align: left;
 }
 
-/* 第 1 步的名单可能很长，换行显示全，不截断。 */
-.card-sub.start-found {
+/* 副 agent 一行：含哪几家的说明可能较长，在名称右侧那一栏内换行显示全，不截断。 */
+.start-worker-row .card-sub {
+  flex: 0 1 auto;
+  min-width: 0;
   white-space: normal;
   overflow: visible;
   text-overflow: clip;

@@ -246,6 +246,8 @@ export interface ResourceModelEntry {
   agent: string;
   /** 原生模型为空串。 */
   provider: string;
+  /** 模型的厂商（Anthropic、OpenAI、其他…）；旧引擎没有这个字段。 */
+  vendor?: string;
   /** 实际模型；与 id 相同时界面不重复显示。 */
   resolved_id: string;
   /** 状态词：未探测 / 可用 / 已验证 / 未验证 / 验证失败 / 冒烟超时 / 未登录 / 额度用尽 / 未安装 /

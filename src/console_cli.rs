@@ -2827,6 +2827,7 @@ fn agent_entry(agent: &ResourceAgent, ever_detected: bool, now_millis: i64) -> V
                 "id": model.id,
                 "agent": model.agent,
                 "provider": model.provider,
+                "vendor": model.vendor,
                 "resolved_id": model.resolved_id,
                 "state": state,
                 "note": note,

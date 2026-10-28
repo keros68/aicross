@@ -1,4 +1,4 @@
-// 「开始」页的展示纯函数（TASK-63）：找到的 agent、审与干活各用哪个模式（与 skill 1.23.0
+// 「开始」页的展示纯函数（TASK-63）：副 agent 各有哪些模型、审与干活各用哪个模式（与 skill 1.23.0
 // 「按窗口配置派发」同一套选法）、各位置派给谁、配好没有、示例输入。
 
 import type { ModeEntry, ResourcesOutput, SkillHostStatus } from '../tauri';
@@ -6,16 +6,60 @@ import { flowColumns, isConfirmedInstalled, isSelectableState, modeIsReady, seat
 import { globalInstallAction, skillInstalled, staleExternal } from './skill-view';
 import { modeKind } from './mode-kind';
 
-/** 探测过、确认装了的 agent 名称与可选模型数。 */
-export function foundAgents(resources: ResourcesOutput | null | undefined): { names: string[]; models: number } {
-  const agents = (resources?.agents ?? []).filter(isConfirmedInstalled);
-  const models = agents.reduce((sum, agent) => sum + agent.models.filter((model) => isSelectableState(model.state)).length, 0);
-  return { names: agents.map((agent) => agent.name), models };
+/** 厂商 → 用户口头常说的模型系列名；表里没有的照写厂商名，「其他」「未知」不写。 */
+const FAMILY: Record<string, string> = {
+  anthropic: 'Claude',
+  openai: 'GPT',
+  google: 'Gemini',
+  moonshot: 'Kimi',
+  zhipu: 'GLM',
+  智谱: 'GLM',
+  deepseek: 'DeepSeek',
+  alibaba: 'Qwen',
+  阿里: 'Qwen',
+};
+
+function familyOf(vendor: string | undefined): string {
+  const value = (vendor ?? '').trim();
+  if (value === '' || value === '其他' || value === '未知') return '';
+  return FAMILY[value.toLowerCase()] ?? value;
 }
 
-/** 只能当主 agent、不在派发清单里的软件（WorkBuddy、OpenCode 等）的名称。 */
-export function hostOnlyNames(hosts: Array<{ name: string }> | null | undefined, dispatchNames: string[]): string[] {
-  return (hosts ?? []).map((host) => host.name).filter((name) => !dispatchNames.includes(name));
+export interface WorkerAgent {
+  id: string;
+  name: string;
+  /** 可选（可用、已验证）的模型数。 */
+  models: number;
+  /** 未验证、验证后可选的模型数。 */
+  pending: number;
+  /** 含哪几家的模型，按模型数从多到少。 */
+  families: string[];
+  /** 也是当前主 agent。 */
+  isHost: boolean;
+}
+
+/** 副 agent：探测过、确认装了的 agent，各自的可选与未验证模型数、含哪几家的模型（按
+ *  可选加未验证的算）。同一家的模型常经几个 agent 都能用（pi 里也有 Claude），写出系列名
+ *  让用户知道去哪找。 */
+export function workerAgents(resources: ResourcesOutput | null | undefined, hostId: string): WorkerAgent[] {
+  return (resources?.agents ?? []).filter(isConfirmedInstalled).map((agent) => {
+    const usable = agent.models.filter((model) => isSelectableState(model.state));
+    const pending = agent.models.filter((model) => model.state === '未验证');
+    const counts = new Map<string, number>();
+    for (const model of [...usable, ...pending]) {
+      const family = familyOf(model.vendor);
+      if (family !== '') counts.set(family, (counts.get(family) ?? 0) + 1);
+    }
+    const families = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([family]) => family);
+    return { id: agent.id, name: agent.name, models: usable.length, pending: pending.length, families, isHost: agent.id === hostId };
+  });
+}
+
+/** 副 agent 一行的说明：「可用 1 个，未验证 33 个 · 含 GLM、Claude、DeepSeek」。系列名全写，
+ *  排在后面的往往正是用户要找的（pi 里的 Claude），截断会把它藏掉。 */
+export function workerText(worker: Pick<WorkerAgent, 'models' | 'pending' | 'families'>): string {
+  const count = worker.pending > 0 ? `可用 ${worker.models} 个，未验证 ${worker.pending} 个` : `可用 ${worker.models} 个`;
+  return worker.families.length === 0 ? count : `${count} · 含 ${worker.families.join('、')}`;
 }
 
 const REVIEW_KINDS = new Set(['blind', 'jury']);

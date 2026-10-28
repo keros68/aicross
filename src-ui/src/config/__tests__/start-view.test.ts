@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  foundAgents,
-  hostOnlyNames,
   invokeText,
   needsSkillInstall,
   reviewMode,
@@ -10,6 +8,8 @@ import {
   setupState,
   usageExamples,
   workMode,
+  workerAgents,
+  workerText,
 } from '../start-view';
 import type { EffectiveSeat, ModeEntry, ModeSeatNode, ResourcesOutput, SkillHostStatus, SkillLocation } from '../../tauri';
 
@@ -42,23 +42,36 @@ function hostStatus(locations: SkillLocation[]): SkillHostStatus {
   return { host: 'claude', locations, duplicate: false, updateAvailable: false };
 }
 
-describe('找到的 agent', () => {
-  it('只算探测过且装了的，模型只数可选的', () => {
-    const resources: ResourcesOutput = {
-      detected_at: '2026-10-25T10:00:00+08:00',
-      agents: [
-        { id: 'claude', name: 'Claude Code', version: '', state: '可用', note: '', models: [
-          { id: 'opus', agent: 'claude', provider: '', resolved_id: 'opus', state: '可用', note: '' },
-        ] },
-        { id: 'pi', name: 'pi agent', version: '', state: '可用', note: '', models: [
-          { id: 'glm', agent: 'pi', provider: 'zai', resolved_id: 'glm', state: '已验证', note: '' },
-          { id: 'qwen', agent: 'pi', provider: 'q', resolved_id: 'qwen', state: '未验证', note: '' },
-        ] },
-        { id: 'codex', name: 'Codex', version: '', state: '未安装', note: '', models: [] },
-      ],
-    };
-    expect(foundAgents(resources)).toEqual({ names: ['Claude Code', 'pi agent'], models: 2 });
-    expect(foundAgents(null)).toEqual({ names: [], models: 0 });
+describe('副 agent', () => {
+  const resources: ResourcesOutput = {
+    detected_at: '2026-10-25T10:00:00+08:00',
+    agents: [
+      { id: 'claude', name: 'Claude Code', version: '', state: '可用', note: '', models: [
+        { id: 'opus', agent: 'claude', provider: '', vendor: 'Anthropic', resolved_id: 'opus', state: '可用', note: '' },
+      ] },
+      { id: 'pi', name: 'pi agent', version: '', state: '可用', note: '', models: [
+        { id: 'glm-5', agent: 'pi', provider: 'zai', vendor: 'Zhipu', resolved_id: 'glm-5', state: '已验证', note: '' },
+        { id: 'glm-4', agent: 'pi', provider: 'zai', vendor: '智谱', resolved_id: 'glm-4', state: '未验证', note: '' },
+        { id: 'claude-opus-5-5', agent: 'pi', provider: 'og', vendor: 'Anthropic', resolved_id: 'claude-opus-5-5', state: '未验证', note: '' },
+        { id: 'cat', agent: 'pi', provider: 'og', vendor: '其他', resolved_id: 'cat', state: '未验证', note: '' },
+        { id: 'bad', agent: 'pi', provider: 'og', vendor: 'DeepSeek', resolved_id: 'bad', state: '验证失败', note: '' },
+      ] },
+      { id: 'codex', name: 'Codex', version: '', state: '未安装', note: '', models: [] },
+    ],
+  };
+
+  it('只列探测过且装了的；可选与未验证分开数，验证失败不算；系列名按模型数排，「其他」不写；标出当前主 agent', () => {
+    expect(workerAgents(resources, 'claude')).toEqual([
+      { id: 'claude', name: 'Claude Code', models: 1, pending: 0, families: ['Claude'], isHost: true },
+      { id: 'pi', name: 'pi agent', models: 1, pending: 3, families: ['GLM', 'Claude'], isHost: false },
+    ]);
+    expect(workerAgents(null, '')).toEqual([]);
+  });
+
+  it('系列名全写不截断；没有未验证不写；没有系列名只写数量', () => {
+    expect(workerText({ models: 1, pending: 3, families: ['GLM', 'Claude'] })).toBe('可用 1 个，未验证 3 个 · 含 GLM、Claude');
+    expect(workerText({ models: 9, pending: 0, families: ['A', 'B', 'C', 'D', 'E'] })).toBe('可用 9 个 · 含 A、B、C、D、E');
+    expect(workerText({ models: 2, pending: 0, families: [] })).toBe('可用 2 个');
   });
 });
 
@@ -181,13 +194,5 @@ describe('缺人提示', () => {
 
   it('同一个模式出现两次只算一次；没有说明时原因为空', () => {
     expect(setupHint([emptyBlind, emptyBlind], [])).toEqual({ missing: 2, reasons: [], unverified: 0 });
-  });
-});
-
-describe('只能当主 agent 的软件', () => {
-  it('主 agent 里不在派发清单的单独列出', () => {
-    const hosts = [{ name: 'Claude Code' }, { name: 'WorkBuddy' }, { name: 'OpenCode' }];
-    expect(hostOnlyNames(hosts, ['Claude Code', 'Codex'])).toEqual(['WorkBuddy', 'OpenCode']);
-    expect(hostOnlyNames(null, [])).toEqual([]);
   });
 });
