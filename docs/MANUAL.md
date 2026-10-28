@@ -85,11 +85,6 @@ claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，真身记在
 `resolved_id`。额度用尽的模型标「额度用尽」并写恢复时间；有备选时按备选顺序
 改派，结果注明「主 X 额度用尽，已切备 Y」。
 
-Windows 上开了系统代理（Clash、v2rayN 等的「系统代理」）而没设
-`HTTPS_PROXY` 时，aicross 启动时把系统代理写进 `HTTP_PROXY` / `HTTPS_PROXY`，
-拉起的各家 CLI 都走它；agy 这类只认环境变量的 CLI 因此能联网。要直连，把
-`HTTPS_PROXY` 设成空值。
-
 ## 模式
 
 模式 = 给某个引擎换一套预设，一律叫「X模式」：
