@@ -72,6 +72,17 @@ aicross open <run_id>
 共享 / 经济 / 盲审模式，也可以直接写预设 id。`--text-file` 接受 UTF-8，
 可带 UTF-8 BOM；其它编码返回参数错误。不接受 `--text` 或 `--text=...`。
 
+`--seat <阶段>.<位置>=<agent>:<provider>:<model>` 可重复，只对这一次派发换人，不写
+`modes.json`；provider 没有就空着（`1.1=claude::opus`），写法与 `resources find` 输出的
+`target` 一致。模式取 `--preset`，没给时取该主 agent 的默认模式；需要 `--host`。校验与
+`config set-seat` 相同（模型在资源库里、阶段与位置在范围内、可见性允许该 agent，模式里
+写定了模型的位置不能换）；不通过退出 2，不派发。通过后 stderr 每个位置写一行
+「这次临时换人（不改配置）：…」。
+
+```powershell
+aicross dispatch --host claude --project D:\work\project --preset blind --seat 1.1=pi:opencode-go:claude-opus-5-5 --text-file D:\tmp\dispatch.txt
+```
+
 `--accept-file` 可选，给验收条件文件：UTF-8、可带 BOM，超过 64 KB 截断并在
 stderr 说明。内容随派发存进 run 文件（`accept_criteria`，未给时不写出），
 盲验收与盲审的隔离目录写成 `ACCEPT.md`，执行节点不收；未给时不生成这个
@@ -214,6 +225,7 @@ aicross resources
 aicross resources detect
 aicross resources smoke pi --model glm-4.7 --provider zai-coding-cn
 aicross resources prune [--agent <a>]
+aicross resources find claude 5.5
 aicross resources set-path pi D:\tools\pi\pi.cmd
 aicross resources set-path pi
 aicross config show --host claude
@@ -283,6 +295,19 @@ roles.json 角色引用的——这些照样删除，相关位置在 `config sho
 `effective.state` 变成「不在资源库」，需重新指定人选；stderr 写
 「已清理 N 个未发现的模型」，有被引用的另说明一行。窗口命令 `resources_prune`
 返回同一结构。删掉的模型再次探测发现后会重新加入资源库。
+
+`resources find <名字>` 按用户口头说的名字在资源库里找模型，范围是所有 agent 下的模型，
+不只看同名的 agent：「claude 5.5」可以对上 pi 下的 `claude-opus-5-5`。名字拆成字母段与
+数字段，与模型编号、`resolved_id`、提供方、厂商、agent 比对；大小写、空格、横线、点号
+不影响；claude ↔ anthropic / opus / sonnet / haiku、gpt ↔ openai、gemini ↔ google、
+kimi ↔ moonshot、glm ↔ zhipu / zai 互认；code、cli、agent、model 这类词忽略；版本号从头
+对上才算（5.5 对上 5-5，6 对不上 5.6）。stdout 为
+`{ "query", "matches": [...], "related": [...] }`，每项有 `agent`、`provider`、`model`、
+`resolved_id`、`vendor`、`state`、`note`、`usable`（可用 / 已验证 / 未验证 / 冒烟超时为
+true）与 `target`（`<agent>:<provider>:<model>`，可直接给 `dispatch --seat`）。
+`matches` 按能派发的在前、与说法多出的段少的在前，最多 20 个；一个都没对上时为空，
+`related` 列出只按名字（不看版本号）对上的模型。退出码：有对上的 0，没有 1，名字里没有
+字母或数字 2，资源库读不了 3。
 
 `resources set-path <agent> [<路径>]` 记下某个 agent 的可执行文件路径（资源库该 agent 的
 `customPath`），不给路径即清除；只认支持清单里的 agent，路径必须是已存在的文件，否则

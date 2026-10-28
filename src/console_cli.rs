@@ -61,13 +61,13 @@ fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
          \x20 aicross <子命令> [参数]\n\
          \n\
          子命令：\n\
-         \x20 dispatch    派发一次；多行任务文本走 --text-file，不进 argv\n\
+         \x20 dispatch    派发一次；多行任务文本走 --text-file；--seat 只对这一次换人\n\
          \x20 status      看一次 run 的状态；--wait 等到结束\n\
          \x20 adopt       采纳某一路的结果\n\
          \x20 cancel      叫停一次派发\n\
          \x20 recover     崩溃后核对；--rollback 恢复单写者改动的项目文件\n\
          \x20 open        打开该 run 的查看页\n\
-         \x20 resources   看资源库 / 重新探测 / 冒烟验证 / 指定路径\n\
+         \x20 resources   看资源库 / 重新探测 / 冒烟验证 / 按名字找模型 / 指定路径\n\
          \x20 config      看与改角色、派发设置、模式人选\n\
          \x20 hosts       看与改主 agent\n\
          \x20 skill       skill status / install / upgrade / uninstall\n\
@@ -157,6 +157,18 @@ fn run_at_with(
                 Ok(host) => host,
                 Err((code, message)) => { let _ = writeln!(stderr, "{message}"); return code; }
             };
+            // TASK-67：--seat 只对这一次换人，校验与 set-seat 相同，不写配置。
+            let seat_args = option_values(args, "--seat");
+            if !seat_args.is_empty() {
+                match dispatch_seat_overrides(root, &mut input, &seat_args) {
+                    Ok(lines) => {
+                        for line in lines {
+                            let _ = writeln!(stderr, "{line}");
+                        }
+                    }
+                    Err((code, message)) => { let _ = writeln!(stderr, "{message}"); return code; }
+                }
+            }
             return match crate::engine::start_dispatch(root, input) {
                 Ok(response) => {
                     let accepted = response.get("accepted").and_then(Value::as_bool) == Some(true);
@@ -283,6 +295,32 @@ fn run_resources(
         }
         Some("smoke") => run_resources_smoke(root, args, ops, stdout, stderr),
         Some("prune") => run_resources_prune(root, args, ops, stdout, stderr),
+        Some("find") => {
+            let text = args.get(3..).unwrap_or_default().join(" ");
+            if text.trim().is_empty() {
+                let _ = writeln!(stderr, "用法：aicross resources find <模型名>，如 aicross resources find claude 5.5");
+                return 2;
+            }
+            let store = match (ops.read_resources)(&store_file(root)) {
+                Ok(store) => store,
+                Err(message) => {
+                    let _ = writeln!(stderr, "{message}");
+                    return 3;
+                }
+            };
+            match crate::model_find::find(&store, text.trim(), chrono::Local::now().timestamp_millis()) {
+                Ok((value, message)) => {
+                    let found = value["matches"].as_array().is_some_and(|items| !items.is_empty());
+                    let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
+                    let _ = writeln!(stderr, "{message}");
+                    if found { 0 } else { 1 }
+                }
+                Err(message) => {
+                    let _ = writeln!(stderr, "{message}");
+                    2
+                }
+            }
+        }
         Some("set-path") => {
             if let Some(message) = extra_arg_error(args, 5) {
                 let _ = writeln!(stderr, "{message}");
@@ -2206,23 +2244,20 @@ pub(crate) fn modes_write_lock(root: &Path) -> Result<ModesGuard, (i32, String)>
 /// fix-46-r1 R7：写入前把该模式的 seats 数组整理成预设的形状（实现已
 /// 收敛到 `orchestration::shape_seats_to_preset`，set-seat 与一键推荐共用）。
 
-/// `config set-seat <模式> <阶段> <位置> …` 的实现体；窗口命令直接调这里。
-/// 校验顺序：模式不存在 → 阶段/位置超出范围 → thinking 非法 → 人选或备选
-/// 不在资源库。写入后返回该模式那一项（同 `config show` 的 modes[i]）。
-pub(crate) fn config_set_seat_at(
+/// 把一个人选放进内存里的 modes（不落盘）：校验 thinking、人选与备选在
+/// 资源库里、阶段与位置在范围内、可见性允许该 agent，再按预设形状写入。
+/// set-seat 落盘前与 dispatch --seat 的临时换人共用。
+#[allow(clippy::too_many_arguments)]
+fn place_seat(
     root: &Path,
+    modes: &mut ModesFile,
     host: &str,
-    mode: &str,
+    wanted: &str,
+    found: &Preset,
     stage: usize,
     index: usize,
     seat: SeatChoice,
-) -> Result<Value, (i32, String)> {
-    // 锁外先查一次，模式不存在时最先报（校验顺序不变）；写入用的预设在
-    // 锁内重读（fix-fullcheck A4）。
-    let (wanted, _) = find_preset(root, mode)?;
-    // TASK-56：阶段与位置按该主 agent 调整后的形状算。形状在写入锁内按
-    // 严格读到的 modes 重取并重新校验范围：counts 与人选在同一次读改写里
-    // 保持一致，不被并发的 set-count 改动隔开。
+) -> Result<(), (i32, String)> {
     if !seat.thinking.is_empty() && !THINKING_LEVELS.contains(&seat.thinking.as_str()) {
         return Err((2, format!("--thinking 只认 关|低|中|高：{}", seat.thinking)));
     }
@@ -2255,58 +2290,90 @@ pub(crate) fn config_set_seat_at(
         }
         None => None,
     };
+    // TASK-56：阶段与位置按该主 agent 调整后的形状算；set-seat 在写入锁内
+    // 按严格读到的 modes 调用，counts 与人选在同一次读改写里保持一致。
+    let preset = {
+        let section = crate::orchestration::host_section(modes, host);
+        crate::orchestration::shaped_preset(found, section)
+    };
+    if stage == 0 || stage > preset.stages.len() {
+        return Err((
+            2,
+            format!("阶段超出范围：{} 共 {} 个阶段", preset.name, preset.stages.len()),
+        ));
+    }
+    let node_count = preset.stages[stage - 1].nodes.len();
+    if index == 0 || index > node_count {
+        return Err((
+            2,
+            format!("位置超出范围：{} 第 {stage} 阶段共 {node_count} 个位置", preset.name),
+        ));
+    }
+    // 预设里写定了模型的位置不读人选（engine::fill_seats 的来源「预设」），
+    // 写进去也不会生效，当面拒掉。
+    let node = &preset.stages[stage - 1].nodes[index - 1];
+    if !node.model.trim().is_empty() {
+        return Err((
+            2,
+            format!(
+                "{} 第 {stage} 阶段第 {index} 个位置在模式里写定了 {}/{}，不能换人",
+                preset.name, node.agent, node.model
+            ),
+        ));
+    }
+    // TASK-61：只接盲位置的 agent（agy 与未实测四家）不许写进共享 /
+    // 单写者位置；人选与备选都查。
+    let visibility = &node.visibility;
+    let chosen_agents = std::iter::once(agent_id.as_str())
+        .chain(fallback.as_ref().map(|fallback| fallback.agent.as_str()));
+    for agent in chosen_agents {
+        if let Some(reason) = crate::agent_catalog::seat_violation(agent, visibility) {
+            return Err((
+                2,
+                format!(
+                    "{reason}：{} 第 {stage} 阶段第 {index} 个位置可见性为「{visibility}」，{agent} 只能放在盲位置",
+                    preset.name
+                ),
+            ));
+        }
+    }
+    let section = crate::orchestration::host_section_mut(modes, host);
+    let stages = section.seats.entry(wanted.to_string()).or_default();
+    // 写盘前按预设形状补齐 null（fix-46-r1 R7），前面的阶段不再落盘为空数组。
+    crate::orchestration::shape_seats_to_preset(stages, &preset);
+    stages[stage - 1][index - 1] = Some(SeatChoice {
+        agent: agent_id,
+        // provider 用资源库里的规范值；原生模型的空 provider 写 null。
+        provider: (!chosen.provider.is_empty()).then(|| chosen.provider.clone()),
+        model: chosen.id.clone(),
+        tier: seat.tier,
+        thinking: seat.thinking,
+        fallback,
+        // 窗口与命令行手选的人选都是 manual。
+        origin: crate::orchestration::SEAT_ORIGIN_MANUAL.to_string(),
+    });
+    Ok(())
+}
+
+/// `config set-seat <模式> <阶段> <位置> …` 的实现体；窗口命令直接调这里。
+/// 校验顺序：模式不存在 → 阶段/位置超出范围 → thinking 非法 → 人选或备选
+/// 不在资源库。写入后返回该模式那一项（同 `config show` 的 modes[i]）。
+pub(crate) fn config_set_seat_at(
+    root: &Path,
+    host: &str,
+    mode: &str,
+    stage: usize,
+    index: usize,
+    seat: SeatChoice,
+) -> Result<Value, (i32, String)> {
+    // 锁外先查一次，模式不存在时最先报（校验顺序不变）；写入用的预设在
+    // 锁内重读（fix-fullcheck A4）。
+    let (wanted, _) = find_preset(root, mode)?;
     {
         let _guard = modes_write_lock(root)?;
         let (_, found) = find_preset(root, mode)?;
         let mut modes = strict_modes_for_write(root)?;
-        let preset = {
-            let section = crate::orchestration::host_section(&modes, host);
-            crate::orchestration::shaped_preset(&found, section)
-        };
-        if stage == 0 || stage > preset.stages.len() {
-            return Err((
-                2,
-                format!("阶段超出范围：{} 共 {} 个阶段", preset.name, preset.stages.len()),
-            ));
-        }
-        let node_count = preset.stages[stage - 1].nodes.len();
-        if index == 0 || index > node_count {
-            return Err((
-                2,
-                format!("位置超出范围：{} 第 {stage} 阶段共 {node_count} 个位置", preset.name),
-            ));
-        }
-        // TASK-61：只接盲位置的 agent（agy 与未实测四家）不许写进共享 /
-        // 单写者位置；人选与备选都查。
-        let visibility = &preset.stages[stage - 1].nodes[index - 1].visibility;
-        let chosen_agents = std::iter::once(agent_id.as_str())
-            .chain(fallback.as_ref().map(|fallback| fallback.agent.as_str()));
-        for agent in chosen_agents {
-            if let Some(reason) = crate::agent_catalog::seat_violation(agent, visibility) {
-                return Err((
-                    2,
-                    format!(
-                        "{reason}：{} 第 {stage} 阶段第 {index} 个位置可见性为「{visibility}」，{agent} 只能放在盲位置",
-                        preset.name
-                    ),
-                ));
-            }
-        }
-        let section = crate::orchestration::host_section_mut(&mut modes, host);
-        let stages = section.seats.entry(wanted.clone()).or_default();
-        // 写盘前按预设形状补齐 null（fix-46-r1 R7），前面的阶段不再落盘为空数组。
-        crate::orchestration::shape_seats_to_preset(stages, &preset);
-        stages[stage - 1][index - 1] = Some(SeatChoice {
-            agent: agent_id,
-            // provider 用资源库里的规范值；原生模型的空 provider 写 null。
-            provider: (!chosen.provider.is_empty()).then(|| chosen.provider.clone()),
-            model: chosen.id.clone(),
-            tier: seat.tier,
-            thinking: seat.thinking,
-            fallback,
-            // 窗口与命令行手选的人选都是 manual。
-            origin: crate::orchestration::SEAT_ORIGIN_MANUAL.to_string(),
-        });
+        place_seat(root, &mut modes, host, &wanted, &found, stage, index, seat)?;
         crate::orchestration::save_modes_in(root, &modes).map_err(|message| (1, message))?;
     }
     seat_entry_after_write(root, host, &wanted)
@@ -2994,6 +3061,63 @@ fn build_request(args: &[String]) -> Result<CliRequest, String> {
     }
 }
 
+/// 可重复的选项（如 `--seat`）的全部取值，按出现顺序。
+fn option_values(args: &[String], name: &str) -> Vec<String> {
+    args.windows(2)
+        .filter(|pair| pair[0] == name && !pair[1].starts_with('-'))
+        .map(|pair| pair[1].clone())
+        .collect()
+}
+
+/// `dispatch --seat <阶段>.<位置>=<agent>:<provider>:<model>` 的解析与校验
+///（TASK-67）。在内存里的 modes 上逐个放人选（与 set-seat 同一套校验），
+/// 把结果作为本次派发的人选交给引擎，modes.json 不动。模式取 --preset，
+/// 没给时取该主 agent 的默认模式。返回给人看的说明行。
+fn dispatch_seat_overrides(
+    root: &Path,
+    input: &mut crate::engine::DispatchInput,
+    seat_args: &[String],
+) -> Result<Vec<String>, (i32, String)> {
+    let Some(host) = input.host.clone() else {
+        return Err((2, "--seat 需要同时给 --host".into()));
+    };
+    let mut modes = crate::orchestration::modes_from_strict(root).map_err(|message| (1, message))?;
+    let presets = crate::orchestration::raw_presets_from(root);
+    let mode = input.preset.clone().unwrap_or_else(|| {
+        crate::engine::default_preset_id(modes.hosts.get(&host), &presets.presets)
+    });
+    let (wanted, found) = find_preset(root, &mode)?;
+    let mut lines = Vec::new();
+    for raw in seat_args {
+        let form = "--seat 的写法是 <阶段>.<位置>=<agent>:<provider>:<model>，provider 没有就空着，如 1.1=pi:opencode-go:claude-opus-5-5、1.1=claude::opus";
+        let (place, target) = raw.split_once('=').ok_or_else(|| (2, format!("{form}：{raw}")))?;
+        let (stage, index) = place
+            .split_once('.')
+            .and_then(|(stage, index)| Some((stage.trim().parse::<usize>().ok()?, index.trim().parse::<usize>().ok()?)))
+            .ok_or_else(|| (2, format!("{form}：{raw}")))?;
+        let mut parts = target.splitn(3, ':');
+        let (Some(agent), Some(provider), Some(model)) = (parts.next(), parts.next(), parts.next()) else {
+            return Err((2, format!("{form}：{raw}")));
+        };
+        let seat = SeatChoice {
+            agent: agent.trim().to_string(),
+            provider: (!provider.trim().is_empty()).then(|| provider.trim().to_string()),
+            model: model.trim().to_string(),
+            tier: String::new(),
+            thinking: String::new(),
+            fallback: None,
+            origin: crate::orchestration::SEAT_ORIGIN_MANUAL.to_string(),
+        };
+        place_seat(root, &mut modes, &host, &wanted, &found, stage, index, seat)?;
+        lines.push(format!("这次临时换人（不改配置）：{} 第 {stage} 阶段第 {index} 个位置 → {target}", found.name));
+    }
+    input.seats = crate::orchestration::host_section(&modes, &host)
+        .and_then(|section| section.seats.get(&wanted))
+        .cloned();
+    input.preset = Some(wanted);
+    Ok(lines)
+}
+
 fn option_value(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|arg| arg == name)
         .and_then(|index| args.get(index + 1))
@@ -3394,6 +3518,71 @@ mod tests {
             assert_eq!(code, 2, "{args:?}");
             assert!(stderr.contains(expected), "{args:?}: {stderr}");
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task67_resources_find() {
+        let root = fixture_root("find");
+        write_fixture_store(&root);
+        let ops = ResourcesOps::production();
+
+        let (code, stdout, stderr) = run_with(&root, &["aicross", "resources", "find", "GLM", "4.7"], &ops);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.contains("对上 2 个模型，其中 1 个可以派发"), "{stderr}");
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["matches"][0]["target"], "pi:zai:glm-4.7");
+        assert_eq!(parsed["matches"][1]["state"], "未登录");
+
+        let (code, stdout, stderr) = run_with(&root, &["aicross", "resources", "find", "claude 9"], &ops);
+        assert_eq!(code, 1, "{stderr}");
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["related"][0]["target"], "claude::sonnet");
+
+        let (code, _, stderr) = run_with(&root, &["aicross", "resources", "find"], &ops);
+        assert_eq!(code, 2);
+        assert!(stderr.contains("用法"), "{stderr}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task67_dispatch_seat_override_is_one_off() {
+        let root = fixture_root("seat-override");
+        write_fixture_store(&root);
+        let input = || crate::engine::DispatchInput {
+            host: Some("claude".into()),
+            preset: Some("blind".into()),
+            ..crate::engine::DispatchInput::default()
+        };
+
+        let mut ok = input();
+        let lines = dispatch_seat_overrides(&root, &mut ok, &["1.1=pi:zai:glm-4.7".into()]).unwrap();
+        assert!(lines[0].contains("这次临时换人（不改配置）：盲审模式 第 1 阶段第 1 个位置 → pi:zai:glm-4.7"), "{lines:?}");
+        assert_eq!(ok.preset.as_deref(), Some("builtin-blind"));
+        let seat = ok.seats.as_ref().unwrap()[0][0].as_ref().unwrap();
+        assert_eq!((seat.agent.as_str(), seat.provider.as_deref(), seat.model.as_str()), ("pi", Some("zai"), "glm-4.7"));
+        assert!(!root.join("modes.json").exists(), "不写配置");
+
+        for (seat, expected) in [
+            ("1.1=pi:glm-4.7", "--seat 的写法"),
+            ("x=pi:zai:glm-4.7", "--seat 的写法"),
+            ("1.1=pi:zai:nope", "模型不存在"),
+            ("9.1=pi:zai:glm-4.7", "阶段超出范围"),
+        ] {
+            let err = dispatch_seat_overrides(&root, &mut input(), &[seat.into()]).unwrap_err();
+            assert_eq!(err.0, 2, "{seat}");
+            assert!(err.1.contains(expected), "{seat}: {}", err.1);
+        }
+        fs::write(
+            root.join("presets.json"),
+            r#"{"version":1,"presets":[{"id":"u1","name":"预发回归","builtin":false,"stages":[{"nodes":[{"role":"执行","agent":"codex","model":"exec","thinking":"中","visibility":"共享","write":"只读"}]}]}]}"#,
+        )
+        .unwrap();
+        let mut fixed = crate::engine::DispatchInput { preset: Some("u1".into()), ..input() };
+        let err = dispatch_seat_overrides(&root, &mut fixed, &["1.1=pi:zai:glm-4.7".into()]).unwrap_err();
+        assert!(err.1.contains("写定了 codex/exec，不能换人"), "{}", err.1);
+        let mut no_host = crate::engine::DispatchInput { host: None, ..input() };
+        assert!(dispatch_seat_overrides(&root, &mut no_host, &["1.1=pi:zai:glm-4.7".into()]).unwrap_err().1.contains("--host"));
         let _ = fs::remove_dir_all(root);
     }
 

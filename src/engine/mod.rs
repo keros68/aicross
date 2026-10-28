@@ -3023,6 +3023,11 @@ pub(crate) struct DispatchInput {
     /// 命令行入口校验，引擎不再查资源库。
     #[serde(default)]
     pub host: Option<String>,
+    /// TASK-67：这一次临时换人（命令行 `--seat`）。整份替换该主 agent
+    /// 在 `preset` 那个模式下的人选，只用于本次派发，不写回 modes.json；
+    /// 由命令行入口校验并补齐预设形状，给了它就一定给了 preset 与 host。
+    #[serde(default)]
+    pub seats: Option<Vec<Vec<Option<orchestration::SeatChoice>>>>,
 }
 
 #[derive(Debug)]
@@ -3074,10 +3079,15 @@ fn start_dispatch_with(
     let resources = orchestration::dispatchable_from(root);
     let presets = orchestration::raw_presets_from(root);
     let roles = orchestration::roles_from(root);
-    let modes = orchestration::modes_from(root);
+    let mut modes = orchestration::modes_from(root);
     // TASK-50：主 agent 与它的配置段。给了 host 直接取；没给时 modes.json
     // 只有一个主 agent 的配置就用它，零或多于一个按无配置处理。
     let host = resolve_engine_host(input.host.as_deref(), &modes);
+    if let (Some(host), Some(preset), Some(seats)) = (&host, &input.preset, &input.seats) {
+        orchestration::host_section_mut(&mut modes, host)
+            .seats
+            .insert(preset.clone(), seats.clone());
+    }
     let host_modes = host.as_ref().and_then(|host| modes.hosts.get(host));
     let default_preset = default_preset_id(host_modes, &presets.presets);
     // fix-37-r1 R1-4：run 文件记本次所用预设的 id，查看器据此取模式名，

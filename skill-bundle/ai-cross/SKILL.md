@@ -2,7 +2,7 @@
 name: ai-cross
 description: 多模型分工与跨厂商交叉验证 skill：把任务派给合适的模型分工执行，用不同厂商的模型互相核查关键产出，按档位分层派发以节省订阅额度。适用场景：用户要求派发任务、分层执行、多模型协作、对关键产出做交叉验证、盘点或接入可用模型，或提到 dispatch、派工；也包括日常说法：让别的模型或另一家看看、换个模型审一下、要个第二意见、找别家复查、多找几家对一下。不适用场景：没提到其他模型的普通任务（只说"帮我检查一下"不算，没有派发需求时不要触发）、没有 shell 执行能力的纯聊天宿主。
 metadata:
-  version: 1.23.0
+  version: 1.24.0
 ---
 
 # ai-cross — 多模型分工与跨厂商交叉验证
@@ -18,6 +18,7 @@ metadata:
 **先看装没装 aicross**（用户在它的窗口里选好模式与人选，skill 照办）：跑 `aicross config show --host <主 agent>`，主 agent 写 `claude` / `codex` / `kimi` / `pi`（当前宿主是哪家就写哪家；宿主不在这四家里就跳过这一段）。
 
 - **退出码 0** → 按 aicross 的配置派发，**不看下面的盘点清单，也不要求盘点**：读 `references/channels.md`「aicross 引擎通道」的「按窗口配置派发」照做。开场的路由决策行写明「按你在 aicross 里设的<模式名>」和每个位置派给谁。
+- **用户点名了某个模型**（"让 claude 5.5 看看"）：模型名不等于程序名，Claude 的模型可能经 pi、Antigravity 等别的 agent 跑。装了 aicross 时先跑 `aicross resources find <用户说的名字>`，按 channels.md「按窗口配置派发」第 4 条处理；没装时看 `inventory.py show` 的全部条目。**只查了名字相同的那个程序就说"没有"不算数。**
 - **命令不存在** → 没装 aicross，从下面第 1 条开始。
 - **其他退出码**（当前宿主不在 aicross 的主 agent 里、配置读不了）→ 对用户说一句原因（stderr 原文），从下面第 1 条开始。
 

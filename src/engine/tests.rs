@@ -3012,3 +3012,44 @@ fn task61_r1_run_summary_records_model_decided_thinking() {
     assert_eq!(value[0]["thinking"], "由模型决定：low");
     assert!(value[1].get("thinking").is_none(), "{value}");
 }
+
+#[test]
+fn task67_seats_in_input_replace_mode_seats_for_this_run_only() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    let root = temp("seat-override");
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"codex","detected":true,"models":[{"id":"exec","agent":"codex"}]},{"id":"pi","detected":true,"models":[{"id":"glm-5","agent":"pi","provider":"zai","verification":"verified"}]}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("presets.json"),
+        r#"{"version":1,"presets":[{"id":"u1","name":"预发回归","builtin":false,"stages":[{"nodes":[{"role":"执行","agent":"","model":"","thinking":"中","visibility":"共享","write":"只读"}]}]}]}"#,
+    )
+    .unwrap();
+    let seat = orchestration::SeatChoice {
+        agent: "pi".into(),
+        provider: Some("zai".into()),
+        model: "glm-5".into(),
+        ..orchestration::SeatChoice::default()
+    };
+    let input = DispatchInput {
+        project: root.to_string_lossy().into(),
+        text: "实现任务".into(),
+        preset: Some("u1".into()),
+        host: Some("claude".into()),
+        seats: Some(vec![vec![Some(seat)]]),
+        ..DispatchInput::default()
+    };
+    let result = start_dispatch_with(&root, input, spawn_ok).expect("派发成功");
+    assert_eq!(result["accepted"], true, "{result}");
+    let run: EngineRun = serde_json::from_slice(
+        &fs::read(runs_dir(&root).join(format!("{}.json", result["run_id"].as_str().unwrap()))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(run.nodes[0].agent, "pi");
+    assert!(!root.join("modes.json").exists(), "不写配置");
+    let _ = fs::remove_dir_all(root);
+}

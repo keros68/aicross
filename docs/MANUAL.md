@@ -22,13 +22,13 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 
 | 命令 | 用途 |
 |---|---|
-| `aicross dispatch --project <目录> --preset <模式> --text-file <文件> [--accept-file <文件>]` | 派发一次；多行任务文本走文件，不进 argv |
+| `aicross dispatch --project <目录> --preset <模式> --text-file <文件> [--accept-file <文件>] [--seat <阶段>.<位置>=<目标>]` | 派发一次；多行任务文本走文件，不进 argv；`--seat` 只对这一次换人 |
 | `aicross status <run_id> [--wait] [--timeout 秒]` | 看一次 run 的状态；`--wait` 等到结束 |
 | `aicross adopt <run_id> <node_id>` | 采纳某一路的结果 |
 | `aicross cancel <run_id>` | 叫停一次派发 |
 | `aicross recover <run_id> [--rollback]` | 崩溃后核对；`--rollback` 恢复单写者改动的项目文件 |
 | `aicross open <run_id>` | 打开该 run 的查看页 |
-| `aicross resources [detect \| smoke <agent> \| set-path <agent> [<路径>]]` | 看资源库 / 重新探测 / 冒烟验证 / 指定可执行文件路径 |
+| `aicross resources [detect \| smoke <agent> \| find <名字> \| set-path <agent> [<路径>]]` | 看资源库 / 重新探测 / 冒烟验证 / 按名字找模型 / 指定可执行文件路径 |
 | `aicross config show \| set-role \| set` | 看与改角色、派发设置 |
 
 `--preset` 认 `shared` / `economy` / `blind`（共享 / 经济 / 盲审），也可以直接
@@ -84,6 +84,8 @@ ACP 默认关闭，派发走各家 CLI 自带的续聊。要用 ACP 时执行
 claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，真身记在
 `resolved_id`。额度用尽的模型标「额度用尽」并写恢复时间；有备选时按备选顺序
 改派，结果注明「主 X 额度用尽，已切备 Y」。
+
+按名字找模型：`aicross resources find claude 5.5` 在所有 agent 下找，不只看名字相同的 agent；同一个模型可能经 pi、Antigravity 等几个 agent 都能用。结果列出每个模型经哪个 agent 用、当前状态，以及可直接交给 `aicross dispatch --seat` 的目标；对上多个时由用户挑。skill 在用户点名模型时先跑它，再说有没有。
 
 agent 装在 PATH 以外的目录时探测不到，资源页写明「没找到 <命令>」。在该 agent 的卡片或「未安装」行点「指定路径」，填可执行文件的完整路径，保存后重新探测；探测、测试、派发都先用这个路径。命令行：`aicross resources set-path <agent> [<路径>]`，不给路径即清除。以前探测到过、这次没找到的 agent 不折叠进「未安装」，留在主列表里显示原因。
 

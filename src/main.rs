@@ -7,6 +7,7 @@ mod dispatch;
 mod engine;
 mod file_lock;
 mod hosts;
+mod model_find;
 mod orchestration;
 mod paths;
 mod preset;
