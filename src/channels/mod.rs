@@ -593,6 +593,10 @@ pub(crate) fn resolve_binary(binary: &str, fallback: Option<PathBuf>) -> Result<
     if path.components().count() > 1 && path.is_file() {
         return Ok(path.to_path_buf());
     }
+    // 用户在资源页给这个 agent 指定的路径优先（TASK-66）。
+    if let Some(custom) = crate::resources::custom_program(binary) {
+        return Ok(custom);
+    }
     let lookup = if cfg!(windows) { "where.exe" } else { "which" };
     #[cfg(windows)]
     let names = [

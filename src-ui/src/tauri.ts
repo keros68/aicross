@@ -87,6 +87,9 @@ export const commands = {
     invoke<unknown>('skill_uninstall', { host, scope, project: project ?? null }),
   /** 从资源库删除最近一次探测未发现的模型；给了 agent 只清这一家（TASK-52 第 1 节）。 */
   resourcesPrune: (agent: string | null) => invoke<PruneResult>('resources_prune', { agent }),
+  /** 指定 agent 的可执行文件路径（TASK-66）；path 为 null 即清除。重新探测后生效。 */
+  resourcesSetPath: (agent: string, path: string | null) =>
+    invoke<ResourceAgentEntry>('resources_set_path', { agent, path }),
   // TASK-53 斜杠命令（契约见 tasks/TASK-53-slash-commands.md 第 3 节）。
   slashList: (host: string) => invoke<SlashList>('slash_list', { host }),
   /** 同名已存在则更新。 */
@@ -265,6 +268,8 @@ export interface ResourceAgentEntry {
   untested?: boolean;
   /** 官网地址（TASK-61）；旧引擎缺这个字段时按空串。 */
   homepage?: string;
+  /** 用户指定的可执行文件路径（TASK-66）；没指定为空串，旧引擎没有。 */
+  custom_path?: string;
 }
 
 export interface ResourcesOutput {

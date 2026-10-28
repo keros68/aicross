@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  batchSmokeButton,
   batchSmokeLabel,
   batchSmokeTargets,
   detectButtonLabel,
@@ -62,6 +63,13 @@ describe('全部测试（TASK-58 #4）', () => {
       ],
     });
     expect(targets.map((item) => item.id)).toEqual(['a', 'd', 'e', 'f']);
+  });
+
+  it('有第三方模型就显示按钮；没有可测的置灰并说明原因（TASK-66）', () => {
+    expect(batchSmokeButton({ state: '可用', models: [model('a', '', '可用')] })).toEqual({ show: false, reason: '' });
+    expect(batchSmokeButton({ state: '可用', models: [model('a', 'zai', '验证失败')] })).toEqual({ show: true, reason: '' });
+    expect(batchSmokeButton({ state: '可用', models: [model('a', 'zai', '已验证')] })).toEqual({ show: true, reason: '没有待测的模型' });
+    expect(batchSmokeButton({ state: '未安装', models: [model('a', 'zai', '未安装')] })).toEqual({ show: true, reason: '未安装，无法测试' });
   });
 
   it('按钮文字：未运行「全部测试」，运行中「测试中 12/33」', () => {

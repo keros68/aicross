@@ -184,6 +184,18 @@ async fn resources_prune(agent: Option<String>) -> Result<serde_json::Value, Str
     .map_err(|error| format!("清理任务失败：{error}"))?
 }
 
+/// 记下或清除 agent 的指定路径（TASK-66，`aicross resources set-path` 同实现体）；
+/// path 为空或 None 即清除。
+#[tauri::command]
+async fn resources_set_path(agent: String, path: Option<String>) -> Result<serde_json::Value, String> {
+    let root = crate::paths::aicross_root()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::console_cli::resources_set_path_command_at(&root, &agent, path.as_deref())
+    })
+    .await
+    .map_err(|error| format!("指定路径失败：{error}"))?
+}
+
 /// stage、index 从 1 开始数（与命令行一致）；seat 是 modes.json 的人选对象。
 #[tauri::command]
 async fn config_set_default_mode(
@@ -587,6 +599,7 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
             resources_detect,
             resources_smoke,
             resources_prune,
+            resources_set_path,
             config_set_default_mode,
             config_set_seat,
             config_set_count,

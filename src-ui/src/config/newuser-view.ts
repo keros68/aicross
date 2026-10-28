@@ -35,6 +35,15 @@ export function batchSmokeTargets(agent: Pick<ResourceAgentEntry, 'models'>): Re
   return agent.models.filter((model) => canSmoke(model) && model.provider.trim() !== '');
 }
 
+/** 「全部测试」按钮（TASK-66）：有第三方模型的 agent 始终显示；没有可测的模型时置灰，
+ *  reason 作悬停说明。没有第三方模型的 agent 不显示（show 为 false）。 */
+export function batchSmokeButton(agent: Pick<ResourceAgentEntry, 'state' | 'models'>): { show: boolean; reason: string } {
+  const show = agent.models.some((model) => model.provider.trim() !== '');
+  if (!show) return { show, reason: '' };
+  if (agent.state === '未安装') return { show, reason: '未安装，无法测试' };
+  return { show, reason: batchSmokeTargets(agent).length === 0 ? '没有待测的模型' : '' };
+}
+
 export function batchSmokeLabel(running: { done: number; total: number } | null): string {
   return running ? `测试中 ${running.done}/${running.total}` : '全部测试';
 }

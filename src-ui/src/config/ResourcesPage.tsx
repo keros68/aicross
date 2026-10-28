@@ -6,12 +6,14 @@
 // 数字条「不可用」可点，筛出不可用的模型。单个第三方模型可测试连接。数据取
 // config_snapshot 的 resources，操作结束后重新取一次。探测、测试连接、清理同一时间
 // 只跑一个。TASK-58：从未探测时顶部空态条与「探测」；探测中按进度事件显示「探测中 2/4」与
-// 各卡片转圈；有待测第三方模型（未验证、验证失败、连接超时）的卡片可「全部测试」（并发 3，可取消）；模式页「去测试」
-// 跳来时展开对应卡片。TASK-62：没装的 agent 折叠成末尾一行「未安装 N 个」，展开后每行图标、
-// 名称与官网地址（可复制）；未实测的 agent 卡片标题旁标「未实测」。
+// 各卡片转圈；有第三方模型的卡片给「全部测试」（并发 3，可取消），测未验证、验证失败、连接
+// 超时的，没有可测的置灰；模式页「去测试」跳来时展开对应卡片。TASK-62：没装的 agent 折叠成
+// 末尾一行「未安装 N 个」，展开后每行图标、名称与官网地址（可复制）；未实测的 agent 卡片标题
+// 旁标「未实测」。TASK-66：这次没找到、但以前探测到过的 agent 留在主列表并写明原因；未安装
+// 的 agent 可「指定路径」，保存后重新探测。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { commands, isTauri, type DetectProgress, type ResourceModelEntry, type ResourcesOutput } from '../tauri';
+import { commands, isTauri, type DetectProgress, type ResourceAgentEntry, type ResourceModelEntry, type ResourcesOutput } from '../tauri';
 import {
   DETECT_STALE_HINT,
   MODEL_PREVIEW_LIMIT,
@@ -20,7 +22,7 @@ import {
   agentStats,
   canSmoke,
   isAgentOpen,
-  isInstalled,
+  isListed,
   isUnavailable,
   isUntested,
   notInstalledText,
@@ -50,7 +52,7 @@ import { Icon } from '../components/common/Icon';
 import { StatCards } from '../components/common/StatCards';
 import { PageHeader } from '../components/common/PageHeader';
 import { pageTabStorage } from './page-tabs';
-import { batchSmokeLabel, batchSmokeTargets, detectButtonLabel, versionText } from './newuser-view';
+import { batchSmokeButton, batchSmokeLabel, batchSmokeTargets, detectButtonLabel, versionText } from './newuser-view';
 import { runPool } from '../lib/pool';
 import './ConfigPages.css';
 
@@ -59,6 +61,7 @@ type Busy =
   | { kind: 'smoke'; key: string }
   | { kind: 'prune'; agent: string | null }
   | { kind: 'batch'; agent: string }
+  | { kind: 'path'; agent: string }
   | null;
 
 /** 「全部测试」的并发数。 */
@@ -125,6 +128,8 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
   const batchStop = useRef(false);
   // 「未安装 N 个」是否展开。
   const [showNotInstalled, setShowNotInstalled] = useState(false);
+  // 正在编辑指定路径的 agent 与输入内容（TASK-66）。
+  const [pathDraft, setPathDraft] = useState<Record<string, string>>({});
 
   // 快照请求序号：首次读取、刷新、探测 / 测试连接 / 清理后的重读各自取号，落地前核对
   // 是最新一次，过期的结果丢弃，避免旧结果盖掉新结果（同模式页）。
@@ -196,7 +201,7 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
   const handledFocusSeq = useRef(-1);
   useEffect(() => {
     if (!focusAgent || resources === null || handledFocusSeq.current === focusAgent.seq) return;
-    if (!resources.agents.some((agent) => agent.id === focusAgent.agent && !isInstalled(agent))) return;
+    if (!resources.agents.some((agent) => agent.id === focusAgent.agent && !isListed(agent))) return;
     handledFocusSeq.current = focusAgent.seq;
     setShowNotInstalled(true);
     const frame = window.requestAnimationFrame(scrollToPending);
@@ -247,7 +252,7 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
     setBusy(null);
   };
 
-  /** 逐条测试该 agent 下未验证的第三方模型，并发 3；取消后不再发新请求。失败的条目保持
+  /** 逐条测试该 agent 下待测的第三方模型，并发 3；取消后不再发新请求。失败的条目保持
    *  各自状态（重读后显示），不弹窗。 */
   const smokeAll = async (agentId: string, targets: ResourceModelEntry[]) => {
     if (busyRef.current !== null || targets.length === 0) return;
@@ -283,6 +288,101 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
     }
     await reload();
     setBusy(null);
+  };
+
+  /** 记下或清除（value 为 null）指定路径，成功后重新探测（TASK-66）。 */
+  const savePath = async (agentId: string, value: string | null) => {
+    if (busyRef.current !== null) return;
+    const key = `path:${agentId}`;
+    setBusy({ kind: 'path', agent: agentId });
+    setRowErrors((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    try {
+      await commands.resourcesSetPath(agentId, value);
+    } catch (err) {
+      setRowErrors((current) => ({ ...current, [key]: String(err) }));
+      setBusy(null);
+      return;
+    }
+    setPathDraft((current) => {
+      const next = { ...current };
+      delete next[agentId];
+      return next;
+    });
+    setBusy(null);
+    await detect();
+  };
+
+  const openPathEditor = (agent: ResourceAgentEntry) =>
+    setPathDraft((current) => ({ ...current, [agent.id]: agent.custom_path ?? '' }));
+
+  /** 「指定路径」按钮：没指定、也没在编辑时给出。 */
+  const pathButton = (agent: ResourceAgentEntry) =>
+    (agent.custom_path ?? '') === '' && pathDraft[agent.id] === undefined && (
+      <button type="button" className="btn small" disabled={busy !== null} onClick={() => openPathEditor(agent)}>
+        指定路径
+      </button>
+    );
+
+  /** 指定路径的编辑行或当前路径行，以及保存失败的说明。 */
+  const pathPanel = (agent: ResourceAgentEntry) => {
+    const draft = pathDraft[agent.id];
+    const current = agent.custom_path ?? '';
+    const error = rowErrors[`path:${agent.id}`] ?? '';
+    const saving = busy?.kind === 'path' && busy.agent === agent.id;
+    return (
+      <>
+        {draft !== undefined ? (
+          <div className="card-row path-row">
+            <input
+              className="path-input cfg-mono"
+              value={draft}
+              placeholder="可执行文件的完整路径"
+              aria-label={`${agent.name || agent.id} 的可执行文件路径`}
+              autoFocus
+              onChange={(event) => setPathDraft((all) => ({ ...all, [agent.id]: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && draft.trim() !== '') void savePath(agent.id, draft.trim());
+              }}
+            />
+            <button
+              type="button"
+              className="btn small primary"
+              disabled={busy !== null || draft.trim() === ''}
+              onClick={() => void savePath(agent.id, draft.trim())}
+            >
+              {saving ? '保存中…' : '保存'}
+            </button>
+            <button
+              type="button"
+              className="btn small"
+              disabled={saving}
+              onClick={() => setPathDraft((all) => {
+                const next = { ...all };
+                delete next[agent.id];
+                return next;
+              })}
+            >
+              取消
+            </button>
+          </div>
+        ) : current !== '' && (
+          <div className="card-row path-row">
+            <span className="cfg-dim">指定路径</span>
+            <span className="cfg-mono homepage-text" title={current}>{current}</span>
+            <span className="cfg-spacer" />
+            <button type="button" className="btn small" disabled={busy !== null} onClick={() => openPathEditor(agent)}>修改</button>
+            <button type="button" className="btn small" disabled={busy !== null} onClick={() => void savePath(agent.id, null)}>
+              {saving ? '清除中…' : '清除'}
+            </button>
+          </div>
+        )}
+        {error !== '' && <p className="cfg-error path-error">{error}</p>}
+      </>
+    );
   };
 
   const prune = async (agent: string | null) => {
@@ -489,6 +589,7 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
             // 探测中、这个 agent 还没探测完：卡片头转圈。
             const pending = detecting && !detectedAgents.has(agent.id);
             const targets = batchSmokeTargets(agent);
+            const batchButton = batchSmokeButton(agent);
             const running = batch && batch.agent === agent.id ? batch : null;
             const headContent = (
               <>
@@ -517,12 +618,13 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
                   ) : (
                     <div className="card-toggle-inner static">{headContent}</div>
                   )}
-                  {(targets.length > 0 || running !== null) && (
+                  {(batchButton.show || running !== null) && (
                     <span className="batch-actions">
                       <button
                         type="button"
                         className="btn small"
-                        disabled={busy !== null && !running}
+                        disabled={running === null && (busy !== null || batchButton.reason !== '')}
+                        title={running === null && batchButton.reason !== '' ? batchButton.reason : undefined}
                         aria-busy={running !== null}
                         onClick={() => { if (!running) void smokeAll(agent.id, targets); }}
                       >
@@ -549,8 +651,15 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
                       <div className="card-row agent-state-row">
                         {agent.state !== '可用' && <StateText state={agent.state} />}
                         <NoteLine text={agent.note.trim()} />
+                        {agent.state === '未安装' && (
+                          <>
+                            <span className="cfg-spacer" />
+                            {pathButton(agent)}
+                          </>
+                        )}
                       </div>
                     )}
+                    {pathPanel(agent)}
                     {!grouped && shown.map((model) => modelRow(model, true, agent.state))}
                     {grouped && groups.map((group) => (
                       <div key={group.provider}>
@@ -627,16 +736,20 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
               {showNotInstalled && notInstalled.map((agent) => {
                 const homepage = agentHomepage(agent);
                 return (
-                  <div key={agent.id} id={`agent-card-${agent.id}`} className="card-row">
-                    <AgentIcon agent={agent.id} size={20} />
-                    <span>{agent.name || agent.id}</span>
-                    <span className="cfg-spacer" />
-                    {homepage !== '' && (
-                      <>
-                        <span className="cfg-mono cfg-dim homepage-text" title="官网">{homepage}</span>
-                        <CopyButton text={homepage} icon />
-                      </>
-                    )}
+                  <div key={agent.id} id={`agent-card-${agent.id}`}>
+                    <div className="card-row">
+                      <AgentIcon agent={agent.id} size={20} />
+                      <span>{agent.name || agent.id}</span>
+                      <span className="cfg-spacer" />
+                      {homepage !== '' && (
+                        <>
+                          <span className="cfg-mono cfg-dim homepage-text" title="官网">{homepage}</span>
+                          <CopyButton text={homepage} icon />
+                        </>
+                      )}
+                      {pathButton(agent)}
+                    </div>
+                    {pathPanel(agent)}
                   </div>
                 );
               })}

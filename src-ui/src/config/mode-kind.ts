@@ -34,6 +34,33 @@ export const MODE_ICONS: Record<ModeKind, IconName> = {
   custom: 'sliders',
 };
 
+/** 内置模式卡片上的一句说明（TASK-66）：先说适合什么任务，再说怎么分工。 */
+const MODE_FIT: Record<Exclude<ModeKind, 'custom'>, string> = {
+  shared: '适合问答、读代码、出主意；一个模型看完整对话后作答',
+  economy: '适合要改代码的日常任务；高档模型出方案，低档模型改，另一家验收',
+  blind: '适合核对方案、改动、结论等关键产出；几家各自审查，互相看不到',
+  arena: '适合想要几个版本挑一个；几家各做一份，选定一份采纳',
+  jury: '适合分头查问题；几家分别从安全、性能、需求覆盖角度审查',
+  swarm: '适合能拆成互不重叠几块的大任务；各家并行完成后依次合并',
+};
+
+/** 模式卡片的说明与写入方式（TASK-66）。内置模式用写定的一句「适合……」，原有介绍作
+ *  悬停提示；自定义模式用用户写的介绍。写入方式：内置蜂群在独立副本里改再合并，算改
+ *  项目文件；其余按位置的写入方式推，有一个位置不是只读就算改项目文件。 */
+export function modeGuide(mode: Pick<ModeEntry, 'id' | 'name' | 'builtin' | 'description' | 'stages'>): {
+  text: string;
+  hint: string;
+  writes: '只读' | '改项目文件';
+} {
+  const kind = mode.builtin ? modeKind(mode.id, mode.name) : 'custom';
+  const description = (mode.description ?? '').trim();
+  const changes = kind === 'swarm' || mode.stages.some((stage) => stage.some((node) => node.write !== '只读'));
+  const writes = changes ? '改项目文件' : '只读';
+  return kind === 'custom'
+    ? { text: description, hint: description, writes }
+    : { text: MODE_FIT[kind], hint: description, writes };
+}
+
 /** 先按 id 认，再按名称认（派发记录只有模式名）；都认不出算自定义。 */
 export function modeKind(id: string, name: string): ModeKind {
   return KIND_BY_ID[id.trim()] ?? KIND_BY_NAME[name.trim()] ?? 'custom';

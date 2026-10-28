@@ -132,6 +132,9 @@ pub struct ResourceAgent {
     /// 官网（TASK-61）；资源页「未安装」里给链接。按支持清单填。
     #[serde(default)]
     pub homepage: String,
+    /// 用户指定的可执行文件路径（TASK-66）；空串时按内置位置与 PATH 查找。
+    #[serde(default, skip_serializing_if = "String::is_empty", rename = "customPath")]
+    pub custom_path: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -756,6 +759,7 @@ pub fn ensure_agents(store: &mut ResourceStore) {
                 models: Vec::new(),
                 untested: entry.untested,
                 homepage: entry.homepage.to_string(),
+                custom_path: String::new(),
             });
         }
         if let Some(agent) = store.agents.iter_mut().find(|agent| agent.id == entry.id) {
@@ -2576,16 +2580,60 @@ pub(crate) fn agent_state(detected: bool) -> &'static str {
     }
 }
 
-/// agent 状态的下一步说明；可用时为空（无下一步）。
+/// agent 状态的下一步说明；可用时为空（无下一步）。未安装时写明找的是哪个
+/// 命令（TASK-66），指定的路径不存在时直接说出路径。
 pub(crate) fn agent_state_note(agent: &ResourceAgent) -> String {
     if agent.detected {
-        String::new()
-    } else {
-        install_note().to_string()
+        return String::new();
     }
+    let custom = agent.custom_path.trim();
+    if !custom.is_empty() && !Path::new(custom).is_file() {
+        return format!("指定的路径不存在：{custom}");
+    }
+    let command = crate::agent_catalog::find(&agent.id).map_or(agent.id.as_str(), |entry| entry.command);
+    format!("没找到 {command}；安装后重新探测，或指定路径")
 }
 
-/// 未安装时的下一步说明；agent 与它下面模型的 note 用同一句。
+/// 用户为支持清单里某个 agent 指定、且文件存在的可执行文件（TASK-66）。
+/// `command` 按命令名或 id 认；探测、派发、冒烟找程序时先查这里。
+pub(crate) fn custom_program(command: &str) -> Option<PathBuf> {
+    let entry = crate::agent_catalog::SUPPORTED_AGENTS
+        .iter()
+        .find(|entry| entry.command.eq_ignore_ascii_case(command) || entry.id.eq_ignore_ascii_case(command))?;
+    let path = crate::paths::aicross_root().ok()?.join("resources.json");
+    custom_program_in(&path, entry.id)
+}
+
+fn custom_program_in(path: &Path, agent_id: &str) -> Option<PathBuf> {
+    // 只读一个字段，不走 load() 的整库整理。
+    let store: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let custom = store
+        .get("agents")?
+        .as_array()?
+        .iter()
+        .find(|agent| agent.get("id").and_then(|id| id.as_str()) == Some(agent_id))?
+        .get("customPath")?
+        .as_str()?
+        .trim();
+    (!custom.is_empty()).then(|| PathBuf::from(custom)).filter(|program| program.is_file())
+}
+
+/// 记下或清除（`program` 为 None）某个 agent 的指定路径（TASK-66）。
+pub(crate) fn set_custom_path_at(path: &Path, agent_id: &str, program: Option<&Path>) -> Result<ResourceStore, String> {
+    let _guard = store_lock(path)?;
+    let mut store = load_or_default(path)?;
+    ensure_agents(&mut store);
+    let agent = store
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == agent_id)
+        .ok_or_else(|| format!("未知 agent：{agent_id}"))?;
+    agent.custom_path = program.map(|program| program.display().to_string()).unwrap_or_default();
+    save_store(path, &store)?;
+    Ok(store)
+}
+
+/// 未安装 agent 下面模型的说明；agent 自己的说明见 [`agent_state_note`]。
 fn install_note() -> &'static str {
     "安装后重新探测"
 }
@@ -5210,9 +5258,39 @@ exit 2
         assert_eq!(agent_state(false), RESOURCE_STATE_MISSING);
         let mut agent = fixture_agent("kimi", Vec::new());
         agent.detected = false;
-        assert_eq!(agent_state_note(&agent), "安装后重新探测");
+        assert_eq!(agent_state_note(&agent), "没找到 kimi；安装后重新探测，或指定路径");
+        agent.custom_path = r"Z:\不存在\kimi.exe".into();
+        assert_eq!(agent_state_note(&agent), r"指定的路径不存在：Z:\不存在\kimi.exe");
         agent.detected = true;
         assert_eq!(agent_state_note(&agent), "");
+    }
+
+    /// TASK-66：指定路径的读写；文件不存在或没指定时不返回，清除后回到空。
+    #[test]
+    fn task66_custom_path_set_read_and_clear() {
+        let root = crate::paths::test_temp_dir().join(format!("task66-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("resources.json");
+        let program = root.join("pi.cmd");
+        fs::write(&program, "@echo off\r\n").unwrap();
+        assert_eq!(custom_program_in(&path, "pi"), None);
+
+        let store = set_custom_path_at(&path, "pi", Some(&program)).unwrap();
+        assert_eq!(store.agents.iter().find(|agent| agent.id == "pi").unwrap().custom_path, program.display().to_string());
+        assert_eq!(custom_program_in(&path, "pi"), Some(program.clone()));
+        assert_eq!(custom_program_in(&path, "kimi"), None);
+        // 探测写回不丢指定路径。
+        let mut reloaded = load(&path).unwrap();
+        set_agent_detection(&mut reloaded, "pi", true, "1.4.0");
+        save_store(&path, &reloaded).unwrap();
+        assert_eq!(custom_program_in(&path, "pi"), Some(program.clone()));
+
+        fs::remove_file(&program).unwrap();
+        assert_eq!(custom_program_in(&path, "pi"), None);
+        set_custom_path_at(&path, "pi", None).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("customPath"));
+        assert!(set_custom_path_at(&path, "nobody", None).is_err());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -214,6 +214,8 @@ aicross resources
 aicross resources detect
 aicross resources smoke pi --model glm-4.7 --provider zai-coding-cn
 aicross resources prune [--agent <a>]
+aicross resources set-path pi D:\tools\pi\pi.cmd
+aicross resources set-path pi
 aicross config show --host claude
 aicross config set-role execution --agent pi --model glm-4.7 --provider zai-coding-cn
 aicross config set timeoutSecs 900
@@ -235,7 +237,9 @@ null）。从未探测过时（`detected_at` 为 null）每个 agent 与其下�
 agent 按支持清单列出（claude、codex、kimi、pi、agy、cursor、codebuddy、
 copilot、qoder），没装的也列（`state` 未安装、`models` 为空）。每个 agent
 另带 `untested`（布尔：命令模板只照官方文档写、没在真机跑通，一键推荐不选）
-与 `homepage`（官网链接）。
+与 `homepage`（官网链接）、`custom_path`（用户指定的可执行文件路径，没指定为空串）。
+未安装的 agent 的 note 写明找的是哪个命令（「没找到 pi；安装后重新探测，或指定路径」），
+指定的路径不存在时为「指定的路径不存在：<路径>」。
 `resources detect` 重新探测全部 agent（含 pi provider 登录检查）并写
 回资源库，同时更新 `detected_at`；各 agent 的探测在资源库锁外并行跑，
 全部完成后一次合并写盘。窗口命令 `resources_detect` 同一实现体，每个
@@ -279,6 +283,12 @@ roles.json 角色引用的——这些照样删除，相关位置在 `config sho
 `effective.state` 变成「不在资源库」，需重新指定人选；stderr 写
 「已清理 N 个未发现的模型」，有被引用的另说明一行。窗口命令 `resources_prune`
 返回同一结构。删掉的模型再次探测发现后会重新加入资源库。
+
+`resources set-path <agent> [<路径>]` 记下某个 agent 的可执行文件路径（资源库该 agent 的
+`customPath`），不给路径即清除；只认支持清单里的 agent，路径必须是已存在的文件，否则
+退出 2。探测、冒烟、派发找程序时先用它，文件不存在时退回内置位置与 PATH。stdout 是该
+agent 的条目（同 `resources`），stderr 提示重新探测后生效。窗口命令 `resources_set_path`
+同一实现体。
 
 `config show [--host <h>]` 输出 `{ "roles": …, "dispatch": …, "acp": …, "defaultMode": …,
 "modes": … }`，`acp` 列出每家 ACP 适配器当前是否就绪，只查不装。`--host` 规则

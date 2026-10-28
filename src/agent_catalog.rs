@@ -221,10 +221,13 @@ pub(crate) fn position_violation(agent: &str, role: &str, visibility: &str) -> O
     None
 }
 
-/// 用支持清单登记的兜底路径与 PATH 找 agent 的可执行文件：兜底存在就用它，
-/// 否则走 PATH。探测、冒烟、派发都经这一处，结果一致（fix-61-r1 4）。
+/// 找 agent 的可执行文件：用户指定的路径（TASK-66）优先，其次支持清单登记的
+/// 兜底路径，再走 PATH。探测、冒烟、派发都经这一处，结果一致（fix-61-r1 4）。
 pub(crate) fn resolve_program(id: &str) -> Option<PathBuf> {
     let entry = find(id)?;
+    if let Some(custom) = crate::resources::custom_program(entry.id) {
+        return Some(custom);
+    }
     if let Some(fallback) = fallback_path(entry.id).filter(|path| path.is_file()) {
         return Some(fallback);
     }

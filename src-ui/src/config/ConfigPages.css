@@ -734,6 +734,13 @@
   gap: 2px;
 }
 
+/* 模式卡片标题行：名称与「只读 / 改项目文件」标签（TASK-66）。 */
+.card-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .cfg-group-title {
   display: flex;
   align-items: center;
@@ -983,6 +990,29 @@ button.card-toggle-inner:hover {
 
 .focus-input[aria-invalid="true"] {
   border-color: var(--red);
+}
+
+/* 指定路径（TASK-66）：输入行与当前路径行。 */
+.path-row {
+  gap: 8px;
+}
+
+.path-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: var(--bg-control);
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.path-error {
+  margin: 0;
+  padding: 0 16px 8px;
 }
 
 /* 未安装的 agent 行里的官网地址（TASK-62）：可选中复制。 */

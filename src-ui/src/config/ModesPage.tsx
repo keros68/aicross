@@ -34,7 +34,7 @@ import {
   type SeatDraft,
   type SeatOption,
 } from './config-view';
-import { MODE_ICONS, groupModes, modeKind } from './mode-kind';
+import { MODE_ICONS, groupModes, modeGuide, modeKind } from './mode-kind';
 import { findHostStatus, modesPrompt, recommendNotes } from './skill-view';
 import { ModelPicker } from './ModelPicker';
 import { PresetEditor } from './PresetEditor';
@@ -630,6 +630,7 @@ export function ModesPage({
               {group.modes.map((mode) => {
                 const isDefault = mode.id === defaultMode;
                 const kind = modeKind(mode.id, mode.name);
+                const guide = modeGuide(mode);
                 const seats = flowColumns(mode.stages).flatMap((column) => column.seats);
                 return (
                   <section key={mode.id} className={`card${isDefault ? ' active' : ''}`}>
@@ -638,9 +639,12 @@ export function ModesPage({
                         <Icon name={MODE_ICONS[kind]} size={18} />
                       </span>
                       <span className="card-head-text">
-                        <span className="card-title">{mode.name}</span>
-                        {(mode.description ?? '').trim() !== '' && (
-                          <span className="card-sub" title={mode.description}>{mode.description}</span>
+                        <span className="card-title-line">
+                          <span className="card-title">{mode.name}</span>
+                          <span className={`pill${guide.writes === '只读' ? ' muted' : ' warn'}`}>{guide.writes}</span>
+                        </span>
+                        {guide.text !== '' && (
+                          <span className="card-sub" title={guide.hint || undefined}>{guide.text}</span>
                         )}
                       </span>
                       <span className="cfg-spacer" />

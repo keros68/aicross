@@ -1,10 +1,41 @@
 import { describe, expect, it } from 'vitest';
-import { MODE_ICONS, groupModes, modeKind } from '../mode-kind';
-import type { ModeEntry } from '../../tauri';
+import { MODE_ICONS, groupModes, modeGuide, modeKind } from '../mode-kind';
+import type { ModeEntry, ModeSeatNode } from '../../tauri';
 
 function mode(id: string, name: string, builtin = true): ModeEntry {
   return { id, name, builtin, default: false, stages: [] };
 }
+
+function node(write: string): ModeSeatNode {
+  return { role: '执行', visibility: '共享', write, seat: null, effective: null, source: '未指定' };
+}
+
+describe('模式说明（TASK-66）', () => {
+  it('内置模式用写定的「适合……」，原有介绍作悬停提示', () => {
+    const guide = modeGuide({ ...mode('builtin-blind', '盲审模式'), description: '同一份材料由多个厂商的模型独立审查', stages: [[node('只读')]] });
+    expect(guide.text.startsWith('适合')).toBe(true);
+    expect(guide.hint).toBe('同一份材料由多个厂商的模型独立审查');
+    expect(guide.writes).toBe('只读');
+  });
+
+  it('六个内置模式都有说明，互不相同', () => {
+    const ids = ['shared', 'economy', 'blind', 'arena', 'jury', 'swarm'];
+    const texts = ids.map((id) => modeGuide(mode(`builtin-${id}`, '')).text);
+    expect(texts.every((text) => text.startsWith('适合'))).toBe(true);
+    expect(new Set(texts).size).toBe(ids.length);
+  });
+
+  it('写入方式：有位置不是只读就算改项目文件；内置蜂群算改项目文件', () => {
+    expect(modeGuide({ ...mode('builtin-economy', '经济模式'), stages: [[node('只读')], [node('单写者')]] }).writes).toBe('改项目文件');
+    expect(modeGuide({ ...mode('builtin-swarm', '蜂群模式'), stages: [[node('只读')]] }).writes).toBe('改项目文件');
+    expect(modeGuide({ ...mode('user-1', '自定义模式', false), stages: [[node('worktree')]] }).writes).toBe('改项目文件');
+  });
+
+  it('自定义模式显示用户写的介绍，名字和内置撞了也不套内置说明', () => {
+    const guide = modeGuide({ ...mode('user-2', '经济模式', false), description: '审稿用', stages: [[node('只读')]] });
+    expect(guide).toEqual({ text: '审稿用', hint: '审稿用', writes: '只读' });
+  });
+});
 
 describe('模式的种类与标识（fix-49-r2）', () => {
   it('先按 id 认，再按名称认，都认不出算自定义', () => {

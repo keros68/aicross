@@ -67,7 +67,7 @@ fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
          \x20 cancel      叫停一次派发\n\
          \x20 recover     崩溃后核对；--rollback 恢复单写者改动的项目文件\n\
          \x20 open        打开该 run 的查看页\n\
-         \x20 resources   看资源库 / 重新探测 / 冒烟验证\n\
+         \x20 resources   看资源库 / 重新探测 / 冒烟验证 / 指定路径\n\
          \x20 config      看与改角色、派发设置、模式人选\n\
          \x20 hosts       看与改主 agent\n\
          \x20 skill       skill status / install / upgrade / uninstall\n\
@@ -283,6 +283,27 @@ fn run_resources(
         }
         Some("smoke") => run_resources_smoke(root, args, ops, stdout, stderr),
         Some("prune") => run_resources_prune(root, args, ops, stdout, stderr),
+        Some("set-path") => {
+            if let Some(message) = extra_arg_error(args, 5) {
+                let _ = writeln!(stderr, "{message}");
+                return 2;
+            }
+            let Some(agent) = args.get(3) else {
+                let _ = writeln!(stderr, "用法：aicross resources set-path <agent> [<路径>]，不给路径即清除");
+                return 2;
+            };
+            match resources_set_path_at(root, agent, args.get(4).map(String::as_str)) {
+                Ok((value, message)) => {
+                    let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
+                    let _ = writeln!(stderr, "{message}");
+                    0
+                }
+                Err((code, message)) => {
+                    let _ = writeln!(stderr, "{message}");
+                    code
+                }
+            }
+        }
         Some(other) => {
             let _ = writeln!(stderr, "未知子命令：{other}");
             2
@@ -681,6 +702,34 @@ fn run_resources_prune(
             code
         }
     }
+}
+
+/// `resources set-path`：记下或清除某个 agent 的指定路径（TASK-66）。只认
+/// 支持清单里的 agent；给的路径必须是已存在的文件。返回该 agent 的条目与
+/// stderr 说明行；参数错退出 2，资源库写不了退出 3。
+fn resources_set_path_at(root: &Path, agent_arg: &str, program: Option<&str>) -> Result<(Value, String), (i32, String)> {
+    let Some(entry) = crate::agent_catalog::find(agent_arg.trim()) else {
+        let ids: Vec<&str> = crate::agent_catalog::SUPPORTED_AGENTS.iter().map(|entry| entry.id).collect();
+        return Err((2, format!("未知 agent：{agent_arg}；可选：{}", join_or_none(&ids))));
+    };
+    let program = program.map(str::trim).filter(|program| !program.is_empty()).map(Path::new);
+    if let Some(program) = program {
+        if !program.is_file() {
+            return Err((2, format!("文件不存在：{}", program.display())));
+        }
+    }
+    let store = resources::set_custom_path_at(&store_file(root), entry.id, program).map_err(|message| (3, message))?;
+    let message = match program {
+        Some(program) => format!("已指定 {} 的路径：{}；重新探测后生效", entry.id, program.display()),
+        None => format!("已清除 {} 的指定路径；重新探测后生效", entry.id),
+    };
+    Ok((resources_value_filtered(&store, Some(entry.id)), message))
+}
+
+/// 窗口指定路径：与 `resources set-path` 同一实现体，失败回 Err(那一行说明)。
+pub(crate) fn resources_set_path_command_at(root: &Path, agent: &str, program: Option<&str>) -> Result<Value, String> {
+    let (value, message) = resources_set_path_at(root, agent, program).map_err(|(_, message)| message)?;
+    Ok(value_with_messages(value, vec![message]))
 }
 
 /// 窗口冒烟的返回值映射：参数错与资源库读不了回 Err(那一行说明)，
@@ -2738,6 +2787,7 @@ fn agent_entry(agent: &ResourceAgent, ever_detected: bool, now_millis: i64) -> V
         "models": models,
         "untested": agent.untested,
         "homepage": agent.homepage,
+        "custom_path": agent.custom_path,
     })
 }
 
@@ -3311,6 +3361,42 @@ mod tests {
             .clone()
     }
 
+    /// TASK-66：`resources set-path` 记下、清除指定路径；未知 agent、文件不存在报参数错。
+    #[test]
+    fn task66_resources_set_path() {
+        let root = fixture_root("set-path");
+        write_fixture_store(&root);
+        let program = root.join("pi.cmd");
+        fs::write(&program, "@echo off\r\n").unwrap();
+        let program_text = program.display().to_string();
+        let ops = ResourcesOps::production();
+
+        let (code, stdout, stderr) = run_with(&root, &["aicross", "resources", "set-path", "PI", &program_text], &ops);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.contains("已指定 pi 的路径") && stderr.contains("重新探测后生效"), "{stderr}");
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["id"], "pi");
+        assert_eq!(parsed["custom_path"], program_text.as_str());
+
+        let (code, stdout, stderr) = run_with(&root, &["aicross", "resources", "set-path", "pi"], &ops);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.contains("已清除 pi 的指定路径"), "{stderr}");
+        let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(parsed["custom_path"], "");
+
+        for (args, expected) in [
+            (vec!["aicross", "resources", "set-path"], "用法"),
+            (vec!["aicross", "resources", "set-path", "gemini", "x"], "未知 agent"),
+            (vec!["aicross", "resources", "set-path", "pi", r"Z:\不存在\pi.cmd"], "文件不存在"),
+            (vec!["aicross", "resources", "set-path", "pi", "a", "b"], "不认识的参数"),
+        ] {
+            let (code, _, stderr) = run_with(&root, &args, &ops);
+            assert_eq!(code, 2, "{args:?}");
+            assert!(stderr.contains(expected), "{args:?}: {stderr}");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn task39_resources_lists_states_without_probing() {
         let root = fixture_root("list");
@@ -3335,9 +3421,10 @@ mod tests {
         let kimi = parsed["agents"].as_array().unwrap().iter()
             .find(|agent| agent["id"] == "kimi").unwrap();
         assert_eq!(kimi["state"], "未安装");
-        assert_eq!(kimi["note"], "安装后重新探测");
+        assert_eq!(kimi["note"], "没找到 kimi；安装后重新探测，或指定路径");
+        assert_eq!(kimi["custom_path"], "");
         assert_eq!(kimi["version"], "未检测");
-        // R1-4：agent 未安装时它下面的模型状态跟随 agent，note 与 agent 一致
+        // R1-4：agent 未安装时它下面的模型状态跟随 agent
         assert_eq!(kimi["models"].as_array().unwrap().len(), 1);
         assert_eq!(kimi["models"][0]["state"], "未安装");
         assert_eq!(kimi["models"][0]["note"], "安装后重新探测");

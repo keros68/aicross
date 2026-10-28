@@ -173,13 +173,19 @@ export function isConfirmedInstalled(agent: Pick<ResourceAgentEntry, 'state'>): 
   return agent.state !== '未安装' && agent.state !== '未探测';
 }
 
-/** 分出已安装与未安装，各自保持引擎给的顺序。 */
-export function splitInstalled<T extends Pick<ResourceAgentEntry, 'state'>>(
+/** 留在主列表的 agent：装了的，以及这次没找到、但资源库里还有模型（以前探测到过）的
+ *  （TASK-66），后者以卡片显示状态与原因，不折叠进「未安装」。 */
+export function isListed(agent: Pick<ResourceAgentEntry, 'state' | 'models'>): boolean {
+  return isInstalled(agent) || agent.models.length > 0;
+}
+
+/** 分出主列表与「未安装」折叠行，各自保持引擎给的顺序。 */
+export function splitInstalled<T extends Pick<ResourceAgentEntry, 'state' | 'models'>>(
   agents: readonly T[],
 ): { installed: T[]; notInstalled: T[] } {
   const installed: T[] = [];
   const notInstalled: T[] = [];
-  for (const agent of agents) (isInstalled(agent) ? installed : notInstalled).push(agent);
+  for (const agent of agents) (isListed(agent) ? installed : notInstalled).push(agent);
   return { installed, notInstalled };
 }
 

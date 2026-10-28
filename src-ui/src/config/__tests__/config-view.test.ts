@@ -651,6 +651,13 @@ describe('更多 agent（TASK-62）', () => {
     expect(splitInstalled([])).toEqual({ installed: [], notInstalled: [] });
   });
 
+  it('这次没找到、但资源库里还有模型的 agent 留在主列表（TASK-66）', () => {
+    const lost = { ...agent('pi', '未安装'), models: [{ id: 'm', agent: 'pi', provider: 'zai', resolved_id: 'm', state: '未安装', note: '' }] };
+    const { installed, notInstalled } = splitInstalled([agent('claude', '可用'), lost, agent('cursor', '未安装')]);
+    expect(installed.map((a) => a.id)).toEqual(['claude', 'pi']);
+    expect(notInstalled.map((a) => a.id)).toEqual(['cursor']);
+  });
+
   it('未安装折叠行文字', () => {
     expect(notInstalledText(5)).toBe('未安装 5 个');
   });
