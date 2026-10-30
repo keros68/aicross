@@ -1,6 +1,6 @@
 [package]
 name = "aicross"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 description = "ai-cross skill 的桌面面板与多厂商 agent 派发引擎"
 license = "MIT"
