@@ -1,6 +1,6 @@
 # aicross 产品说明
 
-> 本文只写现行设计。每条规则当时为什么这样定、推翻过什么，见 `docs/history/PRODUCT-0830-0930.md`（08-30 至 09-30 的定案原文）。竞品事实见 `D:\work\agentteam\COMPETITIVE-LANDSCAPE.md`，进度见 `D:\work\agentteam\PROGRESS.md`，任务书与交付流程见 `tasks/README.md`。
+> 本文只写现行设计。每条规则当时为什么这样定、推翻过什么，见 `docs/history/PRODUCT-0830-0930.md`（08-30 至 09-30 的定案原文）。竞品事实见 `docs/research/COMPETITIVE-LANDSCAPE.md`；进度看 `tasks/` 下的任务书与完成报告，10-05 以前的阶段进度在 `docs/history/PROGRESS-agentteam.md`；交付流程见 `tasks/README.md`。
 
 ## 定位（2026-10-06 用户定）
 

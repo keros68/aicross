@@ -4,7 +4,7 @@
 
 ## 项目是什么
 
-aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常用的宿主（Claude Code / Codex / Kimi Code / pi agent 等，装 ai-cross skill）里说话，模型提议派发、用户采纳；aicross 以命令行拉起各家 CLI、隔离盲审、核对真身、留痕，并在查看器里把各路结果并排交给用户裁决。现行产品说明在 `docs/PRODUCT.md`；08-30 至 09-30 的定案原文在 `docs/history/PRODUCT-0830-0930.md`，只作追溯。`docs/history/proto/index.html` 是 09-30 之前的界面原型，只作历史参考。
+aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常用的宿主（Claude Code / Codex / Kimi Code / pi agent 等，装 ai-cross skill）里说话，模型提议派发、用户采纳；aicross 以命令行拉起各家 CLI、隔离盲审、核对真身、留痕，并在查看器里把各路结果并排交给用户裁决。现行产品说明在 `docs/PRODUCT.md`；08-30 至 09-30 的定案原文在 `docs/history/PRODUCT-0830-0930.md`，只作追溯。`docs/history/proto/index.html` 是 09-30 之前的界面原型，只作历史参考。竞品与相邻项目事实在 `docs/research/COMPETITIVE-LANDSCAPE.md`（按日期追加节，每条带来源），单个坑的复现记录是同目录的 `FINDINGS-*.md`；skill 早期需求规格在 `docs/history/SKILL-SPEC.md`。基准实验、评测记录与配套文章留在本地资料目录 `D:\work\agentteam`，不进本仓库。
 
 ## 技术栈
 
