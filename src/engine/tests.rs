@@ -142,6 +142,34 @@ fn adopt_changes_persisted_graph_without_window() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn task69_adopt_appends_a_track_line_with_the_task_kind() {
+    let root = temp("adopt-track");
+    let mut graph = new_graph("D:/p", "g1".into(), "root".into(), now());
+    let node = graph.nodes.get_mut("root").unwrap();
+    node.reply = Some(Reply { status: "done".into(), text: "answer".into(), ..Reply::default() });
+    node.target = Some(Target { agent: "codex".into(), model: "m".into(), role: "执行".into(), ..Target::default() });
+    orchestration::save_graph_in(&root, &graph).unwrap();
+    let run = EngineRun {
+        run_id: "r1".into(),
+        graph_id: "g1".into(),
+        project: "D:/p".into(),
+        status: "done".into(),
+        task_kind: "frontend".into(),
+        nodes: node_summary(&graph, vec!["root".into()]),
+        ..EngineRun::default()
+    };
+    write_run(&root, &run).unwrap();
+    adopt(&root, "r1", "root").unwrap();
+    adopt(&root, "r1", "root").unwrap();
+    let text = fs::read_to_string(root.join("track").join("outcomes.jsonl")).unwrap();
+    assert!(text.contains("\"type\":\"adopt\"") && text.contains("\"task_kind\":\"frontend\""), "{text}");
+    let stats = crate::track::stats_value(&root, Some("frontend"), None, 0).unwrap();
+    assert_eq!(stats["models"][0]["byKind"][0]["adopted"], 1, "重复采纳只算一次");
+    assert!(fs::read_to_string(root.join("runs").join("r1.json")).unwrap().contains("\"task_kind\": \"frontend\""));
+    let _ = fs::remove_dir_all(root);
+}
+
 // ── R1-5：后台进程不继承标准输入输出 ──────────────────────────────────────
 
 /// 中介进程（以 --ignored 手动拉起才会跑）：spawn_detached 一个长跑孙子后
@@ -902,6 +930,67 @@ fn run_background_ignores_non_running_run() {
     let _ = fs::remove_dir_all(root);
 }
 
+// ── TASK-69：后台跑完一次派发后写使用记录 ───────────────────────
+
+/// 落图到磁盘、每个节点都返回成功；验收节点的回复带 PASS。
+struct DiskSink(PathBuf);
+
+impl PipelineSink for DiskSink {
+    fn save_graph(&mut self, graph: &Graph) -> Result<Option<Graph>, String> {
+        orchestration::save_graph_in(&self.0, graph)?;
+        Ok(None)
+    }
+    fn update(&mut self, _update: &RunUpdate) -> Result<(), String> {
+        Ok(())
+    }
+    fn dispatch(&mut self, request: &DispatchStageRequest) -> Result<DispatchStageResult, String> {
+        Ok(DispatchStageResult {
+            run_id: request.run_id.clone(),
+            results: request
+                .nodes
+                .iter()
+                .map(|node| sample_result(&node.node_id, if node.role == "验收" { "结论：PASS" } else { "完成" }))
+                .collect(),
+            state_file: String::new(),
+        })
+    }
+}
+
+#[test]
+fn task69_finished_run_appends_outcome_lines() {
+    let root = temp("track-run");
+    let mut graph = new_graph("D:/p", "g1".into(), "root".into(), now());
+    graph.nodes.insert("e1".into(), turn("e1", &["root"], "执行", "2026-10-30T00:00:01.000Z"));
+    graph.nodes.insert("a1".into(), turn("a1", &["e1"], "验收", "2026-10-30T00:00:02.000Z"));
+    orchestration::save_graph_in(&root, &graph).unwrap();
+    fs::write(
+        root.join("resources.json"),
+        r#"{"version":1,"agents":[{"id":"codex","models":[{"id":"exec","agent":"codex"}]}]}"#,
+    )
+    .unwrap();
+    let run = EngineRun {
+        run_id: "r1".into(),
+        graph_id: "g1".into(),
+        project: root.to_string_lossy().into_owned(),
+        status: "running".into(),
+        task_kind: "backend".into(),
+        nodes: node_summary(&graph, vec!["e1".into(), "a1".into()]),
+        ..EngineRun::default()
+    };
+    write_run(&root, &run).unwrap();
+    let sink_root = root.clone();
+    run_background_with(&root, "r1", move |_, _, _, _| Box::new(DiskSink(sink_root))).unwrap();
+    let text = fs::read_to_string(root.join("track").join("outcomes.jsonl")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "{text}");
+    let line: Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(line["type"], "outcome");
+    assert_eq!(line["result"], "first_pass");
+    assert_eq!(line["task_kind"], "backend");
+    assert_eq!(line["node_id"], "e1");
+    let _ = fs::remove_dir_all(root);
+}
+
 // ── R2-6：推进中途失败的收尾只动本 run 的节点 ───────────────────
 
 struct FailingCommitSink;
@@ -962,6 +1051,8 @@ fn pipeline_commit_failure_only_fails_this_runs_nodes() {
     assert_eq!(finished.nodes.len(), 1);
     assert_eq!(finished.nodes[0].node_id, "n1");
     assert_eq!(finished.nodes[0].status, "failed");
+    // TASK-69：引擎自己出错时收尾标的失败不进使用记录。
+    assert!(!root.join("track").join("outcomes.jsonl").exists());
     let _ = fs::remove_dir_all(root);
 }
 

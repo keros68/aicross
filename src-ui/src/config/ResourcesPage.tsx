@@ -13,7 +13,8 @@
 // 的 agent 可「指定路径」，保存后重新探测。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { commands, isTauri, type DetectProgress, type ResourceAgentEntry, type ResourceModelEntry, type ResourcesOutput } from '../tauri';
+import { commands, isTauri, type DetectProgress, type ModelTrack, type ResourceAgentEntry, type ResourceModelEntry, type ResourcesOutput } from '../tauri';
+import { orderTags, trackKey, trackLine } from './track-view';
 import {
   DETECT_STALE_HINT,
   MODEL_PREVIEW_LIMIT,
@@ -130,6 +131,39 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
   const [showNotInstalled, setShowNotInstalled] = useState(false);
   // 正在编辑指定路径的 agent 与输入内容（TASK-66）。
   const [pathDraft, setPathDraft] = useState<Record<string, string>>({});
+  // TASK-69：使用记录与标注；正在编辑标注的模型。
+  const [track, setTrack] = useState<ModelTrack | null>(null);
+  const [noteDraft, setNoteDraft] = useState<{ key: string; tags: string[]; note: string } | null>(null);
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [noteError, setNoteError] = useState('');
+
+  const loadTrack = useCallback(async () => {
+    if (!isTauri) return;
+    try {
+      setTrack(await commands.modelTrack());
+    } catch {
+      // 记录读不了不影响资源页，模型行只是不显示记录。
+      setTrack(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (active) void loadTrack();
+  }, [active, refreshKey, loadTrack]);
+
+  const saveNote = async () => {
+    if (noteDraft === null) return;
+    setNoteSaving(true);
+    setNoteError('');
+    try {
+      await commands.modelNoteSet(noteDraft.key, noteDraft.tags, noteDraft.note);
+      setNoteDraft(null);
+      await loadTrack();
+    } catch (err) {
+      setNoteError(String(err));
+    }
+    setNoteSaving(false);
+  };
 
   // 快照请求序号：首次读取、刷新、探测 / 测试连接 / 清理后的重读各自取号，落地前核对
   // 是最新一次，过期的结果丢弃，避免旧结果盖掉新结果（同模式页）。
@@ -414,6 +448,9 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
     const key = seatKey(model.agent, model.provider, model.id);
     const resolved = resolvedModelText(model);
     const smoking = busy?.kind === 'smoke' && busy.key === key;
+    const modelTrackKey = trackKey(model.agent, model.provider, model.id);
+    const tracked = track?.models.find((item) => item.model === modelTrackKey);
+    const editing = noteDraft !== null && noteDraft.key === modelTrackKey;
     return (
       <div key={key} className="card-row model-row">
         <div className="model-row-main">
@@ -437,8 +474,64 @@ export function ResourcesPage({ active, host, refreshKey, onRefreshDone, onDetec
               {smoking && '测试中…'}
             </button>
           )}
+          {track !== null && (
+            <button
+              type="button"
+              className="icon-btn"
+              title="标注用途"
+              aria-label="标注用途"
+              disabled={noteSaving}
+              onClick={() => {
+                setNoteError('');
+                setNoteDraft({ key: modelTrackKey, tags: [...(tracked?.tags ?? [])], note: tracked?.note ?? '' });
+              }}
+            >
+              <Icon name="edit" />
+            </button>
+          )}
         </div>
         <NoteLine text={modelNote(model, agentState)} />
+        {tracked !== undefined && (tracked.tagNames.length > 0 || tracked.note !== '') && (
+          <p className="cfg-note note-line" title={tracked.note}>
+            {tracked.tagNames.length > 0 && `擅长：${tracked.tagNames.join('、')}`}
+            {tracked.tagNames.length > 0 && tracked.note !== '' && '。'}
+            {tracked.note}
+          </p>
+        )}
+        <NoteLine text={trackLine(tracked)} />
+        {editing && track !== null && (
+          <div className="card-row note-edit">
+            <div className="note-edit-tags" role="group" aria-label="擅长的任务">
+              {track.kindList.map((kind) => (
+                <label key={kind.id} className="note-edit-tag">
+                  <input
+                    type="checkbox"
+                    checked={noteDraft.tags.includes(kind.id)}
+                    onChange={(event) => {
+                      const tags = event.target.checked
+                        ? orderTags([...noteDraft.tags, kind.id], track.kindList)
+                        : noteDraft.tags.filter((id) => id !== kind.id);
+                      setNoteDraft({ ...noteDraft, tags });
+                    }}
+                  />
+                  {kind.name}
+                </label>
+              ))}
+            </div>
+            <input
+              className="path-input"
+              aria-label="备注"
+              placeholder="备注，如：审美好、写长文稳"
+              value={noteDraft.note}
+              onChange={(event) => setNoteDraft({ ...noteDraft, note: event.target.value })}
+            />
+            <button type="button" className="btn small primary" disabled={noteSaving} onClick={() => void saveNote()}>
+              {noteSaving ? '保存中…' : '保存'}
+            </button>
+            <button type="button" className="btn small" disabled={noteSaving} onClick={() => setNoteDraft(null)}>取消</button>
+          </div>
+        )}
+        {editing && noteError !== '' && <p className="cfg-error">{noteError}</p>}
         {rowErrors[key] && <p className="cfg-error">{rowErrors[key]}</p>}
       </div>
     );

@@ -355,6 +355,7 @@ aicross 是 ai-cross 的桌面配套程序，安装包在 GitHub Release（安�
    - 干活：默认模式是共享、经济、擂台、蜂群模式之一就用它，否则用经济模式（`--preset economy`）。
    - 用户这次点名了模式（"这次用擂台模式"），就加 `--preset <模式 id>`。
    - 用默认模式时不加 `--preset`，引擎自己读默认模式。
+   - 任务有多种做法、要从中挑一个（界面方案、命名、写法取舍），而默认模式不是擂台模式：开场那行后加一句「这类问题可以用擂台模式让几家各出一版」，用户要才加 `--preset` 换，只对这一次。
 2. **开场一行写明配置来源**：`- [ai-cross] <任务> → 按你在 aicross 里设的<模式名>：<角色> <模型>，<角色> <模型> ｜ 理由：<一句话>`。人选取该模式各位置的 `effective`，用户同意后再发。
 3. **位置没人选（有 `unfilledReason`），或 `effective.state` 是未安装 / 未探测 / 未发现 / 未登录 / 验证失败 / 不在资源库**：不发，告诉用户是哪个位置、原因，请他在 aicross 窗口里重新探测或在「模式」页换人选。不自行换人。额度用尽由引擎按备选改派；未验证、冒烟超时照常派发，在开场那行注明。
 4. **用户点名了模型**（"让 claude 5.5 审""这次换 Kimi"）：先跑 `aicross resources find <用户说的名字>`，不凭名字猜是哪个 agent。同一个模型常挂在别的 agent 下（pi、Antigravity 里都可能有 Claude），只查名字相同的那个程序会误判为没有。
@@ -363,11 +364,16 @@ aicross 是 ai-cross 的桌面配套程序，安装包在 GitHub Release（安�
    - 一个都没有（退出 1）：这时才说资源库里没有；`related` 不空时列出名字相近的供用户改口；用户说装了，请他在 aicross 里重新探测。
    - 选定后只对这一次换人，不改 aicross 的配置：加 `--seat <阶段>.<位置>=<target>`，`target` 原样用 find 输出的；位置看 `config show` 里该模式的 `stages`，换被点名去做的那个角色的位置，可重复。开场那行写明对应关系，如「claude 5.5 → pi · opencode-go/claude-opus-5-5」，用户一眼能看出认没认错。
    - 换模式就加 `--preset`。用户说"以后都这样"时，请他在窗口里改，或跑 `aicross config set-seat` / `set-default-mode`（写入前在对话里确认）。
+5. **任务类型与使用记录**：每次派发都带 `--kind <类型>`，按任务内容在 前端 `frontend` / 后端 `backend` / 文案 `writing` / 数据分析 `data` / 文档 `docs` / 其他 `other` 里选一个，拿不准写 `other`。引擎在派发结束时按类型记下执行位置的结果（一次通过、修正后通过、未通过、失败），给以后选人用。
+   - 发之前跑 `aicross stats --kind <类型>`，看 `kinds[0]`：`ranked` 是这一类上样本够的模型按通过率排序（`passRate` 0–100），`tagged` 是用户标了擅长这一类的模型；模型写作 `agent:provider:model`，`usable` 为 false 的不考虑。
+   - 执行位置的人选在 `ranked` 里，且有一个可用模型的 `passRate` 高出 20 以上；或人选不在 `tagged` 里而 `tagged` 里有可用模型：开场那行后加一句提示，如「前端任务里 pi · opencode-go/claude-opus-5-5 通过率 85%，当前人选 60%，要不要这次换它」。用户同意才加 `--seat` 换，只对这一次。两条都不满足就不提。
+   - 用户在对话里认可了某一路的结果（"就用这个""采纳 Kimi 那版"），调 `aicross adopt <run_id> <node_id>`，节点 id 取 `status` 输出里那一路的。
 
 ```powershell
 $s = if ($env:AICROSS_HOME) { "$env:AICROSS_HOME\scratch" } else { "$HOME\.aicross\scratch" }
 aicross config show --host claude
-aicross dispatch --host claude --project D:\work\project --text-file $s\dispatch.txt                 # 默认模式
+aicross stats --kind frontend                                                                        # 派发前看这一类的记录
+aicross dispatch --host claude --project D:\work\project --kind frontend --text-file $s\dispatch.txt  # 默认模式
 aicross dispatch --host claude --project D:\work\project --preset blind --text-file $s\dispatch.txt   # 指定模式
 aicross resources find claude 5.5                                                                    # 用户点名模型时先找
 aicross dispatch --host claude --project D:\work\project --preset blind --seat 1.1=pi:opencode-go:claude-opus-5-5 --text-file $s\dispatch.txt   # 这一次换人

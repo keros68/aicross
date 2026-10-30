@@ -90,6 +90,11 @@ stderr 说明。内容随派发存进 run 文件（`accept_criteria`，未给时
 worktree 时取该 worktree；多路上游各附一份，`project-2/` 起递增），
 `REQUEST.md` 头部写项目与执行者 worktree 的提交号（非 git 项目不写）。
 
+`--kind` 可选，给任务类型：`frontend` / `backend` / `writing` / `data` / `docs` /
+`other`，中文名（前端 / 后端 / 文案 / 数据分析 / 文档 / 其他）也认；别的值或缺值
+退出 2。解析成英文 id 后存进 run 文件（`task_kind`，未给时不写出），供使用记录
+按类型汇总，派发流程不因它改变。
+
 每个派出的节点，最终外发文本末尾固定追加一句如实汇报要求：`Be honest in your
 response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。`
 所有角色与模式都一样，没有开关；派发原文在提示词里原样保留。派发层铺材料前
@@ -152,7 +157,7 @@ cursor、codebuddy、copilot、qoder 是未实测通道，派发直接失败并�
 run 摘要记录本次派发的原始需求文本（`original_request`）、验收条件全文
 （`accept_criteria`，未给 `--accept-file` 时不写出）、所用预设 id
 （`preset_id`，按 targets 直给时为空）、主 agent（`host`，无配置时不写出）、
-从节点移除未发现备选的说明（`notes`，
+任务类型（`task_kind`，未给 `--kind` 时不写出）、从节点移除未发现备选的说明（`notes`，
 无则不写出）、后台进程 pid 与进程创建时间（`pid_started_at`）。后台引擎逐阶段更新；取消标记存放在同目录的
 `<run_id>.cancel`，处理完成后删除。
 
@@ -217,6 +222,41 @@ worktree 节点给 `worktree` 路径，原样保留；图上没有产物时按�
 每次 `aicross dispatch` 新建一张图，派发之间不共享上下文：后一次派发的执行者
 读不到前一次的材料与回复，run 摘要的遗留项只来自本次的图，图标题取本次的任务。
 追问同一件事时，由调用方把前情写进任务文本。
+
+## 使用记录（stats）与用途标注（resources note）
+
+后台引擎跑完一次派发（成功或失败）时，按最终的图给每条执行链往
+`$AICROSS_HOME/track/outcomes.jsonl` 追加一行 `{"type":"outcome", run_id, node_id,
+host, preset_id, task_kind, agent, provider, model, role, result, rounds, error_kind}`。
+执行链是第一轮执行节点加它后面的修正轮（验收要求修正后长出的执行，以及同父、
+同人选、任务文本以「[修正」开头或含「请修正后重新运行」的验证重试）。`result`：
+
+| 值 | 条件 |
+|---|---|
+| `first_pass` | 链只有一轮，最后一个验收结论 PASS |
+| `fixed_pass` | 修正轮之后验收结论 PASS |
+| `not_passed` | 验收结论 NEEDS_FIX（修正轮到顶），或最后一轮 `error_kind` 为 `validation_failed` |
+| `failed` | 最后一轮 `failed`（非验证失败）或 `quota_exhausted` |
+| `no_acceptance` | 最后一轮完成，没有验收节点 |
+| `unjudged` | 有验收，但验收没完成或结论读不出 |
+
+叫停（`cancelled`）、从没跑过（draft / pending）、链上任一轮切了备选的不写。
+`adopt` 成功时追加 `{"type":"adopt", …, role}`。写失败只在 stderr 说明，不影响
+派发与采纳。读的时候同一（type、run_id、node_id）只取最后一行。
+
+`aicross stats [--kind <类型>]` 输出 `{ minJudged, kindList, models, kinds }`：
+`models[]` 每项 `model`（`agent:provider:model`）、`usable`（按资源库状态，资源库
+读不了时为 null）、`tags` / `tagNames` / `note`、`total` 与 `byKind[]`（`runs`、
+各结果数、`adopted`、`judged` = 一次通过 + 修正后通过 + 未通过、`passRate` /
+`firstPassRate`：`judged` ≥ 5 时为 0–100 的整数，否则 null）；`kinds[]` 每项
+`ranked`（`passRate` 不为 null 的模型按通过率、样本数降序）与 `tagged`。退出码：
+0 成功，1 标注文件读不了，2 参数错。
+
+`aicross resources note <agent>:<provider>:<model> [--tags <类型,…>] [--note <文本>]`
+读写 `$AICROSS_HOME/model-notes.json`（`{ version: 1, models: { <模型>: { note, tags } } }`，
+标签存英文 id、按类型表顺序、去重；两项都空时删掉该条）。不给选项只读；
+`--tags ""` / `--note ""` 清空。输出 `{ model, tags, tagNames, note }`；模型写法
+不对、标签不在类型表里、未知选项退出 2，文件读写失败退出 1。
 
 ## 资源与配置
 

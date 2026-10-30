@@ -19,6 +19,7 @@ mod server;
 mod skill_install;
 mod slash;
 mod startup_env;
+mod track;
 
 use anyhow::Result;
 

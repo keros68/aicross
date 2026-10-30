@@ -995,6 +995,7 @@ mod tests {
             pid: 0,
             pid_started_at: String::new(),
             host: "claude".into(),
+            task_kind: String::new(),
             original_request: "给解析器加测试\n顺便补文档".into(),
             accept_criteria: String::new(),
             preset_id: "builtin-economy".into(),

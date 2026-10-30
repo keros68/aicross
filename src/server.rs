@@ -196,6 +196,32 @@ async fn resources_set_path(agent: String, path: Option<String>) -> Result<serde
     .map_err(|error| format!("指定路径失败：{error}"))?
 }
 
+/// TASK-69：各模型的使用记录与标注（`aicross stats` 同结构）。
+#[tauri::command]
+async fn model_track() -> Result<serde_json::Value, String> {
+    let root = crate::paths::aicross_root()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = crate::resources::get_resources_at(&crate::console_cli::store_file(&root)).ok();
+        crate::track::stats_value(&root, None, store.as_ref(), chrono::Local::now().timestamp_millis())
+    })
+    .await
+    .map_err(|error| format!("读取使用记录失败：{error}"))?
+}
+
+/// TASK-69：改一个模型的标签与备注（`aicross resources note` 同实现体）。
+/// tags 为任务类型 id 列表，整份替换。
+#[tauri::command]
+async fn model_note_set(model: String, tags: Vec<String>, note: String) -> Result<serde_json::Value, String> {
+    let root = crate::paths::aicross_root()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = crate::track::parse_model_key(&model)?;
+        let saved = crate::track::set_note(&root, &key, Some(&tags.join(",")), Some(&note))?;
+        Ok(crate::track::note_value(&key, &saved))
+    })
+    .await
+    .map_err(|error| format!("保存标注失败：{error}"))?
+}
+
 /// stage、index 从 1 开始数（与命令行一致）；seat 是 modes.json 的人选对象。
 #[tauri::command]
 async fn config_set_default_mode(
@@ -600,6 +626,8 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
             resources_smoke,
             resources_prune,
             resources_set_path,
+            model_track,
+            model_note_set,
             config_set_default_mode,
             config_set_seat,
             config_set_count,

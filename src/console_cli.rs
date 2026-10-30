@@ -26,7 +26,7 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
     }
     if !matches!(
         command,
-        Some("dispatch" | "status" | "adopt" | "cancel" | "recover" | "propose" | "resources" | "config" | "hosts" | "skill" | "slash" | "preset" | "__run")
+        Some("dispatch" | "status" | "adopt" | "cancel" | "recover" | "propose" | "resources" | "config" | "hosts" | "skill" | "slash" | "preset" | "stats" | "__run")
     ) {
         return None;
     }
@@ -61,14 +61,15 @@ fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
          \x20 aicross <子命令> [参数]\n\
          \n\
          子命令：\n\
-         \x20 dispatch    派发一次；多行任务文本走 --text-file；--seat 只对这一次换人\n\
+         \x20 dispatch    派发一次；多行任务文本走 --text-file；--seat 只对这一次换人；--kind 记任务类型\n\
          \x20 status      看一次 run 的状态；--wait 等到结束\n\
          \x20 adopt       采纳某一路的结果\n\
          \x20 cancel      叫停一次派发\n\
          \x20 recover     崩溃后核对；--rollback 恢复单写者改动的项目文件\n\
          \x20 open        打开该 run 的查看页\n\
-         \x20 resources   看资源库 / 重新探测 / 冒烟验证 / 按名字找模型 / 指定路径\n\
-         \x20 config      看与改角色、派发设置、模式人选\n\
+         \x20 resources   看资源库 / 重新探测 / 冒烟验证 / 按名字找模型 / 指定路径 / 标注用途\n\
+         \x20 stats       各模型按任务类型的使用记录\n\
+         \x20 config     看与改角色、派发设置、模式人选\n\
          \x20 hosts       看与改主 agent\n\
          \x20 skill       skill status / install / upgrade / uninstall\n\
          \x20 slash       斜杠命令写入各家宿主，可自定义短命令\n\
@@ -132,6 +133,7 @@ fn run_at_with(
         Some("skill") => return run_skill(root, args, stdout, stderr),
         Some("slash") => return run_slash(root, args, stdout, stderr),
         Some("preset") => return run_preset(root, args, stdout, stderr),
+        Some("stats") => return run_stats(root, args, ops, stdout, stderr),
         _ => {}
     }
     let request = match build_request(args) {
@@ -250,6 +252,92 @@ pub(crate) fn store_file(root: &Path) -> PathBuf {
     root.join("resources.json")
 }
 
+/// TASK-69 `aicross stats [--kind <类型>]`：各模型按任务类型的使用记录。
+/// 资源库读不了时照常输出，`usable` 为 null。
+fn run_stats(root: &Path, args: &[String], ops: &ResourcesOps, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+    let kind = if args.iter().any(|arg| arg == "--kind") {
+        let Some(raw) = option_value(args, "--kind") else {
+            let _ = writeln!(stderr, "缺少 --kind 的值");
+            return 2;
+        };
+        match crate::track::resolve_kind(&raw) {
+            Ok(kind) => Some(kind),
+            Err(message) => {
+                let _ = writeln!(stderr, "{message}");
+                return 2;
+            }
+        }
+    } else {
+        if let Some(message) = extra_arg_error(args, 2) {
+            let _ = writeln!(stderr, "{message}");
+            return 2;
+        }
+        None
+    };
+    let store = (ops.read_resources)(&store_file(root)).ok();
+    match crate::track::stats_value(root, kind, store.as_ref(), chrono::Local::now().timestamp_millis()) {
+        Ok(value) => {
+            let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
+            let count = value["models"].as_array().map(Vec::len).unwrap_or(0);
+            let _ = writeln!(stderr, "已读取 {count} 个模型的使用记录");
+            0
+        }
+        Err(message) => {
+            let _ = writeln!(stderr, "{message}");
+            1
+        }
+    }
+}
+
+/// TASK-69 `aicross resources note <agent>:<provider>:<model> [--tags …] [--note …]`。
+/// 不给选项时只显示；`--tags ""`、`--note ""` 清空。
+fn run_resources_note(root: &Path, args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+    const USAGE: &str = "用法：aicross resources note <agent>:<provider>:<model> [--tags 前端,文案] [--note 文本]";
+    let Some(raw) = args.get(3).filter(|value| !value.starts_with('-')) else {
+        let _ = writeln!(stderr, "{USAGE}");
+        return 2;
+    };
+    let key = match crate::track::parse_model_key(raw) {
+        Ok(key) => key,
+        Err(message) => {
+            let _ = writeln!(stderr, "{message}");
+            return 2;
+        }
+    };
+    let mut values: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    for name in ["--tags", "--note"] {
+        if args.iter().any(|arg| arg == name) {
+            let Some(value) = option_value(args, name) else {
+                let _ = writeln!(stderr, "缺少 {name} 的值；{USAGE}");
+                return 2;
+            };
+            values.insert(name, value);
+        }
+    }
+    let known = |arg: &String| matches!(arg.as_str(), "--tags" | "--note");
+    if let Some(unknown) = args.iter().skip(4).find(|arg| arg.starts_with("--") && !known(arg)) {
+        let _ = writeln!(stderr, "不认识的选项 {unknown}；{USAGE}");
+        return 2;
+    }
+    let result = if values.is_empty() {
+        crate::track::load_notes(root).map(|file| file.models.get(&key).cloned().unwrap_or_default())
+    } else {
+        crate::track::set_note(root, &key, values.get("--tags").map(String::as_str), values.get("--note").map(String::as_str))
+    };
+    match result {
+        Ok(note) => {
+            let _ = writeln!(stdout, "{}", serde_json::to_string(&crate::track::note_value(&key, &note)).unwrap_or_else(|_| "{}".into()));
+            let _ = writeln!(stderr, "{}", if values.is_empty() { "已读取标注" } else { "已保存标注" });
+            0
+        }
+        Err(message) => {
+            let code = if message.starts_with("任务类型只能是") { 2 } else { 1 };
+            let _ = writeln!(stderr, "{message}");
+            code
+        }
+    }
+}
+
 fn run_resources(
     root: &Path,
     args: &[String],
@@ -295,6 +383,7 @@ fn run_resources(
         }
         Some("smoke") => run_resources_smoke(root, args, ops, stdout, stderr),
         Some("prune") => run_resources_prune(root, args, ops, stdout, stderr),
+        Some("note") => run_resources_note(root, args, stdout, stderr),
         Some("find") => {
             let text = args.get(3..).unwrap_or_default().join(" ");
             if text.trim().is_empty() {
@@ -3037,6 +3126,11 @@ fn build_request(args: &[String]) -> Result<CliRequest, String> {
             if !accept_criteria.is_empty() {
                 body["accept_criteria"] = Value::String(accept_criteria);
             }
+            // TASK-69：--kind 可选，中文名与英文 id 都认，进 run 文件。
+            if args.iter().any(|arg| arg == "--kind") {
+                let raw = option_value(args, "--kind").ok_or_else(|| "缺少 --kind 的值".to_string())?;
+                body["task_kind"] = Value::String(crate::track::resolve_kind(&raw)?.to_string());
+            }
             Ok(CliRequest {
                 body: Some(body),
                 timeout: Duration::from_secs(30),
@@ -3351,6 +3445,55 @@ mod tests {
         .unwrap();
         assert!(plain.body.unwrap().get("accept_criteria").is_none());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task69_dispatch_kind_is_resolved_into_the_body() {
+        let root = crate::paths::test_temp_dir().join(format!("kind-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("t.txt"), "任务").unwrap();
+        let base = |extra: &[&str]| {
+            let mut args: Vec<String> = ["aicross", "dispatch", "--project", "D:/p", "--text-file"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            args.push(root.join("t.txt").to_string_lossy().into());
+            args.extend(extra.iter().map(|s| s.to_string()));
+            build_request(&args)
+        };
+        assert_eq!(base(&["--kind", "前端"]).unwrap().body.unwrap()["task_kind"], "frontend");
+        assert!(base(&[]).unwrap().body.unwrap().get("task_kind").is_none());
+        assert!(base(&["--kind", "视频"]).err().unwrap().starts_with("任务类型只能是"));
+        assert_eq!(base(&["--kind"]).err().unwrap(), "缺少 --kind 的值");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task69_resources_note_and_stats() {
+        let root = fixture_root("note");
+        write_fixture_store(&root);
+        let ops = ResourcesOps::production();
+        let (code, stdout, stderr) =
+            run_with(&root, &["aicross", "resources", "note", "kimi::k2", "--tags", "文案,前端", "--note", "审美好"], &ops);
+        assert_eq!(code, 0, "{stderr}");
+        let saved: Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(saved["tags"], json!(["frontend", "writing"]));
+        assert_eq!(saved["note"], "审美好");
+        let (code, stdout, _) = run_with(&root, &["aicross", "resources", "note", "kimi::k2"], &ops);
+        assert_eq!(code, 0);
+        assert_eq!(serde_json::from_str::<Value>(stdout.trim()).unwrap()["tagNames"], json!(["前端", "文案"]));
+        assert_eq!(run_with(&root, &["aicross", "resources", "note", "kimi:k2"], &ops).0, 2);
+        assert_eq!(run_with(&root, &["aicross", "resources", "note", "kimi::k2", "--tags", "视频"], &ops).0, 2);
+        assert_eq!(run_with(&root, &["aicross", "resources", "note", "kimi::k2", "--tag", "前端"], &ops).0, 2);
+
+        let (code, stdout, stderr) = run_with(&root, &["aicross", "stats", "--kind", "前端"], &ops);
+        assert_eq!(code, 0, "{stderr}");
+        let stats: Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(stats["kinds"][0]["tagged"], json!(["kimi::k2"]));
+        // 夹具里 kimi 没检测到，不可派。
+        assert_eq!(stats["models"][0]["usable"], false);
+        assert_eq!(run_with(&root, &["aicross", "stats", "--kind", "视频"], &ops).0, 2);
+        assert_eq!(run_with(&root, &["aicross", "stats", "extra"], &ops).0, 2);
     }
 
     #[test]

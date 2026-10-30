@@ -1176,3 +1176,24 @@ button.card-toggle-inner:hover {
   font-size: 13px;
   user-select: text;
 }
+
+/* 模型用途标注（TASK-69）：任务类型勾选与备注一行，放不下时换行。 */
+.note-edit {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.note-edit-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  width: 100%;
+}
+
+.note-edit-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-1);
+}

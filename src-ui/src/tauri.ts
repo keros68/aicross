@@ -90,6 +90,10 @@ export const commands = {
   /** 指定 agent 的可执行文件路径（TASK-66）；path 为 null 即清除。重新探测后生效。 */
   resourcesSetPath: (agent: string, path: string | null) =>
     invoke<ResourceAgentEntry>('resources_set_path', { agent, path }),
+  // TASK-69 使用记录与标注。model 写作 agent:provider:model。
+  modelTrack: () => invoke<ModelTrack>('model_track'),
+  modelNoteSet: (model: string, tags: string[], note: string) =>
+    invoke<ModelNoteValue>('model_note_set', { model, tags, note }),
   // TASK-53 斜杠命令（契约见 tasks/TASK-53-slash-commands.md 第 3 节）。
   slashList: (host: string) => invoke<SlashList>('slash_list', { host }),
   /** 同名已存在则更新。 */
@@ -256,6 +260,48 @@ export interface ResourceModelEntry {
   note: string;
   /** 最近一次探测未发现的标记（不看 agent 是否可用）；旧版引擎没有这个字段。 */
   missing?: boolean;
+}
+
+/** TASK-69 一个模型在一类任务（或全部）上的记录。 */
+export interface TrackCounts {
+  /** 任务类型 id；全部合计与未分类为空串。 */
+  kind: string;
+  kindName: string;
+  runs: number;
+  firstPass: number;
+  fixedPass: number;
+  notPassed: number;
+  failed: number;
+  noAcceptance: number;
+  unjudged: number;
+  adopted: number;
+  judged: number;
+  /** 有验收结论的次数够了才有，0–100。 */
+  passRate: number | null;
+  firstPassRate: number | null;
+}
+
+export interface TrackModel {
+  /** agent:provider:model */
+  model: string;
+  tags: string[];
+  tagNames: string[];
+  note: string;
+  total: TrackCounts;
+  byKind: TrackCounts[];
+}
+
+export interface ModelTrack {
+  minJudged: number;
+  kindList: { id: string; name: string }[];
+  models: TrackModel[];
+}
+
+export interface ModelNoteValue {
+  model: string;
+  tags: string[];
+  tagNames: string[];
+  note: string;
 }
 
 export interface ResourceAgentEntry {

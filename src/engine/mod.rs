@@ -212,6 +212,10 @@ pub struct EngineRun {
     /// 无配置时为空串，不写出。旧 run 文件没有该字段，按空处理。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host: String,
+    /// TASK-69：任务类型 id（命令行 `--kind`，见 track::TASK_KINDS）；
+    /// 没给为空串，不写出。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub task_kind: String,
     pub updated_at: String,
 }
 
@@ -1772,7 +1776,7 @@ fn apply_results(graph: &Graph, results: &[DispatchNodeResult]) -> Graph {
 
 /// TS `parseAcceptance`：尾部 1200 个 UTF-16 码元内取最后一个
 /// `\b(?:PASS|NEEDS_FIX)\b`（大写后），没有则 UNKNOWN。
-fn parse_acceptance(text: &str) -> &'static str {
+pub(crate) fn parse_acceptance(text: &str) -> &'static str {
     let upper = utf16_tail(text, 1200).to_uppercase();
     let mut verdict = "UNKNOWN";
     for word in upper.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
@@ -3028,6 +3032,9 @@ pub(crate) struct DispatchInput {
     /// 由命令行入口校验并补齐预设形状，给了它就一定给了 preset 与 host。
     #[serde(default)]
     pub seats: Option<Vec<Vec<Option<orchestration::SeatChoice>>>>,
+    /// TASK-69：任务类型 id（命令行 `--kind`，入口已解析成 id）。
+    #[serde(default)]
+    pub task_kind: String,
 }
 
 #[derive(Debug)]
@@ -3171,6 +3178,7 @@ fn start_dispatch_with(
         preset_id,
         notes: notes.clone(),
         host: host.unwrap_or_default(),
+        task_kind: input.task_kind.clone(),
         ..EngineRun::default()
     };
     // R1-6：spawn 前写一次（pid 为 0），之后父进程不再整写 run 文件。
@@ -3468,6 +3476,19 @@ fn run_background_with(
     if let Err(error) = &result {
         finish_failed_run(root, &mut run, error);
     }
+    // TASK-69：按最终的图记每条执行链的结果；记不下只写 stderr，不影响派发。
+    // 引擎自己中途出错时不记：收尾标的失败不是模型的结果。
+    if result.is_ok() {
+        match orchestration::load_graph_in(root, &run.graph_id) {
+            Ok(Some(graph)) => {
+                if let Err(message) = crate::track::record_run(root, &run, &graph, &now()) {
+                    eprintln!("{message}");
+                }
+            }
+            Ok(None) => {}
+            Err(message) => eprintln!("{message}"),
+        }
+    }
     result
 }
 
@@ -3523,6 +3544,12 @@ pub(crate) fn adopt(root: &Path, run_id: &str, node_id: &str) -> Result<EngineRu
     // R2-3：只改图（合并写），不整写 run 文件；返回值按刚改好的图现算摘要，
     // 免得把已落盘的终态写回 running。
     merge_save_graph(root, Some(&disk), &next)?;
+    // TASK-69：采纳记进使用记录；同一节点重复采纳在汇总时只算一次。
+    if let Some(node) = next.nodes.get(node_id) {
+        if let Err(message) = crate::track::record_adopt(root, &run, node, &now()) {
+            eprintln!("{message}");
+        }
+    }
     let ids: Vec<String> = run.nodes.iter().map(|n| n.node_id.clone()).collect();
     run.nodes = node_summary(&next, ids);
     Ok(run)
@@ -4218,6 +4245,12 @@ mod accept_criteria_run_file {
         let second = start_dispatch_with(&root, dispatch_input(&root, ""), spawn_stub).unwrap();
         let stored = run_json(second);
         assert!(!stored.contains("accept_criteria"), "{stored}");
+        assert!(!stored.contains("task_kind"), "{stored}");
+
+        // TASK-69：任务类型随派发进 run 文件。
+        let input = DispatchInput { task_kind: "data".into(), ..dispatch_input(&root, "") };
+        let stored = run_json(start_dispatch_with(&root, input, spawn_stub).unwrap());
+        assert!(stored.contains("\"task_kind\": \"data\""), "{stored}");
         let _ = fs::remove_dir_all(root);
     }
 }

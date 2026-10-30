@@ -31,7 +31,7 @@ const ALIASES: &[(&str, &[&str])] = &[
 
 /// 按派发看能不能用：可用、已验证、未验证、冒烟超时可以派；其余（未安装、
 /// 未发现、未登录、验证失败、额度用尽、未探测）派不出去。
-const USABLE_STATES: &[&str] = &[
+pub(crate) const USABLE_STATES: &[&str] = &[
     resources::RESOURCE_STATE_AVAILABLE,
     resources::RESOURCE_STATE_VERIFIED,
     resources::RESOURCE_STATE_UNVERIFIED,

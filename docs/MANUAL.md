@@ -22,13 +22,14 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 
 | 命令 | 用途 |
 |---|---|
-| `aicross dispatch --project <目录> --preset <模式> --text-file <文件> [--accept-file <文件>] [--seat <阶段>.<位置>=<目标>]` | 派发一次；多行任务文本走文件，不进 argv；`--seat` 只对这一次换人 |
+| `aicross dispatch --project <目录> --preset <模式> --text-file <文件> [--accept-file <文件>] [--seat <阶段>.<位置>=<目标>] [--kind <任务类型>]` | 派发一次；多行任务文本走文件，不进 argv；`--seat` 只对这一次换人；`--kind` 记任务类型 |
 | `aicross status <run_id> [--wait] [--timeout 秒]` | 看一次 run 的状态；`--wait` 等到结束 |
 | `aicross adopt <run_id> <node_id>` | 采纳某一路的结果 |
 | `aicross cancel <run_id>` | 叫停一次派发 |
 | `aicross recover <run_id> [--rollback]` | 崩溃后核对；`--rollback` 恢复单写者改动的项目文件 |
 | `aicross open <run_id>` | 打开该 run 的查看页 |
-| `aicross resources [detect \| smoke <agent> \| find <名字> \| set-path <agent> [<路径>]]` | 看资源库 / 重新探测 / 冒烟验证 / 按名字找模型 / 指定可执行文件路径 |
+| `aicross resources [detect \| smoke <agent> \| find <名字> \| set-path <agent> [<路径>] \| note <模型> [--tags …] [--note …]]` | 看资源库 / 重新探测 / 冒烟验证 / 按名字找模型 / 指定可执行文件路径 / 标注用途 |
+| `aicross stats [--kind <任务类型>]` | 各模型按任务类型的使用记录 |
 | `aicross config show \| set-role \| set` | 看与改角色、派发设置 |
 
 `--preset` 认 `shared` / `economy` / `blind`（共享 / 经济 / 盲审），也可以直接
@@ -88,6 +89,16 @@ claude 的 `fable` / `opus` / `sonnet` / `haiku` 是别名，真身记在
 按名字找模型：`aicross resources find claude 5.5` 在所有 agent 下找，不只看名字相同的 agent；同一个模型可能经 pi、Antigravity 等几个 agent 都能用。结果列出每个模型经哪个 agent 用、当前状态，以及可直接交给 `aicross dispatch --seat` 的目标；对上多个时由用户挑。skill 在用户点名模型时先跑它，再说有没有。
 
 agent 装在 PATH 以外的目录时探测不到，资源页写明「没找到 <命令>」。在该 agent 的卡片或「未安装」行点「指定路径」，填可执行文件的完整路径，保存后重新探测；探测、测试、派发都先用这个路径。命令行：`aicross resources set-path <agent> [<路径>]`，不给路径即清除。以前探测到过、这次没找到的 agent 不折叠进「未安装」，留在主列表里显示原因。
+
+## 使用记录与用途标注
+
+派发时 `--kind` 给任务类型：前端 `frontend`、后端 `backend`、文案 `writing`、数据分析 `data`、文档 `docs`、其他 `other`，中文名与英文 id 都认。skill 每次派发按任务内容带上。
+
+每次派发结束，引擎给执行位置记一条结果：一次通过、修正后通过、未通过（验收到顶仍要求修正，或验证命令到顶仍未通过）、失败（出错、超时、真身不符、额度用尽）、无验收、结论不明。叫停的、切了备选的不记；出方案、验收、验证位置不记。`aicross adopt` 另记一次采纳，同一路只算一次。记录在 `~/.aicross/track/outcomes.jsonl`，不随 30 天的派发记录清理删除。
+
+`aicross stats [--kind <类型>]` 汇总：每个模型按类型的次数、各结果数与采纳数；有验收结论的次数满 5 次才给通过率。`ranked` 是这一类上样本够的模型按通过率排序，`tagged` 是标了擅长这一类的模型。skill 派发前读它：人选的通过率比另一个可用模型低 20 个百分点以上，或人选没标这一类而有可用模型标了，在对话里提一句，用户同意才只对这一次换人。配置不会因记录自动改动。
+
+用途标注：资源页模型行的「标注用途」，或 `aicross resources note <agent>:<provider>:<model> --tags 前端,文案 --note 审美好`；不给选项时显示当前值，`--tags ""`、`--note ""` 清空。标注存在 `~/.aicross/model-notes.json`，重新探测不影响它。
 
 ## 模式
 
@@ -224,6 +235,10 @@ Markdown 文件，头部 YAML 记着模型真身、用量、耗时、可见性�
 | thinking 档 | 关 / 低 / 中 / 高 | 角色配置 |
 | 把任务发给模型 | 派发 | 命令行、本手册 |
 | 认可一路结果 | 采纳（状态：已采纳） | 查看页卡片 |
+| 派发时给的任务分类 | 任务类型（前端 / 后端 / 文案 / 数据分析 / 文档 / 其他） | `--kind`、`aicross stats` |
+| 执行位置的派发结果 | 一次通过 / 修正后通过 / 未通过 / 失败 / 无验收 / 结论不明 | `aicross stats`、本手册 |
+| 汇总的派发结果 | 使用记录（资源页写作「记录：」） | 资源页、`aicross stats` |
+| 用户给模型标的擅长类型与备注 | 用途标注（资源页写作「擅长：」，按钮「标注用途」） | 资源页、`aicross resources note` |
 | 派发结果查看页 | 查看页（命令 `aicross open`） | 本手册、`docs/CONSOLE-CHANNEL.md` |
 | 再派一次 | 重派 | 宿主对话 |
 | 中途停止 | 叫停（命令 `aicross cancel`） | 宿主对话、本手册 |
