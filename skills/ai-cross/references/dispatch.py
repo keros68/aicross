@@ -162,7 +162,7 @@ def call_claude(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     # --restricted 挡住用户级 CLAUDE.md：盲审要挡，执行者不必
     cmd = [exe(pick), "-p", "--model", pick["model"], "--tools", READ_TOOLS if tools else ""] \
         + (["--restricted"] if blind else []) \
-        + ["--output-format", "json"]
+        + ["--output-format", "json", "--no-session-persistence"]
     out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout, prompt)
     if err:
         out["error"] = err
@@ -208,7 +208,7 @@ def call_codex(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     effort = {"off": "low", "low": "low", "mid": "medium", "high": "high"}[thinking]
     out["thinking"] = "low" if thinking == "off" else thinking  # codex 没有关思考，最低是 low
     cmd = [exe(pick), "exec", "-m", pick["model"], "-c", f'model_reasoning_effort="{effort}"',
-           "-s", "read-only", "--skip-git-repo-check", "--json", "-"]
+           "-s", "read-only", "--skip-git-repo-check", "--json", "--ephemeral", "-"]
     out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout, prompt)
     if err:
         out["error"] = err
@@ -260,7 +260,7 @@ def call_pi(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     level = {"off": "off", "low": "low", "mid": "medium", "high": "high"}[thinking]
     # --no-context-files 挡住用户级 AGENTS.md：盲审要挡，执行者不必
     cmd = [exe(pick), "--provider", pick["channel"].split(":", 1)[1], "--model", pick["model"], "-p",
-           *(["--tools", "read,grep,find,ls"] if tools else ["--no-tools"]), "--no-extensions", "--mode", "json"] \
+           *(["--tools", "read,grep,find,ls"] if tools else ["--no-tools"]), "--no-extensions", "--mode", "json", "--no-session"] \
         + (["--no-context-files"] if blind else []) \
         + ["--thinking", level]
     out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout, prompt)

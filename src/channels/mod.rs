@@ -342,7 +342,8 @@ fn build_invocation_spec(
                 claude_effort(thinking).into(),
             ];
             if blind {
-                args.push("--restricted".into());
+                // 盲审和冒烟在一次性空目录里跑，不留会话，免得每次在 Claude 的项目列表里多一个目录
+                args.extend(["--restricted".into(), "--no-session-persistence".into()]);
             }
             if let Some(id) = session_id.filter(|id| !id.is_empty()) {
                 args.extend(["--resume".into(), id.into()]);
@@ -1167,6 +1168,16 @@ mod tests {
         )
         .unwrap();
         assert!(invocation.args.iter().any(|arg| arg == "--restricted"));
+        assert!(invocation.args.iter().any(|arg| arg == "--no-session-persistence"));
+    }
+
+    #[test]
+    fn claude_executor_keeps_session_for_revision_rounds() {
+        let invocation = build_invocation_spec(
+            "claude", "", "sonnet", "低", "低", false, None, "x", None, None, None, true,
+        )
+        .unwrap();
+        assert!(!invocation.args.iter().any(|arg| arg == "--no-session-persistence"));
     }
 
     #[test]
