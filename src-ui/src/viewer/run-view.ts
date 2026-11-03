@@ -144,7 +144,10 @@ export type AcceptanceVerdict = 'PASS' | 'NEEDS_FIX' | 'UNKNOWN' | null;
  * null（不显示）。 */
 export function acceptanceVerdict(node: RunViewNode): AcceptanceVerdict {
   if (node.role !== '验收' && node.role !== '验证') return null;
-  return node.status === 'done' ? parseAcceptance(node.text) : 'UNKNOWN';
+  if (node.status !== 'done') return 'UNKNOWN';
+  // 与引擎同一规则：分了两类时只看「会出错」有没有条目。
+  if (node.reviewStructured) return node.reviewErrors.length > 0 ? 'NEEDS_FIX' : 'PASS';
+  return parseAcceptance(node.text);
 }
 
 export function acceptanceVerdictLabel(verdict: AcceptanceVerdict): string {

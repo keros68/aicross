@@ -63,6 +63,9 @@ aicross dispatch --project D:\work\project --preset economy --text-file D:\tmp\d
 aicross status <run_id>
 aicross status <run_id> --wait --timeout 600
 aicross adopt <run_id> <node_id>
+aicross adopt <run_id> --verdict-file D:\tmp\verdict.md
+aicross decided add --project D:\work\project --kind 不做 --text <一句> --reason <一句>
+aicross decided show --project D:\work\project
 aicross cancel <run_id>
 aicross open <run_id>
 ```
@@ -151,7 +154,30 @@ cursor、codebuddy、copilot、qoder 是未实测通道，派发直接失败并�
 `status` 输出 run 摘要（与 `~/.aicross/runs/<run_id>.json` 同一口径，含死进程
 判定）。`--wait` 等到 run 不再是 `running`，`--timeout` 单位为秒，默认 600，
 到时以退出码 1 结束。`adopt <run_id> <node_id>` 只写图上的采纳标记；worktree
-那路的改动要按查看页提示手动合并。`cancel <run_id>` 写取消标记，不改写 run
+那路的改动要按查看页提示手动合并。
+
+`status` 的 `nodes[]` 里，审查类节点（角色 验收 / 验证 / 仲裁，或可见性为盲）
+带 `independence`：「独立」或「非独立：原因、原因」。三条都满足才是独立：位置
+是盲的、通道隔离完整、与被审方不同厂商；原因依次是「看得到执行过程」「隔离不
+完整」「同一家厂商」，厂商读不出时是「审查方厂商未知」「被审方厂商未知」。被审
+方是上游执行节点实际跑的那一家；没有上游执行节点时是主 agent（按 `--host` 推定）。
+图上每个完成节点的 reply 记 `vendor`（切了备选时是备选的厂商）与
+`independence`。
+
+审查回复按「会出错」「建议」两节解析：「会出错」里写了「出错场景」的条目才算，
+写不出的降为建议。有「会出错」这一节时，结论按条目算（有一条就是 NEEDS_FIX，
+否则 PASS，回复末尾的结论词不算）；没有这一节时按尾部结论词。修正轮发回执行方
+的文本只含「会出错」条目。修正轮上限 `fixRoundLimit` 取 0–3。
+
+`adopt <run_id> --verdict-file <path>` 存用户在对话里的裁决：文件原样写到该次
+派发目录的 `裁决.md`（项目里没有派发目录时写到 `$AICROSS_HOME/runs/<run_id>/`），
+stdout 输出 `{ path, fix, keep, never }`。计数取表格行里正好是「改」「不改」「以后
+不再报」的那一格。
+
+`decided add` 往 `<项目>/.aicross/decided.md` 的「已定」或「不做」一节追加一行
+`- YYYY-MM-DD 内容（理由）`，文件不存在时先建；内容与理由各 200 字以内、单行。
+`decided show` 输出全文。不给 `--project` 时用当前目录。派发时文件存在就作为
+「用户已定事项」一节附在每个模型节点的任务文本末尾，超过 8KB 截断并注明。`cancel <run_id>` 写取消标记，不改写 run
 文件；run 已不在 `running` 时取消静默成功（退出 0，打印当前 run）。
 
 run 摘要记录本次派发的原始需求文本（`original_request`）、验收条件全文
@@ -212,7 +238,7 @@ worktree 节点给 `worktree` 路径，原样保留；图上没有产物时按�
 （.git/node_modules/target/dist…）与链接里的改动不在快照内；超过单文件上限
 的文件只记路径不存内容，这些位置的变化无法自动恢复，会列在 `unrestorable`。
 
-单写者执行期间，项目目录的 `.dispatch/` 下会有 `<node>.inflight/`
+单写者执行期间，该次派发目录的 `.snapshots/` 下会有 `<node>.inflight/`
 （执行中快照），执行结束即删除；看到它残留说明引擎在执行中途退出。
 
 项目路径按命令行给的原文使用（不做规范化改写）；项目目录不存在时派发前拒绝。
@@ -241,8 +267,9 @@ host, preset_id, task_kind, agent, provider, model, role, result, rounds, error_
 | `unjudged` | 有验收，但验收没完成或结论读不出 |
 
 叫停（`cancelled`）、从没跑过（draft / pending）、链上任一轮切了备选的不写。
-`adopt` 成功时追加 `{"type":"adopt", …, role}`。写失败只在 stderr 说明，不影响
-派发与采纳。读的时候同一（type、run_id、node_id）只取最后一行。
+`adopt` 成功时追加 `{"type":"adopt", …, role}`；`adopt --verdict-file` 追加
+`{"type":"verdict", run_id, host, preset_id, task_kind, verdict: {fix, keep, never}}`，
+`stats` 不读这一行。写失败只在 stderr 说明，不影响派发与采纳。读的时候同一（type、run_id、node_id）只取最后一行。
 
 `aicross stats [--kind <类型>]` 输出 `{ minJudged, kindList, models, kinds }`：
 `models[]` 每项 `model`（`agent:provider:model`）、`usable`（按资源库状态，资源库
@@ -807,8 +834,13 @@ skill 仅在退出码 3 时回退到直接调各家 CLI。
 
 ## 留痕与摘要
 
-派发记录写在 `<项目>/.dispatch/`（一次调用一个 Markdown 文件，`STATE.md` 记
-未跑完的那一轮；引擎仍会写入，当前没有命令读取）；run 摘要在
+项目里只有一个目录 `<项目>/.aicross/`：`decided.md` 是已定事项；`runs/` 下一次
+派发一个目录，名为「派发开始时间-run_id 前 8 位」，里面一路一个 Markdown 记录
+（`schema: aicross-dispatch/2`）、`STATE.md`（未跑完的那一轮）、`裁决.md` 与派发前
+快照 `.snapshots/`。`.aicross/.gitignore` 只忽略 `runs/`。旧的平铺 `.dispatch/` 在
+引擎下一次往该项目写记录时一次性迁入：md 按 frontmatter 的 `run_id` 归组，
+`before_dir` 的旧前缀改写为新路径，快照目录并进对应的 `.snapshots/`，其余放进
+`runs/旧记录/`，最后删除 `.dispatch/`；迁移出错时保持原样，下次再迁，不阻断派发。run 摘要在
 `~/.aicross/runs/<run_id>.json`；图在
 `~/.aicross/graphs/`；用户预设在 `~/.aicross/presets.json`；派发设置在
 `~/.aicross/dispatch-settings.json`。设了

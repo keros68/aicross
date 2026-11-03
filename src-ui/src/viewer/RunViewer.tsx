@@ -307,11 +307,31 @@ function RunCard({ node, view, busy, onAdopt }: {
         </div>
         <div><dt>耗时</dt><dd className="run-viewer-mono">{formatDuration(node.ms)}</dd></div>
         {verdict !== null && <div><dt>结论</dt><dd>{acceptanceVerdictLabel(verdict)}</dd></div>}
+        {node.independence !== '' && <div><dt>独立性</dt><dd>{node.independence}</dd></div>}
       </dl>
       {fallbackText(node) !== '' && <div className="run-viewer-card-note">{fallbackText(node)}</div>}
       {quotaResetText(node) !== '' && <div className="run-viewer-card-note">{quotaResetText(node)}</div>}
       {node.skippedReason !== '' && <div className="run-viewer-card-note">已跳过：{node.skippedReason}</div>}
-      {node.text !== '' && <div className="run-viewer-card-text"><ConsoleMarkdown text={node.text} /></div>}
+      {node.reviewStructured ? (
+        <>
+          <div className="run-viewer-card-text">
+            <div className="run-viewer-review-heading">会出错 · {node.reviewErrors.length} 条</div>
+            {node.reviewErrors.length === 0
+              ? <div className="run-viewer-card-note">无</div>
+              : <ol className="run-viewer-review-list">{node.reviewErrors.map((item, index) => <li key={index}><ConsoleMarkdown text={item} /></li>)}</ol>}
+          </div>
+          {node.reviewSuggestions.length > 0 && (
+            <details className="run-viewer-artifacts">
+              <summary>建议 · {node.reviewSuggestions.length} 条</summary>
+              <ul className="run-viewer-review-list">{node.reviewSuggestions.map((item, index) => <li key={index}><ConsoleMarkdown text={item} /></li>)}</ul>
+            </details>
+          )}
+          <details className="run-viewer-artifacts">
+            <summary>回复原文</summary>
+            <div className="run-viewer-card-text"><ConsoleMarkdown text={node.text} /></div>
+          </details>
+        </>
+      ) : node.text !== '' && <div className="run-viewer-card-text"><ConsoleMarkdown text={node.text} /></div>}
       {node.artifacts && (
         <details className="run-viewer-artifacts">
           <summary>产物 · {node.artifacts.changedFileCount} 个文件</summary>

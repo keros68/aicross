@@ -67,7 +67,7 @@ fn settings_missing_invalid_and_clamped() {
             s.console_run_limit,
             s.fix_round_limit
         ),
-        (1, 3, 100, 1, 3, 9)
+        (1, 3, 100, 1, 3, 3)
     );
     assert!(!s.redact);
     let _ = fs::remove_dir_all(root);
@@ -3143,4 +3143,152 @@ fn task67_seats_in_input_replace_mode_seats_for_this_run_only() {
     assert_eq!(run.nodes[0].agent, "pi");
     assert!(!root.join("modes.json").exists(), "不写配置");
     let _ = fs::remove_dir_all(root);
+}
+
+// ── 11-02 半开放的个人协作：两类结论、独立性、已定事项 ──────────────────
+
+const TWO_CLASS_REVIEW: &str = "看过了。\n\n## 会出错\n1. 空列表时下标越界。出错场景：传入空数组时 items[0] 崩溃。\n2. 好像没处理并发\n\n## 建议\n- 变量名 tmp 不够清楚\n\nPASS";
+
+#[test]
+fn parse_review_splits_classes_and_demotes_items_without_scenario() {
+    let findings = parse_review(TWO_CLASS_REVIEW);
+    assert!(findings.structured);
+    assert_eq!(findings.errors.len(), 1, "{findings:?}");
+    assert!(findings.errors[0].contains("空列表"));
+    assert_eq!(findings.suggestions.len(), 2, "{findings:?}");
+    assert!(findings.suggestions.iter().any(|s| s.contains("并发")));
+    assert!(findings.suggestions.iter().any(|s| s.contains("tmp")));
+    // 有会出错条目时以条目为准，模型自己写的 PASS 不算
+    assert_eq!(parse_acceptance(TWO_CLASS_REVIEW), "NEEDS_FIX");
+}
+
+#[test]
+fn parse_review_without_errors_passes_and_old_format_falls_back() {
+    let only_suggestions = "## 会出错\n无\n\n## 建议\n- 注释可以更短\n\nNEEDS_FIX";
+    assert_eq!(parse_acceptance(only_suggestions), "PASS");
+    let old = "整体可以。\n结论：NEEDS_FIX";
+    assert!(!parse_review(old).structured);
+    assert_eq!(parse_acceptance(old), "NEEDS_FIX");
+    assert_eq!(parse_acceptance("**会出错**：\n- 文件丢失。出错场景：断电时写一半。\n"), "NEEDS_FIX");
+    // 条目里以「结论」开头的句子不截断小节
+    let inline = parse_review("## 会出错\n- 缓存不失效\n结论是旧数据会被读到。出错场景：更新后立刻读。\n## 建议\n无");
+    assert_eq!(inline.errors.len(), 1, "{inline:?}");
+}
+
+#[test]
+fn correction_round_sends_only_error_items() {
+    let text = correction_text(TWO_CLASS_REVIEW);
+    assert!(text.contains("空列表"));
+    assert!(!text.contains("tmp"));
+    assert!(!text.contains("并发"));
+    // 没分类时照旧带全文
+    let old = correction_text("改一下命名。NEEDS_FIX");
+    assert!(old.contains("改一下命名"));
+}
+
+fn review_graph(reviewer_visibility: &str, reviewer_vendor: &str, exec_vendor: Option<&str>) -> Graph {
+    let mut graph = Graph::default();
+    let mut root = GraphNode { id: "m".into(), kind: "material".into(), ..GraphNode::default() };
+    root.target = None;
+    graph.nodes.insert("m".into(), root);
+    let mut review_parent = "m";
+    if let Some(vendor) = exec_vendor {
+        let mut exec = turn("e", &["m"], "执行", "2026-11-02T00:00:00Z");
+        exec.reply = Some(Reply { status: "done".into(), vendor: Some(vendor.into()), ..Reply::default() });
+        graph.nodes.insert("e".into(), exec);
+        review_parent = "e";
+    }
+    let mut review = turn("r", &[review_parent], "验收", "2026-11-02T00:00:01Z");
+    review.target.as_mut().unwrap().visibility = reviewer_visibility.into();
+    review.reply = Some(Reply { status: "done".into(), vendor: Some(reviewer_vendor.into()), ..Reply::default() });
+    graph.nodes.insert("r".into(), review);
+    graph
+}
+
+#[test]
+fn independence_label_names_each_missing_condition() {
+    let graph = review_graph("盲", "Google", Some("OpenAI"));
+    assert_eq!(independence_label(&graph, "r", "完整", "").as_deref(), Some("独立"));
+    let graph = review_graph("共享", "OpenAI", Some("openai"));
+    assert_eq!(
+        independence_label(&graph, "r", "部分", "").as_deref(),
+        Some("非独立：看得到执行过程、隔离不完整、同一家厂商")
+    );
+    // 没有上游执行节点：被审方是主 agent
+    let graph = review_graph("盲", "Anthropic", None);
+    assert_eq!(independence_label(&graph, "r", "完整", "Anthropic").as_deref(), Some("非独立：同一家厂商"));
+    assert_eq!(independence_label(&graph, "r", "完整", "").as_deref(), Some("非独立：被审方厂商未知"));
+    // 执行节点不标
+    let graph = review_graph("盲", "Google", Some("OpenAI"));
+    assert_eq!(independence_label(&graph, "e", "完整", ""), None);
+}
+
+#[test]
+fn apply_results_records_vendor_and_independence() {
+    let graph = review_graph("盲", "", Some("OpenAI"));
+    let result = DispatchNodeResult { vendor: "Google".into(), isolation: "完整".into(), ..sample_result("r", "## 会出错\n无\n## 建议\n无\nPASS") };
+    let next = apply_results(&graph, &[result], "");
+    let reply = next.nodes["r"].reply.as_ref().unwrap();
+    assert_eq!(reply.vendor.as_deref(), Some("Google"));
+    assert_eq!(reply.independence.as_deref(), Some("独立"));
+}
+
+#[test]
+fn decided_items_are_attached_to_every_node_prompt() {
+    let project = temp("decided-prompt");
+    assert_eq!(decided_section(&project), "");
+    crate::project_dir::add_decided(&project, "不做", "不处理 IE", "只用 Chrome", "2026-11-02").unwrap();
+    let section = decided_section(&project);
+    assert!(section.starts_with("## 用户已定事项"));
+    assert!(section.contains("不处理 IE"));
+    let big = "x".repeat(9 * 1024);
+    fs::write(crate::project_dir::decided_path(&project), &big).unwrap();
+    let section = decided_section(&project);
+    assert!(section.contains("超过 8KB"));
+    assert!(section.len() < 9 * 1024);
+}
+
+#[test]
+fn verdict_table_counts_choices() {
+    let table = "| 结论 | 选择 | 理由 | 写入已定事项 |\n|---|---|---|---|\n| 越界 | 改 | 会崩 | 否 |\n| 命名 | 不改 | 无所谓 | 否 |\n| IE | 以后不再报 | 只用 Chrome | 是 |\n| 并发 | 改 | 有风险 | 否 |";
+    let counts = crate::track::count_verdict(table);
+    assert_eq!((counts.fix, counts.keep, counts.never), (2, 1, 1));
+}
+
+#[test]
+fn adopt_verdict_writes_run_folder_and_track_line() {
+    let root = temp("verdict-root");
+    let project = temp("verdict-project");
+    let run_id = Uuid::new_v4().to_string();
+    let run = EngineRun {
+        run_id: run_id.clone(),
+        project: project.to_string_lossy().into_owned(),
+        status: "done".into(),
+        host: "claude".into(),
+        ..EngineRun::default()
+    };
+    write_run(&root, &run).unwrap();
+    let (run_dir, _) = crate::project_dir::run_dir(&project, &run_id).unwrap();
+    let table = "| 结论 | 选择 | 理由 | 写入已定事项 |\n|---|---|---|---|\n| 越界 | 改 | 会崩 | 否 |";
+    let path = adopt_verdict(&root, &run_id, table).unwrap();
+    assert_eq!(path, run_dir.join("裁决.md"));
+    assert!(fs::read_to_string(&path).unwrap().contains("| 越界 | 改 |"));
+    let lines = crate::track::read_lines(&root);
+    let verdict = lines.iter().find(|l| l.kind_of_line == "verdict").unwrap();
+    assert_eq!(verdict.run_id, run_id);
+    assert_eq!(verdict.verdict.as_ref().unwrap().fix, 1);
+    // 裁决行不进 stats 的模型表
+    let stats = crate::track::stats_value(&root, None, None, 0).unwrap();
+    assert_eq!(stats["models"].as_array().unwrap().len(), 0, "{stats}");
+    assert!(adopt_verdict(&root, &run_id, "  ").is_err());
+    assert!(adopt_verdict(&root, &run_id, "| 结论 | 选择 |\n|---|---|\n| 越界 | 再看看 |").is_err());
+}
+
+#[test]
+fn review_classes_reach_acceptance_and_verification_prompts() {
+    for role in ["验收", "验证"] {
+        let prompt = role_prompt(role, "材料", true);
+        assert!(prompt.contains("## 会出错") && prompt.contains("出错场景"), "{role}: {prompt}");
+    }
+    assert!(!role_prompt("执行", "材料", true).contains("## 会出错"));
 }

@@ -414,7 +414,7 @@
             "tier": "中",
             "thinking": "中",
             "visibility": "盲",
-            "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n请按以下固定维度验收：需求完整性、逻辑正确性、边界情况、代码质量、测试覆盖、实际运行结果。\n末尾必须单独回答：对照原始需求，是否完整实现？只写 PASS 或 NEEDS_FIX。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\nBe honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。",
+            "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n审查意见分两节写：\n## 会出错\n每条写问题，再写「出错场景：在什么输入或状态下，得到什么错误结果」。会出错指结果不对、崩溃、丢数据、安全问题、违反用户原话或验收条件。写不出具体出错场景的放到「建议」。与「用户已定事项」相反的意见，只在写得出出错场景时报，并注明「与已定事项冲突」。\n## 建议\n命名、格式、注释、写法偏好、可读性等，以及写不出出错场景的疑虑。\n哪一节没有内容就写「无」。\n请按以下维度验收：需求完整性、逻辑正确性、边界情况、测试覆盖、实际运行结果。\n末尾必须单独回答：对照原始需求，是否完整实现？只写 PASS 或 NEEDS_FIX；「会出错」有条目时写 NEEDS_FIX。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\nBe honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。",
             "currentMessage": "",
             "materials": [],
             "sessionId": "",
@@ -447,7 +447,7 @@
             "tier": "中",
             "thinking": "中",
             "visibility": "盲",
-            "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n[用户]\n盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。\n\nBe honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。",
+            "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n[用户]\n盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。\n\n审查意见分两节写：\n## 会出错\n每条写问题，再写「出错场景：在什么输入或状态下，得到什么错误结果」。会出错指结果不对、崩溃、丢数据、安全问题、违反用户原话或验收条件。写不出具体出错场景的放到「建议」。与「用户已定事项」相反的意见，只在写得出出错场景时报，并注明「与已定事项冲突」。\n## 建议\n命名、格式、注释、写法偏好、可读性等，以及写不出出错场景的疑虑。\n哪一节没有内容就写「无」。\n\nBe honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。",
             "currentMessage": "[用户]\n盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。",
             "materials": [],
             "sessionId": "",
@@ -660,7 +660,7 @@
             "tier": "中",
             "thinking": "中",
             "visibility": "盲",
-            "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n[用户]\n根据上一轮验收意见修正实现。\n\nNEEDS_FIX\n- 第一项\n- 第二项\n\n请按以下固定维度验收：需求完整性、逻辑正确性、边界情况、代码质量、测试覆盖、实际运行结果。\n末尾必须单独回答：对照原始需求，是否完整实现？只写 PASS 或 NEEDS_FIX。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\nBe honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。",
+            "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n[用户]\n根据上一轮验收意见修正实现。\n\nNEEDS_FIX\n- 第一项\n- 第二项\n\n审查意见分两节写：\n## 会出错\n每条写问题，再写「出错场景：在什么输入或状态下，得到什么错误结果」。会出错指结果不对、崩溃、丢数据、安全问题、违反用户原话或验收条件。写不出具体出错场景的放到「建议」。与「用户已定事项」相反的意见，只在写得出出错场景时报，并注明「与已定事项冲突」。\n## 建议\n命名、格式、注释、写法偏好、可读性等，以及写不出出错场景的疑虑。\n哪一节没有内容就写「无」。\n请按以下维度验收：需求完整性、逻辑正确性、边界情况、测试覆盖、实际运行结果。\n末尾必须单独回答：对照原始需求，是否完整实现？只写 PASS 或 NEEDS_FIX；「会出错」有条目时写 NEEDS_FIX。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\nBe honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。",
             "currentMessage": "",
             "materials": [],
             "sessionId": "",
@@ -693,7 +693,7 @@
             "tier": "中",
             "thinking": "中",
             "visibility": "盲",
-            "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n[用户]\n根据上一轮验收意见修正实现。\n\nNEEDS_FIX\n- 第一项\n- 第二项\n\n[用户]\n盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。\n\nBe honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。",
+            "prompt": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。\n固定关注点：契约（字段、命令签名、序列化大小写）有没有变。\n固定关注点：新增的测试能不能红：把修复回退后该测试是否会失败。\n\n[用户]\n实现任务\n\n[用户]\n根据上一轮验收意见修正实现。\n\nNEEDS_FIX\n- 第一项\n- 第二项\n\n[用户]\n盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。\n\n审查意见分两节写：\n## 会出错\n每条写问题，再写「出错场景：在什么输入或状态下，得到什么错误结果」。会出错指结果不对、崩溃、丢数据、安全问题、违反用户原话或验收条件。写不出具体出错场景的放到「建议」。与「用户已定事项」相反的意见，只在写得出出错场景时报，并注明「与已定事项冲突」。\n## 建议\n命名、格式、注释、写法偏好、可读性等，以及写不出出错场景的疑虑。\n哪一节没有内容就写「无」。\n\nBe honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。",
             "currentMessage": "[用户]\n盲审：独立审查同一份产物，只看材料与验证命令输出，不看验收结论。",
             "materials": [],
             "sessionId": "",
@@ -1240,7 +1240,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1249,7 +1250,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         }
       ],
       "leftover": [],
@@ -1286,7 +1288,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1295,7 +1298,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         }
       ],
       "leftover": [],
@@ -1332,7 +1336,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1341,7 +1346,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_5",
@@ -1389,7 +1395,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1398,7 +1405,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_5",
@@ -1446,7 +1454,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1455,7 +1464,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_5",
@@ -1501,7 +1511,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1510,7 +1521,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_5",
@@ -1577,7 +1589,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1586,7 +1599,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_5",
@@ -1653,7 +1667,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1662,7 +1677,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_5",
@@ -1680,7 +1696,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 仍未闭合",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_7",
@@ -1689,7 +1706,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         }
       ],
       "leftover": [
@@ -1728,7 +1746,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1737,7 +1756,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_5",
@@ -1755,7 +1775,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 仍未闭合",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_7",
@@ -1764,7 +1785,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         }
       ],
       "leftover": [
@@ -1803,7 +1825,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 第一项\n- 第二项",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_4",
@@ -1812,7 +1835,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_5",
@@ -1830,7 +1854,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "NEEDS_FIX\n- 仍未闭合",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         {
           "node_id": "UUID_7",
@@ -1839,7 +1864,8 @@
           "model": "review",
           "status": "done",
           "text_excerpt": "核对一致",
-          "artifacts_dir": ""
+          "artifacts_dir": "",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         }
       ],
       "leftover": [
@@ -1958,7 +1984,8 @@
           "tokens_in": 11,
           "tokens_out": 22,
           "ms": 33,
-          "runner": "oneshot"
+          "runner": "oneshot",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         "target": {
           "agent": "kimi",
@@ -1990,7 +2017,8 @@
           "tokens_in": 11,
           "tokens_out": 22,
           "ms": 33,
-          "runner": "oneshot"
+          "runner": "oneshot",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         "target": {
           "agent": "kimi",
@@ -2068,7 +2096,8 @@
           "tokens_in": 11,
           "tokens_out": 22,
           "ms": 33,
-          "runner": "oneshot"
+          "runner": "oneshot",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         "target": {
           "agent": "kimi",
@@ -2099,7 +2128,8 @@
           "tokens_in": 11,
           "tokens_out": 22,
           "ms": 33,
-          "runner": "oneshot"
+          "runner": "oneshot",
+          "independence": "非独立：隔离不完整、审查方厂商未知"
         },
         "target": {
           "agent": "kimi",

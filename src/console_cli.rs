@@ -26,7 +26,7 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
     }
     if !matches!(
         command,
-        Some("dispatch" | "status" | "adopt" | "cancel" | "recover" | "propose" | "resources" | "config" | "hosts" | "skill" | "slash" | "preset" | "stats" | "__run")
+        Some("dispatch" | "status" | "adopt" | "cancel" | "recover" | "propose" | "resources" | "config" | "hosts" | "skill" | "slash" | "preset" | "stats" | "decided" | "__run")
     ) {
         return None;
     }
@@ -63,7 +63,8 @@ fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
          子命令：\n\
          \x20 dispatch    派发一次；多行任务文本走 --text-file；--seat 只对这一次换人；--kind 记任务类型\n\
          \x20 status      看一次 run 的状态；--wait 等到结束\n\
-         \x20 adopt       采纳某一路的结果\n\
+         \x20 adopt       采纳某一路的结果；--verdict-file 记下用户的裁决\n\
+         \x20 decided     项目的已定事项：add / show\n\
          \x20 cancel      叫停一次派发\n\
          \x20 recover     崩溃后核对；--rollback 恢复单写者改动的项目文件\n\
          \x20 open        打开该 run 的查看页\n\
@@ -134,6 +135,10 @@ fn run_at_with(
         Some("slash") => return run_slash(root, args, stdout, stderr),
         Some("preset") => return run_preset(root, args, stdout, stderr),
         Some("stats") => return run_stats(root, args, ops, stdout, stderr),
+        Some("decided") => return run_decided(args, stdout, stderr),
+        Some("adopt") if args.iter().any(|arg| arg == "--verdict-file") => {
+            return run_adopt_verdict(root, args, stdout, stderr)
+        }
         _ => {}
     }
     let request = match build_request(args) {
@@ -254,6 +259,96 @@ pub(crate) fn store_file(root: &Path) -> PathBuf {
 
 /// TASK-69 `aicross stats [--kind <类型>]`：各模型按任务类型的使用记录。
 /// 资源库读不了时照常输出，`usable` 为 null。
+/// `aicross adopt <run_id> --verdict-file <path>`：存用户的裁决。
+fn run_adopt_verdict(root: &Path, args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+    const USAGE: &str = "用法：aicross adopt <run_id> --verdict-file <裁决表.md>";
+    let Some(run_id) = args.get(2).filter(|value| !value.starts_with('-')) else {
+        let _ = writeln!(stderr, "{USAGE}");
+        return 2;
+    };
+    if !crate::engine::valid_id(run_id) {
+        let _ = writeln!(stderr, "run_id 无效");
+        return 2;
+    }
+    let Some(file) = option_value(args, "--verdict-file") else {
+        let _ = writeln!(stderr, "{USAGE}");
+        return 2;
+    };
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(error) => {
+            let _ = writeln!(stderr, "读取裁决文件失败：{error}");
+            return 2;
+        }
+    };
+    match crate::engine::adopt_verdict(root, run_id, &text) {
+        Ok(path) => {
+            let counts = crate::track::count_verdict(&text);
+            let _ = writeln!(
+                stdout,
+                "{}",
+                json!({ "path": path.to_string_lossy(), "fix": counts.fix, "keep": counts.keep, "never": counts.never })
+            );
+            let _ = writeln!(stderr, "已记录裁决：改 {} 件，不改 {} 件，以后不再报 {} 件", counts.fix, counts.keep, counts.never);
+            0
+        }
+        Err(message) => {
+            let _ = writeln!(stderr, "{message}");
+            1
+        }
+    }
+}
+
+/// `aicross decided add|show --project <dir>`：项目的已定事项。不给
+/// --project 时用当前目录。
+fn run_decided(args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+    const USAGE: &str = "用法：aicross decided add --project <目录> --kind 已定|不做 --text <内容> --reason <理由>；aicross decided show --project <目录>";
+    let project = option_value(args, "--project")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let Some(project) = project.filter(|path| path.is_dir()) else {
+        let _ = writeln!(stderr, "项目目录不存在");
+        return 2;
+    };
+    match args.get(2).map(String::as_str) {
+        Some("show") => {
+            let path = crate::project_dir::decided_path(&project);
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let _ = write!(stdout, "{text}");
+            if text.is_empty() {
+                let _ = writeln!(stderr, "还没有已定事项");
+            } else {
+                let _ = writeln!(stderr, "{}", path.display());
+            }
+            0
+        }
+        Some("add") => {
+            let (Some(kind), Some(text), Some(reason)) =
+                (option_value(args, "--kind"), option_value(args, "--text"), option_value(args, "--reason"))
+            else {
+                let _ = writeln!(stderr, "{USAGE}");
+                return 2;
+            };
+            let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+            match crate::project_dir::add_decided(&project, &kind, &text, &reason, &date) {
+                Ok(entry) => {
+                    let _ = writeln!(stdout, "{entry}");
+                    let _ = writeln!(stderr, "已写入 {}", crate::project_dir::decided_path(&project).display());
+                    0
+                }
+                Err(message) => {
+                    let _ = writeln!(stderr, "{message}");
+                    2
+                }
+            }
+        }
+        _ => {
+            let _ = writeln!(stderr, "{USAGE}");
+            2
+        }
+    }
+}
+
 fn run_stats(root: &Path, args: &[String], ops: &ResourcesOps, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
     let kind = if args.iter().any(|arg| arg == "--kind") {
         let Some(raw) = option_value(args, "--kind") else {

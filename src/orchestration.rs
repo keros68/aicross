@@ -141,6 +141,12 @@ pub struct Reply {
     /// 额度用尽结果的恢复时间；旧图缺失时为空。
     #[serde(default)]
     pub quota_resets_at: Option<String>,
+    /// 实际跑这一路的厂商；旧图缺失时为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    /// 审查类节点的独立性：「独立」或「非独立：原因、原因」；其它节点为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub independence: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]

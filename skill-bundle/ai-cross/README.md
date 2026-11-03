@@ -45,7 +45,7 @@
 
 **通道**：命令模板见 `references/channels.md`，包括 `codex exec`、Kimi Code CLI、`claude -p` 接 Anthropic 兼容端点（GLM / Kimi coding plan）、`cc_switch.py exec`、裸 API 与 aichat。gemini、qoder、codebuddy 的独立 CLI 已下线（2026-07 核实），不再作为派发通道；Qoder 仍可作宿主。模型 ID 在派发前从本地读取，不写死。
 
-**存档**：每次外部派发存为 `<项目>/.dispatch/<日期时间>-<通道>-<档位>-<角色>.md`，含任务全文、模型和原始输出；该目录自带 `.gitignore`，不随代码提交。多轮闭环进度写入 `.dispatch/STATE.md`，中断后可续。
+**存档**：项目里只有一个目录 `.aicross/`。每次外部派发存为 `.aicross/runs/<派发>/<日期时间>-<通道>-<模型>-<角色>.md`，含任务全文、模型和原始输出，`runs/` 不随代码提交；多轮闭环进度写入 `.aicross/runs/STATE.md`，中断后可续。用户定过的事与不做的事记在 `.aicross/decided.md`（随代码提交），派发时附给各方，同一件事不再反复报。
 
 **防错**：第三方 Anthropic 兼容端点可能把不认识的模型名静默换成默认模型，`references/verify_model.py` 核对响应中的 `model` 字段。同一通道连续失败 2 次切换备选；外派时设 `AI_CROSS_PEER=1`，被派方不再向下派发。
 
@@ -91,7 +91,7 @@ Claude Code 的内部 subagent 分层需另把 `agents/*.md` 复制到 `~/.claud
 
 - 盘点：列出检测到的 CLI 与模型，确认后生成 `manifest.json`。
 - 说"让别家审一下这段代码"：先给出路由决策和外发说明（发给谁、多大、脱敏几处），同意前不发送。
-- 发送后项目下出现 `.dispatch/<日期时间>-...md`，记录任务原文、应答模型和原始输出。
+- 发送后项目下出现 `.aicross/runs/<派发>/<日期时间>-...md`，记录任务原文、应答模型和原始输出。
 - 只说"帮我检查一下"、没提其他模型时不触发。
 
 ## 凭据处理
@@ -106,7 +106,7 @@ Claude Code 的内部 subagent 分层需另把 `agents/*.md` 复制到 `~/.claud
 - `inventory.py` 只读取配置中的模型字段，只写入自己的 manifest（`tests/test_inventory.py` 覆盖）。
 - `dispatch.py` 不读密钥，带 `--go` 才外发，外发前脱敏，存档不含环境变量值（`tests/test_dispatch.py` 覆盖）。
 
-规则层面（`references/security.md`，约束 agent 行为，非代码强制）：密钥不写入 manifest 和 `.dispatch/`，输出中打码，读凭据库前先告知用户，`ANTHROPIC_BASE_URL` 与 `ANTHROPIC_AUTH_TOKEN` 只传给子进程、不写入全局配置。
+规则层面（`references/security.md`，约束 agent 行为，非代码强制）：密钥不写入 manifest 和 `.aicross/`，输出中打码，读凭据库前先告知用户，`ANTHROPIC_BASE_URL` 与 `ANTHROPIC_AUTH_TOKEN` 只传给子进程、不写入全局配置。
 
 ## 仓库结构
 
@@ -130,7 +130,7 @@ Released under the MIT License. Redistributions, forks and modified versions mus
 
 ## English
 
-ai-cross is an AI-agent skill that routes tasks to model tiers by task type, has a model from a different vendor cross-check important outputs, and logs every dispatch to `.dispatch/`. It does not use majority voting: checkable facts are verified by running code or tests, and unresolved disagreements are shown side by side. Cross-vendor review needs at least two vendors; with one, tiered dispatch still works.
+ai-cross is an AI-agent skill that routes tasks to model tiers by task type, has a model from a different vendor cross-check important outputs, and logs every dispatch to `.aicross/runs/`. It does not use majority voting: checkable facts are verified by running code or tests, and unresolved disagreements are shown side by side. Cross-vendor review needs at least two vendors; with one, tiered dispatch still works.
 
 ```bash
 npx skills add keros68/aicross --skill ai-cross -g

@@ -223,6 +223,20 @@
   line-height: 1.6;
 }
 
+.run-viewer-review-heading {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.run-viewer-review-list {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.run-viewer-review-list li + li {
+  margin-top: 4px;
+}
+
 .run-viewer-artifacts {
   margin-top: 12px;
   color: var(--text-2);

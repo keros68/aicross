@@ -72,7 +72,7 @@ class DBase(Base):
             return self.call(dispatch.cmd_review, **args)
 
     def traces(self):
-        return sorted((self.project / ".dispatch").glob("*.md"))
+        return sorted((self.project / ".aicross" / "runs").glob("*/*.md"))
 
 
 class TestReview(DBase):
@@ -83,7 +83,7 @@ class TestReview(DBase):
         self.assertIn("路由决策行", out)
         self.assertIn("pi:zai-coding-cn / glm-5.3（Zhipu）", out)
         self.assertIn("尚未发送", out)
-        self.assertFalse((self.project / ".dispatch").exists())
+        self.assertFalse((self.project / ".aicross").exists())
 
     def test_same_name_materials_labeled_by_relative_path(self):
         files = []
@@ -117,11 +117,13 @@ class TestReview(DBase):
         self.assertIn("发现两处问题", out)
         self.assertIn("本次派发小结", out)
         trace = self.traces()[0].read_text(encoding="utf-8")
-        for needle in ('schema: "aicross-dispatch/1"', 'visibility: "盲"', 'isolation: "完整"', 'status: "ok"',
+        for needle in ('schema: "aicross-dispatch/2"', 'visibility: "盲"', 'isolation: "完整"', 'status: "ok"',
                        "tokens_in: 508", "## 任务全文", "def average", "## 原始输出", "发现两处问题"):
             self.assertIn(needle, trace)
         self.assertNotIn("草稿里的答案", trace)                    # 思考草稿不当答案
-        self.assertEqual((self.project / ".dispatch" / ".gitignore").read_text(encoding="utf-8"), "*\n")
+        self.assertEqual((self.project / ".aicross" / ".gitignore").read_text(encoding="utf-8"), "runs/\n")
+        self.assertIn("审查意见分两节写", trace)                     # 两类结论的要求随模板发出
+        self.assertIn("独立性：", out)
         smoke = {e["id"]: e["smoke"]["status"] for e in self.manifest()["entries"]}
         self.assertEqual(smoke["pi-zai-coding-cn.zhipu"], "ok")    # 成功的派发顺带刷新冒烟
 
@@ -159,17 +161,17 @@ class TestReview(DBase):
         try:
             os.chdir(elsewhere)                                    # 当前目录不是项目，也没给 --project
             code, out, _ = self.review(file=[str(src / "a.py")], project=None)
-            self.assertIn(str(self.project.resolve() / ".dispatch"), out)   # 往上找到带 AGENTS.md 的项目根
+            self.assertIn(str(self.project.resolve() / ".aicross" / "runs"), out)   # 往上找到带 AGENTS.md 的项目根
             os.chdir(self.project)
             code, out, _ = self.review(file=[str(src / "a.py")], project=None)
-            self.assertIn(str(self.project.resolve() / ".dispatch"), out)   # 材料在当前目录下就用当前目录
+            self.assertIn(str(self.project.resolve() / ".aicross" / "runs"), out)   # 材料在当前目录下就用当前目录
         finally:
             os.chdir(old)
 
     def test_trace_never_contains_environment_values(self):
         with mock.patch.dict(os.environ, {"GLM_CODING_KEY": SECRET_ENV}):
             self.review({"--provider": (0, pi_out(), "")}, go=True)
-        for path in (self.project / ".dispatch").iterdir():
+        for path in (self.project / ".aicross" / "runs").rglob("*.md"):
             self.assertNotIn(SECRET_ENV, path.read_text(encoding="utf-8"))
 
 
@@ -358,7 +360,7 @@ class TestRun(DBase):
         self.assertEqual((code, self.calls), (0, []))
         self.assertIn("gpt-6.1-sol", out)                           # 「条目:档位」的写法也认
         self.assertIn("只读运行", out)
-        self.assertIn(str(self.project / ".dispatch"), out)         # 没给 --project 时留痕跟着只读目录走
+        self.assertIn(str(self.project / ".aicross" / "runs"), out)         # 没给 --project 时留痕跟着只读目录走
         self.run_task({"exec": (0, CODEX_OUT, "")}, entry="codex.openai", read_dir=str(self.project), go=True)
         cmd, cwd, _ = self.calls[0]
         self.assertEqual(Path(cwd), self.project.resolve())         # 在项目目录里跑
@@ -420,3 +422,38 @@ class TestSmoke(DBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProjectFolder(DBase):
+    def test_decided_items_are_attached_to_review_prompt(self):
+        (self.project / ".aicross").mkdir()
+        (self.project / ".aicross" / "decided.md").write_text(
+            "# 已定事项\n\n## 不做\n\n- 2026-11-02 不处理 IE（只用 Chrome）\n", encoding="utf-8")
+        self.review({"--provider": (0, pi_out(), "")}, go=True)
+        trace = self.traces()[0].read_text(encoding="utf-8")
+        self.assertIn("## 用户已定事项", trace)
+        self.assertIn("不处理 IE", trace)
+
+    def test_legacy_dispatch_folder_is_migrated(self):
+        legacy = self.project / ".dispatch"
+        (legacy / "run-a" / "n.before").mkdir(parents=True)
+        (legacy / "run-a" / "n.before" / "x.txt").write_text("old", encoding="utf-8")
+        (legacy / ".gitignore").write_text("*\n", encoding="utf-8")
+        (legacy / "20260913-191317-pi-m-验证.md").write_text(
+            '---\nrun_id: "run-a"\nbefore_dir: ".dispatch/run-a/n.before"\n---\n', encoding="utf-8")
+        (legacy / "notes.txt").write_text("x", encoding="utf-8")
+        dispatch.migrate_legacy(self.project)
+        self.assertFalse(legacy.exists())
+        folder = self.project / ".aicross" / "runs" / "20260913-191317-runa"
+        record = (folder / "20260913-191317-pi-m-验证.md").read_text(encoding="utf-8")
+        self.assertIn(".aicross/runs/20260913-191317-runa/.snapshots/n.before", record)
+        self.assertEqual((folder / ".snapshots" / "n.before" / "x.txt").read_text(encoding="utf-8"), "old")
+        self.assertTrue((self.project / ".aicross" / "runs" / "旧记录" / "notes.txt").is_file())
+
+    def test_independence_label(self):
+        full = {"isolation": "full", "vendor": "Google"}
+        self.assertEqual(dispatch.independence(full, "OpenAI"), "独立")
+        self.assertEqual(dispatch.independence({"isolation": "dir", "vendor": "OpenAI"}, "OpenAI"),
+                         "非独立：隔离不完整、同一家厂商")
+        self.assertEqual(dispatch.independence(full, None), "非独立：被审方厂商未知")
+        self.assertEqual(dispatch.independence(full, None, no_author=True), "独立")

@@ -25,6 +25,8 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 | `aicross dispatch --project <目录> --preset <模式> --text-file <文件> [--accept-file <文件>] [--seat <阶段>.<位置>=<目标>] [--kind <任务类型>]` | 派发一次；多行任务文本走文件，不进 argv；`--seat` 只对这一次换人；`--kind` 记任务类型 |
 | `aicross status <run_id> [--wait] [--timeout 秒]` | 看一次 run 的状态；`--wait` 等到结束 |
 | `aicross adopt <run_id> <node_id>` | 采纳某一路的结果 |
+| `aicross adopt <run_id> --verdict-file <文件>` | 记下用户对这次派发的裁决 |
+| `aicross decided add\|show --project <目录>` | 项目的已定事项 |
 | `aicross cancel <run_id>` | 叫停一次派发 |
 | `aicross recover <run_id> [--rollback]` | 崩溃后核对；`--rollback` 恢复单写者改动的项目文件 |
 | `aicross open <run_id>` | 打开该 run 的查看页 |
@@ -61,7 +63,7 @@ ACP 默认关闭，派发走各家 CLI 自带的续聊。要用 ACP 时执行
 一半。`aicross recover <run_id>` 只读核对：列出这些节点、各自的写权限与状态
 （执行中断 / 执行已结束，结果未写回 / 未发出），单写者节点给出有变化的文件与
 对应快照目录，worktree 节点给 worktree 路径（原样保留，没有产物时按创建规则
-推算）。单写者执行期间，项目目录的 `.dispatch/` 下会有 `<node>.inflight/`
+推算）。单写者执行期间，该次派发目录的 `.snapshots/` 下会有 `<node>.inflight/`
 执行中快照，执行结束即删除；看到它残留说明引擎在执行中途退出。
 
 `aicross recover <run_id> --rollback` 把单写者节点的项目改动恢复到对应快照：
@@ -202,14 +204,29 @@ Hermes Agent、ZCode、CodeBuddy、WorkBuddy、Qoder、Qoder CN 也可当主 age
 - **采纳**：每张有结果的卡上一个「采纳」；已采纳的卡只显示「已采纳」。
   采纳只改图上的标记；worktree 那路的改动要先按卡上给的路径手动合并。
 
-## `.dispatch/` 与留痕
+## 项目里的 `.aicross/`
 
-每次派发在项目目录下写一份派发记录：`<项目>/.dispatch/`，一次调用一个
-Markdown 文件，头部 YAML 记着模型真身、用量、耗时、可见性；`STATE.md` 记未
-跑完的那一轮；引擎仍会写入，当前没有命令读取。目录自带内容为 `*` 的
-`.gitignore`，默认不进版本库。不想写进
-项目，用 `aicross config set writeProjectDispatch false` 改写到
-`~/.aicross/runs/`。
+aicross 在项目里只建一个目录 `.aicross/`：
+
+- `runs/<派发>/`：一次派发一个目录，名为「开始时间-run_id 前 8 位」。一路一个
+  Markdown 记录，头部 YAML 记着模型真身、用量、耗时、可见性；`STATE.md` 记未
+  跑完的那一轮；`裁决.md` 记用户的裁决；`.snapshots/` 是派发前快照。
+- `decided.md`：已定事项，分「已定」「不做」两节。由 skill 在你同意后写入，
+  也可以直接编辑；派发时附给各方，审查者不再反复报你否掉过的事。
+
+`.aicross/.gitignore` 只忽略 `runs/`，`decided.md` 照常进版本库。不想把派发记录
+写进项目，用 `aicross config set writeProjectDispatch false` 改写到
+`~/.aicross/runs/`。旧版本的 `.dispatch/` 在下一次派发时自动迁入 `runs/`。
+
+## 审查结论与独立性
+
+审查者按两节作答：「会出错」每条必须写出出错场景（什么输入或状态下得到什么错误
+结果），写不出的算「建议」。只有「会出错」决定结论和修正轮：有一条就要求修正，
+建议不触发返工。查看页把「会出错」直接列出，建议折叠。
+
+每条审查结果标「独立」或「非独立：原因」。独立要同时满足：位置是盲的、通道隔离
+完整、与被审方不同厂商。缺哪条写哪条，照常派发；skill 只把「独立」的结论说成
+另一家把关过。
 
 ## 密钥与脱敏
 
@@ -235,6 +252,10 @@ Markdown 文件，头部 YAML 记着模型真身、用量、耗时、可见性�
 | thinking 档 | 关 / 低 / 中 / 高 | 角色配置 |
 | 把任务发给模型 | 派发 | 命令行、本手册 |
 | 认可一路结果 | 采纳（状态：已采纳） | 查看页卡片 |
+| 审查意见的两类 | 会出错（必须写出出错场景）/ 建议 | 审查模板、查看页卡片 |
+| 审查是否独立 | 独立 / 非独立：原因 | 查看页卡片「独立性」、`aicross status` |
+| 用户定过的事与不做的事 | 已定事项（「已定」「不做」两节） | `.aicross/decided.md`、`aicross decided` |
+| 用户对一次派发逐件的选择 | 裁决（改 / 不改 / 以后不再报） | `裁决.md`、`aicross adopt --verdict-file` |
 | 派发时给的任务分类 | 任务类型（前端 / 后端 / 文案 / 数据分析 / 文档 / 其他） | `--kind`、`aicross stats` |
 | 执行位置的派发结果 | 一次通过 / 修正后通过 / 未通过 / 失败 / 无验收 / 结论不明 | `aicross stats`、本手册 |
 | 汇总的派发结果 | 使用记录（资源页写作「记录：」） | 资源页、`aicross stats` |

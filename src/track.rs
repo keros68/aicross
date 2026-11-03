@@ -271,6 +271,53 @@ pub(crate) struct TrackLine {
     pub rounds: usize,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error_kind: String,
+    /// 裁决行（type = verdict）：用户逐件选择的计数；其它行没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<VerdictCounts>,
+}
+
+/// 一次裁决里三种选择各几件。
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub(crate) struct VerdictCounts {
+    pub fix: u32,
+    pub keep: u32,
+    pub never: u32,
+}
+
+/// 从 skill 写的裁决表里数选择：表格行里某一格正好是「改」「不改」
+/// 「以后不再报」就计一件；表头与分隔行不算。
+pub(crate) fn count_verdict(text: &str) -> VerdictCounts {
+    let mut counts = VerdictCounts::default();
+    for line in text.lines().filter(|line| line.trim_start().starts_with('|')) {
+        for cell in line.split('|').map(str::trim) {
+            let slot = match cell {
+                "改" => &mut counts.fix,
+                "不改" => &mut counts.keep,
+                "以后不再报" => &mut counts.never,
+                _ => continue,
+            };
+            *slot += 1;
+            break;
+        }
+    }
+    counts
+}
+
+/// 用户在对话里裁决后调（`aicross adopt <run> --verdict-file`）。
+pub(crate) fn record_verdict(root: &Path, run: &crate::engine::EngineRun, counts: VerdictCounts, at: &str) -> Result<(), String> {
+    append_lines(
+        root,
+        &[TrackLine {
+            kind_of_line: "verdict".into(),
+            at: at.into(),
+            run_id: run.run_id.clone(),
+            host: run.host.clone(),
+            preset_id: run.preset_id.clone(),
+            task_kind: run.task_kind.clone(),
+            verdict: Some(counts),
+            ..TrackLine::default()
+        }],
+    )
 }
 
 fn is_zero(value: &usize) -> bool {
@@ -317,6 +364,7 @@ pub(crate) fn record_run(root: &Path, run: &crate::engine::EngineRun, graph: &Gr
             result: o.result.into(),
             rounds: o.rounds,
             error_kind: o.error_kind,
+            verdict: None,
         })
         .collect();
     append_lines(root, &lines)
@@ -347,7 +395,7 @@ pub(crate) fn record_adopt(root: &Path, run: &crate::engine::EngineRun, node: &G
 }
 
 /// 读全部行；坏行跳过。同一 (类型, run, 节点) 只留最后一行。
-fn read_lines(root: &Path) -> Vec<TrackLine> {
+pub(crate) fn read_lines(root: &Path) -> Vec<TrackLine> {
     let Ok(text) = fs::read_to_string(outcomes_path(root)) else {
         return Vec::new();
     };
@@ -537,7 +585,7 @@ pub(crate) fn stats_value(
     // 模型 → 类型 → 计数
     let mut table: BTreeMap<String, BTreeMap<String, Counts>> = BTreeMap::new();
     for line in &lines {
-        if only_kind.is_some_and(|k| k != line.task_kind) {
+        if only_kind.is_some_and(|k| k != line.task_kind) || line.kind_of_line == "verdict" {
             continue;
         }
         let key = model_key(&line.agent, &line.provider, &line.model);

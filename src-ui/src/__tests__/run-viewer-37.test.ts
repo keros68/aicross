@@ -46,6 +46,10 @@ function node(overrides: Partial<RunViewNode> = {}): RunViewNode {
     quotaResetsAt: '',
     swarmTitle: '',
     artifacts: null,
+    independence: '',
+    reviewStructured: false,
+    reviewErrors: [],
+    reviewSuggestions: [],
     ...overrides,
   };
 }
@@ -182,6 +186,9 @@ describe('run viewer data assembly (TASK-37)', () => {
     expect(acceptanceVerdict(node({ role: '验证', status: 'pending' }))).toBe('UNKNOWN');
     // 执行角色不显示结论。
     expect(acceptanceVerdict(node({ role: '执行', text: 'PASS' }))).toBeNull();
+    // 分了两类时只看「会出错」有没有条目，模型自己写的结论词不算。
+    expect(acceptanceVerdict(node({ role: '验收', text: 'PASS', reviewStructured: true, reviewErrors: ['越界。出错场景：空数组'] }))).toBe('NEEDS_FIX');
+    expect(acceptanceVerdict(node({ role: '验收', text: 'NEEDS_FIX', reviewStructured: true, reviewSuggestions: ['命名'] }))).toBe('PASS');
     expect(acceptanceVerdictLabel('PASS')).toBe('通过');
     expect(acceptanceVerdictLabel('NEEDS_FIX')).toBe('需修正');
     expect(acceptanceVerdictLabel('UNKNOWN')).toBe('未判定');

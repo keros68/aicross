@@ -34,7 +34,7 @@ python <本skill目录>/references/dispatch.py smoke --all | --entry <条目>
 
 - 每路各在 `${AICROSS_HOME:-~/.aicross}/scratch/<时间>-blind/<条目>/` 这个空目录里跑，带 `AI_CROSS_PEER=1`，跑完目录即删。
 - prompt 只有冻结模板加原始材料原文，外发前做六类脱敏（私钥块、Bearer、口令与密钥字面量、环境变量式赋值、`AKIA…`、带口令的数据库 URL）；脱敏只处理字面量，是兜底不是保证。
-- 留痕写进 `<项目>/.dispatch/`（`--project` 指定，默认当前目录），格式见文末契约；通道的原始事件流另存为同名 `.raw.txt`。
+- 记录写进 `<项目>/.aicross/runs/<派发>/`（`--project` 指定，默认当前目录），格式见文末契约；通道的原始事件流另存为同名 `.raw.txt`。
 - `--thinking off|low|mid|high` 只对 codex 与 pi 生效，其余通道的思考档由模型名或其自身配置决定。
 - 退出码：0 至少一路成功；1 没有可用的审查者或全部失败；2 参数有误；3 还没有 manifest。当前会话带 `AI_CROSS_PEER=1` 时拒绝执行。
 - 双保险的多路独立执行：同一份任务文本对两个不同厂商的条目各跑一次 `run --entry <条目>`。
@@ -42,7 +42,7 @@ python <本skill目录>/references/dispatch.py smoke --all | --entry <条目>
 
 ## 手写命令时的隔离写法
 
-**验证者一律在空目录里跑**（盲验目录隔离，规则见 `rules.md`「验证的框架隔离」）。项目目录里的 `.dispatch/`、`STATE.md`、`CLAUDE.md`/`AGENTS.md` 都携带我方结论，`codex exec`/`claude -p` 会加载项目指令文件，kimi 会自行打开 cwd 里的文件。两种写法：
+**验证者一律在空目录里跑**（盲验目录隔离，规则见 `rules.md`「验证的框架隔离」）。项目目录里的 `.aicross/`（历史输出与 `STATE.md`）、`CLAUDE.md`/`AGENTS.md` 都携带我方结论，`codex exec`/`claude -p` 会加载项目指令文件，kimi 会自行打开 cwd 里的文件。两种写法：
 
 ```bash
 # ① 纯文本材料：不给工具，材料走 stdin，cwd 无所谓
@@ -163,7 +163,7 @@ cat in.ndjson | "$AGY" --model gemini-3.8-flash-high --print-timeout 5m \
 
 - **默认档写在 manifest**。未指定时从 `agy models` 里取当前最新的 Flash 系列：审查与第二意见用它的 high，冒烟与琐事用 low；Pro 档额度消耗更大，留给用户明确点名的场合。作者本机 2026-09-16 的设定是 `gemini-3.8-flash-high` / `-low`。
 - **⚠️ 无头模式下连读文件都会被自动拒绝**（2026-09-16 实测）：`view_file` 报「required the "read_file" permission that headless mode cannot prompt for」，`run_command` 同样。实测让它读一个文件，八次工具调用全被拒、烧掉 12.4 万 token、最后 `status: SUCCESS` 但 `response` 是空字符串——**空回答不是模型不会答，是工具全被拒**，别误判成能力问题。
-- **因此它只能当纯文本盲审者：材料全部内联进 prompt，并在 prompt 里明写「不要使用任何工具」。** 这正好满足盲验的隔离要求（它读不到 `.dispatch/`、`STATE.md`、项目 `AGENTS.md`）。实测内联一段代码 + 一个问题：1.3 万 token、2.7 秒，准确指出了埋进去的缺陷。
+- **因此它只能当纯文本盲审者：材料全部内联进 prompt，并在 prompt 里明写「不要使用任何工具」。** 这正好满足盲验的隔离要求（它读不到 `.aicross/`、项目 `AGENTS.md`）。实测内联一段代码 + 一个问题：1.3 万 token、2.7 秒，准确指出了埋进去的缺陷。
 - **固定足迹约 1.3 万 token/次**（工具定义 + 系统提示），比 pi 的 405 贵一个量级，但走订阅额度不花钱——对订阅用户按「省额度」而不是「省钱」记账。
 - **绝不加 `--dangerously-skip-permissions`**：用户全局 `settings.json` 的 `permissions.allow` 里有 `command(cargo fmt)`、`command(cargo test)`、`command(npm run build)` 一类规则，放开后这些会在无头下自动放行，在别人的仓库里真跑 `cargo fmt` 就是破坏性改动。也不要去改那份全局配置——它是用户的应用设置。
 - **写工具已实测挡住**：让它在当前目录建文件，`run_command` 被自动拒，文件没生成；退出码仍是 0，所以**别只看退出码**，要解析 `{"event":"result"}` 那行的 `result.status` 与 `result.response`，`response` 为空即视为未完成。
@@ -346,7 +346,7 @@ cat file.txt | aichat -m <provider>:<model> "总结要点"   # 长文本走 stdi
 
 ## aicross 引擎通道（可选；装了 aicross 就优先走这条，2026-10-01 端到端实测）
 
-aicross 是 ai-cross 的桌面配套程序，安装包在 GitHub Release（安装时把自己加进当前用户 PATH）；命令 `aicross` 不存在就跳过本节。用户在它的窗口里探测本机模型、选默认模式和每个位置的人选；派发时它在本机后台执行整条流水线：拉起各家 CLI、盲审隔离、真身核对、`.dispatch/` 留痕、修正轮、红绿核对、额度切备选。**派发不需要打开窗口**，skill 只负责提议、发起和读结果。
+aicross 是 ai-cross 的桌面配套程序，安装包在 GitHub Release（安装时把自己加进当前用户 PATH）；命令 `aicross` 不存在就跳过本节。用户在它的窗口里探测本机模型、选默认模式和每个位置的人选；派发时它在本机后台执行整条流水线：拉起各家 CLI、盲审隔离、真身核对、记录（`<项目>/.aicross/runs/`）、修正轮、红绿核对、额度切备选。**派发不需要打开窗口**，skill 只负责提议、发起和读结果。
 
 ### 按窗口配置派发
 
@@ -370,6 +370,9 @@ aicross 是 ai-cross 的桌面配套程序，安装包在 GitHub Release（安�
    - 发之前跑 `aicross stats --kind <类型>`，看 `kinds[0]`：`ranked` 是这一类上样本够的模型按通过率排序（`passRate` 0–100），`tagged` 是用户标了擅长这一类的模型；模型写作 `agent:provider:model`，`usable` 为 false 的不考虑。
    - 执行位置的人选在 `ranked` 里，且有一个可用模型的 `passRate` 高出 20 以上；或人选不在 `tagged` 里而 `tagged` 里有可用模型：开场那行后加一句提示，如「前端任务里 pi · opencode-go/claude-opus-5-5 通过率 85%，当前人选 60%，要不要这次换它」。用户同意才加 `--seat` 换，只对这一次。两条都不满足就不提。
    - 用户在对话里认可了某一路的结果（"就用这个""采纳 Kimi 那版"），调 `aicross adopt <run_id> <node_id>`，节点 id 取 `status` 输出里那一路的。
+6. **收尾：只把要拍板的事交给用户**。`status` 里审查位置的 `independence` 是引擎标的独立性：「独立」才说成「另一家把关过」；「非独立：原因」照原因说（如「同一家厂商，只算复核」）。审查回复分「会出错」「建议」两节，引擎只把「会出错」发回修正；你核实后，按「开场与收尾」的格式列出至多 5 件要拍板的事，每件附你的建议，其余归入建议一句带过。
+   - 用户逐件选「改 / 不改 / 以后不再报」后，把选择写成表存进 scratch，调 `aicross adopt <run_id> --verdict-file <表>`，引擎存进这次派发目录的 `裁决.md`。表头固定：`| 结论 | 选择 | 理由 | 写入已定事项 |`。
+   - 选「以后不再报」的，或用户说「这个定了」「以后都这样」，**先在对话里问一句确认**，再调 `aicross decided add --project <项目> --kind 不做|已定 --text <一句> --reason <一句>`。写进 `<项目>/.aicross/decided.md` 后，以后每次派发引擎都会把它附给各方，审查者不再反复报同一件事。用户没点头不写。
 
 ```powershell
 $s = if ($env:AICROSS_HOME) { "$env:AICROSS_HOME\scratch" } else { "$HOME\.aicross\scratch" }
@@ -383,6 +386,9 @@ aicross dispatch --host claude --project D:\work\project --text-file $s\dispatch
 aicross status <run_id>
 aicross status <run_id> --wait --timeout 540
 aicross adopt <run_id> <node_id>
+aicross adopt <run_id> --verdict-file $s\verdict.md                                                  # 记下用户的裁决
+aicross decided add --project D:\work\project --kind 不做 --text "不处理 IE 兼容" --reason "只用 Chrome"   # 用户点头后
+aicross decided show --project D:\work\project
 aicross cancel <run_id>
 aicross open <run_id>        # 查看器：一次派发一页，各路并排、可采纳
 aicross recover <run_id> [--rollback]   # 引擎中断后核对；--rollback 恢复改了一半的项目文件
@@ -396,7 +402,7 @@ aicross recover <run_id> [--rollback]   # 引擎中断后核对；--rollback 恢
 - **每次 `dispatch` 都是独立的一张图，派发之间不共享上下文**：对上一次结果的追问、返工，要把必要的前情（上一次的结论、要改的点、相关文件）写进这次的任务文本。
 - **派出去之后不要在宿主里长时间干等**：先把 run id 和各路派给了谁告诉用户、对话照常继续；要结果时再查。Codex 里前台等长命令会反复回发上下文，150 秒的等待实测耗约 18 万输入 token；Claude Code 单条命令上限 10 分钟，`--wait` 的 `--timeout` 取 540 以内，没结束就再查一次。
 - `status` 的节点状态保留图上的原词：`draft` / `pending` / `done` / `failed` / `quota_exhausted`。**额度用尽不折算成 failed**，有恢复时间时在 `quota_resets_at`——对应「限额即换家」：读到 `quota_exhausted` 就换厂商派，不要等配额回来。run 为 `failed` 且原因是「引擎进程已退出」或「引擎进程未能启动」时，按失败处理，不自动重派；先跑 `aicross recover <run_id>` 看哪些节点停在半路、单写者改了哪些文件，告诉用户，用户同意后再 `aicross recover <run_id> --rollback` 把项目文件恢复到派发前。
-- 收尾时在对话里汇总：共同结论、分歧、各自独有发现，并提示用户可用 `aicross open <run_id>` 在查看器里看各路全文与 diff、直接点采纳；用户在对话里说采纳哪一路时再调 `adopt`。`open` 立即返回，不等窗口关闭。
+- 收尾按上面第 6 条：要拍板的事至多 5 件、附建议，标明每路审查独立与否；并提示用户可用 `aicross open <run_id>` 在查看器里看各路全文与 diff（「会出错」直接列出，建议折叠）。`open` 立即返回，不等窗口关闭。
 - 退出码：0 成功 / 1 业务失败或等待超时 / 2 参数与编码错 / 3 引擎不可用（引擎目录不可确定、run 目录不可写、后台进程起不来）。**只有 3 才回退到上面的 CLI 通道**；1 和 2 是这次请求本身的问题，原样重试没有意义。
 - 同时在飞默认最多 3 个 run；数据目录是 `AICROSS_HOME`（未设时 `~/.aicross`），派发设置在其下 `dispatch-settings.json`，运行记录在 `runs/`，超过 30 天未改动的在下次派发时删除。
 - 协议全文（run 文件字段、存活判定、并发写规则）在 aicross 仓库的 `docs/CONSOLE-CHANNEL.md`，那边是权威；本节只记 skill 侧怎么用、什么时候回退。
@@ -432,13 +438,13 @@ aicross recover <run_id> [--rollback]   # 引擎中断后核对；--rollback 恢
 
 **用户说「更新模型 / 升级清单」**：重跑盘点流程（`setup.md` 第 1–3 步：`inventory.py detect` → 用户确认改动 → `save` → 冒烟）；没有事实源的通道查文档或问用户，并刷新本文件里对应的 ID 和日期。
 
-## `.dispatch/` 留痕契约（aicross-dispatch/1，2026-09-13 定）
+## 派发记录契约（aicross-dispatch/2，2026-11-02 定）
 
-skill 与 aicross 引擎共用同一份留痕格式，字段定了不改。每路一份 `<项目>/.dispatch/<YYYYMMDD-HHMMSS>-<agent>-<model>-<角色>.md`，首次创建目录时写入 `.gitignore`（内容一行 `*`）。正文两节：`## 任务全文`（发出去的 prompt 原文）、`## 原始输出`（stdout 全文；stderr 另起 `## stderr`）。**绝不写入任何环境变量值。** 同目录的 `STATE.md` 格式见 `rules.md` 闭环规则第 5 条。
+skill 与 aicross 引擎共用同一份记录格式。项目里只有一个目录 `<项目>/.aicross/`：`decided.md` 是已定事项（进版本库），`runs/` 下一次派发一个目录（引擎用「开始时间-run_id 前 8 位」，`dispatch.py` 用开始时间），每路一份 `<YYYYMMDD-HHMMSS>-<agent>-<model>-<角色>.md`，同目录还有 `STATE.md`、`裁决.md` 与派发前快照 `.snapshots/`。`.aicross/.gitignore` 只忽略 `runs/`。正文两节：`## 任务全文`（发出去的 prompt 原文）、`## 原始输出`（stdout 全文；stderr 另起 `## stderr`）。**绝不写入任何环境变量值。** `STATE.md` 格式见 `rules.md` 闭环规则第 5 条。旧的平铺 `.dispatch/`（`aicross-dispatch/1`）在下一次派发时一次性迁入 `runs/`，按 `run_id` 归组，读旧格式照常。
 
 ```yaml
 ---
-schema: aicross-dispatch/1
+schema: aicross-dispatch/2
 run_id: <uuid>
 stage: 1
 node: <node_id>

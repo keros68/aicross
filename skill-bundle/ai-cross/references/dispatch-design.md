@@ -223,7 +223,7 @@ tools=[{"type": "advisor_20260301", "model": "claude-opus-4-6", "max_uses": 3}]
 
 - **Subagents 的三种模式**：串行流水线（pipeline）、并行扇出（fan-out/fan-in）、主从委派（delegation）。本 skill 用的是「扇出 + 审查回路」；委派深度不超过一层（层级深了信息丢失）。
 - **Worktrees = 工作隔离**：并行 agent 写同一文件会打架。非编程场景不需要真 git worktree，**路径隔离即可**（各写各的输出文件，编排者合并）。
-- **State/Memory ≠ 记忆力，而是任务可恢复**。本 skill 据此新增 `.dispatch/STATE.md`：留痕是**事后可审计**，STATE 是**事中可恢复**，两者不可互替。
+- **State/Memory ≠ 记忆力，而是任务可恢复**。本 skill 据此新增 `STATE.md`（现在 `.aicross/runs/STATE.md`）：留痕是**事后可审计**，STATE 是**事中可恢复**，两者不可互替。
 
 **已吸收的两条（都对上了我们踩过的坑）**：
 

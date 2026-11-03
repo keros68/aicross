@@ -12,6 +12,7 @@ mod orchestration;
 mod paths;
 mod preset;
 mod process;
+mod project_dir;
 mod recommend;
 mod resources;
 mod run_view;

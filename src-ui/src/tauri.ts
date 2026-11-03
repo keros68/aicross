@@ -465,6 +465,12 @@ export interface RunViewNode {
   /** 蜂群件标题（节点正文首行）；非蜂群件为空串。 */
   swarmTitle: string;
   artifacts: RunViewArtifacts | null;
+  /** 审查类节点的独立性：「独立」或「非独立：原因」；其它节点为空串。 */
+  independence: string;
+  /** 审查回复是否按「会出错 / 建议」分了两类；为假时只显示原文。 */
+  reviewStructured: boolean;
+  reviewErrors: string[];
+  reviewSuggestions: string[];
 }
 
 export interface RunView {

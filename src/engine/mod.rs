@@ -68,6 +68,10 @@ pub struct EngineSettings {
     pub validation_command: String,
     pub acp_enabled: bool,
     pub fix_round_limit: usize,
+    /// 主 agent 的厂商（派发开始时推定，不写盘）；独立性标注里没有上游
+    /// 执行节点时，被审方就是主 agent。
+    #[serde(skip)]
+    pub host_vendor: String,
 }
 
 impl Default for EngineSettings {
@@ -86,6 +90,7 @@ impl Default for EngineSettings {
             validation_command: String::new(),
             acp_enabled: false,
             fix_round_limit: 1,
+            host_vendor: String::new(),
         }
     }
 }
@@ -139,8 +144,24 @@ pub(crate) fn settings_from_value(map: &serde_json::Map<String, Value>) -> Engin
         acp_enabled: map.get("acpEnabled").and_then(Value::as_bool) == Some(true),
         fix_round_limit: finite_number(map.get("fixRoundLimit"), 1.0)
             .floor()
-            .clamp(0.0, 9.0) as usize,
+            .clamp(0.0, 3.0) as usize,
+        host_vendor: String::new(),
     }
+}
+
+/// 主 agent 的厂商，推定不出或没给 --host 时为空串。
+fn host_vendor_of(root: &Path, host: &str) -> String {
+    if host.trim().is_empty() {
+        return String::new();
+    }
+    let Ok(home) = crate::paths::home() else { return String::new() };
+    let env_base_url = std::env::var("ANTHROPIC_BASE_URL").ok();
+    crate::hosts::list_hosts_at(root, &home, env_base_url.as_deref())
+        .ok()
+        .and_then(|hosts| hosts.into_iter().find(|h| h.id == host))
+        .map(|h| h.vendor)
+        .filter(|v| vendor_known(v))
+        .unwrap_or_default()
 }
 
 pub(crate) fn load_settings(root: &Path) -> EngineSettings {
@@ -171,6 +192,9 @@ pub struct RunNode {
     /// 档位时为「由模型决定：low」等）；相同时为空、不写出。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub thinking: String,
+    /// 审查类节点的独立性（「独立」或「非独立：原因」）；其它节点不写出。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub independence: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -476,6 +500,7 @@ pub(crate) fn node_summary(graph: &Graph, ids: impl IntoIterator<Item = String>)
                     .and_then(|a| a.worktree.clone())
                     .unwrap_or_default(),
                 quota_resets_at: reply.and_then(|r| r.quota_resets_at.clone()),
+                independence: reply.and_then(|r| r.independence.clone()).unwrap_or_default(),
                 thinking: {
                     let effective = crate::channels::effective_thinking(
                         &target.agent,
@@ -1529,11 +1554,44 @@ fn role_prompt(role: &str, prompt: &str, upstream: bool) -> String {
         "顾问" => Some(include_str!("../../fixtures/prompts/advisor.txt").trim()),
         _ => None,
     };
+    // 审查意见分「会出错 / 建议」两类（11-02 定）：验收与验证都要，验证没有
+    // 自己的模板，只附这一段。
+    let classes = include_str!("../../fixtures/prompts/review-classes.txt").trim();
     match (role, template) {
         ("执行", Some(t)) => format!("{t}\n\n{prompt}"),
+        ("验收", Some(t)) => format!("{prompt}\n\n{classes}\n{t}"),
         (_, Some(t)) => format!("{prompt}\n\n{t}"),
+        ("验证", None) => format!("{prompt}\n\n{classes}"),
         _ => prompt.into(),
     }
+}
+
+/// 附给每个模型节点的已定事项上限（字节）；超出截断并注明。
+const DECIDED_LIMIT: usize = 8 * 1024;
+
+/// 项目 `.aicross/decided.md` 作为用户约束的一节；文件不存在或为空时空串。
+/// 盲审位置也附：这是用户的决定，不是执行方的推理。
+pub(crate) fn decided_section(project: &Path) -> String {
+    let Ok(text) = fs::read_to_string(crate::project_dir::decided_path(project)) else {
+        return String::new();
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    let body = if text.len() > DECIDED_LIMIT {
+        let mut end = DECIDED_LIMIT;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}
+（已定事项超过 8KB，后面的部分没有附上）", &text[..end])
+    } else {
+        text.to_string()
+    };
+    format!("## 用户已定事项（来自 .aicross/decided.md，作为约束）
+
+{body}")
 }
 
 /// TS `buildNodeRequest` + `runConsoleDispatch` 的 buildRequest：模型查找只按
@@ -1554,6 +1612,7 @@ fn build_request(
         .map(|id| graph_stage(graph, id))
         .min()
         .unwrap_or(1);
+    let decided = decided_section(Path::new(project));
     let nodes = ids
         .iter()
         .filter_map(|id| {
@@ -1566,6 +1625,12 @@ fn build_request(
             let (context, materials) = serialize_context(graph, id);
             let mut prompt =
                 role_prompt(&target.role, &context, has_upstream_product(graph, id));
+            if !decided.is_empty() {
+                prompt.push_str("
+
+");
+                prompt.push_str(&decided);
+            }
             if target.write != "只读" && !prompt.contains(NO_EXTERNAL_ACTIONS) {
                 prompt.push_str("\n\n");
                 prompt.push_str(NO_EXTERNAL_ACTIONS);
@@ -1678,7 +1743,7 @@ fn reset_nodes_to_draft(graph: &Graph, ids: &[String]) -> Graph {
 
 /// TS `applyDispatchResults`。fallback_from 非空时 fallback_to 总写（可为空串）；
 /// quota_resets_at 空串滤掉。
-fn apply_results(graph: &Graph, results: &[DispatchNodeResult]) -> Graph {
+fn apply_results(graph: &Graph, results: &[DispatchNodeResult], host_vendor: &str) -> Graph {
     let mut next = graph.clone();
     for result in results {
         let Some(node) = next.nodes.get_mut(&result.node_id) else {
@@ -1768,15 +1833,197 @@ fn apply_results(graph: &Graph, results: &[DispatchNodeResult]) -> Graph {
                 .quota_resets_at
                 .clone()
                 .filter(|s| !s.is_empty()),
+            vendor: (!result.vendor.trim().is_empty()).then(|| result.vendor.clone()),
             ..Reply::default()
         });
+    }
+    for result in results.iter().filter(|r| r.status == "ok") {
+        let label = independence_label(&next, &result.node_id, &result.isolation, host_vendor);
+        if let Some(reply) = next.nodes.get_mut(&result.node_id).and_then(|n| n.reply.as_mut()) {
+            reply.independence = label;
+        }
     }
     next
 }
 
-/// TS `parseAcceptance`：尾部 1200 个 UTF-16 码元内取最后一个
-/// `\b(?:PASS|NEEDS_FIX)\b`（大写后），没有则 UNKNOWN。
+/// 审查类节点：验收、验证、仲裁，或可见性为盲的位置。
+fn is_review_node(target: &orchestration::Target) -> bool {
+    matches!(target.role.as_str(), "验收" | "验证" | "仲裁") || target.visibility == "盲"
+}
+
+fn vendor_known(vendor: &str) -> bool {
+    let v = vendor.trim();
+    !v.is_empty() && v != crate::hosts::VENDOR_SOURCE_UNKNOWN && !v.eq_ignore_ascii_case("unknown")
+}
+
+/// 独立性标注（11-02 定）：位置是盲的、通道隔离完整、与被审方不同厂商，
+/// 三条都满足才是「独立」，缺哪条写哪条。被审方是上游执行节点；没有上游
+/// 产物时是主 agent。非审查类节点返回 None。
+pub(crate) fn independence_label(graph: &Graph, node_id: &str, isolation: &str, host_vendor: &str) -> Option<String> {
+    let node = graph.nodes.get(node_id)?;
+    let target = node.target.as_ref()?;
+    if !is_review_node(target) {
+        return None;
+    }
+    let mut reasons: Vec<&str> = Vec::new();
+    if target.visibility != "盲" {
+        reasons.push("看得到执行过程");
+    }
+    if isolation != "完整" {
+        reasons.push("隔离不完整");
+    }
+    let reviewer = node.reply.as_ref().and_then(|r| r.vendor.clone()).unwrap_or_default();
+    let reviewed = node
+        .parents
+        .iter()
+        .filter_map(|id| graph.nodes.get(id))
+        .find(|parent| parent.target.is_some())
+        .map(|parent| parent.reply.as_ref().and_then(|r| r.vendor.clone()).unwrap_or_default())
+        .unwrap_or_else(|| host_vendor.to_string());
+    if !vendor_known(&reviewer) {
+        reasons.push("审查方厂商未知");
+    } else if !vendor_known(&reviewed) {
+        reasons.push("被审方厂商未知");
+    } else if crate::hosts::normalize_vendor(&reviewer).eq_ignore_ascii_case(&crate::hosts::normalize_vendor(&reviewed)) {
+        reasons.push("同一家厂商");
+    }
+    Some(if reasons.is_empty() { "独立".into() } else { format!("非独立：{}", reasons.join("、")) })
+}
+
+/// 审查意见按两类拆开后的结果。`structured` 为假表示回复里没有「会出错」
+/// 一节，按旧规则只看结论词。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ReviewFindings {
+    pub structured: bool,
+    pub errors: Vec<String>,
+    pub suggestions: Vec<String>,
+}
+
+/// 写在「会出错」条目里的出错场景标记；没有它的条目降为建议。
+pub(crate) const ERROR_SCENARIO_MARK: &str = "出错场景";
+
+/// 一行是不是「会出错」/「建议」小节标题：去掉 `#`、`*`、空格、冒号后
+/// 正好是这两个词（允许「会出错的问题」这类短尾，总长不超过 8 个字）。
+fn review_heading(line: &str) -> Option<&'static str> {
+    let core: String = line
+        .trim()
+        .trim_start_matches('#')
+        .trim()
+        .trim_matches(|c: char| c == '*' || c == '_' || c.is_whitespace())
+        .trim_end_matches(['：', ':'])
+        .trim()
+        .to_string();
+    if core.chars().count() > 8 {
+        return None;
+    }
+    if core.starts_with("会出错") {
+        Some("error")
+    } else if core.starts_with("建议") {
+        Some("suggestion")
+    } else {
+        None
+    }
+}
+
+/// 条目开头：`-` `*` `•` 或 `1.` `1、` `1)` `（1）`。返回去掉标记后的正文。
+fn item_start(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    for mark in ["- ", "* ", "• ", "-", "•"] {
+        if let Some(rest) = t.strip_prefix(mark) {
+            if mark == "-" && rest.starts_with('-') {
+                return None;
+            }
+            return Some(rest.trim());
+        }
+    }
+    let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 {
+        let rest = &t[digits..];
+        for sep in [".", "、", ")", "）"] {
+            if let Some(body) = rest.strip_prefix(sep) {
+                return Some(body.trim());
+            }
+        }
+    }
+    None
+}
+
+fn is_verdict_line(line: &str) -> bool {
+    let core = line.trim().trim_matches(|c: char| c == '*' || c == '`' || c.is_whitespace());
+    let upper = core.to_uppercase();
+    matches!(upper.as_str(), "PASS" | "NEEDS_FIX")
+        || (core.starts_with("结论") && (upper.contains("PASS") || upper.contains("NEEDS_FIX")))
+}
+
+fn is_none_text(text: &str) -> bool {
+    matches!(text.trim().trim_end_matches(['。', '.']), "无" | "没有" | "暂无" | "None" | "none")
+}
+
+/// 按「会出错 / 建议」两节拆审查回复（11-02 定）。会出错条目必须写出
+/// 「出错场景」，写不出的降为建议。找不到「会出错」小节时 `structured`
+/// 为假，调用方退回旧规则。
+pub(crate) fn parse_review(text: &str) -> ReviewFindings {
+    let mut findings = ReviewFindings::default();
+    let mut section: Option<&'static str> = None;
+    let mut current: Option<String> = None;
+    let push = |findings: &mut ReviewFindings, section: Option<&'static str>, item: Option<String>| {
+        let Some(item) = item.map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && !is_none_text(s)) else {
+            return;
+        };
+        match section {
+            Some("error") if item.contains(ERROR_SCENARIO_MARK) => findings.errors.push(item),
+            Some(_) => findings.suggestions.push(item),
+            None => {}
+        }
+    };
+    for line in text.lines() {
+        if let Some(kind) = review_heading(line) {
+            push(&mut findings, section, current.take());
+            if kind == "error" {
+                findings.structured = true;
+            }
+            section = Some(kind);
+            continue;
+        }
+        if section.is_none() {
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || is_verdict_line(trimmed) {
+            push(&mut findings, section, current.take());
+            section = None;
+            continue;
+        }
+        if let Some(body) = item_start(line) {
+            push(&mut findings, section, current.take());
+            current = Some(body.to_string());
+        } else if trimmed.is_empty() {
+            continue;
+        } else if let Some(item) = current.as_mut() {
+            item.push('\n');
+            item.push_str(trimmed);
+        } else {
+            current = Some(trimmed.to_string());
+        }
+    }
+    push(&mut findings, section, current.take());
+    findings
+}
+
+/// 审查结论：有「会出错」小节时按条目算（有一条带出错场景的就是
+/// NEEDS_FIX，否则 PASS，模型自己写的结论词不算）；没有这一节时按
+/// 旧规则取尾部结论词。
 pub(crate) fn parse_acceptance(text: &str) -> &'static str {
+    let findings = parse_review(text);
+    if findings.structured {
+        return if findings.errors.is_empty() { "PASS" } else { "NEEDS_FIX" };
+    }
+    verdict_word(text)
+}
+
+/// TS `parseAcceptance` 的旧规则：尾部 1200 个 UTF-16 码元内取最后一个
+/// `\b(?:PASS|NEEDS_FIX)\b`（大写后），没有则 UNKNOWN。
+fn verdict_word(text: &str) -> &'static str {
     let upper = utf16_tail(text, 1200).to_uppercase();
     let mut verdict = "UNKNOWN";
     for word in upper.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
@@ -1805,6 +2052,23 @@ fn verification_siblings(graph: &Graph, accept: &GraphNode) -> Vec<GraphNode> {
 /// TS `appendCorrectionRound`：previous 取 accept.parents 里第一个角色「执行」
 /// 的节点；它没有产物就不生成修正轮（不跳到别的执行父）。验证兄弟跟着长，
 /// upstreams 清掉。
+/// 修正轮发给执行方的文本：审查回复分了两类时只带「会出错」条目，
+/// 建议不触发返工；没分类时照旧带全文。
+pub(crate) fn correction_text(review: &str) -> String {
+    let findings = parse_review(review);
+    if findings.structured && !findings.errors.is_empty() {
+        let items = findings
+            .errors
+            .iter()
+            .enumerate()
+            .map(|(index, item)| format!("{}. {item}", index + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return format!("根据上一轮验收意见修正实现。只需处理下面会出错的问题，建议类意见不用改。\n\n{items}");
+    }
+    format!("根据上一轮验收意见修正实现。\n\n{review}")
+}
+
 fn append_correction(
     graph: &Graph,
     accept_id: &str,
@@ -1841,10 +2105,7 @@ fn append_correction(
         kind: "turn".into(),
         parents: vec![accept_id.into()],
         user: Message {
-            text: format!(
-                "根据上一轮验收意见修正实现。\n\n{}",
-                accept.reply.as_ref().map(|r| r.text.as_str()).unwrap_or("")
-            ),
+            text: correction_text(accept.reply.as_ref().map(|r| r.text.as_str()).unwrap_or("")),
             attachments: vec![],
         },
         reply: Some(Reply {
@@ -2905,7 +3166,7 @@ pub(crate) fn run_pipeline(
                     })
                     .collect();
                 if !stubs.is_empty() {
-                    graph = apply_results(&graph, &stubs);
+                    graph = apply_results(&graph, &stubs, &settings.host_vendor);
                     commit!();
                     for stub in &stubs {
                         push_unique(&mut all_run_ids, &stub.node_id);
@@ -2942,7 +3203,7 @@ pub(crate) fn run_pipeline(
             push_unique(&mut all_run_ids, &result.node_id);
         }
         in_flight = vec![];
-        graph = apply_results(&graph, &output.results);
+        graph = apply_results(&graph, &output.results, &settings.host_vendor);
         commit!();
         // R2-8：判定取消时本阶段已返回的结果已写回图；没返回结果的节点保持
         // pending，由收尾统一标「派发已取消」。
@@ -3430,7 +3691,8 @@ fn run_background_with(
     run.updated_at = now();
     write_run(root, &run)?;
     let graph = load_graph_for_run(root, &run)?;
-    let settings = load_settings(root);
+    let mut settings = load_settings(root);
+    settings.host_vendor = host_vendor_of(root, &run.host);
     let resources = orchestration::dispatchable_from(root);
     if let Some(error) = resources.error {
         run.status = "failed".into();
@@ -3555,6 +3817,30 @@ pub(crate) fn adopt(root: &Path, run_id: &str, node_id: &str) -> Result<EngineRu
     Ok(run)
 }
 
+/// 裁决记录（11-02 定）：skill 把用户在对话里的逐件选择写成表交给这里，
+/// 原样存到该次派发目录的 `裁决.md`（没有项目派发目录时存到 run 目录），
+/// 并在使用记录里追加一行计数。返回写入的路径。
+pub(crate) fn adopt_verdict(root: &Path, run_id: &str, text: &str) -> Result<PathBuf, String> {
+    let run = read_run(root, run_id)?;
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("裁决内容为空".into());
+    }
+    let counts = crate::track::count_verdict(text);
+    if counts.fix + counts.keep + counts.never == 0 {
+        return Err("裁决表里没有认出「改」「不改」「以后不再报」，表格行的选择一格要正好是这三个词之一".into());
+    }
+    let dir = crate::project_dir::find_run_dir(Path::new(&run.project), run_id)
+        .unwrap_or_else(|| runs_dir(root).join(run_id));
+    fs::create_dir_all(&dir).map_err(|e| format!("创建派发目录失败：{e}"))?;
+    let path = dir.join(crate::project_dir::VERDICT_FILE);
+    fs::write(&path, format!("{text}\n")).map_err(|e| format!("写入裁决失败：{e}"))?;
+    if let Err(message) = crate::track::record_verdict(root, &run, counts, &now()) {
+        eprintln!("{message}");
+    }
+    Ok(path)
+}
+
 pub(crate) fn cancel(root: &Path, run_id: &str) -> Result<EngineRun, String> {
     let run = read_run(root, run_id)?;
     // R1-6：run 不在 running 时按 TS 口径静默成功；只写标记文件，不改写 run。
@@ -3624,6 +3910,7 @@ fn recover_excluded_directory(name: &str) -> bool {
         name,
         ".git"
             | ".dispatch"
+            | ".aicross"
             | ".aicross-runtime"
             | ".pytest_cache"
             | "__pycache__"
@@ -3735,10 +4022,7 @@ struct RecoverInflightFile {
 
 /// 执行中快照目录：与 `.before` 同一根目录规则，执行结束即删。
 fn inflight_dir_for(project: &Path, run_id: &str, node_id: &str) -> PathBuf {
-    project
-        .join(".dispatch")
-        .join(recover_safe_name(run_id))
-        .join(format!("{}.inflight", recover_safe_name(node_id)))
+    crate::project_dir::node_snapshot(project, run_id, &recover_safe_name(node_id), "inflight")
 }
 
 /// 读执行中快照清单；损坏按 Err 返回（回滚时进 failures）。
@@ -4018,10 +4302,12 @@ pub(crate) fn recover(root: &Path, run_id: &str, rollback: bool) -> Result<Recov
                     }
                 } else {
                     // 与回滚同一套规则找快照：先历史记录，落到本次 run 的固定位置。
-                    let fallback = project
-                        .join(".dispatch")
-                        .join(recover_safe_name(run_id))
-                        .join(format!("{}.before", recover_safe_name(node_id)));
+                    let fallback = crate::project_dir::node_snapshot(
+                        &project,
+                        run_id,
+                        &recover_safe_name(node_id),
+                        "before",
+                    );
                     let before_dir = crate::dispatch::latest_before_dir(&project, node_id)
                         .unwrap_or(fallback);
                     if before_dir.is_dir() {
@@ -4350,18 +4636,13 @@ mod recover_cmd {
         // exec 新建的 created.txt。foreign 也有自己的快照。项目当前状态：
         // a.txt 改了一半、created.txt 新建、gone.txt 被删、half.txt 是无快照
         // 节点改的、fb.txt 是 foreign 节点改的。
-        let before = project
-            .join(".dispatch")
-            .join("run")
-            .join(format!("{exec_node}.before"));
+        let run_dir = crate::project_dir::run_dir(&project, "run").unwrap().0;
+        let before = crate::project_dir::snapshot_dir(&run_dir, &exec_node, "before");
         fs::create_dir_all(&before).unwrap();
         fs::write(before.join("a.txt"), "before").unwrap();
         fs::write(before.join("gone.txt"), "gone").unwrap();
         fs::write(before.join(".created"), "created.txt").unwrap();
-        let foreign_before = project
-            .join(".dispatch")
-            .join("run")
-            .join(format!("{foreign_node}.before"));
+        let foreign_before = crate::project_dir::snapshot_dir(&run_dir, &foreign_node, "before");
         fs::create_dir_all(&foreign_before).unwrap();
         fs::write(foreign_before.join("fb.txt"), "orig").unwrap();
         fs::write(project.join("a.txt"), "after").unwrap();
@@ -4623,10 +4904,8 @@ mod recover_cmd {
             },
         );
         orchestration::save_graph_in(&root, &graph).unwrap();
-        let inflight = project
-            .join(".dispatch")
-            .join("run")
-            .join(format!("{node}.inflight"));
+        let run_dir = crate::project_dir::run_dir(&project, "run").unwrap().0;
+        let inflight = crate::project_dir::snapshot_dir(&run_dir, &node, "inflight");
         let files = inflight.join("files");
         fs::create_dir_all(&files).unwrap();
         let manifest = manifest.unwrap_or(

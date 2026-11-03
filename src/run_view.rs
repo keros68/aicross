@@ -178,6 +178,12 @@ pub struct RunViewNode {
     /// 蜂群件的标题（节点正文首行）；不是蜂群件为空串。
     pub swarm_title: String,
     pub artifacts: Option<RunViewArtifacts>,
+    /// 审查类节点的独立性：「独立」或「非独立：原因」；其它节点为空串。
+    pub independence: String,
+    /// 审查回复按两类拆开：`review_structured` 为假时没分类，页面照旧显示全文。
+    pub review_structured: bool,
+    pub review_errors: Vec<String>,
+    pub review_suggestions: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -262,6 +268,10 @@ pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
             let node = graph.as_ref().and_then(|g| g.nodes.get(&summary.node_id));
             let target = node.and_then(|n| n.target.as_ref());
             let reply = node.and_then(|n| n.reply.as_ref());
+            let findings = reply
+                .filter(|r| r.status == "done")
+                .map(|r| crate::engine::parse_review(&r.text))
+                .unwrap_or_default();
             RunViewNode {
                 node_id: summary.node_id.clone(),
                 stage: depths
@@ -303,6 +313,10 @@ pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
                 tokens_out: reply.and_then(|r| r.tokens_out),
                 tokens_cache: reply.and_then(|r| r.tokens_cache_read),
                 ms: reply.and_then(|r| r.ms),
+                independence: reply.and_then(|r| r.independence.clone()).unwrap_or_default(),
+                review_structured: findings.structured,
+                review_errors: findings.errors.clone(),
+                review_suggestions: findings.suggestions.clone(),
                 fallback_from: reply
                     .and_then(|r| r.fallback_from.clone())
                     .unwrap_or_default(),

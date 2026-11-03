@@ -241,6 +241,9 @@ pub struct DispatchNodeResult {
     /// 主失败但跳过备选的原因（空串 = 未发生跳过）；可写节点为「可写节点」。
     #[serde(default)]
     pub fallback_skipped: String,
+    /// 实际跑这一路的厂商（切了备选时是备选的厂商）；独立性标注用。
+    #[serde(default)]
+    pub vendor: String,
     /// 额度用尽时能从通道响应解析出的恢复时间（ISO 8601）。
     #[serde(default)]
     pub quota_resets_at: Option<String>,
@@ -360,11 +363,15 @@ struct DispatchRecord {
     merge_result: String,
 }
 
+/// 记录格式：/2 起记录放在 `.aicross/runs/<派发>/`；读旧的 /1 照常。
+pub(crate) const RECORD_SCHEMA: &str = "aicross-dispatch/2";
+
 fn excluded_snapshot_directory(name: &str) -> bool {
     matches!(
         name,
         ".git"
             | ".dispatch"
+            | ".aicross"
             | ".aicross-runtime"
             | ".pytest_cache"
             | "__pycache__"
@@ -490,7 +497,7 @@ fn parse_record_file(path: &Path) -> Result<(DispatchRecord, String, Option<Disp
     let (yaml, body) = rest.split_once("\n---\n").ok_or_else(|| "派发记录 frontmatter 未结束".to_string())?;
     let record: DispatchRecord = serde_yaml::from_str(yaml)
         .map_err(|error| format!("解析派发记录 frontmatter 失败：{error}"))?;
-    if record.schema != "aicross-dispatch/1" {
+    if record.schema != "aicross-dispatch/1" && record.schema != RECORD_SCHEMA {
         return Err(format!("不支持的派发记录 schema：{}", record.schema));
     }
     let section = |heading: &str| {
@@ -637,11 +644,13 @@ pub(crate) fn dispatch_stage_core(
     let _classification_cleanup = ClassificationRunCleanup::new(&request.run_id, &run_root);
     fs::create_dir_all(&run_root).map_err(|error| format!("创建运行目录失败：{error}"))?;
     let log_dir = if request.settings.write_project_dispatch {
-        project.join(".dispatch")
+        // 迁移旧 .dispatch 失败不阻断派发：原样留着，下次派发再迁。
+        crate::project_dir::run_dir(&project, &request.run_id)?.0
     } else {
-        run_root.join("dispatch")
+        let dir = run_root.join("dispatch");
+        ensure_log_dir(&dir)?;
+        dir
     };
-    ensure_log_dir(&log_dir)?;
 
     let mut status: HashMap<String, String> = request
         .nodes
@@ -1159,7 +1168,7 @@ where
 fn persist_before_snapshot_with_note(
     project: &Path,
     log_dir: &Path,
-    run_id: &str,
+    _run_id: &str,
     node_id: &str,
     before: &DirectorySnapshot,
     after: &DirectorySnapshot,
@@ -1168,9 +1177,8 @@ fn persist_before_snapshot_with_note(
     if changed.is_empty() {
         return Ok(PersistedBeforeSnapshot { path: String::new(), note: String::new() });
     }
-    let project_dispatch = project.join(".dispatch");
-    let root = if log_dir == project_dispatch {
-        log_dir.join(safe_name(run_id)).join(format!("{}.before", safe_name(node_id)))
+    let root = if log_dir.starts_with(crate::project_dir::runs_dir(project)) {
+        crate::project_dir::snapshot_dir(log_dir, &safe_name(node_id), "before")
     } else {
         log_dir.join(format!("{}.before", safe_name(node_id)))
     };
@@ -1261,10 +1269,8 @@ fn persist_inflight_snapshot(
     node_id: &str,
     snapshot: &DirectorySnapshot,
 ) -> Result<PathBuf, String> {
-    let root = project
-        .join(".dispatch")
-        .join(safe_name(run_id))
-        .join(format!("{}.inflight", safe_name(node_id)));
+    let run_dir = crate::project_dir::run_dir(project, run_id)?.0;
+    let root = crate::project_dir::snapshot_dir(&run_dir, &safe_name(node_id), "inflight");
     if root.exists() && !root.is_dir() {
         return Err("旧执行中快照不是目录".into());
     }
@@ -1322,8 +1328,10 @@ fn persist_inflight_snapshot(
 /// 同一套规则找它；只开放调用，逻辑不改。
 pub(crate) fn latest_before_dir(project: &Path, node_id: &str) -> Option<PathBuf> {
     let mut matched: Option<(i64, bool, PathBuf, PathBuf)> = None;
-    let mut paths = fs::read_dir(project.join(".dispatch")).into_iter().flatten().flatten()
-        .map(|entry| entry.path()).collect::<Vec<_>>();
+    let mut paths = crate::project_dir::all_run_dirs(project)
+        .into_iter()
+        .flat_map(|dir| fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path()))
+        .collect::<Vec<_>>();
     if let Ok(root) = dispatch_data_root() {
         if let Ok(runs) = fs::read_dir(root.join("runs")) {
             for run in runs.flatten() {
@@ -1352,7 +1360,7 @@ pub(crate) fn latest_before_dir(project: &Path, node_id: &str) -> Option<PathBuf
 
 /// TASK-44：开放给引擎的 `aicross recover --rollback` 调用；逻辑不改。
 pub(crate) fn rollback_node_changes_core(project: &Path, run_id: &str, node_id: &str) -> Result<RollbackSummary, String> {
-    let fallback = project.join(".dispatch").join(safe_name(run_id)).join(format!("{}.before", safe_name(node_id)));
+    let fallback = crate::project_dir::node_snapshot(project, run_id, &safe_name(node_id), "before");
     let root = latest_before_dir(project, node_id).unwrap_or(fallback);
     if !root.is_dir() {
         return Ok(RollbackSummary { note: "没有找到派发前快照（首次派发或快照已清理）；排除目录（.git/node_modules/target/dist…）与链接内的改动不在快照内".into(), ..RollbackSummary::default() });
@@ -3109,7 +3117,10 @@ fn run_one_attempt(
                 &settings.validation_command,
                 red_green_timeout,
                 &cancel_key,
-                &project.join(".dispatch").join(safe_name(run_id)).join(format!("{}.redgreen", safe_name(&node.node_id))),
+                &crate::project_dir::find_run_dir(project, run_id)
+                    .unwrap_or_else(|| run_root.join("dispatch"))
+                    .join(crate::project_dir::SNAPSHOTS_DIR)
+                    .join(format!("{}.redgreen", safe_name(&node.node_id))),
             )
         } else {
             RedGreenOutcome {
@@ -3149,7 +3160,7 @@ fn run_one_attempt(
         String::new()
     };
     let record = DispatchRecord {
-        schema: "aicross-dispatch/1".into(),
+        schema: RECORD_SCHEMA.into(),
         run_id: run_id.into(),
         stage,
         node: node.node_id.clone(),
@@ -3238,6 +3249,7 @@ fn run_one_attempt(
         fallback_from: String::new(),
         fallback_to: String::new(),
         fallback_skipped,
+        vendor: node.vendor.clone(),
         quota_resets_at,
         resources_changed,
     };
@@ -3622,7 +3634,7 @@ struct ProjectPathList {
 fn excluded_project_copy_path(path: &str) -> bool {
     path.replace('\\', "/")
         .split('/')
-        .any(|part| matches!(part, ".dispatch" | ".git" | ".aicross-runtime"))
+        .any(|part| matches!(part, ".dispatch" | ".aicross" | ".git" | ".aicross-runtime"))
 }
 
 fn secret_project_file(path: &Path) -> bool {
@@ -4545,6 +4557,16 @@ pub(crate) fn node_is_cancelled(run_id: &str, node_id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// 项目里本次派发的记录目录（`.aicross/runs/<派发>/`）。
+    fn test_log_dir(project: &Path, run_id: &str) -> PathBuf {
+        crate::project_dir::run_dir(project, run_id).unwrap().0
+    }
+
+    /// 本次派发里某节点的快照目录。
+    fn test_snapshot(project: &Path, run_id: &str, node: &str, kind: &str) -> PathBuf {
+        crate::project_dir::snapshot_dir(&test_log_dir(project, run_id), node, kind)
+    }
+
     use super::*;
 
     fn git_available() -> bool {
@@ -5886,7 +5908,7 @@ mod tests {
         fs::remove_file(root.join("deleted.txt")).unwrap();
         fs::write(root.join("created.txt"), "remove me").unwrap();
         let after = snapshot_directory(&root).unwrap();
-        persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &before, &after).unwrap();
+        persist_before_snapshot(&root, &test_log_dir(&root, "run"), "run", "node", &before, &after).unwrap();
         let summary = rollback_node_changes_core(&root, "run", "node").unwrap();
         assert_eq!(fs::read_to_string(root.join("changed.txt")).unwrap(), "before");
         assert_eq!(fs::read_to_string(root.join("deleted.txt")).unwrap(), "restore me");
@@ -5900,29 +5922,29 @@ mod tests {
     #[test]
     fn task07_before_snapshot_write_failure_restores_previous_directory() {
         let root = crate::paths::test_temp_dir().join(format!("aicross-task07-snapshot-restore-{}", Uuid::new_v4()));
-        let old = root.join(".dispatch/run/node.before");
+        let old = test_snapshot(&root, "run", "node", "before");
         fs::create_dir_all(&old).unwrap();
         fs::write(old.join("kept.txt"), "old snapshot").unwrap();
         let before = HashMap::from([("../unsafe".into(), SnapshotFile { bytes: Some(b"old".to_vec()), ..SnapshotFile::default() })]);
         let after = HashMap::from([("../unsafe".into(), SnapshotFile { bytes: Some(b"new".to_vec()), ..SnapshotFile::default() })]);
-        assert!(persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &before, &after).is_err());
+        assert!(persist_before_snapshot(&root, &test_log_dir(&root, "run"), "run", "node", &before, &after).is_err());
         assert_eq!(fs::read_to_string(old.join("kept.txt")).unwrap(), "old snapshot");
-        assert!(!root.join(".dispatch/run/node.before.prev").exists());
+        assert!(!test_snapshot(&root, "run", "node", "before.prev").exists());
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn task07_before_snapshot_success_replaces_old_and_removes_prev() {
         let root = crate::paths::test_temp_dir().join(format!("aicross-task07-snapshot-commit-{}", Uuid::new_v4()));
-        let old = root.join(".dispatch/run/node.before");
+        let old = test_snapshot(&root, "run", "node", "before");
         fs::create_dir_all(&old).unwrap();
         fs::write(old.join("stale.txt"), "stale").unwrap();
         let before = HashMap::from([("changed.txt".into(), SnapshotFile { bytes: Some(b"old".to_vec()), ..SnapshotFile::default() })]);
         let after = HashMap::from([("changed.txt".into(), SnapshotFile { bytes: Some(b"new".to_vec()), ..SnapshotFile::default() })]);
-        persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &before, &after).unwrap();
+        persist_before_snapshot(&root, &test_log_dir(&root, "run"), "run", "node", &before, &after).unwrap();
         assert_eq!(fs::read_to_string(old.join("changed.txt")).unwrap(), "old");
         assert!(!old.join("stale.txt").exists());
-        assert!(!root.join(".dispatch/run/node.before.prev").exists());
+        assert!(!test_snapshot(&root, "run", "node", "before.prev").exists());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -5940,11 +5962,11 @@ mod tests {
     #[test]
     fn task07_zero_change_redispatch_preserves_nonempty_snapshot() {
         let root = crate::paths::test_temp_dir().join(format!("aicross-task07-zero-change-{}", Uuid::new_v4()));
-        let old = root.join(".dispatch/run/node.before");
+        let old = test_snapshot(&root, "run", "node", "before");
         fs::create_dir_all(&old).unwrap();
         fs::write(old.join("kept.txt"), "old snapshot").unwrap();
         let same = HashMap::from([("same.txt".into(), SnapshotFile { bytes: Some(b"same".to_vec()), ..SnapshotFile::default() })]);
-        assert_eq!(persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &same, &same).unwrap(), "");
+        assert_eq!(persist_before_snapshot(&root, &test_log_dir(&root, "run"), "run", "node", &same, &same).unwrap(), "");
         assert_eq!(fs::read_to_string(old.join("kept.txt")).unwrap(), "old snapshot");
         let _ = fs::remove_dir_all(root);
     }
@@ -5952,14 +5974,14 @@ mod tests {
     #[test]
     fn r1_before_root_file_error_preserves_existing_prev_directory() {
         let root = crate::paths::test_temp_dir().join(format!("aicross-r1-before-file-{}", Uuid::new_v4()));
-        let before_root = root.join(".dispatch/run/node.before");
-        let previous = root.join(".dispatch/run/node.before.prev");
+        let before_root = test_snapshot(&root, "run", "node", "before");
+        let previous = test_snapshot(&root, "run", "node", "before.prev");
         fs::create_dir_all(&previous).unwrap();
         fs::write(previous.join("kept.txt"), "kept").unwrap();
         fs::write(&before_root, "conflict").unwrap();
         let before = HashMap::from([("a.txt".into(), SnapshotFile { bytes: Some(b"old".to_vec()), ..SnapshotFile::default() })]);
         let after = HashMap::from([("a.txt".into(), SnapshotFile { bytes: Some(b"new".to_vec()), ..SnapshotFile::default() })]);
-        assert!(persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &before, &after).is_err());
+        assert!(persist_before_snapshot(&root, &test_log_dir(&root, "run"), "run", "node", &before, &after).is_err());
         assert_eq!(fs::read_to_string(previous.join("kept.txt")).unwrap(), "kept");
         let _ = fs::remove_dir_all(root);
     }
@@ -5977,7 +5999,6 @@ mod tests {
         if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
         let root = crate::paths::test_temp_dir().join(format!("aicross-r1-zero-e2e-{}", Uuid::new_v4()));
         let project = root.join("project");
-        let log_dir = project.join(".dispatch");
         fs::create_dir_all(&project).unwrap();
         fs::write(project.join("a.txt"), "old").unwrap();
         let stub = root.join("stub.py");
@@ -5986,11 +6007,12 @@ mod tests {
         request.agent = "cc-switch".into(); request.provider = "stub".into(); request.model = "stub".into();
         request.role = "执行".into(); request.visibility = "共享".into(); request.write = "单写者".into();
         let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..DispatchSettings::default() };
-        let first = run_one("run-a", &project, &root.join("runs"), &log_dir, &settings, request.clone());
+        let first = run_one("run-a", &project, &root.join("runs"), &test_log_dir(&project, "run-a"), &settings, request.clone());
         assert_eq!(first.status, "ok", "{}", first.error);
-        assert!(first.frontmatter.contains("before_dir: .dispatch/run-a/node-1.before"));
+        assert!(first.frontmatter.contains("before_dir: .aicross/runs/"), "{}", first.frontmatter);
+        assert!(first.frontmatter.contains("-runa/.snapshots/node-1.before"), "{}", first.frontmatter);
         fs::write(&stub, "print('unchanged')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
-        let second = run_one("run-b", &project, &root.join("runs"), &log_dir, &settings, request);
+        let second = run_one("run-b", &project, &root.join("runs"), &test_log_dir(&project, "run-b"), &settings, request);
         assert_eq!(second.status, "ok", "{}", second.error);
         assert!(second.frontmatter.contains("before_dir: ''"));
         fs::write(project.join("a.txt"), "dirty").unwrap();
@@ -6031,7 +6053,7 @@ mod tests {
         fs::create_dir_all(&log_dir).unwrap();
         fs::write(project.join("a.txt"), "before").unwrap();
         let marker = root.join("inflight_seen.txt");
-        let inflight = project.join(".dispatch").join("run").join("node-1.inflight");
+        let inflight = test_snapshot(&project, "run", "node-1", "inflight");
         let stub = root.join("cc_switch_stub.py");
         fs::write(
             &stub,
@@ -6107,10 +6129,8 @@ mod tests {
         }
         let root = crate::paths::test_temp_dir().join(format!("aicross-task06-run-one-{}", Uuid::new_v4()));
         let project = root.join("project");
-        let log_dir = project.join(".dispatch");
         let run_root = root.join("runs");
         fs::create_dir_all(&project).unwrap();
-        fs::create_dir_all(&log_dir).unwrap();
         fs::write(project.join("tracked.txt"), "before").unwrap();
         let stub = root.join("cc_switch_stub.py");
         fs::write(&stub, "import pathlib\np=pathlib.Path.cwd()\n(p/'tracked.txt').write_text('first', encoding='utf-8')\n(p/'created.txt').write_text('new', encoding='utf-8')\nprint('first reply')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
@@ -6123,13 +6143,13 @@ mod tests {
         request.write = "单写者".into();
         let settings = DispatchSettings { cc_switch_path: stub.to_string_lossy().into_owned(), ..DispatchSettings::default() };
         request.write = "worktree".into();
-        let first = run_one("run-a", &project, &run_root, &log_dir, &settings, request.clone());
+        let first = run_one("run-a", &project, &run_root, &test_log_dir(&project, "run-a"), &settings, request.clone());
         assert_eq!(first.status, "ok", "{}", first.error);
-        assert!(first.frontmatter.contains("before_dir: .dispatch/run-a/node-1.before"));
+        assert!(first.frontmatter.contains("-runa/.snapshots/node-1.before"), "{}", first.frontmatter);
         fs::write(project.join("tracked.txt"), "half-finished").unwrap();
         fs::write(&stub, "import pathlib\np=pathlib.Path.cwd()\nassert (p/'tracked.txt').read_text(encoding='utf-8') == 'before'\nassert not (p/'created.txt').exists()\nprint('rollback observed')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
         request.rollback_before = true;
-        let second = run_one("run-b", &project, &run_root, &log_dir, &settings, request);
+        let second = run_one("run-b", &project, &run_root, &test_log_dir(&project, "run-b"), &settings, request);
         assert_eq!(second.status, "ok", "{}", second.error);
         assert!(second.runner_note.contains("已回滚上次改动 2 文件"));
         assert_eq!(fs::read_to_string(project.join("tracked.txt")).unwrap(), "before");
@@ -6143,7 +6163,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let before = HashMap::from([("large.bin".into(), SnapshotFile { bytes: None, size: SNAPSHOT_FILE_LIMIT + 1, modified_ns: 1, ..SnapshotFile::default() })]);
         let after = HashMap::from([("large.bin".into(), SnapshotFile { bytes: None, size: SNAPSHOT_FILE_LIMIT + 1, modified_ns: 2, ..SnapshotFile::default() })]);
-        persist_before_snapshot(&root, &root.join(".dispatch"), "run", "node", &before, &after).unwrap();
+        persist_before_snapshot(&root, &test_log_dir(&root, "run"), "run", "node", &before, &after).unwrap();
         let summary = rollback_node_changes_core(&root, "run", "node").unwrap();
         assert_eq!(summary.skipped, ["large.bin"]);
         let _ = fs::remove_dir_all(root);
@@ -6249,7 +6269,7 @@ mod tests {
     #[test]
     fn task06_rollback_created_root_path_does_not_escape_project() {
         let root = crate::paths::test_temp_dir().join(format!("aicross-task06-rooted-{}", Uuid::new_v4()));
-        let before = root.join(".dispatch/run/node.before");
+        let before = test_snapshot(&root, "run", "node", "before");
         fs::create_dir_all(&before).unwrap();
         fs::write(before.join(".created"), "/x").unwrap();
         fs::write(before.join(".skipped"), "").unwrap();
@@ -6328,8 +6348,8 @@ mod tests {
     fn task06_early_failure_does_not_replace_previous_before_snapshot() {
         if channels::resolve_binary("python", None).is_err() { eprintln!("跳过：PATH 中没有 python"); return; }
         let root = crate::paths::test_temp_dir().join(format!("aicross-task06-preserve-{}", Uuid::new_v4()));
-        let project = root.join("project"); let log_dir = project.join(".dispatch");
-        fs::create_dir_all(&log_dir).unwrap(); fs::write(project.join("a.txt"), "old").unwrap();
+        let project = root.join("project"); fs::create_dir_all(&project).unwrap();
+        let log_dir = test_log_dir(&project, "run"); fs::write(project.join("a.txt"), "old").unwrap();
         let stub = root.join("stub.py");
         fs::write(&stub, "import pathlib\n(pathlib.Path.cwd()/'a.txt').write_text('new')\nprint('ok')\nprint('input=1 cache_read=0 output=1')\n").unwrap();
         let mut request = node(Vec::new());
@@ -6348,7 +6368,7 @@ mod tests {
     #[test]
     fn task06_rollback_reads_before_directory_beyond_snapshot_total_limit() {
         let root = crate::paths::test_temp_dir().join(format!("aicross-task06-total-{}", Uuid::new_v4()));
-        let before = root.join(".dispatch/run/node.before"); fs::create_dir_all(&before).unwrap();
+        let before = test_snapshot(&root, "run", "node", "before"); fs::create_dir_all(&before).unwrap();
         let file = fs::File::create(before.join("large.bin")).unwrap(); file.set_len(ROLLBACK_TEST_TOTAL_LIMIT + 1).unwrap(); drop(file);
         fs::write(before.join(".created"), "").unwrap(); fs::write(before.join(".skipped"), "").unwrap();
         assert!(snapshot_directory_with_limits(&before, ROLLBACK_TEST_TOTAL_LIMIT * 2, ROLLBACK_TEST_TOTAL_LIMIT).is_err());
@@ -6363,7 +6383,7 @@ mod tests {
     fn task06_rollback_replaces_target_symlink_without_following_it() {
         use std::os::windows::fs::symlink_file;
         let root = crate::paths::test_temp_dir().join(format!("aicross-task06-link-{}", Uuid::new_v4()));
-        let outside = root.with_extension("outside"); let before = root.join(".dispatch/run/node.before");
+        let outside = root.with_extension("outside"); let before = test_snapshot(&root, "run", "node", "before");
         fs::create_dir_all(&before).unwrap(); fs::write(before.join("a.txt"), "inside").unwrap();
         fs::write(before.join(".created"), "").unwrap(); fs::write(before.join(".skipped"), "").unwrap(); fs::write(&outside, "outside").unwrap();
         if let Err(error) = symlink_file(&outside, root.join("a.txt")) { eprintln!("跳过：无法创建符号链接：{error}"); let _ = fs::remove_dir_all(root); let _ = fs::remove_file(outside); return; }

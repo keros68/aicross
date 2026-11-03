@@ -281,7 +281,7 @@ python <本skill目录>/references/inventory.py set --note "<一句话备注>"
 盘点报告后问用户一句："要不要跑一次演示派发，直观看看交叉验证长什么样？（约一次冷调用 × 2 的成本，全程只读、不碰你的项目文件）"。同意后执行：
 
 1. **备材料**：把下面这段内置演示代码存成 `${AICROSS_HOME:-~/.aicross}/scratch/demo.py`（**不读用户项目文件**——演示的安全边界就是它自己）。
-2. **派发**：`python <本skill目录>/references/dispatch.py review --host <宿主名> --author none --n 2 --tier low --kind code --file <demo.py> --project <scratch 目录>`，先不带 `--go` 把方案给用户看，同意后加 `--go`。它选两家**不同厂商**的最便宜档并行盲审，原始输出留痕在 `<scratch 目录>/.dispatch/`。只凑得出一家时脚本会说明，这时**明说这不是交叉验证**，只当第二意见演示。
+2. **派发**：`python <本skill目录>/references/dispatch.py review --host <宿主名> --author none --n 2 --tier low --kind code --file <demo.py> --project <scratch 目录>`，先不带 `--go` 把方案给用户看，同意后加 `--go`。它选两家**不同厂商**的最便宜档并行盲审，原始输出记录在 `<scratch 目录>/.aicross/runs/`。只凑得出一家时脚本会说明，这时**明说这不是交叉验证**，只当第二意见演示。
 3. **核对与汇总**：对照下方「已知缺陷答案」（⚠️ 答案绝不进派发材料），给用户三样东西：**共识**（两家都抓到的）、**分歧**（只有一家抓到的/意见相反的）、**账单**（每路 token 与耗时）。两家高度一致也是合法结果，如实展示即可。演示完删掉 `demo.py`。
 
 演示代码（含植入缺陷，自包含）：
