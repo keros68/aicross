@@ -1,6 +1,5 @@
-// 自定义模式编辑器的纯函数（TASK-55）：初值（新建 / 复制为新模式 / 编辑）、与引擎一致
+// 自定义模式编辑器的纯函数：初值（新建 / 复制为新模式 / 编辑）、与引擎一致
 // 的校验、写权限显示名与引擎值的映射、提交给 preset_save 的对象、删除影响计数。
-// 契约见 tasks/TASK-55-custom-modes.md 第 2 节。
 
 import type { ModeEntry, PresetPayload, SlashCommand } from '../tauri';
 

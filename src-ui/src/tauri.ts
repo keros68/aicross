@@ -40,9 +40,7 @@ export const commands = {
   // TASK-40「派发记录」：最近 50 条，按更新时间倒序。
   listRuns: () => invoke<RunListItem[]>('list_runs'),
 
-  // TASK-47 资源页与模式页（契约见 tasks/TASK-46-modes-config.md 第 4 节）；
-  // TASK-51 起配置按主 agent 分开，读写配置的命令都带 host（契约见
-  // tasks/TASK-50-host-skill-recommend.md 第 5 节）。
+  // 资源页与模式页；配置按主 agent 分开，读写配置的命令都带 host。
   // 返回值与对应命令行的 stdout JSON 同一结构；失败时 reject 的是 stderr 那行说明。
   /** host 为 null 时由引擎按 --host 缺省规则取；没有任何主 agent 配置时返回资源与
    *  空配置（资源页在还没有主 agent 时用）。 */
@@ -94,13 +92,13 @@ export const commands = {
   modelTrack: () => invoke<ModelTrack>('model_track'),
   modelNoteSet: (model: string, tags: string[], note: string) =>
     invoke<ModelNoteValue>('model_note_set', { model, tags, note }),
-  // TASK-53 斜杠命令（契约见 tasks/TASK-53-slash-commands.md 第 3 节）。
+  // 斜杠命令。
   slashList: (host: string) => invoke<SlashList>('slash_list', { host }),
   /** 同名已存在则更新。 */
   slashAdd: (host: string, name: string, mode: string, note: string | null) =>
     invoke<SlashList>('slash_add', { host, name, mode, note }),
   slashRemove: (host: string, name: string) => invoke<SlashList>('slash_remove', { host, name }),
-  // TASK-55 自定义模式（契约见 tasks/TASK-55-custom-modes.md 第 2 节）。
+  // 自定义模式。
   /** 没有 id 时新建，有 id 时更新同 id 的自定义模式；host 为当前主 agent。 */
   presetSave: (host: string, preset: PresetPayload) => invoke<PresetSaveResult>('preset_save', { host, preset }),
   /** 删除自定义模式，并清理各主 agent 下的人选、默认模式与斜杠命令；不分主 agent，不带 host。 */

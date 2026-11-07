@@ -1,6 +1,5 @@
-// 新用户走查修正的展示纯函数（TASK-58）：未探测状态、探测按钮文字、全部测试的目标
+// 新用户走查修正的展示纯函数：未探测状态、探测按钮文字、全部测试的目标
 // 与文字、推荐后的未验证提示、评审视角、模型下拉的状态文字、已存在的命令文件。
-// 引擎字段见 tasks/TASK-58-newuser-ui.md「引擎契约」。
 
 import type { ResourceAgentEntry, ResourceModelEntry, SlashModeEntry } from '../tauri';
 import { canSmoke } from './config-view';

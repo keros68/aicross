@@ -1,6 +1,5 @@
-// skill 页「斜杠命令」卡片的纯函数（TASK-53、TASK-54）：名称校验、触发写法预览、
-// 状态的显示、按模式列出与「其它」的划分。契约见 tasks/TASK-53-slash-commands.md
-// 第 1、3 节与 tasks/TASK-54-slash-per-mode.md 第 2、3 节。
+// skill 页「斜杠命令」卡片的纯函数：名称校验、触发写法预览、
+// 状态的显示、按模式列出与「其它」的划分。
 
 import type { SlashCommand, SlashList, SlashModeEntry } from '../tauri';
 

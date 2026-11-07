@@ -1,5 +1,4 @@
-// 评审模式位置视角的纯函数（TASK-60）：下拉选项与自定义视角的校验。契约见
-// tasks/TASK-60-focus-ui.md（config_set_focus，空串恢复默认）。
+// 评审模式位置视角的纯函数：下拉选项与自定义视角的校验（config_set_focus，空串恢复默认）。
 
 /** 下拉里「自定义…」的值（不会和真实视角重名）。 */
 export const FOCUS_CUSTOM = '\u0000custom';

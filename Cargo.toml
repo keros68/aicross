@@ -29,8 +29,7 @@ serde_json = "1"
 # （修正轮验收查找、遗留节点复用、latest_leaf 平局都按插入序）。
 indexmap = { version = "2", features = ["serde"] }
 serde_yaml = "0.9"
-# TASK-50：skill 内置包（skill-bundle/ai-cross）编进可执行文件；体积影响见
-# tasks/REPORT-50.md。
+# skill 内置包（skill-bundle/ai-cross）编进可执行文件。
 include_dir = "0.7"
 # 读 kimi 的模型清单（~/.kimi-code/config.toml 的 [models]）
 toml = "0.9"
