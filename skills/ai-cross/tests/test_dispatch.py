@@ -264,6 +264,36 @@ class TestChannels(DBase):
         self.assertEqual((r["status"], r["answer"]), ("ok", "收到"))
         self.assertEqual(self.calls[0][0][2], "短材料")
 
+    def test_kimi_runs_in_one_fixed_emptied_dir(self):
+        kimi = inventory.describe({"id": "kimi.moonshot", "channel": "kimi", "kind": "cli", "vendor": "Moonshot",
+                                   "billing": "subscription", "tiers": {"high": "kimi-code/k3"}}, "high")
+        fixed = inventory.data_root() / "kimi-oneshot"
+        fixed.mkdir(parents=True)
+        (fixed / "上一路留下的.md").write_text("我方结论", encoding="utf-8")
+        seen = []
+        out = jl({"role": "assistant", "content": "收到"})
+
+        def fake_run(cmd, cwd, timeout, stdin_text=None):
+            seen.append((cwd, sorted(os.listdir(cwd))))
+            Path(cwd, "kimi写的.txt").write_text("x", encoding="utf-8")
+            return 0, out, "", None
+
+        with mock.patch.object(dispatch, "run_process", fake_run):
+            for _ in range(2):
+                self.assertEqual(dispatch.call(kimi, "短材料", str(self.home), 5, "high", "p")["status"], "ok")
+        self.assertEqual(seen, [(str(fixed), [])] * 2)   # 两次同一目录，每次进去都是空的
+        self.assertEqual(os.listdir(fixed), [])
+
+    def test_kimi_waits_for_lock_then_gives_up(self):
+        kimi = inventory.describe({"id": "kimi.moonshot", "channel": "kimi", "kind": "cli", "vendor": "Moonshot",
+                                   "billing": "subscription", "tiers": {"high": "kimi-code/k3"}}, "high")
+        with dispatch.kimi_oneshot_dir(1) as (_, held_error):
+            self.assertIsNone(held_error)
+            with self.fake({}):
+                r = dispatch.call(kimi, "短材料", str(self.home), 1, "high", "p")
+        self.assertEqual((r["status"], self.calls), ("error", []))
+        self.assertIn("另一路 kimi", r["error"])
+
     def test_manual_entry_is_skipped(self):
         manual = {"id": "manual-x.mistral", "channel": "manual:x", "kind": "manual", "vendor": "Mistral",
                   "billing": "per-call", "tier": "low", "model": "mistral-small"}

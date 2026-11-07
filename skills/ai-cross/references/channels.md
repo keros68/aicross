@@ -29,7 +29,7 @@ python <本skill目录>/references/dispatch.py smoke --all | --entry <条目>
 | codex | `codex exec -m M -c model_reasoning_effort=… -s read-only --skip-git-repo-check --json --ephemeral -`，材料走 stdin | 回答取全部非空 `agent_message`（正文常在倒数第二条） |
 | pi:<provider> | `pi --provider P --model M -p --no-tools --no-extensions --mode json --no-session --no-context-files --thinking …`，材料走 stdin | 只认 `text` 块；`responseModel` 与请求不符判 `identity_mismatch` |
 | agy | `--input-format stream-json --output-format stream-json`，材料是 stdin 的一行 NDJSON | `response` 为空判失败 |
-| kimi | `kimi -p <材料> -m M --output-format stream-json` | 材料超过约 30KB 这一路跳过（没有 stdin 入口） |
+| kimi | `kimi -p <材料> -m M --output-format stream-json`，cwd 固定为 `<AICROSS_HOME>/kimi-oneshot` | 材料超过约 30KB 这一路跳过（没有 stdin 入口）；同一时间只跑一路 |
 | cc-switch:<名字> | `cc_switch.py exec --provider … --model M --task-file … --tools ""` | key 由桥注入；没有 `--restricted`，隔离记为部分 |
 
 - 每路各在 `${AICROSS_HOME:-~/.aicross}/scratch/<时间>-blind/<条目>/` 这个空目录里跑，带 `AI_CROSS_PEER=1`，跑完目录即删。
@@ -58,7 +58,7 @@ cd - && rm -rf "$d"
 
 **一次性文件统一放 `scratch/`**：派发用的任务文本、验收条件、`blind.txt`、盲验空目录，一律建在 `${AICROSS_HOME:-~/.aicross}/scratch/` 下，按「日期时间-用途」命名，结果读回后删除；不往系统临时目录、盘符根目录或项目目录里散放。`AICROSS_HOME` 与 aicross 引擎共用，未设时落在 `~/.aicross`。
 
-**一次性派发不留会话**：各家 CLI 按工作目录保存会话，每个空目录都会在它们的历史里变成一个新项目。不续接的派发一律加关会话参数：claude `--no-session-persistence`，codex `--ephemeral`，pi `--no-session`。kimi 没有这个参数，它的会话会留在历史里。要续接的执行者不加。
+**一次性派发不留会话**：各家 CLI 按工作目录保存会话，每个空目录都会在它们的历史里变成一个新项目。不续接的派发一律加关会话参数：claude `--no-session-persistence`，codex `--ephemeral`，pi `--no-session`。kimi 没有这个参数，脚本让所有 kimi 派发都在固定目录 `${AICROSS_HOME:-~/.aicross}/kimi-oneshot/` 里跑，它的历史里只多这一个项目：用锁文件 `kimi-oneshot.lock`（放在目录外）保证同一时间只跑一路，每路运行前后清空目录，各路看到的仍是空目录；并发的 kimi 派发因此排队，等满超时就不派。要续接的执行者不加。
 
 `cc_switch.py exec` 的 cwd 就是调用时的目录，同样先 `cd` 进空目录再调。执行者（本来就要改项目文件的活）不受此限。
 

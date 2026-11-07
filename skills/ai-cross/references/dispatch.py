@@ -253,6 +253,64 @@ def call_codex(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     return out
 
 
+class kimi_oneshot_dir:
+    """独占并清空 <AICROSS_HOME>/kimi-oneshot，退出时再清空。锁文件放在目录外，清空时不受影响。"""
+
+    def __init__(self, timeout):
+        self.timeout = timeout
+        self.root = inventory.data_root()
+        self.workdir = self.root / "kimi-oneshot"
+        self.handle = None
+
+    def _try_lock(self):
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(self):
+        if os.name == "nt":
+            import msvcrt
+            self.handle.seek(0)
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+
+    def _reset(self):
+        shutil.rmtree(self.workdir, ignore_errors=True)
+        self.workdir.mkdir(parents=True, exist_ok=True)
+
+    def __enter__(self):
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.handle = open(self.root / "kimi-oneshot.lock", "a+")
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                self._try_lock()
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    self.handle.close()
+                    self.handle = None
+                    return None, f"等了 {self.timeout} 秒，另一路 kimi 派发还没结束，这一路没派"
+                time.sleep(0.5)
+        self._reset()
+        return self.workdir, None
+
+    def __exit__(self, *exc):
+        if self.handle is None:
+            return False
+        try:
+            self._reset()
+        finally:
+            self._unlock()
+            self.handle.close()
+        return False
+
+
 def call_kimi(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     out = base_result()
     if tools:
@@ -264,7 +322,13 @@ def call_kimi(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
         out["error"] = "材料超过 kimi 命令行能收的长度（约 1 万汉字），kimi 没有 stdin 入口，这一路不派"
         return out
     cmd = [exe(pick), "-p", prompt, "-m", pick["model"], "--output-format", "stream-json"]
-    out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout)
+    # kimi 没有关会话保存的参数，按工作目录记项目：一律在同一个固定目录里跑，历史里只多一个项目。
+    # 一次只跑一路、前后清空，各路仍只看到空目录；代价是并发的 kimi 派发排队
+    with kimi_oneshot_dir(timeout) as (workdir, lock_error):
+        if lock_error:
+            out["error"] = lock_error
+            return out
+        out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, str(workdir), timeout)
     if err:
         out["error"] = err
         return out
