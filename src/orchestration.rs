@@ -1,7 +1,6 @@
 //! 第 2 期「对话图」Rust 侧：模型清单 + 预设与图的持久化命令。
 //!
-//! 契约见 tasks/TASK-02-orchestration.md A 节。字段名（snake_case）是跨期
-//! 契约，前端 graph/types.ts 与之逐字段对应，改名必须两期同步。
+//! 字段名（snake_case）是跨期契约，前端 graph/types.ts 与之逐字段对应，改名必须两期同步。
 //!
 //! 持久化位置（全部在 `~/.aicross` 下，见 paths.rs）：
 //! - `resources.json`：第 0/1 期资源接入写的模型清单，本期只读。

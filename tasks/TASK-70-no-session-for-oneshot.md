@@ -2,7 +2,7 @@
 
 ## 问题
 
-各家 CLI 按工作目录保存会话。盲审、冒烟和 skill 的 `dispatch.py` 每次都在新的空目录里跑，于是每跑一次，Claude、pi 等 CLI 的历史里就多一个项目。用户在 Coffee CLI 的会话记录里看到大量 `coderB-SDM-…`、`…-blind-…` 目录。2026-11-02 本机统计：`~/.pi/agent/sessions` 下有 315 个目录指向 `scratch`，`~/.claude/projects` 下有 19 个。
+各家 CLI 按工作目录保存会话。盲审、冒烟和 skill 的 `dispatch.py` 每次都在新的空目录里跑，于是每跑一次，Claude、pi 等 CLI 的历史里就多一个项目。会话记录里出现大量 `coderB-SDM-…`、`…-blind-…` 目录。2026-11-02 本机统计：`~/.pi/agent/sessions` 下有 315 个目录指向 `scratch`，`~/.claude/projects` 下有 19 个。
 
 ## 范围
 

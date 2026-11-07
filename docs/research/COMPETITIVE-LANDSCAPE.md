@@ -125,7 +125,7 @@ Sources: code.claude.com/docs/en/cross-session-messaging · developers.openai.co
 ## 补充（2026-08-30）：agent 资源接入怎么做
 
 调查记录 `D:\work\aicross\docs\proto
-esources-research.md`。要点：pi 0.84.2 的 `~/.pi/agent/models-store.json` 是 provider→模型两级，`pi --list-models` 可列已鉴权模型，`pi auth` 看 provider 就绪，可自动探测；coffeecli 用静态注册表 + `where/which` 探测 + T1–T3 分档 + `~/.coffee-cli/tools.json` 用户覆写，任务板条目 `{id,title,description,status}` 与资源树无关；FreeBuddy 按二进制名探测、模型是 agent 卡片下的可编辑字段；Vibe Kanban 是 executor→variant（运行预设）两级。
+esources-research.md`。要点：pi 0.84.2 的 `~/.pi/agent/models-store.json` 是 provider→模型两级，`pi --list-models` 可列已鉴权模型，`pi auth` 看 provider 就绪，可自动探测；FreeBuddy 按二进制名探测、模型是 agent 卡片下的可编辑字段；Vibe Kanban 是 executor→variant（运行预设）两级。
 
 ## 补充（2026-09-01）：NyaTerm——终端工作区里已经做完的那半个控制台
 
@@ -162,7 +162,7 @@ Codex / Claude Code 集成随「文件预览 + 双栏文件管理器」那版发
 ### 对本项目的含义
 
 1. **核心价值主张没被占**——多厂商 @ 已是大路货（08-30 节），管道层现在也有 MIT 参考实现，唯一没人做的仍是"@ 里有一种是盲的，且有章法"。
-2. **管道层自研的必要性下降**。`codex.rs` 的 app-server JSON-RPC 用法、两家的 CLI 候选路径发现与版本探测、审批事件模型、`redaction.rs` 的脱敏点，都可以直接读代码定夺，比继续拿 `claude -p` 试参数快。注意 license：NyaTerm 是 MIT，aicross 是 AGPL-3.0 fork（上游 Coffee CLI），**MIT 代码可并入 AGPL 项目**，反向不可；若逐字复用须保留 MIT 版权声明。
+2. **管道层自研的必要性下降**。`codex.rs` 的 app-server JSON-RPC 用法、两家的 CLI 候选路径发现与版本探测、审批事件模型、`redaction.rs` 的脱敏点，都可以直接读代码定夺，比继续拿 `claude -p` 试参数快。注意 license：NyaTerm 与 aicross 都是 MIT，逐字复用须保留其版权声明。
 3. **它是 aicross 的一个反面参照**：同样是审批门 + 多 provider + 外部 agent，它止步于"一个模型 + 一个终端"。这条边界正是本产品要越过的那条。
 
 Sources: github.com/nyakang/nyaterm（`src-tauri/src/core/ai/`、`src-tauri/src/config/settings/ai.rs`、`src/components/panel/ai/`、`docs-site/docs/guide/ai-assistant.md`、Releases v1.2.6 及更早 changelog）· nyaterm.app/docs
@@ -222,7 +222,7 @@ github.com/huang-sh/PiX · 无 license · Electron + Vite + TS · 2026-09-04 建
 - **不是竞品**：单 agent（pi）的会话树，一张图上只有一个模型身份在换分支；没有跨厂商、没有并排比对的判分、没有盲验概念。
 - **是中栏形态的直接参照**（已采纳，`aicross/docs/PRODUCT.md` 09-13 定案「对话即图」）：扇出比对 = 同一节点 fork N 份 + 三列并排；盲审 = 选分叉点；预设 = 在节点上盖子图。它把「对话是末端」这条 08-30 定案推翻了。
 - **两处借不动**：① PiX 是树，README 没有合并、没有多父节点；aicross 的验收要收多条分支的产物，必须扩成 DAG 加扇入节点。② PiX 的分支是同一个 pi 会话的分叉，「上下文跟随分支」是免费的；aicross 的分支是不同厂商的 CLI 进程，切分支等于把路径序列化成 prompt 喂新进程，有损（丢 thinking，见本文件 08-30 节对 pi 跨厂商迁移的论证）。
-- 无 license，只取形态不取代码，与 coffeecli / ThinkRail 同样处理。
+- 无 license，只取形态不取代码，与 ThinkRail 同样处理。
 
 Sources: github.com/huang-sh/PiX（README.md main 分支，09-13 读）· api.github.com/repos/huang-sh/PiX（license null、created 2026-09-04、pushed 2026-09-13）
 
@@ -305,7 +305,6 @@ Electron 桌面应用，Apache 2.0，2026-05-10 建仓，09-04 仍在推送，71
 ### 与 aicross 的关系
 
 - **重合**：一个桌面应用接各家已装 CLI、按任务选、compare 并排、可跨厂商配 reviewer。接入面与界面形态它已做得很宽，aicross 不在「接得多」上竞争。
-- **与 Coffee CLI 同一品类**（多 CLI 桌面工作区，tab 里跑原生 TUI）。Coffee 是 Tauri，重在终端体验（T1 气泡与权限卡、灵动岛、Gambit、11 种语言、面向非开发者）；Yoda 是 Electron，重在编排（worktree、compare、team room、工单）。aicross fork 自 Coffee，在它上面加的派发、盲审、蜂群、worktree 合并，正好落在 Yoda 已做的那一侧。
 - **不重合**：① 验证者可见性——Yoda reviewer 共享 worktree 与执行者交接消息，是带上下文的复查；aicross 默认盲验、空目录、只给原始材料。② 拓扑——Yoda 成员互相 @，conductor 转发，靠跳数上限防循环；aicross 是星形，被派方互不可见。③ 裁决——Yoda 预设循环里 implementer ↔ reviewer 自行来回直到 PASS；aicross 派发前、收结果两道人工闸门。④ 真身核对——没看到类似 `verify_model.py` 的模型身份检查，经 MaaS 跑时存在静默降级风险（未实测）。
 - **值得借的**：Skills/Hooks/Memory 透视（「agent 变笨多半出在这层」）；Agent 与客户端解耦的定义方式；compare 的平铺窗口。
 - **不借的**：32 种客户端全覆盖、工单集成、手机端——与「一个引擎一个预设地加」的范围冲突。
