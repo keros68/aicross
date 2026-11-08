@@ -55,7 +55,7 @@ class DBase(Base):
 
     def fake(self, outputs):
         """按命令里出现的关键字返回伪造输出;记录每次调用的 (cmd, cwd, stdin)。"""
-        def run_process(cmd, cwd, timeout, stdin_text=None):
+        def run_process(cmd, cwd, timeout, stdin_text=None, **kwargs):
             self.calls.append((cmd, cwd, stdin_text))
             for key, (code, out, err) in outputs.items():
                 if any(key in str(part) for part in cmd):
@@ -228,6 +228,19 @@ class TestChannels(DBase):
         self.assertEqual(r["status"], "identity_mismatch")
         self.assertEqual(self.run_one("pi-zai-coding-cn.zhipu", (0, pi_out(served="GLM-5.3"), ""))["status"], "ok")
         self.assertEqual(dispatch.norm_model("GLM-5.3-Flash[1M]"), "glm-5.3-flash")
+
+    def test_pi_truncated_output_is_not_success(self):
+        for stop in ("length", "aborted"):
+            r = self.run_one("pi-zai-coding-cn.zhipu", (0, pi_out(stop=stop), ""))
+            self.assertEqual(r["status"], "error")
+            self.assertIn(stop, r["error"])
+
+    def test_pi_unsupported_level_does_not_silently_escalate(self):
+        pick = {"channel":"pi:opencode-go", "model":"deepseek-v4-pro"}
+        with mock.patch.object(dispatch, "pi_supported_thinking", return_value=["off","high","max"]), self.fake({}):
+            r = dispatch.call_pi(pick, "input", str(self.home), 5, "mid")
+            self.assertIn("不支持 medium", r["error"])
+            self.assertFalse(self.calls)
 
     def test_cc_switch_goes_through_bridge(self):
         r = self.run_one("cc-switch-deepseek.deepseek", (0, "看起来没问题", "[usage] input=120 fresh=20 cache_create=0 cache_read=100 output=7\n"))
