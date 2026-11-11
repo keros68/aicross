@@ -60,6 +60,8 @@ cd - && rm -rf "$d"
 
 **一次性派发不留会话**：各家 CLI 按工作目录保存会话，每个空目录都会在它们的历史里变成一个新项目。不续接的派发一律加关会话参数：claude `--no-session-persistence`，codex `--ephemeral`，pi `--no-session`。kimi 没有这个参数，脚本让所有 kimi 派发都在固定目录 `${AICROSS_HOME:-~/.aicross}/kimi-oneshot/` 里跑，它的历史里只多这一个项目：用锁文件 `kimi-oneshot.lock`（放在目录外）保证同一时间只跑一路，每路运行前后清空目录，各路看到的仍是空目录；并发的 kimi 派发因此排队，等满超时就不派。要续接的执行者不加。
 
+**不留会话的派发另记用量**：关了会话保存，这些调用就不在各家 CLI 自己的日志里，本机的用量统计工具读不到。`dispatch.py` 每跑完一路，把用量追加到 `${AICROSS_HOME:-~/.aicross}/usage/<年-月>.jsonl`，一个模型一行（schema `aicross-usage/1`）：`id`、`at_ms`、`run_id`、`agent`（claude / codex / pi，cc-switch 记为 claude）、`provider`、`project`、`model`，以及互不重叠的四个分量 `input_uncached`、`cache_read`、`cache_write`、`output`。文件只含用量与归属，不含任务和回答。kimi 与 agy 的会话仍由它们自己保存，不写这份记录，免得被统计两次。手动按上面模板派发的不经过脚本，也不记。
+
 `cc_switch.py exec` 的 cwd 就是调用时的目录，同样先 `cd` 进空目录再调。执行者（本来就要改项目文件的活）不受此限。
 
 **空目录挡不住宿主级指令（2026-09-01 真机实测，claude 2.1.251）**：`claude -p` 即使 `--tools ""` 且 cwd 为空目录，仍会把用户级 `~/.claude/CLAUDE.md` 注入上下文（模型能原样复述其中的专有名词）。盲验的 claude 通道一律加 `--restricted`，实测它挡住用户级指令且鉴权不受影响；**不要**用 `CLAUDE_CONFIG_DIR=<空目录>`，它连凭据一起隔离掉（`Not logged in`，exit 0 但 `is_error=true`）。

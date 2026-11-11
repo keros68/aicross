@@ -239,6 +239,43 @@ class TestChannels(DBase):
         r = self.run_one("cc-switch-deepseek.deepseek", (8, "", "[API 错误] status=529"))
         self.assertEqual(r["status"], "error")
 
+    def usage_rows(self):
+        return [json.loads(line) for path in sorted((self.home / "data" / "usage").glob("*.jsonl"))
+                for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_unsaved_sessions_leave_a_usage_record(self):
+        self.run_one("codex.openai", (0, CODEX_OUT, ""))
+        self.run_one("claude.anthropic", (0, CLAUDE_OUT, ""))
+        per_model = json.dumps({"is_error": False, "result": "没有发现问题", "usage": {"input_tokens": 9},
+                                "modelUsage": {"claude-haiku-5-5": {"inputTokens": 2, "outputTokens": 4,
+                                                                    "cacheReadInputTokens": 7,
+                                                                    "cacheCreationInputTokens": 25833}}})
+        self.run_one("claude.anthropic", (0, per_model, ""))
+        self.run_one("pi-zai-coding-cn.zhipu", (0, pi_out(), ""))
+        self.run_one("cc-switch-deepseek.deepseek",
+                     (0, "看起来没问题", "[usage] input=120 fresh=20 cache_create=0 cache_read=100 output=7\n"))
+        rows = self.usage_rows()
+        self.assertEqual([(r["agent"], r["provider"]) for r in rows],
+                         [("codex", ""), ("claude", ""), ("claude", ""), ("pi", "zai-coding-cn"), ("claude", "DeepSeek")])
+        parts = [tuple(r[k] for k in dispatch.USAGE_KEYS) for r in rows]
+        self.assertEqual(parts, [(19838, 57600, 0, 35), (10, 4286, 2285, 119), (2, 7, 25833, 4),
+                                 (508, 3, 0, 9), (20, 100, 0, 7)])
+        self.assertEqual(rows[2]["model"], "claude-haiku-5-5")      # 按实际应答的模型记
+        self.assertTrue(all(r["schema"] == "aicross-usage/1" and len(r["id"]) == 32 for r in rows))
+        self.assertEqual(len({r["id"] for r in rows}), len(rows))
+        self.assertFalse(any("answer" in r or "prompt" in r for r in rows))
+
+    def test_saved_sessions_and_empty_calls_leave_no_usage_record(self):
+        self.run_one("codex.openai", (1, "", "boom"))               # 没有用量的失败调用
+        agy = inventory.describe({"id": "agy.google", "channel": "agy", "kind": "cli", "vendor": "Google",
+                                  "billing": "subscription", "tiers": {"high": "gemini-3.8-flash-high"}}, "high")
+        done = jl({"event": "result", "result": {"status": "SUCCESS", "response": "有除零风险",
+                                                 "usage": {"input_tokens": 50, "output_tokens": 5}}})
+        with self.fake({"": (0, done, "")}):                        # agy 的会话由它自己保存
+            r = dispatch.call(agy, "材料", str(self.home), 5, "high", str(self.home / "p.txt"))
+        self.assertEqual((r["status"], r["tokens_in"]), ("ok", 50))
+        self.assertEqual(self.usage_rows(), [])
+
     def test_agy_empty_response_is_failure(self):
         agy = inventory.describe({"id": "agy.google", "channel": "agy", "kind": "cli", "vendor": "Google",
                                   "billing": "subscription", "tiers": {"high": "gemini-3.8-flash-high"}}, "high")

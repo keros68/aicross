@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -146,7 +147,13 @@ def build_prompt(kind, files, text_file, base=None):
 
 def base_result():
     return {"status": "error", "answer": "", "tokens_in": 0, "tokens_out": 0, "cache_read": 0,
-            "identity": "", "exit_code": None, "error": "", "raw": "", "stderr": "", "thinking": None}
+            "identity": "", "exit_code": None, "error": "", "raw": "", "stderr": "", "thinking": None, "usage": []}
+
+
+def usage_part(model, input_uncached, cache_read, cache_write, output):
+    """一个模型在一次派发里的用量，四个分量互不重叠。"""
+    return {"model": model, "input_uncached": max(0, int(input_uncached or 0)), "cache_read": int(cache_read or 0),
+            "cache_write": int(cache_write or 0), "output": int(output or 0)}
 
 
 def run_process(cmd, cwd, timeout, stdin_text=None):
@@ -198,6 +205,13 @@ def call_claude(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     out["cache_read"] = usage.get("cache_read_input_tokens", 0)
     out["tokens_in"] = usage.get("input_tokens", 0) + usage.get("cache_creation_input_tokens", 0) + out["cache_read"]
     out["tokens_out"] = usage.get("output_tokens", 0)
+    # modelUsage 按实际应答的模型分列（含后台小模型）；没有时退回汇总值
+    per_model = data.get("modelUsage") if isinstance(data.get("modelUsage"), dict) else {}
+    out["usage"] = [usage_part(model, u.get("inputTokens"), u.get("cacheReadInputTokens"),
+                               u.get("cacheCreationInputTokens"), u.get("outputTokens"))
+                    for model, u in per_model.items() if isinstance(u, dict)] \
+        or [usage_part(pick["model"], usage.get("input_tokens"), out["cache_read"],
+                       usage.get("cache_creation_input_tokens"), out["tokens_out"])]
     if data.get("is_error") or data.get("api_error_status"):  # 出错时仍可能 exit 0，错误文本在 result 里
         out["error"] = f"API 错误 {data.get('api_error_status') or ''}：{(data.get('result') or '')[:200]}"
         return out
@@ -217,6 +231,9 @@ def call_cc_switch(pick, prompt, cwd, timeout, thinking, blind, tools, prompt_fi
     usage = re.search(r"input=(\d+).*?cache_read=(\d+).*?output=(\d+)", out["stderr"])
     if usage:
         out["tokens_in"], out["cache_read"], out["tokens_out"] = (int(g) for g in usage.groups())
+        parts = re.search(r"fresh=(\d+) cache_create=(\d+)", out["stderr"])
+        if parts:
+            out["usage"] = [usage_part(pick["model"], parts.group(1), out["cache_read"], parts.group(2), out["tokens_out"])]
     if out["exit_code"] != 0:
         out["status"] = "timeout" if out["exit_code"] == 9 else "error"
         out["error"] = out["stderr"].strip()[:300] or f"cc_switch.py 退出码 {out['exit_code']}"
@@ -245,6 +262,10 @@ def call_codex(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
             out["tokens_in"] = usage.get("input_tokens", 0)
             out["cache_read"] = usage.get("cached_input_tokens", 0)
             out["tokens_out"] = usage.get("output_tokens", 0)
+            # input_tokens 含缓存读写，拆出未缓存部分
+            written = usage.get("cache_write_input_tokens", 0)
+            out["usage"] = [usage_part(pick["model"], out["tokens_in"] - out["cache_read"] - written,
+                                       out["cache_read"], written, out["tokens_out"])]
         elif event.get("type") in ("error", "turn.failed"):
             out["error"] = json.dumps(event.get("error") or event.get("message") or event, ensure_ascii=False)[:300]
     out["answer"] = "\n\n".join(messages)
@@ -356,7 +377,7 @@ def call_pi(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     # 流式增量事件每条都带累计内容，几千条能到上百 KB；留痕只留成段的事件
     out["raw"] = "\n".join(l for l in out["raw"].splitlines() if '"type":"message_update"' not in l)
     # 带工具时一次任务有多条 assistant 消息，正文可能在中间某一条：逐条收正文、累加用量
-    message, texts = None, []
+    message, texts, cache_write = None, [], 0
     for event in json_lines(out["raw"]):
         if event.get("type") == "message_end" and (event.get("message") or {}).get("role") == "assistant":
             message = event["message"]
@@ -364,6 +385,7 @@ def call_pi(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
             out["tokens_in"] += usage.get("input", 0)
             out["tokens_out"] += usage.get("output", 0)
             out["cache_read"] += usage.get("cacheRead", 0)
+            cache_write += usage.get("cacheWrite", 0)
             # 只认 text 块；答案只出现在 thinking 块里时按没有回答算，不回退去读思考草稿
             text = "".join(b.get("text", "") for b in message.get("content") or [] if b.get("type") == "text")
             if text.strip():
@@ -373,6 +395,8 @@ def call_pi(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
         return out
     served = message.get("responseModel") or message.get("model") or ""
     out["identity"] = f"{message.get('provider', '')}/{served}".strip("/")
+    # pi 的 input 不含缓存读写
+    out["usage"] = [usage_part(served or pick["model"], out["tokens_in"], out["cache_read"], cache_write, out["tokens_out"])]
     if message.get("stopReason") == "error":
         out["error"] = (message.get("errorMessage") or "pi 报告 stopReason=error")[:300]
         return out
@@ -426,7 +450,33 @@ def norm_model(name):
     return re.sub(r"\[.*?\]$", "", (name or "").strip().lower().rsplit("/", 1)[-1])
 
 
-def call(pick, prompt, cwd, timeout, thinking, prompt_file, blind=True, tools=False):
+def record_usage(pick, out, project, run_id):
+    """把这一路的用量追加到 <AICROSS_HOME>/usage/<年-月>.jsonl，供本机的用量统计工具读取。
+
+    只记 claude、codex、pi 与 cc-switch：它们的一次性派发不留会话，各家自己的日志里没有这笔用量。
+    kimi 与 agy 的会话仍由各自的 CLI 保存，不在这里重复记。文件只含用量与归属，不含任务和回答。
+    """
+    parts = [part for part in out.get("usage") or [] if any(part[k] for k in USAGE_KEYS)]
+    if not parts:
+        return
+    channel = pick["channel"]
+    agent, _, provider = channel.partition(":")
+    now = datetime.now().astimezone()
+    try:
+        folder = inventory.data_root() / "usage"
+        folder.mkdir(parents=True, exist_ok=True)
+        with open(folder / f"{now:%Y-%m}.jsonl", "a", encoding="utf-8", newline="\n") as handle:
+            for part in parts:
+                handle.write(json.dumps({
+                    "schema": USAGE_SCHEMA, "id": uuid.uuid4().hex, "at_ms": int(now.timestamp() * 1000),
+                    "run_id": run_id or "", "agent": "claude" if agent == "cc-switch" else agent,
+                    "provider": provider, "project": str(project) if project else "", **part,
+                }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass  # 记不下用量不影响派发本身
+
+
+def call(pick, prompt, cwd, timeout, thinking, prompt_file, blind=True, tools=False, project=None, run_id=None):
     """跑一路并补齐状态。返回的 dict 里 status 为 ok / error / timeout / skipped / identity_mismatch。"""
     runner = runner_for(pick)
     started = datetime.now().astimezone()
@@ -451,12 +501,15 @@ def call(pick, prompt, cwd, timeout, thinking, prompt_file, blind=True, tools=Fa
     out.update(started_at=started.isoformat(timespec="seconds"),
                ended_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                duration_ms=int((time.time() - t0) * 1000))
+    record_usage(pick, out, project, run_id)
     return out
 
 
 # ---------- 留痕 ----------
 
 RECORD_SCHEMA = "aicross-dispatch/2"
+USAGE_SCHEMA = "aicross-usage/1"
+USAGE_KEYS = ("input_uncached", "cache_read", "cache_write", "output")
 
 
 def runs_root(project):
@@ -677,7 +730,8 @@ def cmd_review(args):
     def one(pick):
         workdir = run_dir / pick["id"]  # 每路一个空目录：读不到项目里的指令文件与历史输出
         workdir.mkdir()
-        out = call(pick, prompt, str(workdir), args.timeout, args.thinking, str(prompt_file))
+        out = call(pick, prompt, str(workdir), args.timeout, args.thinking, str(prompt_file),
+                   project=project, run_id=stamp)
         trace = write_trace(project, stamp, pick, out, prompt, materials, redacted, workdir, "验证")
         out["trace"] = trace.relative_to(project).as_posix()  # 相对项目目录，汇总里直接引用
         out["independence"] = independence(pick, chosen.get("author_vendor"), chosen.get("no_author", False))
@@ -815,7 +869,7 @@ def cmd_run(args):
     if read_dir:  # 只读模式：在用户指定的目录里跑，工具收窄到只读
         workdir = read_dir
     out = call(pick, prompt, str(workdir), args.timeout, args.thinking, str(prompt_file),
-               blind=False, tools=bool(read_dir))
+               blind=False, tools=bool(read_dir), project=project, run_id=stamp)
     trace = write_trace(project, stamp, pick, out, prompt, materials, redacted, workdir, "执行", blind=False)
     out["trace"] = trace.relative_to(project).as_posix()
     shutil.rmtree(run_dir, ignore_errors=True)
