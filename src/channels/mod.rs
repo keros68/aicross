@@ -7,7 +7,7 @@ pub(crate) mod acp;
 pub(crate) mod acp_setup;
 mod cli_agents;
 
-pub(crate) use cli_agents::{effective_thinking, AGY_NO_TOOLS};
+pub(crate) use cli_agents::{apply_execution_thinking_floor, effective_thinking, AGY_NO_TOOLS};
 
 pub(crate) const KNOWN_MODEL_ROUTES: &[(&str, &str, &str)] = &[
     ("deepseek", "deepseek-v4-flash", "deepseek-flash"),
@@ -259,6 +259,41 @@ pub fn build_invocation(
     writable: bool,
     timeout: std::time::Duration,
 ) -> Result<Invocation, String> {
+    build_invocation_with_blind_files(
+        agent,
+        provider,
+        model,
+        tier,
+        thinking,
+        blind,
+        false,
+        session_id,
+        prompt,
+        task_file,
+        session_dir,
+        cc_switch_path,
+        writable,
+        timeout,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_invocation_with_blind_files(
+    agent: &str,
+    provider: &str,
+    model: &str,
+    tier: &str,
+    thinking: &str,
+    blind: bool,
+    blind_files: bool,
+    session_id: Option<&str>,
+    prompt: &str,
+    task_file: Option<&Path>,
+    session_dir: Option<&Path>,
+    cc_switch_path: Option<&Path>,
+    writable: bool,
+    timeout: std::time::Duration,
+) -> Result<Invocation, String> {
     let normalized = normalize_agent(agent);
     // 支持清单里新增的 agent（TASK-61）走自己的模板，只接盲位置。
     if cli_agents::handles(normalized) {
@@ -278,20 +313,21 @@ pub fn build_invocation(
         if let Some((_, oneshot, _)) = test_provider_parts(provider) {
             let program = resolve_binary("python", None)?;
             let mut args = vec![oneshot];
-            args.extend(build_invocation_spec(
-                normalized, if normalized == "pi" { "test" } else { "" }, model, tier, thinking, blind, session_id, prompt,
+            args.extend(build_invocation_spec_with_blind_files(
+                normalized, if normalized == "pi" { "test" } else { "" }, model, tier, thinking, blind, blind_files, session_id, prompt,
                 task_file, session_dir, cc_switch_path, writable,
             )?.args);
             return Ok(Invocation { program, args, input: None, stdout_skip: None });
         }
     }
-    let spec = build_invocation_spec(
+    let spec = build_invocation_spec_with_blind_files(
         normalized,
         provider,
         model,
         tier,
         thinking,
         blind,
+        blind_files,
         session_id,
         prompt,
         task_file,
@@ -319,6 +355,7 @@ pub(crate) fn test_provider_parts(provider: &str) -> Option<(String, String, Vec
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn build_invocation_spec(
     agent: &str,
     provider: &str,
@@ -333,10 +370,47 @@ fn build_invocation_spec(
     cc_switch_path: Option<&Path>,
     writable: bool,
 ) -> Result<InvocationSpec, String> {
+    build_invocation_spec_with_blind_files(
+        agent,
+        provider,
+        model,
+        tier,
+        thinking,
+        blind,
+        false,
+        session_id,
+        prompt,
+        task_file,
+        session_dir,
+        cc_switch_path,
+        writable,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_invocation_spec_with_blind_files(
+    agent: &str,
+    provider: &str,
+    model: &str,
+    tier: &str,
+    thinking: &str,
+    blind: bool,
+    blind_files: bool,
+    session_id: Option<&str>,
+    prompt: &str,
+    task_file: Option<&Path>,
+    session_dir: Option<&Path>,
+    cc_switch_path: Option<&Path>,
+    writable: bool,
+) -> Result<InvocationSpec, String> {
     match agent {
         "claude" => {
             let tools = if blind {
-                ""
+                if blind_files || prompt.contains(BLIND_ARTIFACT_NOTICE) {
+                    "Read,Grep,Glob"
+                } else {
+                    ""
+                }
             } else if writable {
                 "Read,Grep,Glob,Write,Edit,Bash"
             } else {
@@ -563,17 +637,17 @@ pub(crate) fn normalize_agent(agent: &str) -> &str {
 }
 
 fn claude_effort(thinking: &str) -> &'static str {
-    match thinking {
-        "高" => "high",
-        "中" => "medium",
+    match thinking.strip_prefix("已调整为：").unwrap_or(thinking) {
+        "高" | "high" | "xhigh" | "max" => "high",
+        "中" | "medium" => "medium",
         _ => "low",
     }
 }
 
 fn codex_effort(thinking: &str) -> &'static str {
-    match thinking {
-        "高" => "high",
-        "中" => "medium",
+    match thinking.strip_prefix("已调整为：").unwrap_or(thinking) {
+        "高" | "high" | "xhigh" | "max" => "high",
+        "中" | "medium" => "medium",
         _ => "low",
     }
 }
@@ -1662,5 +1736,33 @@ mod tests {
         assert_eq!(codex_effort("低"), "low");
         assert_eq!(codex_effort("中"), "medium");
         assert_eq!(codex_effort("高"), "high");
+    }
+
+    #[test]
+    fn task74_blind_claude_gets_readonly_tools_only_when_blind_files_exist() {
+        let inlined = build_invocation_spec_with_blind_files(
+            "claude", "", "sonnet", "中", "中", true, false, None, "材料已全内联", None, None, None, false,
+        )
+        .unwrap();
+        let tools_pos = inlined.args.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(inlined.args[tools_pos + 1], "");
+        assert!(inlined.args.iter().any(|a| a == "--restricted"));
+        assert!(inlined.args.iter().any(|a| a == "--no-session-persistence"));
+
+        let with_files = build_invocation_spec_with_blind_files(
+            "claude", "", "sonnet", "中", "中", true, true, None, "请阅读盲目录里的文件", None, None, None, false,
+        )
+        .unwrap();
+        let tools_pos = with_files.args.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(with_files.args[tools_pos + 1], "Read,Grep,Glob");
+        assert!(with_files.args.iter().any(|a| a == "--restricted"));
+        assert!(with_files.args.iter().any(|a| a == "--no-session-persistence"));
+
+        let with_notice = build_invocation_spec_with_blind_files(
+            "claude", "", "sonnet", "中", "中", true, false, None, &format!("头部\n{BLIND_ARTIFACT_NOTICE}"), None, None, None, false,
+        )
+        .unwrap();
+        let tools_pos = with_notice.args.iter().position(|a| a == "--tools").unwrap();
+        assert_eq!(with_notice.args[tools_pos + 1], "Read,Grep,Glob");
     }
 }

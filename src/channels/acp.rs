@@ -568,15 +568,15 @@ impl AcpClient {
         let (thought_id, thought) = match thought_option {
             Some(option) => {
                 let values = option_values(option);
-                let wanted = match thinking {
-                    "关" | "低" => "low",
-                    "高" => "high",
+                let wanted = match thinking.strip_prefix("已调整为：").unwrap_or(thinking) {
+                    "关" | "off" | "minimal" | "低" | "low" => "low",
+                    "高" | "high" | "xhigh" | "max" => "high",
                     _ => "medium",
                 };
                 let value = if values.iter().any(|value| value == wanted) { wanted } else if wanted == "medium" { "high" } else { wanted };
                 (option.get("id").and_then(Value::as_str).unwrap_or("thinking").to_string(), value)
             }
-            None => ("thinking".to_string(), if matches!(thinking, "关" | "低") { "low" } else { "high" }),
+            None => ("thinking".to_string(), if matches!(thinking.strip_prefix("已调整为：").unwrap_or(thinking), "关" | "off" | "minimal" | "低" | "low") { "low" } else { "high" }),
         };
         if self.request("session/set_config_option", json!({"sessionId":session_id,"configId":thought_id,"value":thought}), deadline, None, writable, blind, cancel_key, None).is_err() {
             notes.push(format!("ACP 未能设置 thinking={thought}"));

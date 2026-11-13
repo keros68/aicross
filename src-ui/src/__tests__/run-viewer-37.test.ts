@@ -191,8 +191,16 @@ describe('run viewer data assembly (TASK-37)', () => {
     expect(acceptanceVerdict(node({ role: '验收', text: 'NEEDS_FIX', reviewStructured: true, reviewSuggestions: ['命名'] }))).toBe('PASS');
     expect(acceptanceVerdictLabel('PASS')).toBe('通过');
     expect(acceptanceVerdictLabel('NEEDS_FIX')).toBe('需修正');
-    expect(acceptanceVerdictLabel('UNKNOWN')).toBe('未判定');
+    expect(acceptanceVerdictLabel('UNKNOWN')).toBe('结论不明');
     expect(acceptanceVerdictLabel(null)).toBe('—');
+
+    const noChanges = node({ status: 'no_changes', errorKind: 'no_changes' });
+    expect(nodeStatusLabel(noChanges)).toBe('执行没有产物');
+    expect(nodeStatusTone(noChanges)).toBe('alert');
+
+    const unclear = node({ status: 'unclear', errorKind: 'unclear' });
+    expect(nodeStatusLabel(unclear)).toBe('结论不明');
+    expect(nodeStatusTone(unclear)).toBe('alert');
   });
 
   it('offers adopt only on nodes with settled results', () => {

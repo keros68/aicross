@@ -78,6 +78,8 @@ export function nodeStatusLabel(node: RunViewNode): string {
   if (node.status === 'draft') return '未开始';
   if (node.status === 'pending') return '运行中';
   if (node.status === 'done') return '完成';
+  if (node.status === 'no_changes' || node.errorKind === 'no_changes') return '执行没有产物';
+  if (node.status === 'unclear' || node.errorKind === 'unclear') return '结论不明';
   if (node.status === 'quota_exhausted' || node.errorKind === 'quota_exhausted') return '额度用尽';
   if (node.errorKind === 'identity_mismatch') return '实际模型不符';
   if (node.errorKind === 'validation_failed') return '验证命令未通过';
@@ -140,7 +142,7 @@ export function adoptAction(node: RunViewNode): AdoptAction {
 
 export type AcceptanceVerdict = 'PASS' | 'NEEDS_FIX' | 'UNKNOWN' | null;
 
-/** 验收 / 验证那两路的结论：完成看正文尾部判定，其余按未判定；别的角色为
+/** 验收 / 验证那两路的结论：完成看正文尾部，其余按结论不明；别的角色为
  * null（不显示）。 */
 export function acceptanceVerdict(node: RunViewNode): AcceptanceVerdict {
   if (node.role !== '验收' && node.role !== '验证') return null;
@@ -153,7 +155,7 @@ export function acceptanceVerdict(node: RunViewNode): AcceptanceVerdict {
 export function acceptanceVerdictLabel(verdict: AcceptanceVerdict): string {
   if (verdict === 'PASS') return '通过';
   if (verdict === 'NEEDS_FIX') return '需修正';
-  if (verdict === 'UNKNOWN') return '未判定';
+  if (verdict === 'UNKNOWN') return '结论不明';
   return '—';
 }
 

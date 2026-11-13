@@ -61,7 +61,7 @@ fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
          \x20 aicross <子命令> [参数]\n\
          \n\
          子命令：\n\
-         \x20 dispatch    派发一次；多行任务文本走 --text-file；--seat 只对这一次换人；--kind 记任务类型\n\
+         \x20 dispatch    派发一次；多行任务文本走 --text-file；--seat 只对这一次换人；--kind 记任务类型；--read-only-task 标明只读任务\n\
          \x20 status      看一次 run 的状态；--wait 等到结束\n\
          \x20 adopt       采纳某一路的结果；--verdict-file 记下用户的裁决\n\
          \x20 decided     项目的已定事项：add / show\n\
@@ -3228,6 +3228,12 @@ fn build_request(args: &[String]) -> Result<CliRequest, String> {
             if args.iter().any(|arg| arg == "--kind") {
                 let raw = option_value(args, "--kind").ok_or_else(|| "缺少 --kind 的值".to_string())?;
                 body["task_kind"] = Value::String(crate::track::resolve_kind(&raw)?.to_string());
+            }
+            if let Some(bad) = args.iter().find(|arg| arg.starts_with("--read-only-task=")) {
+                return Err(format!("--read-only-task 不接受参数值：{bad}"));
+            }
+            if args.iter().any(|arg| arg == "--read-only-task") {
+                body["read_only_task"] = Value::Bool(true);
             }
             Ok(CliRequest {
                 body: Some(body),
@@ -7205,6 +7211,48 @@ mod tests {
         );
         assert_eq!(code, 2);
         assert!(stderr.contains("不认识的参数"), "{stderr}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task74_dispatch_read_only_task_flag() {
+        let root = fixture_root("t74-read-only-flag");
+        let text_path = root.join("prompt.txt");
+        fs::write(&text_path, "只读排查").unwrap();
+        let args = vec![
+            "aicross".into(),
+            "dispatch".into(),
+            "--project".into(),
+            root.to_string_lossy().into(),
+            "--text-file".into(),
+            text_path.to_string_lossy().into(),
+            "--read-only-task".into(),
+        ];
+        let request = build_request(&args).unwrap();
+        assert_eq!(request.body.unwrap()["read_only_task"], Value::Bool(true));
+
+        let bad_args = vec![
+            "aicross".into(),
+            "dispatch".into(),
+            "--project".into(),
+            root.to_string_lossy().into(),
+            "--text-file".into(),
+            text_path.to_string_lossy().into(),
+            "--read-only-task=1".into(),
+        ];
+        assert!(matches!(build_request(&bad_args), Err(err) if err.contains("--read-only-task")));
+        let bad_slice = [
+            "aicross",
+            "dispatch",
+            "--project",
+            root.to_str().unwrap(),
+            "--text-file",
+            text_path.to_str().unwrap(),
+            "--read-only-task=1",
+        ];
+        let (code, _, stderr) = run_with(&root, &bad_slice, &ResourcesOps::production());
+        assert_eq!(code, 2, "{stderr}");
+        assert!(stderr.contains("--read-only-task"), "{stderr}");
         let _ = fs::remove_dir_all(root);
     }
 }

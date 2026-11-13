@@ -117,14 +117,13 @@ fn read_pi_catalog() -> Option<Value> {
 }
 
 fn effective_pi_thinking(catalog: &Value, provider: &str, model: &str, thinking: &str) -> String {
-    let was_adjusted = thinking.starts_with("已调整为：");
-    let requested = thinking.strip_prefix("已调整为：").unwrap_or(thinking);
-    let (level, adjusted) = resolve_pi_thinking(catalog, provider, model, requested);
-    if was_adjusted || adjusted { format!("已调整为：{level}") } else { thinking.to_string() }
+    let (level, adjusted) = resolve_pi_thinking(catalog, provider, model, thinking);
+    if adjusted { format!("已调整为：{level}") } else { thinking.to_string() }
 }
 
 fn resolve_pi_thinking(catalog: &Value, provider: &str, model_id: &str, requested: &str) -> (String, bool) {
     const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let min_medium = requested.starts_with("已调整为：") && requested.strip_prefix("已调整为：") == Some("中");
     let requested = requested.strip_prefix("已调整为：").unwrap_or(requested);
     let old = super::pi_thinking(requested);
     let Some(model) = catalog.get(provider).and_then(|p| p.get("models")).and_then(Value::as_array)
@@ -139,20 +138,91 @@ fn resolve_pi_thinking(catalog: &Value, provider: &str, model_id: &str, requeste
     };
     if supported.contains(&old) { return (old.into(), false); }
     let index = LEVELS.iter().position(|l| *l == old).unwrap_or(3);
-    let chosen = supported.iter().rev().find(|l| LEVELS.iter().position(|x| *x == **l).unwrap_or(0) < index && (**l != "off" || old == "off"))
-        .or_else(|| supported.iter().find(|l| LEVELS.iter().position(|x| *x == **l).unwrap_or(0) > index))
-        .copied().unwrap_or("off");
+    let higher = || supported.iter().find(|l| LEVELS.iter().position(|x| *x == **l).unwrap_or(0) > index);
+    let lower = || supported.iter().rev().find(|l| LEVELS.iter().position(|x| *x == **l).unwrap_or(0) < index && (**l != "off" || old == "off"));
+    // 多步执行任务拉高到不低于「中」时，若模型缺 medium 优先选更高的 supported 档位（如 high），避免又掉回 low。
+    let chosen = if min_medium {
+        higher().or_else(lower)
+    } else {
+        lower().or_else(higher)
+    }
+    .copied()
+    .unwrap_or("off");
     (chosen.into(), chosen != old)
 }
 
 const MODEL_DECIDED_PREFIX: &str = "由模型决定：";
 
+/// TASK-74：粗略启发式，用于「执行位置遇到多步任务时思考不低于中」。
+/// 满足下列任一条即视为超过一步：
+/// 1. 在非代码块区域内，以步骤编号开头的非空行不少于 2 行（如 `1.`、`2)`、`1、`、`(1)`、`（1）`、`一、`、`第1步`、`步骤1`）；
+/// 2. 文本中出现至少 2 个带常见扩展名的不同文件/路径（忽略大小写，统一 `/` 分隔）。
+/// 注意：这是粗略启发式，不解析语义。
+pub(crate) fn is_multi_step_task(text: &str) -> bool {
+    use regex::Regex;
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+
+    static STEP_LINE: OnceLock<Regex> = OnceLock::new();
+    static FILE_TOKEN: OnceLock<Regex> = OnceLock::new();
+    let step_re = STEP_LINE.get_or_init(|| {
+        Regex::new(
+            r"^\s*(?:\d+\s*[.)、]|[（(]\d+[)）]|[一二三四五六七八九十]+\s*、|第\s*[一二三四五六七八九十\d]+\s*步|步骤\s*\d+)\s*\S",
+        )
+        .expect("step line regex")
+    });
+    let file_re = FILE_TOKEN.get_or_init(|| {
+        Regex::new(
+            r"(?i)(?:^|[\s`(\[{\x22'：:，,、；;])([A-Za-z0-9_./\\-]+\.(?:rs|ts|tsx|js|jsx|mjs|cjs|py|json|toml|yaml|yml|md|html|css|scss|sh|ps1|cmd|bat|go|java|kt|c|cc|cpp|h|hpp|sql|vue|svelte))\b",
+        )
+        .expect("file token regex")
+    });
+
+    let mut step_lines = 0usize;
+    let mut files: HashSet<String> = HashSet::new();
+    let mut in_fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence && step_re.is_match(line) {
+            step_lines += 1;
+            if step_lines >= 2 {
+                return true;
+            }
+        }
+        for cap in file_re.captures_iter(line) {
+            if let Some(m) = cap.get(1) {
+                let norm = m.as_str().replace('\\', "/").to_ascii_lowercase();
+                if files.insert(norm) && files.len() >= 2 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// TASK-74：执行位置在多步任务下思考档位不低于「中」，提升时标「已调整为：中」。
+pub(crate) fn apply_execution_thinking_floor(role: &str, task_text: &str, thinking: &str) -> String {
+    let trimmed = thinking.trim();
+    if role == "执行"
+        && matches!(trimmed, "" | "关" | "off" | "minimal" | "低" | "low")
+        && is_multi_step_task(task_text)
+    {
+        return "已调整为：中".to_string();
+    }
+    thinking.to_string()
+}
+
 /// 思考档：低 / 中 / 高 → low / medium / high；其余不传，用 agy 默认。
 fn agy_effort(thinking: &str) -> Option<&'static str> {
-    match thinking {
-        "低" => Some("low"),
-        "中" => Some("medium"),
-        "高" => Some("high"),
+    match thinking.strip_prefix("已调整为：").unwrap_or(thinking) {
+        "低" | "low" => Some("low"),
+        "中" | "medium" => Some("medium"),
+        "高" | "high" | "xhigh" | "max" => Some("high"),
         _ => None,
     }
 }
@@ -494,5 +564,42 @@ mod tests {
             assert!(parse(agent, &process("x", Some(2))).unwrap().is_err());
         }
         assert!(parse("claude", &process("", Some(0))).is_none());
+    }
+
+    #[test]
+    fn task74_multi_step_heuristic_and_thinking_floor() {
+        assert!(is_multi_step_task("1. 修改入口\n2. 补充测试"));
+        assert!(is_multi_step_task("请修改 src/a.rs 与 src\\b.rs"));
+        assert!(!is_multi_step_task("请反复核对 src/a.rs 和 SRC\\A.RS"));
+        assert!(!is_multi_step_task("检查这段代码块：\n```md\n1. 示例步骤一\n2. 示例步骤二\n```"));
+        assert!(!is_multi_step_task("只检查这一句话"));
+
+        assert_eq!(apply_execution_thinking_floor("执行", "1. 第一步\n2. 第二步", "低"), "已调整为：中");
+        assert_eq!(apply_execution_thinking_floor("执行", "1. 第一步\n2. 第二步", "高"), "高");
+        assert_eq!(apply_execution_thinking_floor("验收", "1. 第一步\n2. 第二步", "低"), "低");
+        assert_eq!(apply_execution_thinking_floor("执行", "单步检查", "关"), "关");
+
+        let catalog = serde_json::json!({
+            "demo": {
+                "models": [
+                    {
+                        "id": "m-no-med",
+                        "reasoning": true,
+                        "thinkingLevelMap": {
+                            "off": null,
+                            "minimal": null,
+                            "low": "low",
+                            "medium": null,
+                            "high": "high"
+                        }
+                    }
+                ]
+            }
+        });
+        assert_eq!(resolve_pi_thinking(&catalog, "demo", "m-no-med", "已调整为：中"), ("high".into(), true));
+        assert_eq!(resolve_pi_thinking(&catalog, "demo", "m-no-med", "中"), ("low".into(), true));
+        assert_eq!(effective_pi_thinking(&catalog, "demo", "m-no-med", "已调整为：中"), "已调整为：high");
+        assert_eq!(effective_pi_thinking(&catalog, "demo", "m-no-med", "中"), "已调整为：low");
+        assert_eq!(effective_pi_thinking(&catalog, "unknown", "m", "已调整为：中"), "已调整为：中");
     }
 }

@@ -1016,6 +1016,7 @@ mod tests {
             leftover: Vec::new(),
             in_flight_node_ids: Vec::new(),
             notes: Vec::new(),
+            read_only_task: false,
             updated_at: updated_at.into(),
         }
     }

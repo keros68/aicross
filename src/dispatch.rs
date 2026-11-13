@@ -2741,7 +2741,14 @@ fn run_one_attempt(
     // 派发前直接失败，不验证、不建 worktree、不铺材料。
     let blind_only = crate::agent_catalog::seat_violation(&node.agent, &node.visibility);
     // fix-61-r1 5：agy 模型自带档位时思考强度由模型决定，留痕记实际生效值。
-    node.thinking = channels::effective_thinking(&node.agent, &node.provider, &node.model, &node.thinking);
+    // TASK-74：执行位置在多步任务下思考不低于「中」（粗略启发式）。
+    let task_text = if node.original_request.trim().is_empty() {
+        &node.prompt
+    } else {
+        &node.original_request
+    };
+    let raised_thinking = channels::apply_execution_thinking_floor(&node.role, task_text, &node.thinking);
+    node.thinking = channels::effective_thinking(&node.agent, &node.provider, &node.model, &raised_thinking);
     if is_cancelled(&cancel_key) {
         verify_error = "派发已取消".to_string();
     } else if let Some(reason) = blind_only {
@@ -2880,9 +2887,12 @@ fn run_one_attempt(
     // fix-fullcheck B5：固定收尾在最终外发文本上统一处理（材料说明、验证
     // 输出、内联材料都已拼完；ACP 回退用的完整上下文也取这份）。
     let (prompt, material_names, prepared_redacted, preparation_error) = match prepared {
-        Ok(OutboundPreparation::Materialized(prompt, names, count)) => {
-            (with_closing(&node.agent, &prompt), names, count, String::new())
-        }
+        Ok(OutboundPreparation::Materialized(prompt, names, count)) => (
+            with_closing_for_role(&node.agent, &node.role, &prompt),
+            names,
+            count,
+            String::new(),
+        ),
         Ok(OutboundPreparation::Unsent) => ("(未发送)".into(), Vec::new(), 0, String::new()),
         Err(error) => ("(未发送)".into(), Vec::new(), 0, error),
     };
@@ -2892,7 +2902,7 @@ fn run_one_attempt(
             (prompt.clone(), prepared_redacted)
         } else {
             let (message, count) = redact_text(&node.current_message, settings.redact);
-            (with_closing(&node.agent, &message), count)
+            (with_closing_for_role(&node.agent, &node.role, &message), count)
         }
     } else {
         (prompt.clone(), prepared_redacted)
@@ -3038,13 +3048,15 @@ fn run_one_attempt(
 
     if needs_oneshot {
         let _ = fs::write(&task_file, oneshot_outbound.as_bytes());
-        match channels::build_invocation(
+        let blind_files = blind && blind_has_uninlined_files(&oneshot_outbound, Some(&workdir), &material_names);
+        match channels::build_invocation_with_blind_files(
             &node.agent,
             &node.provider,
             &node.model,
             &node.tier,
             &node.thinking,
             blind,
+            blind_files,
             (!oneshot_session.is_empty()).then_some(oneshot_session.as_str()),
             &oneshot_outbound,
             Some(&task_file),
@@ -3615,9 +3627,48 @@ fn collect_material_files(
     Ok(())
 }
 
-/// 固定收尾（fix-fullcheck B5）：如实汇报要求，agy 另加「不要使用任何工具」。
-fn closing_text(agent: &str) -> String {
-    let honest = crate::engine::HONEST_REPORTING;
+/// TASK-74：盲目录里是否仍有未内联进正文的文件（diff.patch / changed / project 副本 /
+/// ACCEPT.md / 超 30 KB 或二进制附件 / 未内联的 VALIDATION.txt 等）。
+pub(crate) fn blind_has_uninlined_files(
+    prompt: &str,
+    workdir: Option<&Path>,
+    material_names: &[String],
+) -> bool {
+    if prompt.contains(channels::BLIND_ARTIFACT_NOTICE)
+        || material_names.iter().any(|name| name.ends_with('/'))
+    {
+        return true;
+    }
+    let Some(dir) = workdir else {
+        return !material_names.is_empty();
+    };
+    if !dir.is_dir() {
+        return !material_names.is_empty();
+    }
+    let mut files = Vec::new();
+    if collect_material_files(dir, dir, &mut files).is_err() {
+        return true;
+    }
+    for (relative, path) in files {
+        let Ok(bytes) = fs::read(&path) else {
+            return true;
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            return true;
+        };
+        let inlined_attachment = prompt.contains(&format!("[附件全文 {relative}]\n{text}"));
+        let inlined_validation = relative == REVIEW_VALIDATION_FILE
+            && prompt.contains(&format!("[{REVIEW_VALIDATION_FILE} 全文]\n{text}"));
+        if !inlined_attachment && !inlined_validation {
+            return true;
+        }
+    }
+    false
+}
+
+/// 固定收尾（fix-fullcheck B5）：如实汇报要求（按角色区分），agy 另加「不要使用任何工具」。
+fn closing_text_for_role(agent: &str, role: &str) -> String {
+    let honest = crate::engine::honest_reporting_for_role(role);
     if channels::normalize_agent(agent) == "agy" {
         format!("{honest}\n{}", channels::AGY_NO_TOOLS)
     } else {
@@ -3627,10 +3678,16 @@ fn closing_text(agent: &str) -> String {
 
 /// 去掉引擎拼在 node.prompt 末尾的固定收尾（只认末尾那一段，正文里引用的
 /// 同样文字不动）。派发层在铺材料之前调它，最终外发文本定下后再由
-/// [`with_closing`] 放回最末尾。
+/// [`with_closing_for_role`] 放回最末尾。
 fn strip_engine_closing(agent: &str, prompt: &str) -> String {
-    let honest = crate::engine::HONEST_REPORTING;
-    for closing in [closing_text(agent), honest.to_string()] {
+    let mut candidates = vec![
+        closing_text_for_role(agent, "出方案"),
+        crate::engine::HONEST_REPORTING_PLANNING.to_string(),
+        closing_text_for_role(agent, ""),
+        crate::engine::HONEST_REPORTING.to_string(),
+    ];
+    candidates.dedup();
+    for closing in candidates {
         if let Some(body) = prompt.strip_suffix(&format!("\n\n{closing}")) {
             return body.to_string();
         }
@@ -3646,8 +3703,8 @@ fn strip_engine_closing(agent: &str, prompt: &str) -> String {
 /// current_message。铺材料前先用 [`strip_engine_closing`] 摘掉引擎那一段，
 /// 定下最终外发文本后在这里追加一次；文本已以收尾句结尾时不再追加。
 /// 只在末尾操作，用户原文、diff 与内联源码一个字不改。
-fn with_closing(agent: &str, text: &str) -> String {
-    let closing = closing_text(agent);
+fn with_closing_for_role(agent: &str, role: &str, text: &str) -> String {
+    let closing = closing_text_for_role(agent, role);
     if text.trim_end().ends_with(&closing) {
         return text.to_string();
     }
@@ -3656,6 +3713,11 @@ fn with_closing(agent: &str, text: &str) -> String {
     } else {
         format!("{text}\n\n{closing}")
     }
+}
+
+#[cfg(test)]
+fn with_closing(agent: &str, text: &str) -> String {
+    with_closing_for_role(agent, "", text)
 }
 
 fn reset_acp_fallback(full_prompt: &str) -> (String, String) {
@@ -10560,6 +10622,60 @@ mod tests {
         assert!(failures.is_empty(), "{failures:?}");
         assert!(!fs::symlink_metadata(project.join("function.txt")).unwrap().file_type().is_symlink());
         assert_eq!(fs::read(project.join("function.txt")).unwrap(), b"2\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task74_blind_has_uninlined_files_detects_accept_and_large_attachments() {
+        let dir = crate::paths::test_temp_dir().join(format!("aicross-t74-bf-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let small = "短附件内容";
+        fs::write(dir.join("note.txt"), small).unwrap();
+        let inlined_prompt = format!("[附件全文 note.txt]\n{small}");
+        assert!(!blind_has_uninlined_files(&inlined_prompt, Some(&dir), &["note.txt".into()]));
+
+        fs::write(dir.join("ACCEPT.md"), "必须跑 cargo test").unwrap();
+        assert!(blind_has_uninlined_files(&inlined_prompt, Some(&dir), &["note.txt".into(), "ACCEPT.md".into()]));
+
+        let big_prompt = format!("前言\n{}", channels::BLIND_ARTIFACT_NOTICE);
+        assert!(blind_has_uninlined_files(&big_prompt, None, &[]));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn task74_run_one_records_raised_thinking_on_multi_step_execution() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t74-think-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let argv_file = root.join("pi-argv.json");
+        let stub = root.join("pi_oneshot_stub.py");
+        let provider = format!("__aicross_test__||{}", stub.display());
+        let script_body = format!(
+            "import json, pathlib, sys\n\
+             pathlib.Path(r'{}').write_text(json.dumps(sys.argv), encoding='utf-8')\n\
+             prov = r'{}'\n\
+             print(json.dumps({{'type':'message_end','message':{{'role':'assistant','provider':prov,'model':'fake-model','content':[{{'type':'text','text':'完成'}}]}}}}))\n\
+             print(json.dumps({{'type':'agent_settled'}}))\n\
+             print(json.dumps({{'type':'agent_end','messages':[{{'role':'assistant','provider':prov,'model':'fake-model','content':[{{'type':'text','text':'完成'}}],'usage':{{'input':3,'output':2,'cacheRead':0}}}}]}}))\n",
+            argv_file.display(),
+            provider
+        );
+        let mut request = pi_run_one_fixture(&root, &script_body);
+        request.role = "执行".into();
+        request.thinking = "低".into();
+        request.write = "只读".into();
+        request.prompt = "1. 读取配置\n2. 给出修改建议".into();
+        request.original_request = request.prompt.clone();
+        let settings = DispatchSettings { timeout_secs: 10, write_project_dispatch: true, ..DispatchSettings::default() };
+        let result = run_one("t74-think", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "ok", "{}", result.error);
+        assert!(result.frontmatter.contains("thinking: 已调整为：中"), "{}", result.frontmatter);
+        let argv: Vec<String> = serde_json::from_str(&fs::read_to_string(&argv_file).unwrap()).unwrap();
+        let think_pos = argv.iter().position(|a| a == "--thinking").unwrap();
+        assert_eq!(argv[think_pos + 1], "medium", "{argv:?}");
         let _ = fs::remove_dir_all(root);
     }
 }

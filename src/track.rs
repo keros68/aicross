@@ -123,7 +123,7 @@ fn same_target(a: &GraphNode, b: &GraphNode) -> bool {
     }
 }
 
-/// 修正轮：父节点里有验收（验收要求修正后长出的），或任务文本以「[修正」
+/// 修正轮：父节点里有验收或验证（验收/验证要求修正后长出的），或任务文本以「[修正」
 /// 开头（验证命令未通过后的重试）。
 fn is_correction(graph: &Graph, node: &GraphNode) -> bool {
     is_retry_text(node)
@@ -131,7 +131,7 @@ fn is_correction(graph: &Graph, node: &GraphNode) -> bool {
             .parents
             .iter()
             .filter_map(|id| graph.nodes.get(id))
-            .any(|parent| role(parent) == "验收")
+            .any(|parent| matches!(role(parent), "验收" | "验证"))
 }
 
 fn acceptances_of<'a>(graph: &'a Graph, exec_id: &str) -> Vec<&'a GraphNode> {
@@ -144,23 +144,33 @@ fn acceptances_of<'a>(graph: &'a Graph, exec_id: &str) -> Vec<&'a GraphNode> {
     list
 }
 
-/// 链上的下一轮执行：验收要求修正后长出的执行，或同父、同人选、文本以
+fn reviews_of<'a>(graph: &'a Graph, exec_id: &str) -> Vec<&'a GraphNode> {
+    let mut list: Vec<&GraphNode> = graph
+        .nodes
+        .values()
+        .filter(|n| matches!(role(n), "验收" | "验证") && n.parents.iter().any(|p| p == exec_id))
+        .collect();
+    list.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    list
+}
+
+/// 链上的下一轮执行：验收或验证要求修正后长出的执行，或同父、同人选、文本以
 /// 「[修正」开头的验证重试；取最早建的、没被别的链占用的那个。
 /// 上限：蜂群里同一人选的多条执行同父时，验证重试按建立先后分给各链，
 /// 可能分错；要准确需要重试节点带上蜂群条目号。
 fn next_round<'a>(graph: &'a Graph, current: &GraphNode, used: &HashSet<String>) -> Option<&'a GraphNode> {
-    let accept_ids: HashSet<&str> = acceptances_of(graph, &current.id).iter().map(|n| n.id.as_str()).collect();
+    let review_ids: HashSet<&str> = reviews_of(graph, &current.id).iter().map(|n| n.id.as_str()).collect();
     let mut candidates: Vec<&GraphNode> = graph
         .nodes
         .values()
         .filter(|n| role(n) == "执行" && n.id != current.id && !used.contains(&n.id))
         .filter(|n| {
-            let from_acceptance = n.parents.iter().any(|p| accept_ids.contains(p.as_str()));
+            let from_review = n.parents.iter().any(|p| review_ids.contains(p.as_str()));
             let validation_retry = is_retry_text(n)
                 && n.parents == current.parents
                 && same_target(n, current)
                 && n.created_at > current.created_at;
-            from_acceptance || validation_retry
+            from_review || validation_retry
         })
         .collect();
     candidates.sort_by(|a, b| a.created_at.cmp(&b.created_at));
@@ -218,6 +228,16 @@ fn judge(graph: &Graph, last: &GraphNode, rounds: usize) -> Option<&'static str>
     }
     match status(last) {
         "done" => {
+            if reviews_of(graph, &last.id).into_iter().any(|review| {
+                role(review) == "验证"
+                    && status(review) == "done"
+                    && review
+                        .reply
+                        .as_ref()
+                        .is_some_and(|r| !crate::engine::parse_review(&r.text).errors.is_empty())
+            }) {
+                return Some(RESULT_NOT_PASSED);
+            }
             let acceptances = acceptances_of(graph, &last.id);
             let Some(accept) = acceptances.last() else {
                 return Some(RESULT_NO_ACCEPTANCE);
@@ -238,7 +258,7 @@ fn judge(graph: &Graph, last: &GraphNode, rounds: usize) -> Option<&'static str>
             })
         }
         "failed" if error_kind == "validation_failed" => Some(RESULT_NOT_PASSED),
-        "failed" | "quota_exhausted" => Some(RESULT_FAILED),
+        "failed" | "quota_exhausted" | "no_changes" => Some(RESULT_FAILED),
         _ => None,
     }
 }
@@ -871,5 +891,27 @@ mod tests {
         assert!(c["byKind"][0]["passRate"].is_null());
         assert_eq!(c["tags"][0], "frontend");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn task74_no_changes_and_verification_correction_chain() {
+        let no_changes = graph(vec![node("e1", &["root"], "执行", "m", "no_changes", "执行没有产物", "1")]);
+        assert_eq!(results(&no_changes), vec![(RESULT_FAILED, 1)]);
+
+        let verify_fixed = graph(vec![
+            node("e1", &["root"], "执行", "m", "done", "", "1"),
+            node("a1", &["e1"], "验收", "k", "done", "PASS", "2"),
+            node("v1", &["e1"], "验证", "c", "done", "## 会出错\n1. 越界。出错场景：空数组崩", "2"),
+            node("e2", &["v1"], "执行", "m", "done", "", "3"),
+            node("a2", &["e2"], "验收", "k", "done", "PASS", "4"),
+        ]);
+        assert_eq!(results(&verify_fixed), vec![(RESULT_FIXED_PASS, 2)]);
+
+        let verify_at_limit = graph(vec![
+            node("e1", &["root"], "执行", "m", "done", "", "1"),
+            node("a1", &["e1"], "验收", "k", "done", "PASS", "2"),
+            node("v1", &["e1"], "验证", "c", "done", "## 会出错\n1. 越界。出错场景：空数组崩", "2"),
+        ]);
+        assert_eq!(results(&verify_at_limit), vec![(RESULT_NOT_PASSED, 1)]);
     }
 }
