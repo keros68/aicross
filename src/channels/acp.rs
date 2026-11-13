@@ -467,13 +467,16 @@ impl AcpClient {
         } else {
             text
         };
-        let usage = parse_usage(response.pointer("/result/usage"));
+        let usage_node = response.pointer("/result/usage");
+        let usage = parse_usage(usage_node);
         Ok(AcpOutput {
             channel: ChannelOutput {
                 text,
                 session_id,
                 usage,
                 identity: reported_model(&response, model),
+                usage_unreported: self.agent == "kimi"
+                    && !matches!(usage_node, Some(value) if value.is_object()),
             },
             raw_stdout: raw,
             raw_stderr: self.process.take_stderr_text(),

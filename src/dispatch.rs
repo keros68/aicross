@@ -308,6 +308,63 @@ struct DispatchStateHeader {
     active_node_ids: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecordTokens {
+    Count(u64),
+    Unreported,
+}
+
+impl Default for RecordTokens {
+    fn default() -> Self {
+        Self::Count(0)
+    }
+}
+
+impl Serialize for RecordTokens {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Count(count) => serializer.serialize_u64(*count),
+            Self::Unreported => serializer.serialize_str("未报告"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RecordTokens {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RecordTokens;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a non-negative integer or \"未报告\"")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(RecordTokens::Count(value))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                u64::try_from(value)
+                    .map(RecordTokens::Count)
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Signed(value), &self))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                if value == "未报告" {
+                    return Ok(RecordTokens::Unreported);
+                }
+                if let Ok(parsed) = value.trim().parse::<u64>() {
+                    return Ok(RecordTokens::Count(parsed));
+                }
+                Err(E::invalid_value(serde::de::Unexpected::Str(value), &self))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 struct DispatchRecord {
@@ -337,9 +394,9 @@ struct DispatchRecord {
     started_at: String,
     ended_at: String,
     duration_ms: u64,
-    tokens_in: u64,
-    tokens_out: u64,
-    cache_read: u64,
+    tokens_in: RecordTokens,
+    tokens_out: RecordTokens,
+    cache_read: RecordTokens,
     identity: String,
     session_id: String,
     exit_code: Option<i32>,
@@ -3119,6 +3176,34 @@ fn run_one_attempt(
     if needs_oneshot {
         let _ = fs::write(&task_file, oneshot_outbound.as_bytes());
         let blind_files = blind && blind_has_uninlined_files(&oneshot_outbound, Some(&workdir), &material_names);
+        // TASK-74 阶段 3：Kimi 超过 24,000 个 UTF-16 码元不再裁剪，改为落盘到独立任务文件，
+        // 命令行只传单行短指路句；盲位置写盲目录 KIMI_TASK.md，共享/单写者写 .aicross/runs/<派发>/。
+        let cli_outbound = if channels::normalize_agent(&node.agent) == "kimi"
+            && oneshot_outbound.encode_utf16().count() > channels::KIMI_UTF16_PROMPT_LIMIT
+        {
+            if blind {
+                write_atomic(&workdir.join("KIMI_TASK.md"), oneshot_outbound.as_bytes())
+                    .map(|()| channels::kimi_pointer_prompt("KIMI_TASK.md"))
+            } else {
+                crate::project_dir::run_dir(&workdir, run_id).and_then(|(kimi_run_dir, _)| {
+                    let file_name = format!(
+                        "kimi-task-{}-{}.md",
+                        safe_name(&node.node_id),
+                        safe_name(attempt)
+                    );
+                    let path = kimi_run_dir.join(&file_name);
+                    let rel = path
+                        .strip_prefix(&workdir)
+                        .map_err(|e| format!("Kimi 任务文件相对路径计算失败：{e}"))?;
+                    write_atomic(&path, oneshot_outbound.as_bytes())?;
+                    Ok(channels::kimi_pointer_prompt(
+                        &rel.to_string_lossy().replace('\\', "/"),
+                    ))
+                })
+            }
+        } else {
+            Ok(oneshot_outbound.clone())
+        };
         // TASK-74：agy >= 1.5.0 在运行时目录（run_root/agy-settings）写入 --settings，
         // 绝不写进盲审工作目录或项目目录。
         let agy_settings_result = if channels::normalize_agent(&node.agent) == "agy" && agy_1_5 {
@@ -3135,27 +3220,29 @@ fn run_one_attempt(
         } else {
             Ok(None)
         };
-        match agy_settings_result.and_then(|agy_settings| {
-            channels::build_invocation_full(
-                &node.agent,
-                &node.provider,
-                &node.model,
-                &node.tier,
-                &node.thinking,
-                blind,
-                blind_files,
-                &node.write,
-                (!oneshot_session.is_empty()).then_some(oneshot_session.as_str()),
-                &oneshot_outbound,
-                Some(&task_file),
-                session_dir.as_deref(),
-                (!settings.cc_switch_path.trim().is_empty())
-                    .then(|| Path::new(settings.cc_switch_path.trim())),
-                writable,
-                channel_timeout,
-                agy_mode,
-                agy_settings.as_deref(),
-            )
+        match cli_outbound.and_then(|cli_prompt| {
+            agy_settings_result.and_then(|agy_settings| {
+                channels::build_invocation_full(
+                    &node.agent,
+                    &node.provider,
+                    &node.model,
+                    &node.tier,
+                    &node.thinking,
+                    blind,
+                    blind_files,
+                    &node.write,
+                    (!oneshot_session.is_empty()).then_some(oneshot_session.as_str()),
+                    &cli_prompt,
+                    Some(&task_file),
+                    session_dir.as_deref(),
+                    (!settings.cc_switch_path.trim().is_empty())
+                        .then(|| Path::new(settings.cc_switch_path.trim())),
+                    writable,
+                    channel_timeout,
+                    agy_mode,
+                    agy_settings.as_deref(),
+                )
+            })
         }) {
             Ok(invocation) => {
                 entered_channel = true;
@@ -3404,9 +3491,21 @@ fn run_one_attempt(
         started_at: started.to_rfc3339_opts(SecondsFormat::Secs, false),
         ended_at: ended.to_rfc3339_opts(SecondsFormat::Secs, false),
         duration_ms,
-        tokens_in: channel_output.usage.input,
-        tokens_out: channel_output.usage.output,
-        cache_read: channel_output.usage.cache_read,
+        tokens_in: if entered_channel && channel_output.usage_unreported {
+            RecordTokens::Unreported
+        } else {
+            RecordTokens::Count(channel_output.usage.input)
+        },
+        tokens_out: if entered_channel && channel_output.usage_unreported {
+            RecordTokens::Unreported
+        } else {
+            RecordTokens::Count(channel_output.usage.output)
+        },
+        cache_read: if entered_channel && channel_output.usage_unreported {
+            RecordTokens::Unreported
+        } else {
+            RecordTokens::Count(channel_output.usage.cache_read)
+        },
         identity: channel_output.identity.clone(),
         session_id: channel_output.session_id.clone(),
         exit_code,
@@ -4578,13 +4677,18 @@ fn validation_failure(code: Option<i32>, output: &str) -> String {
 }
 
 fn annotate_kimi_metadata(agent: &str, output: &mut ChannelOutput, runner_note: &mut String) {
-    if agent != "kimi" { return; }
+    if channels::normalize_agent(agent) != "kimi" { return; }
     if output.identity.is_empty() {
         output.identity = "kimi 不报真身".into();
     }
-    if output.usage.input == 0 && output.usage.output == 0 && output.usage.cache_read == 0 {
-        *runner_note = if runner_note.is_empty() { "kimi 不报用量".into() } else { format!("{runner_note}
-kimi 不报用量") };
+    if output.usage_unreported
+        || (output.text.is_empty()
+            && output.usage.input == 0
+            && output.usage.output == 0
+            && output.usage.cache_read == 0)
+    {
+        output.usage_unreported = true;
+        *runner_note = if runner_note.is_empty() { "kimi 不报用量".into() } else { format!("{runner_note}\nkimi 不报用量") };
     }
 }
 
@@ -5292,9 +5396,9 @@ mod tests {
             started_at: "2026-01-01T00:00:00+08:00".into(),
             ended_at: "2026-01-01T00:00:01+08:00".into(),
             duration_ms: 1000,
-            tokens_in: 10,
-            tokens_out: 3,
-            cache_read: 0,
+            tokens_in: RecordTokens::Count(10),
+            tokens_out: RecordTokens::Count(3),
+            cache_read: RecordTokens::Count(0),
             identity: "openai/gpt".into(),
             session_id: "s".into(),
             exit_code: Some(0),
@@ -5333,7 +5437,10 @@ mod tests {
         let restored: DispatchRecord = serde_yaml::from_str("node: legacy\n").unwrap();
         assert_eq!(restored.node, "legacy");
         assert_eq!(restored.runner, "oneshot");
-        assert_eq!((restored.stage, restored.tokens_in, restored.truncated), (0, 0, false));
+        assert_eq!((restored.stage, restored.tokens_in, restored.truncated), (0, RecordTokens::Count(0), false));
+        let unreported: DispatchRecord = serde_yaml::from_str("node: k\ntokens_in: 未报告\ntokens_out: 未报告\ncache_read: 未报告\n").unwrap();
+        assert_eq!(unreported.tokens_in, RecordTokens::Unreported);
+        assert!(serialize_frontmatter(&unreported).unwrap().contains("tokens_in: 未报告"));
     }
 
     #[test]
@@ -6104,9 +6211,9 @@ mod tests {
             started_at: "2026-01-01T00:00:00+08:00".into(),
             ended_at: "2026-01-01T00:00:01+08:00".into(),
             duration_ms: 1000,
-            tokens_in: 10,
-            tokens_out: 3,
-            cache_read: 0,
+            tokens_in: RecordTokens::Count(10),
+            tokens_out: RecordTokens::Count(3),
+            cache_read: RecordTokens::Count(0),
             identity: "openai/gpt".into(),
             session_id: "s".into(),
             exit_code: Some(0),
@@ -6690,7 +6797,10 @@ mod tests {
         let (record, reply, artifacts) = parse_record_file(&legacy).unwrap();
         assert_eq!(reply, "正文");
         assert!(artifacts.is_none());
-        assert_eq!((record.session_id.as_str(), record.runner.as_str(), record.tokens_in, record.tokens_out, record.cache_read), ("s", "acp", 2, 3, 4));
+        assert_eq!(
+            (record.session_id.as_str(), record.runner.as_str(), record.tokens_in, record.tokens_out, record.cache_read),
+            ("s", "acp", RecordTokens::Count(2), RecordTokens::Count(3), RecordTokens::Count(4))
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -10905,6 +11015,81 @@ mod tests {
             assert_eq!(err2.status, "error");
             assert!(err2.error.contains("纯文本盲审"), "{}", err2.error);
         });
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task74_kimi_long_prompt_uses_task_file_and_marks_unreported_usage() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t74-kimi-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+
+        let captured = root.join("captured.json");
+        let stub = root.join("kimi_stub.py");
+        fs::write(
+            &stub,
+            format!(
+                "import json, pathlib, re, sys\n\
+                 argv = sys.argv[1:]\n\
+                 p_arg = argv[argv.index('-p') + 1]\n\
+                 m = re.search(r'完整任务在 ([^，\\n]+)', p_arg)\n\
+                 task_text = (pathlib.Path.cwd() / m.group(1)).read_text(encoding='utf-8') if m else ''\n\
+                 pathlib.Path(r'{}').write_text(json.dumps({{'cwd': str(pathlib.Path.cwd()), 'p_arg': p_arg, 'task_text': task_text}}, ensure_ascii=False), encoding='utf-8')\n\
+                 print(json.dumps({{'role': 'meta', 'type': 'system.version', 'version': '2.6.0'}}))\n\
+                 print(json.dumps({{'role': 'assistant', 'content': 'PASS：已读取完整任务'}}, ensure_ascii=False))\n\
+                 print(json.dumps({{'role': 'meta', 'type': 'session.resume_hint', 'session_id': 'session_t74_kimi'}}))\n",
+                captured.display()
+            ),
+        )
+        .unwrap();
+
+        let settings = DispatchSettings { timeout_secs: 10, write_project_dispatch: true, ..DispatchSettings::default() };
+        let provider = format!("__aicross_test__||{}", stub.display());
+        let long_prompt = format!("{}\n{}", "中".repeat(25_000), "中段标记-74KIMI");
+
+        let mut blind_req = node(Vec::new());
+        blind_req.node_id = "kimi-blind".into();
+        blind_req.agent = "kimi".into();
+        blind_req.provider = provider.clone();
+        blind_req.model = "kimi-code/k".into();
+        blind_req.prompt = long_prompt.clone();
+        let res_blind = run_one("t74-kimi-blind", &project, &run_root, &log_dir, &settings, blind_req);
+        assert_eq!(res_blind.status, "ok", "{}", res_blind.error);
+        let c1: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
+        let p1 = c1["p_arg"].as_str().unwrap();
+        assert_eq!(p1, "完整任务在 KIMI_TASK.md，先读完再按其要求完成。");
+        assert!(c1["task_text"].as_str().unwrap().contains("中段标记-74KIMI"));
+        assert!(PathBuf::from(c1["cwd"].as_str().unwrap()).join("KIMI_TASK.md").is_file());
+        assert!(!project.join("KIMI_TASK.md").exists());
+        assert!(res_blind.frontmatter.contains("tokens_in: 未报告"), "{}", res_blind.frontmatter);
+        assert!(res_blind.frontmatter.contains("tokens_out: 未报告"), "{}", res_blind.frontmatter);
+        assert!(res_blind.frontmatter.contains("cache_read: 未报告"), "{}", res_blind.frontmatter);
+        assert!(res_blind.runner_note.contains("kimi 不报用量"), "{}", res_blind.runner_note);
+        let record_body = fs::read_to_string(&res_blind.dispatch_file).unwrap();
+        assert!(record_body.contains("中段标记-74KIMI"));
+
+        let mut shared_req = node(Vec::new());
+        shared_req.node_id = "kimi-shared".into();
+        shared_req.agent = "kimi".into();
+        shared_req.provider = provider;
+        shared_req.model = "kimi-code/k".into();
+        shared_req.visibility = "共享".into();
+        shared_req.write = "只读".into();
+        shared_req.prompt = long_prompt;
+        let res_shared = run_one("t74-kimi-shared", &project, &run_root, &log_dir, &settings, shared_req);
+        assert_eq!(res_shared.status, "ok", "{}", res_shared.error);
+        let c2: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
+        let p2 = c2["p_arg"].as_str().unwrap();
+        assert!(!p2.contains('\n'));
+        assert!(p2.starts_with("完整任务在 .aicross/runs/") && p2.contains("/kimi-task-kimi-shared-主.md，"), "{p2}");
+        assert!(c2["task_text"].as_str().unwrap().contains("中段标记-74KIMI"));
+        assert!(!project.join("KIMI_TASK.md").exists());
+        assert!(!project.join("kimi-task-kimi-shared-主.md").exists());
 
         let _ = fs::remove_dir_all(root);
     }

@@ -310,16 +310,36 @@ class TestChannels(DBase):
             r4 = dispatch.call(agy, "材料", str(self.home), 120, "high", "p")
         self.assertEqual((r4["status"], r4["error"]), ("error", "回答超过输出上限"))
 
-    def test_kimi_over_argv_limit_is_skipped_without_calling(self):
+    def test_kimi_over_utf16_limit_writes_task_file_and_marks_unreported_usage(self):
         kimi = inventory.describe({"id": "kimi.moonshot", "channel": "kimi", "kind": "cli", "vendor": "Moonshot",
                                    "billing": "subscription", "tiers": {"high": "kimi-code/k3"}}, "high")
-        with self.fake({}):
-            r = dispatch.call(kimi, "字" * 11000, str(self.home), 5, "high", "p")
-        self.assertEqual((r["status"], self.calls), ("skipped", []))
-        out = jl({"role": "meta", "type": "system.version"}, {"role": "assistant", "content": "收到"})
-        with self.fake({"": (0, out, "")}):
-            r = dispatch.call(kimi, "短材料", str(self.home), 5, "high", "p")
-        self.assertEqual((r["status"], r["answer"]), ("ok", "收到"))
+        out = jl(
+            {"role": "meta", "type": "system.version", "version": "2.6.0"},
+            {"role": "assistant", "content": "已读完"},
+        )
+        seen_task = {}
+        long_prompt = ("字" * 24001) + "\n中段标记"
+
+        def fake_long(cmd, cwd, timeout, stdin_text=None):
+            seen_task["cmd"] = cmd
+            seen_task["cwd"] = cwd
+            seen_task["text"] = (Path(cwd) / "KIMI_TASK.md").read_text(encoding="utf-8")
+            return 0, out, "", None
+
+        with mock.patch.object(dispatch, "run_process", fake_long):
+            r = dispatch.call(kimi, long_prompt, str(self.home), 5, "high", "p")
+        self.assertEqual((r["status"], r["answer"]), ("ok", "已读完"))
+        self.assertEqual((r["tokens_in"], r["tokens_out"], r["cache_read"]), ("未报告", "未报告", "未报告"))
+        self.assertEqual(seen_task["cmd"][2], "完整任务在 KIMI_TASK.md，先读完再按其要求完成。")
+        self.assertEqual(seen_task["text"], long_prompt)
+        trace = dispatch.write_trace(self.home, "20261113-t", kimi, r, long_prompt, [], 0, Path(seen_task["cwd"]), "复核", True)
+        self.assertIn('tokens_in: "未报告"', trace.read_text(encoding="utf-8"))
+        out_with_usage = jl(
+            {"role": "assistant", "content": "收到", "usage": {"input_tokens": 11, "output_tokens": 2, "cache_read_tokens": 3}},
+        )
+        with self.fake({"": (0, out_with_usage, "")}):
+            r2 = dispatch.call(kimi, "短材料", str(self.home), 5, "high", "p")
+        self.assertEqual((r2["status"], r2["answer"], r2["tokens_in"], r2["tokens_out"], r2["cache_read"]), ("ok", "收到", 11, 2, 3))
         self.assertEqual(self.calls[0][0][2], "短材料")
 
     def test_kimi_runs_in_one_fixed_emptied_dir(self):

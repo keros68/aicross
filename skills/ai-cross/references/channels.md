@@ -135,7 +135,7 @@ kimi --version && kimi -p "只回复OK" -m kimi-code/kimi-for-coding-highspeed
 
 - **模型别名不要手抄，读本地事实源**：`~/.kimi-code/config.toml` 的 `[models."…"]` 段完整列出当前可用别名、真实模型 ID、上下文长度、effort 支持——派发前读它，别依赖本文件记的值。本机 2026-07-17 实测三个：`kimi-code/k3`（1M，efforts low/high/max）、`kimi-code/kimi-for-coding`（K2.7，256k）、`kimi-code/kimi-for-coding-highspeed`（K2.7 高速）。
 - **⚠️ 无只读档（0.26.0 实测）**：`-p` 模式**不加 `-y` 也默认可写盘**（实测让它建文件，直接 Write 成功落盘）；`--plan` 与 `-p` 互斥（`error: Cannot combine --prompt with --plan`）；`--help` 无 tools 白名单参数。护栏只剩**工作目录隔离**：每次派发在专用空目录里跑（审查材料拷进去），**绝不在宿主项目目录里跑 kimi 并发派发**。**目录隔离只防相对路径误写，不是沙箱**——kimi 仍可按绝对路径写任何位置，不要对用户暗示这是"只读"。敏感工作区的咨询/审查任务，优先走有硬白名单的 `claude -p --tools Read,Grep,Glob` + Kimi 端点覆写（下方 coding plan 通道，需 API key）。
-- **⚠️ 没有大输入入口（0.38.0 实测，2026-08-24）**：`-p` 只收 argv，**管道 stdin 被完全忽略**（实测 `echo "口令 PANDA-4417" | kimi -p "看到口令就回答它"` → 答 NONE），`--help` 也无 `--prompt-file`。于是 Windows 命令行 ≈32KB 的硬顶对 kimi 成了**没有出口的硬顶**——同一堵墙 `claude -p` 和 `codex exec` 都能靠 stdin 绕开，kimi 绕不过去。**>1 万汉字的材料别派给 kimi CLI**：走 `cc_switch.py exec --task-file` 或 `codex exec < file`，或分块。这不是模型能力问题，是壳少一个入口（壳 ≠ 模型的又一实例）。详见上方「大材料怎么交给被派方」。
+- **大输入处理（0.38.0 起无 stdin 入口）**：`-p` 只收 argv，管道 stdin 被忽略（实测 `echo "口令 PANDA-4417" | kimi -p "看到口令就回答它"` → 答 NONE），`--help` 也无 `--prompt-file`。因此当提示词超过 **24,000 个 UTF-16 码元**时，派发器把完整提示词写入任务文件（引擎盲位置与 `dispatch.py` 写工作目录 `KIMI_TASK.md`；引擎共享与单写者写项目 `.aicross/runs/<派发>/`），`-p` 只传一句单行短指路句让它先读该文件再完成任务；`dispatch.py` 下工作区目录保持隔离清理，引擎共享位置也不在项目根目录留临时文件。kimi 2.6.0 `--output-format stream-json` 实测不返回 `usage` 字段，派发记录的用量字段记为「未报告」（不再记 0）。
 - **思考关不掉**：`config.toml` 里 k3/K2.7 的 capabilities 均含 `always_thinking`，`[thinking] enabled = true`。即每次派发都付思考 token，**kimi 不能作为"关思考的便宜执行者"用**。实测 k3 可见输出吞吐 ~33 tok/s（1261 字 / 34s），长产出任务的耗时大头在解码，不在预填。
 - **会主动读工作目录里的无关文件**（0.38.0 实测）：一次派发中它自行打开了 cwd 里残留的 `prompt.txt`，还在思考里纠结"这文件说不要调工具"。**目录隔离不只防误写盘，也防上下文污染**——作为验证者派发时，cwd 里的脏文件会破坏盲验。
 - **超长行文件（0.26.0 实测，0.38.0 已不复现）**：旧版 Read 工具对单行数千字符的 Markdown 反复返回截断预览，10 轮零产出。0.38.0 复测（单行 20000 字符）模型改用 Bash `tail` 绕开，16.6s 正常完成。**若再遇到零产出**，仍按老办法把材料按 ≤100 字符换行（`textwrap.wrap`）后重派——这是升级阶梯第①条「先查输入是否送达」的实例。
@@ -486,4 +486,4 @@ error: ""
 - `truncated`：输出撞上上限时置位，不静默丢弃——结论被无声截半是判分事故的来源。
 - `redacted`：外发前对 prompt 与材料做脱敏替换的命中次数，六类：私钥块、`Authorization: Bearer`、`password=`、`token/api_key/secret_key/access_key=`、`AKIA…`、带凭据的数据库 URL。
 - 手工派发（skill 侧）至少填 `schema/agent/model/role/visibility/isolation/status/started_at/duration_ms/tokens_in/tokens_out`，其余留空串或 0。
-- `dispatch.py` 写的留痕：`run_id` 用派发时间戳，`node` 是 manifest 条目名，「原始输出」一节放解析出的回答正文，通道的原始事件流另存为同名 `.raw.txt`；kimi 不报用量，token 记 0。
+- `dispatch.py` 写的留痕：`run_id` 用派发时间戳，`node` 是 manifest 条目名，「原始输出」一节放解析出的回答正文，通道的原始事件流另存为同名 `.raw.txt`；kimi 不报用量时，token 记 `"未报告"`。

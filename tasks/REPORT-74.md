@@ -250,6 +250,64 @@
 
 - `--settings` 在受信任目录内拒绝 `write_to_file` 与「盲位置单写者改 `hello.txt`」均在 Windows 11 + `agy 1.5.6` 上实测；macOS / Linux 的路径前缀格式未实测。
 
-## 阶段 3
+## 阶段 3：Kimi
 
-未做。
+### 改动清单
+
+- `src/channels/mod.rs`、`src/channels/acp.rs`：
+  - 删除 `crop_utf8_bytes` 及 `"kimi"` 分支对提示词的 30,000 字节裁剪，改为原样传入（短提示词直接走 `-p`，长提示词由上层写文件后传单行指路句）。
+  - 新增 `KIMI_UTF16_PROMPT_LIMIT = 24_000` 与 `kimi_pointer_prompt(relative_path)`（生成单行句 `完整任务在 <相对路径>，先读完再按其要求完成。`）。
+  - `ChannelOutput` 新增 `usage_unreported: bool`：`parse_claude` 与 `parse_pi` 显式设为 `false`；`parse_kimi` / `collect_kimi_fields` 追踪 `saw_usage`（仅 JSON Object 类型的 `usage` 才置位），无用量字段时置 `usage_unreported = true`；`acp.rs` 针对 `kimi` 检查 `/result/usage` 是否为对象，缺失时同样置 `usage_unreported = true`。
+- `src/dispatch.rs`：
+  - 新增枚举 `RecordTokens`（`Count(u64)` 序列化为数字，`Unreported` 序列化为 `"未报告"` 并可反序列化回原值），将 `DispatchRecord` 的 `tokens_in`、`tokens_out`、`cache_read` 由 `u64` 改为 `RecordTokens`（`DispatchNodeResult` 保持 `u64` 不变）。
+  - 更新 `annotate_kimi_metadata` 与 `DispatchRecord` 构建：当进入 Kimi 通道且 `usage_unreported` 为真（或 Kimi 返回全空结果）时，前三个用量字段在派发记录 frontmatter 中写出 `未报告`，同时保留 `runner_note: kimi 不报用量`；若上游返回了明确的 `usage` 对象则按实数写入。
+  - 在 `run_one_attempt` 的一次性派发路径中，当标准化代理为 `kimi` 且外发提示词超过 `24,000` 个 UTF-16 码元时，保留 `## 任务全文` 与 `task_file` 为完整原文，同时写入独立任务文件并向命令行仅传 `kimi_pointer_prompt`：
+    - 盲位置写盲目录 `KIMI_TASK.md`（不修改 `materials` 列表）；
+    - 共享与单写者位置经 `project_dir::run_dir` 写入 `<工作目录>/.aicross/runs/<派发>/kimi-task-<节点>-<尝试>.md`，不在项目根目录建文件。
+- `skills/ai-cross/references/dispatch.py`、`skill-bundle/` 与文档：
+  - `dispatch.py` 将 `KIMI_ARGV_LIMIT = 30000` 改为 `KIMI_UTF16_PROMPT_LIMIT = 24000`；`call_kimi` 不再跳过超长材料，而是在隔离目录 `kimi_oneshot_dir` 内超过 24,000 个 UTF-16 码元时写出 `KIMI_TASK.md`，`-p` 只传单行指路句；解析 `stream-json` 时若无任何 `usage` 字典，将 `tokens_in` / `tokens_out` / `cache_read` 置为 `"未报告"`，否则提取 `usage` 数值。
+  - 更新 [CONSOLE-CHANNEL.md](file:///D:/work/aicross-task74/docs/CONSOLE-CHANNEL.md) 与 [channels.md](file:///D:/work/aicross-task74/skills/ai-cross/references/channels.md) 中关于 Kimi 提示词传递和用量记录的说明，并运行 `python scripts/sync-skill.py` 同步 `skill-bundle/ai-cross`。
+
+### 现有测试修改逐条说明（按任务书要求记录）
+
+- `src/channels/mod.rs`：
+  - 将原 `kimi_crops_more_than_30000_utf8_bytes` 与 `kimi_crop_keeps_honest_closing_at_end` 替换为 `kimi_invocation_does_not_crop_prompt_and_pointer_is_single_line`：原两个测试断言超过 30,000 UTF-8 字节时调用方会被裁剪并出现裁剪标记；按阶段 3 要求删除裁剪逻辑后，改为验证 `build_invocation_spec` 不再裁剪长提示词，以及 `kimi_pointer_prompt` 生成单行且低于 24,000 UTF-16 码元的指路句。
+  - 在 `kimi_reads_plain_string_assistant_content_and_resume_hint` 补加 `assert!(parsed.usage_unreported)`，并在 `kimi_collects_stream_usage_when_present` 补加 `assert!(!parsed.usage_unreported)`；另新增基于 2.6.0 真机输出形状的 `kimi_marks_unreported_usage_when_stream_omits_usage_2_6`。
+- `src/dispatch.rs`：
+  - 因 `DispatchRecord` 的 `tokens_in` / `tokens_out` / `cache_read` 类型由 `u64` 改为 `RecordTokens`，同步更新 `task08a_dispatch_record_swarm_fields_roundtrip`、`task07_dispatch_record_all_legacy_fields_default_instead_of_unknown`、`task05b_r2_dispatch_record_records_write_and_fallback_skipped`（struct 字面量）、`task06_reconcile_parses_embedded_heading_and_legacy_record` 四处测试中的 `u64` 为 `RecordTokens::Count(...)`；并在 `task07_dispatch_record_all_legacy_fields_default_instead_of_unknown` 中追加 `未报告` YAML 的序列化与反序列化验证；另新增 `task74_kimi_long_prompt_uses_task_file_and_marks_unreported_usage` 覆盖盲目录与共享目录两条任务文件路径及记录字段。
+- `skills/ai-cross/tests/test_dispatch.py`：
+  - 将原 `test_kimi_over_argv_limit_is_skipped_without_calling` 替换为 `test_kimi_over_utf16_limit_writes_task_file_and_marks_unreported_usage`：原测试断言超过 30,000 字节时返回 `skipped` 且不拉起进程；改为写任务文件后再传单行指路句后，对应改为用 `mock.patch.object(dispatch, "run_process", ...)` 验证 `> 24,000` UTF-16 码元时向 `KIMI_TASK.md` 写入原文、`-p` 收到单行指路句、无 `usage` 时三项用量与留痕 frontmatter 均为 `"未报告"`，以及带 `usage` 时保留数值。
+
+### 实测与验证结果
+
+- 真机 `kimi 2.6.0` 短探针（`kimi -p "只回复OK" -m kimi-code/kimi-for-coding-highspeed --output-format stream-json`）：退出码 `0`，实际输出仅 3 行 JSON（无任何 `usage` 字段）：
+
+  ```json
+  {"role":"meta","type":"system.version","version":"2.6.0"}
+  {"role":"assistant","content":"OK"}
+  {"role":"meta","type":"session.resume_hint","session_id":"session_7818f337-aed7-417e-94d1-2c2b0e94a09e","command":"kimi -r session_7818f337-aed7-417e-94d1-2c2b0e94a09e","content":"To resume this session: kimi -r session_7818f337-aed7-417e-94d1-2c2b0e94a09e"}
+  ```
+
+- skill 同步与测试（定稿后实跑）：
+  - `python scripts/sync-skill.py`：`已同步 21 个文件：D:\work\aicross-task74\skills\ai-cross -> D:\work\aicross-task74\skill-bundle\ai-cross`。
+  - `cd skills/ai-cross && python -m pytest -q tests`：`83 passed in 4.74s`。
+- 后端检查、全量单测与构建（定稿后实跑）：
+  - `cargo check`：`Finished dev profile [unoptimized + debuginfo] target(s) in 2.12s`，零警告。
+  - `cargo test`：
+
+    ```text
+    test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    test result: ok. 793 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 72.27s
+    ```
+
+  - `cargo build`：`Finished dev profile [unoptimized + debuginfo] target(s) in 10.55s`。
+- 真机 89 KB 中文提示词盲审验证（使用 `D:\work\aicross-task74\target\debug\aicross.exe`）：
+  - 构造 `89,333` 字节（`30,293` 个 UTF-16 码元，共 250 节）中文材料并在第 125 节正中嵌入唯一核验口令 `【中段核验口令：青松石上流泉-7493】`，以 `--preset blind --kind other --seat 1.1=kimi::kimi-code/kimi-for-coding-highspeed --seat 1.2=pi:opencode-go:deepseek-v4.1-flash --seat 1.3=agy::gemini-4-carbon-medium` 发起派发（`run_id: cae33a52-1068-40ed-a370-a5dff9b65375`，`status: done`）。
+  - Kimi 盲目录实测生成了 `KIMI_TASK.md`（`90,513` 字节），Kimi 调用工具从盲目录读到第 250 节后返回 `status: ok`（`exit_code: 0`，`duration_ms: 37388`）：
+    - 回复正文准确写出：`中段核验口令：**青松石上流泉-7493**`、`材料节数：**250 节**（第 1 节至第 250 节）`；
+    - 留痕 frontmatter 实录：`tokens_in: 未报告`、`tokens_out: 未报告`、`cache_read: 未报告`、`runner_note: kimi 不报用量`、`identity: kimi 不报真身`；`## 任务全文` 保留完整长文。
+
+### 未做与不确定处
+
+- 共享与单写者位置写 `.aicross/runs/<派发>/kimi-task-*.md` 的路径已由 Python 桩集成单测 `task74_kimi_long_prompt_uses_task_file_and_marks_unreported_usage` 覆盖，未再单独拉起真机 Kimi 非盲派发；Kimi ACP 通道在本阶段未另做真机复测。
+- 上述真机验证仅在 Windows 11 + `kimi 2.6.0` 下执行。

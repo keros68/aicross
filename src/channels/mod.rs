@@ -63,6 +63,7 @@ pub struct ChannelOutput {
     pub usage: Usage,
     pub identity: String,
     pub session_id: String,
+    pub usage_unreported: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -544,10 +545,9 @@ fn build_invocation_spec_with_blind_files(
             if !model.contains('/') {
                 return Err("Kimi 模型请使用 config.toml 里的别名".into());
             }
-            let prompt = crop_utf8_bytes(prompt, 30_000);
             let mut args = vec![
                 "-p".into(),
-                prompt,
+                prompt.into(),
                 "-m".into(),
                 model.into(),
                 "--output-format".into(),
@@ -645,23 +645,11 @@ fn build_invocation_spec_with_blind_files(
     }
 }
 
-fn crop_utf8_bytes(text: &str, limit: usize) -> String {
-    if text.len() <= limit {
-        return text.to_string();
-    }
-    const MARKER: &str = "\n...[已裁剪以适配 Kimi 30000 字节上限]...\n";
-    let available = limit.saturating_sub(MARKER.len());
-    let front_budget = available * 3 / 5;
-    let back_budget = available - front_budget;
-    let mut front = front_budget.min(text.len());
-    while !text.is_char_boundary(front) {
-        front -= 1;
-    }
-    let mut back_start = text.len().saturating_sub(back_budget);
-    while back_start < text.len() && !text.is_char_boundary(back_start) {
-        back_start += 1;
-    }
-    format!("{}{}{}", &text[..front], MARKER, &text[back_start..])
+pub const KIMI_UTF16_PROMPT_LIMIT: usize = 24_000;
+
+/// 生成超长 Kimi 提示词的短指路句（单行，安全穿过 Windows argv）。
+pub fn kimi_pointer_prompt(relative_path: &str) -> String {
+    format!("完整任务在 {relative_path}，先读完再按其要求完成。")
 }
 
 fn is_command_script(path: &Path) -> bool {
@@ -838,6 +826,7 @@ fn parse_claude(result: &ProcessResult) -> Result<ChannelOutput, String> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        usage_unreported: false,
     })
 }
 
@@ -999,6 +988,7 @@ fn parse_pi(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        usage_unreported: false,
     })
 }
 
@@ -1010,6 +1000,7 @@ fn pi_error_text(result: &ProcessResult, fallback: &str) -> String {
 fn parse_kimi(result: &ProcessResult) -> Result<ChannelOutput, String> {
     let mut texts = Vec::new();
     let mut usage = Usage::default();
+    let mut saw_usage = false;
     let mut hinted_session = String::new();
     for value in json_lines(&result.stdout) {
         // 0.42.0 实测：最终回答是 {"role":"assistant","content":"<纯字符串>"}，
@@ -1031,7 +1022,7 @@ fn parse_kimi(result: &ProcessResult) -> Result<ChannelOutput, String> {
                 hinted_session = id.to_string();
             }
         }
-        collect_kimi_fields(&value, &mut texts, &mut usage);
+        collect_kimi_fields(&value, &mut texts, &mut usage, &mut saw_usage);
     }
     let text = texts
         .into_iter()
@@ -1052,11 +1043,17 @@ fn parse_kimi(result: &ProcessResult) -> Result<ChannelOutput, String> {
         text,
         usage,
         session_id: resume,
+        usage_unreported: !saw_usage,
         ..ChannelOutput::default()
     })
 }
 
-fn collect_kimi_fields(value: &Value, output: &mut Vec<String>, usage: &mut Usage) {
+fn collect_kimi_fields(
+    value: &Value,
+    output: &mut Vec<String>,
+    usage: &mut Usage,
+    saw_usage: &mut bool,
+) {
     match value {
         Value::Object(map) => {
             if map.get("type").and_then(Value::as_str) == Some("text") {
@@ -1065,15 +1062,18 @@ fn collect_kimi_fields(value: &Value, output: &mut Vec<String>, usage: &mut Usag
                 }
             }
             if let Some(current) = map.get("usage") {
+                if current.is_object() {
+                    *saw_usage = true;
+                }
                 merge_usage(usage, current);
             }
             for child in map.values() {
-                collect_kimi_fields(child, output, usage);
+                collect_kimi_fields(child, output, usage, saw_usage);
             }
         }
         Value::Array(values) => {
             for child in values {
-                collect_kimi_fields(child, output, usage);
+                collect_kimi_fields(child, output, usage, saw_usage);
             }
         }
         _ => {}
@@ -1431,7 +1431,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_crops_more_than_30000_utf8_bytes() {
+    fn kimi_invocation_does_not_crop_prompt_and_pointer_is_single_line() {
         let prompt = "中".repeat(10_001);
         let invocation = build_invocation_spec(
             "kimi",
@@ -1448,28 +1448,11 @@ mod tests {
             false,
         )
         .unwrap();
-        let sent = &invocation.args[1];
-        assert!(sent.len() <= 30_000);
-        assert!(sent.contains("已裁剪以适配 Kimi"));
-        assert!(sent.is_char_boundary(sent.len()));
-    }
-
-    /// fix-fullcheck 第二轮 3：超长提示词裁剪后，Kimi 实际收到的文本仍以
-    /// 如实汇报收尾句结尾，且不超过 30000 字节。
-    #[test]
-    fn kimi_crop_keeps_honest_closing_at_end() {
-        let honest = crate::engine::HONEST_REPORTING;
-        for body in ["中".repeat(20_000), "a".repeat(60_000)] {
-            let prompt = format!("{body}\n\n{honest}");
-            let invocation = build_invocation_spec(
-                "kimi", "", "kimi-code/k", "中", "中", true, None, &prompt, None, None, None, false,
-            )
-            .unwrap();
-            let sent = &invocation.args[1];
-            assert!(sent.len() <= 30_000, "{}", sent.len());
-            assert!(sent.ends_with(honest), "{}", &sent[sent.len().saturating_sub(200)..]);
-            assert_eq!(sent.matches(honest).count(), 1);
-        }
+        assert_eq!(invocation.args[1], prompt);
+        let pointer = kimi_pointer_prompt(".aicross/runs/r1/kimi-task-n1.md");
+        assert!(!pointer.contains('\n'));
+        assert!(pointer.contains(".aicross/runs/r1/kimi-task-n1.md"));
+        assert!(pointer.encode_utf16().count() < KIMI_UTF16_PROMPT_LIMIT);
     }
 
     #[test]
@@ -1710,6 +1693,22 @@ mod tests {
         assert_eq!(parsed.text, "# 审查意见\n\n结论正文");
         assert!(!parsed.text.contains("材料原文"));
         assert_eq!(parsed.session_id, "session_ce1012b1");
+        assert!(parsed.usage_unreported);
+    }
+
+    #[test]
+    fn kimi_marks_unreported_usage_when_stream_omits_usage_2_6() {
+        let output = concat!(
+            "{\"role\":\"meta\",\"type\":\"system.version\",\"version\":\"2.6.0\"}\n",
+            "{\"role\":\"assistant\",\"content\":\"OK\"}\n",
+            "{\"role\":\"meta\",\"type\":\"session.resume_hint\",\"session_id\":\"session_7818f337\",\"command\":\"kimi -r session_7818f337\",\"content\":\"To resume this session: kimi -r session_7818f337\"}\n"
+        );
+        let parsed = parse_kimi(&result(output)).unwrap();
+        assert_eq!(parsed.text, "OK");
+        assert!(parsed.usage_unreported);
+        assert_eq!(parsed.usage.input, 0);
+        assert_eq!(parsed.usage.output, 0);
+        assert_eq!(parsed.usage.cache_read, 0);
     }
 
     #[test]
@@ -1720,6 +1719,7 @@ mod tests {
         );
         let parsed = parse_kimi(&result(output)).unwrap();
         assert_eq!(parsed.text, "OK");
+        assert!(!parsed.usage_unreported);
         assert_eq!(parsed.usage.input, 12);
         assert_eq!(parsed.usage.output, 3);
         assert_eq!(parsed.usage.cache_read, 4);
