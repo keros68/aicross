@@ -1,9 +1,19 @@
-//! agent 支持清单（TASK-61）：资源库探测、派发通道与推荐共用的一张表。
+//! agent 支持清单（TASK-61 / TASK-74）：资源库探测、派发通道与推荐共用的一张表。
 //!
 //! 每项写明命令名、版本参数、模型清单从哪读、官网，以及两条派发约束：
 //! `blind_only`（只接盲位置）与 `untested`（命令模板只照官方文档写、没在
 //! 真机跑通；一键推荐不选）。表随软件版本发布，新增 agent 在这里加一行，
 //! 再在 `resources` 的模型清单读法与 `channels` 的命令模板里各补一处。
+//!
+//! Antigravity（`agy`）实测分版本处理：
+//! - `< 1.5.0`（2026-09-16 1.2.3/1.3.1 实测）：无头模式下工具全被拒，只接盲位置且
+//!   只能接收内联纯文本。
+//! - `>= 1.5.0`（2026-11-13 1.5.6 实测）：无头模式下 read 工具可用（含 >300 KB
+//!   文件分页读取）；`--settings <file>` 配合 `permissions.deny` 可在
+//!   `trustedWorkspaces` 内禁止写盘与命令；`permissions.allow: ["write_file(<dir>/)"]`
+//!   （正斜杠加结尾 `/`、不支持 `*` 通配）配合 `deny: ["command","unsandboxed","run_command"]`
+//!   可放行单写者目录内写文件且禁止命令；不支持需要跑命令的 `worktree` 位置；
+//!   绝不传 `--dangerously-skip-permissions`。
 
 use std::path::PathBuf;
 
@@ -58,6 +68,8 @@ pub(crate) struct SupportedAgent {
 }
 
 pub(crate) const UNTESTED_BLIND_ONLY: &str = "未实测通道只接盲（只读、看不到项目）位置";
+pub(crate) const AGY_BLIND_ONLY_REASON: &str = "Antigravity 无头模式下工具全被拒，只能做纯文本盲审";
+pub(crate) const AGY_NO_WORKTREE_REASON: &str = "Antigravity 无头模式不能执行命令，不支持 worktree 位置";
 
 pub(crate) const SUPPORTED_AGENTS: &[SupportedAgent] = &[
     SupportedAgent {
@@ -122,7 +134,8 @@ pub(crate) const SUPPORTED_AGENTS: &[SupportedAgent] = &[
         homepage: "https://antigravity.google",
         untested: false,
         native: true,
-        blind_only: Some("Antigravity 无头模式下工具全被拒，只能做纯文本盲审"),
+        // < 1.5.0 兜底说明；>= 1.5.0 按版本号在 seat_violation_for 中放开盲 / 只读 / 单写者。
+        blind_only: Some(AGY_BLIND_ONLY_REASON),
         core: false,
     },
     SupportedAgent {
@@ -196,26 +209,84 @@ pub(crate) fn is_untested(id: &str) -> bool {
     find(id).is_some_and(|agent| agent.untested)
 }
 
-/// 只能看到 stdin 文字、读不了任何文件的 agent（agy：无头下工具全被拒）。
-/// 派给它的材料必须全部内联进提示词；要读项目副本的验收位它做不了。
+/// 解析 agy 版本号是否达到 `1.5.0`（支持读文件与 `--settings` 权限控制）。
+pub(crate) fn agy_at_least_1_5(version: Option<&str>) -> bool {
+    let Some(raw) = version else {
+        return false;
+    };
+    let trimmed = raw.trim().trim_start_matches(['v', 'V']);
+    let mut parts = trimmed.split('.');
+    let Some(major) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+        return false;
+    };
+    let minor = parts
+        .next()
+        .map(|part| {
+            let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u32>().ok()
+        })
+        .unwrap_or(Some(0));
+    let Some(minor) = minor else {
+        return false;
+    };
+    (major, minor) >= (1, 5)
+}
+
+/// 只能看到 stdin 文字、读不了任何文件的 agent（`< 1.5.0` 的 agy：无头下工具全被拒）。
+/// `>= 1.5.0` 可读文件，不再算纯文本通道。
+pub(crate) fn is_text_only_for(id: &str, agy_version: Option<&str>) -> bool {
+    find(id).is_some_and(|agent| agent.id == "agy") && !agy_at_least_1_5(agy_version)
+}
+
+/// 兼容不传版本的既有调用方（按 `< 1.5.0` 处理）。
 pub(crate) fn is_text_only(id: &str) -> bool {
-    find(id).is_some_and(|agent| agent.id == "agy")
+    is_text_only_for(id, None)
 }
 
-/// 位置硬规则（TASK-61）：只接盲位置的 agent 落在可见性不是「盲」的位置时
-/// 返回原因。set-seat、set-role、`config show` 与派发共用这一条。
+/// 位置硬规则（TASK-61 / TASK-74）：
+/// - `< 1.5.0` 的 agy 与未实测四家：只接盲位置；
+/// - `>= 1.5.0` 的 agy：支持盲 / 只读 / 单写者位置，不支持需要跑命令的 `worktree` 位置。
+pub(crate) fn seat_violation_for(
+    agent: &str,
+    visibility: &str,
+    write: &str,
+    agy_version: Option<&str>,
+) -> Option<&'static str> {
+    let Some(entry) = find(agent) else {
+        return None;
+    };
+    if entry.id == "agy" {
+        if !agy_at_least_1_5(agy_version) {
+            return (visibility != "盲").then_some(AGY_BLIND_ONLY_REASON);
+        }
+        return if visibility == "盲" || matches!(write, "" | "只读" | "单写者") {
+            None
+        } else {
+            Some(AGY_NO_WORKTREE_REASON)
+        };
+    }
+    (visibility != "盲").then_some(entry.blind_only).flatten()
+}
+
+/// 兼容只传可见性的既有调用方（agy 按 `< 1.5.0` 处理）。
+#[cfg(test)]
 pub(crate) fn seat_violation(agent: &str, visibility: &str) -> Option<&'static str> {
-    (visibility != "盲").then(|| blind_only_reason(agent)).flatten()
+    seat_violation_for(agent, visibility, "", None)
 }
 
-/// 与资源库无关的位置硬规则：[`seat_violation`]，加上只看得到文字的
-/// agent 不填验收位（验收要读项目副本）。推荐挑人与补人（`fill_seats`
-/// 的角色默认补位）共用这一条。
-pub(crate) fn position_violation(agent: &str, role: &str, visibility: &str) -> Option<String> {
-    if let Some(reason) = seat_violation(agent, visibility) {
+/// 与资源库无关的位置硬规则（按版本与写入方式检查）：[`seat_violation_for`]，
+/// 加上仍为纯文本的 agent 不填验收位（验收要读项目副本）。
+pub(crate) fn position_violation_for(
+    agent: &str,
+    role: &str,
+    visibility: &str,
+    write: &str,
+    agy_version: Option<&str>,
+) -> Option<String> {
+    if let Some(reason) = seat_violation_for(agent, visibility, write, agy_version) {
         return Some(reason.to_string());
     }
-    if is_text_only(agent) && role == "验收" {
+    if is_text_only_for(agent, agy_version) && role == "验收" {
         return Some(format!("{} 读不到项目副本，不填验收位", agent.trim()));
     }
     None
@@ -439,5 +510,28 @@ mod tests {
         assert!(blind_only_reason("agy").unwrap().contains("纯文本盲审"));
         assert!(blind_only_reason("claude").is_none());
         assert!(fallback_path("agy").is_some_and(|path| path.ends_with("agy/bin/agy.exe")));
+    }
+
+    #[test]
+    fn task74_agy_version_gates_text_only_and_seat_rules() {
+        assert!(!agy_at_least_1_5(None));
+        assert!(!agy_at_least_1_5(Some("")));
+        assert!(!agy_at_least_1_5(Some("1.3.1")));
+        assert!(!agy_at_least_1_5(Some("v1.4.9")));
+        assert!(agy_at_least_1_5(Some("1.5.0")));
+        assert!(agy_at_least_1_5(Some("1.5.6")));
+        assert!(agy_at_least_1_5(Some("v2.0.0-beta")));
+
+        assert!(is_text_only_for("agy", Some("1.3.1")));
+        assert!(!is_text_only_for("agy", Some("1.5.6")));
+        assert!(seat_violation_for("agy", "共享", "只读", Some("1.3.1")).is_some());
+        assert!(seat_violation_for("agy", "共享", "只读", Some("1.5.6")).is_none());
+        assert!(seat_violation_for("agy", "共享", "单写者", Some("1.5.6")).is_none());
+        assert_eq!(
+            seat_violation_for("agy", "共享", "worktree", Some("1.5.6")),
+            Some(AGY_NO_WORKTREE_REASON)
+        );
+        assert!(position_violation_for("agy", "验收", "盲", "只读", Some("1.3.1")).is_some());
+        assert!(position_violation_for("agy", "验收", "盲", "只读", Some("1.5.6")).is_none());
     }
 }

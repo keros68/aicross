@@ -705,7 +705,7 @@ def describe(entry, tier):
     used = next(t for t in order if t in entry["tiers"])
     out = {k: entry[k] for k in ("id", "channel", "kind", "vendor", "billing", "isolation") if k in entry}
     out.update(tier=used, model=entry["tiers"][used], smoke=smoke_text(entry))
-    for key in ("path", "endpoint", "billing_source"):
+    for key in ("path", "endpoint", "billing_source", "version"):
         if entry.get(key):
             out[key] = entry[key]
     return out

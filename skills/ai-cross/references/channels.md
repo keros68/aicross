@@ -162,12 +162,13 @@ cat in.ndjson | "$AGY" --model gemini-3.8-flash-high --print-timeout 5m \
   --input-format stream-json --output-format stream-json
 ```
 
-- **默认档写在 manifest**。未指定时从 `agy models` 里取当前最新的 Flash 系列：审查与第二意见用它的 high，冒烟与琐事用 low；Pro 档额度消耗更大，留给用户明确点名的场合。作者本机 2026-09-16 的设定是 `gemini-3.8-flash-high` / `-low`。
-- **⚠️ 无头模式下连读文件都会被自动拒绝**（2026-09-16 实测）：`view_file` 报「required the "read_file" permission that headless mode cannot prompt for」，`run_command` 同样。实测让它读一个文件，八次工具调用全被拒、烧掉 12.4 万 token、最后 `status: SUCCESS` 但 `response` 是空字符串——**空回答不是模型不会答，是工具全被拒**，别误判成能力问题。
-- **因此它只能当纯文本盲审者：材料全部内联进 prompt，并在 prompt 里明写「不要使用任何工具」。** 这正好满足盲验的隔离要求（它读不到 `.aicross/`、项目 `AGENTS.md`）。实测内联一段代码 + 一个问题：1.3 万 token、2.7 秒，准确指出了埋进去的缺陷。
+- **默认档与推荐过滤**：模型清单包含 `gemini-4-carbon-{low,medium,high}`、`gemini-3.8-flash-*`、`claude-*-5-5-*`、`gpt-oss-120b-medium` 等；引擎一键推荐在验收 / 验证位置不选 agy 的 `-high`、`-xhigh` 模型（`1.5.6` 历史上 `-high` 易触发输出 token 上限或空退失败）。
+- **无头模式分版本能力**：
+  - `1.3.1`（`< 1.5.0`）：无头模式下连读文件都会被自动拒绝，只能当纯文本盲审者，材料全部内联进 prompt（上限 200 KB）并加「不要使用任何工具」，盲目录超过 200 KB 或需要读 `project/` 时拒发。
+  - `1.5.6`（`>= 1.5.0`，2026-11-13 实测）：无头模式已放行只读工具（`read_file`/`view_file`/`list_dir`/`grep_search`/`find_by_name`，实测约 314 KB / 2281 行文件可自动分 3 页读完）。但落在 `trustedWorkspaces` 里时默认可写盘，且 `--settings` 只在执行时拒绝、不会从 `init.tools` 工具表隐藏 `run_command` 等工具（一触碰被拒工具整轮即以 `jetski: no output produced` 中止）：必须经 `--settings <临时文件路径>`（放在运行/临时目录下、不进工作目录）传 `permissions.deny` 锁死写文件与命令执行，并在只读/带文件盲位置提示里写明只用只读文件工具、禁止命令与写入，才可安全跑盲目录（>200 KB 时由 `REQUEST.md` 转交）、`project/` 只读副本及 `--read-dir` 只读目录；传 `permissions.allow: ["write_file(D:/path/)"]`（正斜杠目录前缀、末尾加 `/`、不认 `*` 通配）并拒绝命令工具时可跑单写者位置（提示词写明不能执行命令），仍不支持需要跑命令的 `worktree` 位置。
 - **固定足迹约 1.3 万 token/次**（工具定义 + 系统提示），比 pi 的 405 贵一个量级，但走订阅额度不花钱——对订阅用户按「省额度」而不是「省钱」记账。
-- **绝不加 `--dangerously-skip-permissions`**：用户全局 `settings.json` 的 `permissions.allow` 里有 `command(cargo fmt)`、`command(cargo test)`、`command(npm run build)` 一类规则，放开后这些会在无头下自动放行，在别人的仓库里真跑 `cargo fmt` 就是破坏性改动。也不要去改那份全局配置——它是用户的应用设置。
-- **写工具已实测挡住**：让它在当前目录建文件，`run_command` 被自动拒，文件没生成；退出码仍是 0，所以**别只看退出码**，要解析 `{"event":"result"}` 那行的 `result.status` 与 `result.response`，`response` 为空即视为未完成。
+- **绝不加 `--dangerously-skip-permissions`**：用户全局 `settings.json` 的 `permissions.allow` 里可能有 `command(...)` 一类规则，放开后会在无头下自动执行，绝不使用；也不要去改那份全局配置。
+- **退出码 0 仍可能没给出结果**：工具被拒时 stderr 出现 `jetski: no output produced …`，但 stdout 的 `{"event":"result"}` 可能仍为 `status: SUCCESS`、空 `response`；解析时必须检查 `result.status` 与非空 `response`，stderr 含 `jetski: no output produced` 时保留该行原因（截到 300 字符），遇到 `exceeded the output token limit` 时判失败「回答超过输出上限」。
 - 输出解析：`--output-format json` 给单个对象（`response` / `usage` / `duration_seconds` / `status`）；stream-json 逐步给 `step_update`，最后一行 `{"event":"result"}`。两种都带 `usage`，可直接记 token。
 - 真身核对：`init` 事件里的 `model` 是**请求值回显**，不是响应侧值，不能当真身证据；它是 Google 第一方端点，不是第三方兼容层，静默降级风险低于覆写端点，但要程序化确认时仍应在 prompt 里要它自报型号并比对（实测请求 `gemini-3.8-flash-low`，自报「Google Gemini 3.8 Flash」）。
 - 其它开关：`--effort low|medium|high`（与档位正交的思考旋钮）、`--mode plan|accept-edits`（**`plan` 未验证是否只读，别按只读档用**——kimi 的 plan 模式就不是）、`--sandbox`（只限制终端，不解决权限拒绝）、`--json-schema`（结构化输出）、`-c` / `--conversation` 续聊。

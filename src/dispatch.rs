@@ -2737,9 +2737,17 @@ fn run_one_attempt(
     let mut verify_error = String::new();
     let mut verify_note = String::new();
     let mut verify_quota_resets_at = None;
-    // TASK-61：只接盲位置的 agent（agy 与未实测四家）落在共享 / 单写者位置时
-    // 派发前直接失败，不验证、不建 worktree、不铺材料。
-    let blind_only = crate::agent_catalog::seat_violation(&node.agent, &node.visibility);
+    let agy_version = crate::resources::detected_agent_version("agy");
+    let agy_1_5 = crate::agent_catalog::agy_at_least_1_5(agy_version.as_deref());
+    // TASK-61 / TASK-74：只接盲位置的 agent（< 1.5.0 的 agy 与未实测四家）落在共享 /
+    // 单写者位置时，或 >= 1.5.0 的 agy 落在 worktree 位置时，派发前直接失败，
+    // 不验证、不建 worktree、不铺材料。
+    let blind_only = crate::agent_catalog::seat_violation_for(
+        &node.agent,
+        &node.visibility,
+        &node.write,
+        agy_version.as_deref(),
+    );
     // fix-61-r1 5：agy 模型自带档位时思考强度由模型决定，留痕记实际生效值。
     // TASK-74：执行位置在多步任务下思考不低于「中」（粗略启发式）。
     let task_text = if node.original_request.trim().is_empty() {
@@ -2752,7 +2760,14 @@ fn run_one_attempt(
     if is_cancelled(&cancel_key) {
         verify_error = "派发已取消".to_string();
     } else if let Some(reason) = blind_only {
-        verify_error = format!("{reason}；本位置可见性为「{}」，请改派到盲位置或换 agent", node.visibility);
+        verify_error = if agy_1_5 && node.write == "worktree" {
+            format!(
+                "{reason}；本位置写入方式为「{}」，请改派到盲、只读或单写者位置或换 agent",
+                node.write
+            )
+        } else {
+            format!("{reason}；本位置可见性为「{}」，请改派到盲位置或换 agent", node.visibility)
+        };
     } else if let Some(reason) = blocked {
         // fix-fullcheck B2 / B3：资源库里已验证失败或未发现的目标不进通道。
         verify_error = reason;
@@ -2866,16 +2881,71 @@ fn run_one_attempt(
     // TASK-12：审查材料附带验证输出（盲目录物化后、派发前；一处调用）。
     let (prepared, validation_attached) =
         attach_review_validation(run_id, project, settings, &node, &workdir, blind, timeout, prepared);
-    // fix-61-r1 1：只看得到 stdin 文字的 agent（agy）——盲目录里的材料全部
-    // 内联进提示词；要读项目副本、有二进制或超上限时不发出。
-    let prepared = match prepared {
-        Ok(OutboundPreparation::Materialized(prompt, names, count))
-            if blind && crate::agent_catalog::is_text_only(&node.agent) =>
-        {
-            inline_materials_for_text_only(&node.agent, &prompt, &workdir, &names)
-                .map(|prompt| OutboundPreparation::Materialized(prompt, names, count))
+    // fix-61-r1 1 / TASK-74：
+    // - < 1.5.0 的 agy 只看得到 stdin 文字：盲目录材料全部内联，超 200 KB、含 project/ 或二进制时不发出；
+    // - >= 1.5.0 的 agy：<= 200 KB 纯文本仍内联并标无需工具；超 200 KB、含 project/ 或二进制时
+    //   不再拒发，改为经 `--settings` 禁止写入，让 agy 用只读工具读盲目录文件；
+    //   共享只读与单写者位置同样由 `--settings` 约束权限。
+    let (prepared, agy_mode) = if channels::normalize_agent(&node.agent) == "agy" {
+        if agy_1_5 {
+            match prepared {
+                Ok(OutboundPreparation::Materialized(prompt, mut names, count)) if blind => {
+                    match inline_materials_for_text_only(&node.agent, &prompt, &workdir, &names) {
+                        Ok(inlined) => (
+                            Ok(OutboundPreparation::Materialized(inlined, names, count)),
+                            channels::AgyToolMode::NoTools,
+                        ),
+                        Err(_) => {
+                            if names.is_empty() {
+                                match fs::write(workdir.join("REQUEST.md"), prompt.as_bytes()) {
+                                    Ok(()) => {
+                                        names.push("REQUEST.md".into());
+                                        (
+                                            Ok(OutboundPreparation::Materialized(
+                                                "完整任务与待审材料在当前目录的 REQUEST.md，请先完整读取后再按其要求作答。".to_string(),
+                                                names,
+                                                count,
+                                            )),
+                                            channels::AgyToolMode::ReadOnlyFiles,
+                                        )
+                                    }
+                                    Err(err) => (
+                                        Err(format!("写入 REQUEST.md 失败：{err}")),
+                                        channels::AgyToolMode::ReadOnlyFiles,
+                                    ),
+                                }
+                            } else {
+                                let updated = if node.upstream_artifacts.is_empty()
+                                    && !prompt.contains(channels::BLIND_ARTIFACT_NOTICE)
+                                {
+                                    format!("{prompt}\n\n待审材料文件位于当前目录，请用只读工具读取后作答。")
+                                } else {
+                                    prompt
+                                };
+                                (
+                                    Ok(OutboundPreparation::Materialized(updated, names, count)),
+                                    channels::AgyToolMode::ReadOnlyFiles,
+                                )
+                            }
+                        }
+                    }
+                }
+                other if !blind && node.write == "单写者" => (other, channels::AgyToolMode::SingleWriter),
+                other if !blind => (other, channels::AgyToolMode::ReadOnlyFiles),
+                other => (other, channels::AgyToolMode::NoTools),
+            }
+        } else {
+            match prepared {
+                Ok(OutboundPreparation::Materialized(prompt, names, count)) if blind => (
+                    inline_materials_for_text_only(&node.agent, &prompt, &workdir, &names)
+                        .map(|prompt| OutboundPreparation::Materialized(prompt, names, count)),
+                    channels::AgyToolMode::NoTools,
+                ),
+                other => (other, channels::AgyToolMode::NoTools),
+            }
         }
-        other => other,
+    } else {
+        (prepared, channels::AgyToolMode::NoTools)
     };
     let effective_session =
         if channels::normalize_agent(&node.agent) == "pi" && node.session_id.is_empty() {
@@ -2888,7 +2958,7 @@ fn run_one_attempt(
     // 输出、内联材料都已拼完；ACP 回退用的完整上下文也取这份）。
     let (prompt, material_names, prepared_redacted, preparation_error) = match prepared {
         Ok(OutboundPreparation::Materialized(prompt, names, count)) => (
-            with_closing_for_role(&node.agent, &node.role, &prompt),
+            with_closing_for_node(&node.agent, &node.role, agy_mode, &prompt),
             names,
             count,
             String::new(),
@@ -2902,7 +2972,7 @@ fn run_one_attempt(
             (prompt.clone(), prepared_redacted)
         } else {
             let (message, count) = redact_text(&node.current_message, settings.redact);
-            (with_closing_for_role(&node.agent, &node.role, &message), count)
+            (with_closing_for_node(&node.agent, &node.role, agy_mode, &message), count)
         }
     } else {
         (prompt.clone(), prepared_redacted)
@@ -3049,23 +3119,44 @@ fn run_one_attempt(
     if needs_oneshot {
         let _ = fs::write(&task_file, oneshot_outbound.as_bytes());
         let blind_files = blind && blind_has_uninlined_files(&oneshot_outbound, Some(&workdir), &material_names);
-        match channels::build_invocation_with_blind_files(
-            &node.agent,
-            &node.provider,
-            &node.model,
-            &node.tier,
-            &node.thinking,
-            blind,
-            blind_files,
-            (!oneshot_session.is_empty()).then_some(oneshot_session.as_str()),
-            &oneshot_outbound,
-            Some(&task_file),
-            session_dir.as_deref(),
-            (!settings.cc_switch_path.trim().is_empty())
-                .then(|| Path::new(settings.cc_switch_path.trim())),
-            writable,
-            channel_timeout,
-        ) {
+        // TASK-74：agy >= 1.5.0 在运行时目录（run_root/agy-settings）写入 --settings，
+        // 绝不写进盲审工作目录或项目目录。
+        let agy_settings_result = if channels::normalize_agent(&node.agent) == "agy" && agy_1_5 {
+            let file = run_root
+                .join("agy-settings")
+                .join(format!("{}-{}.json", safe_name(&node.node_id), safe_name(attempt)));
+            let json = match agy_mode {
+                channels::AgyToolMode::SingleWriter => channels::agy_single_writer_settings_json(&workdir),
+                channels::AgyToolMode::NoTools | channels::AgyToolMode::ReadOnlyFiles => {
+                    channels::agy_readonly_settings_json()
+                }
+            };
+            write_atomic(&file, json.as_bytes()).map(|()| Some(file))
+        } else {
+            Ok(None)
+        };
+        match agy_settings_result.and_then(|agy_settings| {
+            channels::build_invocation_full(
+                &node.agent,
+                &node.provider,
+                &node.model,
+                &node.tier,
+                &node.thinking,
+                blind,
+                blind_files,
+                &node.write,
+                (!oneshot_session.is_empty()).then_some(oneshot_session.as_str()),
+                &oneshot_outbound,
+                Some(&task_file),
+                session_dir.as_deref(),
+                (!settings.cc_switch_path.trim().is_empty())
+                    .then(|| Path::new(settings.cc_switch_path.trim())),
+                writable,
+                channel_timeout,
+                agy_mode,
+                agy_settings.as_deref(),
+            )
+        }) {
             Ok(invocation) => {
                 entered_channel = true;
                 match crate::process::run_process_registered_with_options(
@@ -3666,11 +3757,20 @@ pub(crate) fn blind_has_uninlined_files(
     false
 }
 
-/// 固定收尾（fix-fullcheck B5）：如实汇报要求（按角色区分），agy 另加「不要使用任何工具」。
-fn closing_text_for_role(agent: &str, role: &str) -> String {
+/// 固定收尾（fix-fullcheck B5 / TASK-74）：如实汇报要求（按角色区分），
+/// agy 按工具模式决定追加「不要使用任何工具」或单写者不跑命令说明。
+fn closing_text_for_node(agent: &str, role: &str, agy_mode: channels::AgyToolMode) -> String {
     let honest = crate::engine::honest_reporting_for_role(role);
     if channels::normalize_agent(agent) == "agy" {
-        format!("{honest}\n{}", channels::AGY_NO_TOOLS)
+        match agy_mode {
+            channels::AgyToolMode::NoTools => format!("{honest}\n{}", channels::AGY_NO_TOOLS),
+            channels::AgyToolMode::SingleWriter => {
+                format!("{honest}\n{}", channels::AGY_SINGLE_WRITER_NOTE)
+            }
+            channels::AgyToolMode::ReadOnlyFiles => {
+                format!("{honest}\n{}", channels::AGY_READONLY_NOTE)
+            }
+        }
     } else {
         honest.to_string()
     }
@@ -3678,12 +3778,16 @@ fn closing_text_for_role(agent: &str, role: &str) -> String {
 
 /// 去掉引擎拼在 node.prompt 末尾的固定收尾（只认末尾那一段，正文里引用的
 /// 同样文字不动）。派发层在铺材料之前调它，最终外发文本定下后再由
-/// [`with_closing_for_role`] 放回最末尾。
+/// [`with_closing_for_node`] 放回最末尾。
 fn strip_engine_closing(agent: &str, prompt: &str) -> String {
     let mut candidates = vec![
-        closing_text_for_role(agent, "出方案"),
+        closing_text_for_node(agent, "出方案", channels::AgyToolMode::NoTools),
+        closing_text_for_node(agent, "出方案", channels::AgyToolMode::SingleWriter),
+        closing_text_for_node(agent, "出方案", channels::AgyToolMode::ReadOnlyFiles),
         crate::engine::HONEST_REPORTING_PLANNING.to_string(),
-        closing_text_for_role(agent, ""),
+        closing_text_for_node(agent, "", channels::AgyToolMode::NoTools),
+        closing_text_for_node(agent, "", channels::AgyToolMode::SingleWriter),
+        closing_text_for_node(agent, "", channels::AgyToolMode::ReadOnlyFiles),
         crate::engine::HONEST_REPORTING.to_string(),
     ];
     candidates.dedup();
@@ -3703,8 +3807,13 @@ fn strip_engine_closing(agent: &str, prompt: &str) -> String {
 /// current_message。铺材料前先用 [`strip_engine_closing`] 摘掉引擎那一段，
 /// 定下最终外发文本后在这里追加一次；文本已以收尾句结尾时不再追加。
 /// 只在末尾操作，用户原文、diff 与内联源码一个字不改。
-fn with_closing_for_role(agent: &str, role: &str, text: &str) -> String {
-    let closing = closing_text_for_role(agent, role);
+fn with_closing_for_node(
+    agent: &str,
+    role: &str,
+    agy_mode: channels::AgyToolMode,
+    text: &str,
+) -> String {
+    let closing = closing_text_for_node(agent, role, agy_mode);
     if text.trim_end().ends_with(&closing) {
         return text.to_string();
     }
@@ -3717,7 +3826,7 @@ fn with_closing_for_role(agent: &str, role: &str, text: &str) -> String {
 
 #[cfg(test)]
 fn with_closing(agent: &str, text: &str) -> String {
-    with_closing_for_role(agent, "", text)
+    with_closing_for_node(agent, "", channels::AgyToolMode::NoTools, text)
 }
 
 fn reset_acp_fallback(full_prompt: &str) -> (String, String) {
@@ -10676,6 +10785,127 @@ mod tests {
         let argv: Vec<String> = serde_json::from_str(&fs::read_to_string(&argv_file).unwrap()).unwrap();
         let think_pos = argv.iter().position(|a| a == "--thinking").unwrap();
         assert_eq!(argv[think_pos + 1], "medium", "{argv:?}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task74_agy_1_5_6_blind_large_project_copy_single_writer_and_worktree_gate() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t74-agy156-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(project.join("README.md"), "before\n").unwrap();
+
+        let captured = root.join("captured.json");
+        let stub = root.join("agy_stub.py");
+        fs::write(
+            &stub,
+            format!(
+                "import json, pathlib, sys\n\
+                 raw = sys.stdin.readline()\n\
+                 req = json.loads(raw)\n\
+                 argv = sys.argv[1:]\n\
+                 settings_path = argv[argv.index('--settings') + 1] if '--settings' in argv else None\n\
+                 settings_body = pathlib.Path(settings_path).read_text(encoding='utf-8') if settings_path else ''\n\
+                 if 'MODIFY_README' in req['message']['content']: (pathlib.Path.cwd() / 'README.md').write_text('after\\n', encoding='utf-8')\n\
+                 pathlib.Path(r'{}').write_text(json.dumps({{'argv': argv, 'cwd': str(pathlib.Path.cwd()), 'prompt': req['message']['content'], 'settings_path': settings_path, 'settings_body': settings_body}}), encoding='utf-8')\n\
+                 print(json.dumps({{'event': 'result', 'result': {{'status': 'SUCCESS', 'response': 'PASS', 'usage': {{'input_tokens': 10, 'output_tokens': 2}}}}}}))\n",
+                captured.display()
+            ),
+        )
+        .unwrap();
+        let settings = DispatchSettings { timeout_secs: 10, write_project_dispatch: true, ..DispatchSettings::default() };
+        let provider = format!("__aicross_test__||{}", stub.display());
+
+        let base_agy = || {
+            let mut r = node(Vec::new());
+            r.agent = "agy".into();
+            r.provider = provider.clone();
+            r.model = "gemini-4-carbon-medium".into();
+            r
+        };
+
+        crate::resources::with_agent_version_stub("agy", Some("1.5.6"), || {
+            // 1. 盲位置 > 200 KB 纯文本：写入 REQUEST.md，不加 AGY_NO_TOOLS，--settings 在 run_root/agy-settings 下。
+            let mut large = base_agy();
+            large.node_id = "agy-large".into();
+            large.prompt = "A".repeat(210 * 1024);
+            let res1 = run_one("t74-agy-1", &project, &run_root, &log_dir, &settings, large);
+            assert_eq!(res1.status, "ok", "{}", res1.error);
+            let c1: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
+            let workdir1 = PathBuf::from(c1["cwd"].as_str().unwrap());
+            assert!(workdir1.join("REQUEST.md").is_file());
+            let sp1 = PathBuf::from(c1["settings_path"].as_str().unwrap());
+            assert!(sp1.starts_with(run_root.join("agy-settings")) && !sp1.starts_with(&workdir1));
+            let s1: Value = serde_json::from_str(c1["settings_body"].as_str().unwrap()).unwrap();
+            assert!(s1["permissions"]["deny"].as_array().unwrap().iter().any(|v| v == "write_file"));
+            assert!(!c1["prompt"].as_str().unwrap().contains(channels::AGY_NO_TOOLS));
+            assert!(c1["prompt"].as_str().unwrap().contains(channels::AGY_READONLY_NOTE));
+
+            // 2. 盲验收含 project/ 只读副本：不再拒发，不加 AGY_NO_TOOLS，传只读 --settings。
+            let mut accept = base_agy();
+            accept.node_id = "agy-accept".into();
+            accept.role = "验收".into();
+            accept.upstream_artifacts = vec![DispatchArtifacts {
+                diff: "+x".into(),
+                changed_files: vec![ChangedFile { path: "README.md".into(), content: "before\n".into() }],
+                ..DispatchArtifacts::default()
+            }];
+            let res2 = run_one("t74-agy-2", &project, &run_root, &log_dir, &settings, accept);
+            assert_eq!(res2.status, "ok", "{}", res2.error);
+            let c2: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
+            assert!(!c2["prompt"].as_str().unwrap().contains(channels::AGY_NO_TOOLS));
+            assert!(c2["prompt"].as_str().unwrap().contains(channels::AGY_READONLY_NOTE));
+            assert!(PathBuf::from(c2["cwd"].as_str().unwrap()).join("project").is_dir());
+
+            // 3. 单写者位置允许派发，带禁止命令说明与目录前缀 allow 规则，绝不含 --dangerously-skip-permissions。
+            let mut sw = base_agy();
+            sw.node_id = "agy-sw".into();
+            sw.role = "执行".into();
+            sw.visibility = "共享".into();
+            sw.write = "单写者".into();
+            sw.prompt = "MODIFY_README".into();
+            let res3 = run_one("t74-agy-3", &project, &run_root, &log_dir, &settings, sw);
+            assert_eq!(res3.status, "ok", "{}", res3.error);
+            let c3: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
+            assert!(c3["prompt"].as_str().unwrap().contains(channels::AGY_SINGLE_WRITER_NOTE));
+            assert!(!c3["argv"].as_array().unwrap().iter().any(|a| a == "--dangerously-skip-permissions"));
+            let s3: Value = serde_json::from_str(c3["settings_body"].as_str().unwrap()).unwrap();
+            let allow = s3["permissions"]["allow"][0].as_str().unwrap();
+            assert!(allow.starts_with("write_file(") && allow.ends_with("/)") && !allow.contains('*'), "{allow}");
+            assert!(!project.join("agy-settings").exists());
+
+            // 4. worktree 位置派发前直接拒绝。
+            let mut wt = base_agy();
+            wt.node_id = "agy-wt".into();
+            wt.visibility = "共享".into();
+            wt.write = "worktree".into();
+            let res4 = run_one("t74-agy-4", &project, &run_root, &log_dir, &settings, wt);
+            assert_eq!(res4.status, "error");
+            assert!(res4.error.contains("不能执行命令") && res4.error.contains("worktree"), "{}", res4.error);
+        });
+
+        // 5. < 1.5.0 仍拒绝 > 200 KB 与非盲位置。
+        crate::resources::with_agent_version_stub("agy", Some("1.3.1"), || {
+            let mut legacy = base_agy();
+            legacy.node_id = "agy-legacy-big".into();
+            legacy.prompt = "A".repeat(210 * 1024);
+            let err1 = run_one("t74-agy-old1", &project, &run_root, &log_dir, &settings, legacy);
+            assert_eq!(err1.status, "error");
+            assert!(err1.error.contains("上限"), "{}", err1.error);
+
+            let mut legacy_sw = base_agy();
+            legacy_sw.node_id = "agy-legacy-sw".into();
+            legacy_sw.visibility = "共享".into();
+            legacy_sw.write = "单写者".into();
+            let err2 = run_one("t74-agy-old2", &project, &run_root, &log_dir, &settings, legacy_sw);
+            assert_eq!(err2.status, "error");
+            assert!(err2.error.contains("纯文本盲审"), "{}", err2.error);
+        });
+
         let _ = fs::remove_dir_all(root);
     }
 }

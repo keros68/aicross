@@ -7,7 +7,10 @@ pub(crate) mod acp;
 pub(crate) mod acp_setup;
 mod cli_agents;
 
-pub(crate) use cli_agents::{apply_execution_thinking_floor, effective_thinking, AGY_NO_TOOLS};
+pub(crate) use cli_agents::{
+    agy_readonly_settings_json, agy_single_writer_settings_json, apply_execution_thinking_floor,
+    effective_thinking, AgyToolMode, AGY_NO_TOOLS, AGY_READONLY_NOTE, AGY_SINGLE_WRITER_NOTE,
+};
 
 pub(crate) const KNOWN_MODEL_ROUTES: &[(&str, &str, &str)] = &[
     ("deepseek", "deepseek-v4-flash", "deepseek-flash"),
@@ -244,6 +247,7 @@ pub fn isolation_for(agent: &str, blind: bool) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub fn build_invocation(
     agent: &str,
     provider: &str,
@@ -277,6 +281,7 @@ pub fn build_invocation(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn build_invocation_with_blind_files(
     agent: &str,
@@ -294,10 +299,73 @@ pub fn build_invocation_with_blind_files(
     writable: bool,
     timeout: std::time::Duration,
 ) -> Result<Invocation, String> {
+    build_invocation_full(
+        agent,
+        provider,
+        model,
+        tier,
+        thinking,
+        blind,
+        blind_files,
+        if writable { "单写者" } else { "只读" },
+        session_id,
+        prompt,
+        task_file,
+        session_dir,
+        cc_switch_path,
+        writable,
+        timeout,
+        AgyToolMode::NoTools,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_invocation_full(
+    agent: &str,
+    provider: &str,
+    model: &str,
+    tier: &str,
+    thinking: &str,
+    blind: bool,
+    blind_files: bool,
+    write: &str,
+    session_id: Option<&str>,
+    prompt: &str,
+    task_file: Option<&Path>,
+    session_dir: Option<&Path>,
+    cc_switch_path: Option<&Path>,
+    writable: bool,
+    timeout: std::time::Duration,
+    agy_mode: AgyToolMode,
+    agy_settings: Option<&Path>,
+) -> Result<Invocation, String> {
     let normalized = normalize_agent(agent);
-    // 支持清单里新增的 agent（TASK-61）走自己的模板，只接盲位置。
+    // 支持清单里新增的 agent（TASK-61 / TASK-74）走自己的模板。
     if cli_agents::handles(normalized) {
-        let spec = cli_agents::spec(normalized, model, thinking, blind, prompt, timeout)?;
+        let spec = cli_agents::spec_with_agy(
+            normalized,
+            model,
+            thinking,
+            blind,
+            write,
+            prompt,
+            timeout,
+            agy_mode,
+            agy_settings,
+        )?;
+        #[cfg(test)]
+        if let Some((_, oneshot, _)) = test_provider_parts(provider) {
+            let program = resolve_binary("python", None)?;
+            let mut args = vec![oneshot];
+            args.extend(spec.args);
+            return Ok(Invocation {
+                program,
+                args,
+                input: spec.input,
+                stdout_skip: None,
+            });
+        }
         // 与探测同一个解析函数、同一优先级（兜底路径优先，fix-61-r1 4）。
         let program = crate::agent_catalog::resolve_program(normalized)
             .ok_or_else(|| format!("未找到 {} 可执行文件", spec.binary))?;

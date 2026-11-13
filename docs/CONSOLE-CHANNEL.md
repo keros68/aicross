@@ -103,9 +103,7 @@ worktree 时取该 worktree；多路上游各附一份，`project-2/` 起递增�
 盲审材料说明与 diff、agy 的内联材料之后）再在最末尾追加一次，文本已以它结尾
 时不再追加；ACP 与一次性 CLI 两条通道都一样。用户原文、diff、内联源码里引用
 的同样文字不改动。Kimi 一次性通道超过 30000 字节时保留首尾裁中间，收尾句留在
-末尾。派给
-agy 的节点在这句之后再追加 `不要使用任何工具，直接用文字回答。`（agy 无头
-模式下工具全被拒）。盲位置的 claude 通道按盲目录里是否仍有未内联文件分流：全部材料已内联进提示词时传 `--tools ""`，存在 `ACCEPT.md`、大于 30 KB 或二进制附件、未内联 diff / `changed/` / `project/` 等文件时改传只读工具 `--tools Read,Grep,Glob`，其余限制参数（`--restricted --no-session-persistence`）不变。
+末尾。agy 的节点在材料已全内联的盲位置且未读文件时，在这句之后追加 `不要使用任何工具，直接用文字回答。`；版本 1.5.0 起落在需用工具读文件的盲 / 只读位置时追加 `只用只读文件工具（read_file、view_file、list_dir、find_by_name、grep_search），不能执行命令或修改文件。`，落在单写者位置时改为追加 `不能执行命令，改完文件后直接汇报，验证由引擎跑。`（因 `--settings` 只在调用时拒绝、不会从工具表隐藏被禁工具，提示里一并写明边界）。盲位置的 claude 通道按盲目录里是否仍有未内联文件分流：全部材料已内联进提示词时传 `--tools ""`，存在 `ACCEPT.md`、大于 30 KB 或二进制附件、未内联 diff / `changed/` / `project/` 等文件时改传只读工具 `--tools Read,Grep,Glob`，其余限制参数（`--restricted --no-session-persistence`）不变。
 
 审查位的模板看有没有上游产物（直接父节点里有模型节点）：有时验收位用验收
 模板，审查位附两条固定关注点（契约变没变、回退修复后测试红不红）；没有时
@@ -113,17 +111,16 @@ agy 的节点在这句之后再追加 `不要使用任何工具，直接用文�
 原始材料」的模板（`fixtures/prompts/independent-review.txt`），固定关注点
 不附；评审模式的视角句照常。
 
-agy、cursor、codebuddy、copilot、qoder 只接盲位置：落在共享或单写者位置时
-节点派发前直接失败（不做首次验证、不建 worktree），错误写明原因。agy 在盲
-目录里跑 `agy --model <m> --input-format stream-json --output-format stream-json
+cursor、codebuddy、copilot、qoder 与 1.5.0 以下的 agy 只接盲位置：落在共享或单写者位置时
+节点派发前直接失败（不做首次验证、不建 worktree），错误写明原因。agy 跑 `agy --model <m> --input-format stream-json --output-format stream-json
 --print-timeout <超时>s [--effort low|medium|high]`（模型 id 自带 `-low` /
 `-medium` / `-high` 等档位后缀时不传 `--effort`，两者冲突 agy 直接报错），
 材料是 stdin 的一行 NDJSON；
-最后一行 `{"event":"result"}` 的 `status` 不是 SUCCESS 或 `response` 为空即失败。
-agy 读不了文件：盲目录里的材料（REQUEST.md、diff.patch、changed/、ANSWER.md、
+最后一行 `{"event":"result"}` 的 `status` 不是 SUCCESS 或 `response` 为空即失败；stderr 含 `jetski: no output produced` 时带上该行原因（截到 300 字符），错误含 `exceeded the output token limit` 时错误写「回答超过输出上限」。
+1.5.0 以下的 agy 读不了文件：盲目录里的材料（REQUEST.md、diff.patch、changed/、ANSWER.md、
 ACCEPT.md、VALIDATION.txt、附件）全部以文本内联进提示词（提示词里已有的不重复），
 提示词与材料合计上限 200 KB；超上限、有二进制材料、或节点要读项目只读副本
-（如有上游产物的盲验收）时派发前失败，不发出。模型 id 自带档位时思考强度由
+（如有上游产物的盲验收）时派发前失败，不发出。1.5.0 及以上（1.5.6 实测）可读文件并分页读取超过 300 KB 的大文件：盲位置材料不超过 200 KB 纯文本时照旧内联；超过 200 KB、含二进制附件或需读 `project/` 只读副本时不再拒发（纯文本超 200 KB 写入盲目录 `REQUEST.md`），改传运行目录外生成的 `--settings <文件>`（`permissions.deny` 禁止所有写文件与命令执行工具，覆盖 `trustedWorkspaces`）；非盲「单写者」位置允许派发，经 `--settings` 的 `permissions.allow` 仅放行当前工作目录（`write_file(<dir>/)`，正斜杠目录前缀、不用通配）并禁止命令工具；仍不支持 `worktree` 位置；任何情况下绝不传 `--dangerously-skip-permissions`。模型 id 自带档位时思考强度由
 模型决定，留痕的 `thinking`、run 摘要节点的 `thinking`（仅此时写出）与
 `config show` 的 `effective.thinking` 都记「由模型决定：low」这类实际生效值。
 cursor、codebuddy、copilot、qoder 是未实测通道，派发直接失败并提示「未实测通道」。
@@ -395,11 +392,11 @@ agent 的条目（同 `resources`），stderr 提示重新探测后生效。窗�
 见「主 agent 与 --host」；modes 段按该主 agent 的配置显示。`config set-role` 把角色指
 到资源库里的模型，目标不在资源库时退出 2 并列出可选模型；目标是「未发现」的
 模型（最近一次探测没有发现）时同样退出 2，原因与可选模型一并写在 stderr
-（列表里去掉未发现的）；只接盲位置的 agent（agy 与未实测四家）设成
-planning / execution 时退出 2（这两个角色默认补的是共享位置），acceptance 照常写入；
+（列表里去掉未发现的）；1.5.0 以下的 agy 与未实测四家设成
+planning / execution 时退出 2（这两个角色默认补的是共享位置），acceptance 照常写入；1.5.0 及以上的 agy 可设成 planning / execution / acceptance；
 `roles.json` 损坏时退出 1，不写盘。`config show` 每个位置的 `effective` 另带
-`invalid`：生效人选或其备选违反位置硬规则（只接盲的 agent 落在非盲位置）时为
-原因，合规为 null。角色默认违反位置硬规则（只接盲的 agent 落在非盲位置、只看
+`invalid`：生效人选或其备选违反位置硬规则（如 1.5.0 以下的 agy 或未实测四家落在非盲位置、1.5.0 及以上的 agy 落在 worktree 位置）时为
+原因，合规为 null。角色默认违反位置硬规则（不能进非盲或 worktree 的 agent 落在该位置、只看
 得到文字的 agent 落在验收位）时补人不采用它：该位置 `source` 为 `未指定`、
 `effective` 为 null，节点另带 `unfilledReason` 写明原因（其余情况为 null），
 派发计划里同样不补。一键推荐凑不出合规人选时同样不退回它，notes 写明该位置
@@ -542,8 +539,7 @@ version 1 的旧格式不做迁移（从未发布过）：宽松读取当空配�
   `--fallback-provider` 要跟着另两项。模式不存在、阶段或位置超出范围、
   `--thinking` 非法、备选项缺配对退出 2（模式不存在时列出可选的 id 与名称）；
   人选或备选不在资源库、或指向「未发现」的模型，都退出 2 并列出该 agent 下可
-  选的模型（列表里去掉未发现的）；人选或备选是只接盲位置的 agent（agy 与
-  cursor、codebuddy、copilot、qoder），而该位置可见性不是「盲」时退出 2；
+  选的模型（列表里去掉未发现的）；人选或备选是未实测四家或 1.5.0 以下的 agy 而位置可见性不是「盲」，或 1.5.0 及以上的 agy 落在 `worktree` 位置时退出 2；
   资源库读不了退出 3。写入的人选 `origin`
   一律为 `manual`。写入后输出该模式那一项（同 `config show` 的 `modes[i]`）。
 - `config clear-seat <模式> [<阶段> <位置>] [--host <h>]`：给了位置只清这一个
@@ -582,7 +578,7 @@ provider 名可带后缀，如 `zai-coding-cn` 命中 `zai`）、模型名包含
 不同于主 agent 的实际厂商（主 agent 厂商「未知」时
 不设这条限制，并在 notes 里说明「主 agent 厂商未知，无法保证跨厂商」），同
 一阶段的验收 / 验证位置之间厂商互不相同，尽量也不同于该模式里执行位置的厂
-商，已验证的第三方与订阅优先。主 agent 的原生模型（provider 为空，claude /
+商，已验证的第三方与订阅优先。验收与验证位置在一键推荐中不选 agy 的 `-high`、`-xhigh` 模型（出方案、执行不受此限）。主 agent 的原生模型（provider 为空，claude /
 codex / kimi）与主 agent 走同一配置端点，厂商按主 agent 的实际厂商算，不会
 被当成另一家选为审查者；pi 下的模型各带 provider，一律按资源库厂商算。认
 不出厂商（「其他」）与没有厂商信息的模型不参与同阶段去重与主 agent 避让，

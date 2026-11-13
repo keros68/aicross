@@ -1,30 +1,105 @@
-//! 支持清单里新增 agent 的一次性 CLI 通道（TASK-61），与 `build_invocation_spec`
-//! 里的 claude / codex / kimi / pi 并列。全部只接盲位置（只读、看不到项目），
-//! 在派发用的空目录里跑；prompt 只走 stdin，绝不走 argv 多行。
+//! 支持清单里新增 agent 的一次性 CLI 通道（TASK-61 / TASK-74），与
+//! `build_invocation_spec` 里的 claude / codex / kimi / pi 并列。prompt 只走
+//! stdin（或文件引用），绝不走 argv 多行。
 //!
-//! - Antigravity（`agy`）：真机实测通道（1.3.1）。材料作为 stdin 的一行 NDJSON，
-//!   解析最后一行 `{"event":"result"}`。**绝不加 `--dangerously-skip-permissions`**：
-//!   用户全局 settings 的 allow 规则会在无头下被自动放行。
+//! - Antigravity（`agy`）：
+//!   - `1.3.1` 实测：无头模式下工具全被拒，只接纯文本盲审；
+//!   - `1.5.6`（2026-11-13 真机实测）：无头模式已放行只读工具（`read_file` /
+//!     `view_file` / `list_dir` / `grep_search` / `find_by_name`，可分页读 >300 KB
+//!     文件）；`--settings <file>` 传 `permissions.deny` 可在 `trustedWorkspaces`
+//!     内挡住写文件与命令执行；`permissions.allow` 用带结尾 `/` 的正斜杠目录
+//!     `write_file(D:/path/)`（不认 `*` 通配）并拒绝命令工具时可跑单写者位置；
+//!     **绝不加 `--dangerously-skip-permissions`**。
 //! - Cursor / CodeBuddy / Copilot / Qoder：命令模板只照官方文档写，本机没装、
 //!   没跑通；prompt 经 stdin 或文件传入的方式也没核实，所以派发直接失败并
 //!   提示「未实测通道」，不猜。真机核实后把对应项改成实际的 stdin 用法。
 
-use super::{nonempty_error, json_lines, ChannelOutput, InvocationSpec, Usage};
+use super::{json_lines, nonempty_error, ChannelOutput, InvocationSpec, Usage};
 use crate::process::ProcessResult;
 use serde_json::{json, Value};
+use std::path::Path;
 use std::time::Duration;
 
-/// agy 无头模式下工具全被拒（读文件也拒），要求它直接用文字回答。
-/// 引擎在如实汇报后缀之后拼这一句；通道里再兜一次（冒烟、备选改派到
-/// agy 时提示词不经引擎那一处），已有就不重复。
+/// `< 1.5.0` 的 agy 与材料全部内联的盲位置，要求直接用文字回答。
 pub(crate) const AGY_NO_TOOLS: &str = "不要使用任何工具，直接用文字回答。";
+
+/// `>= 1.5.0` 的 agy 落在「单写者」位置时附加的说明：只改文件、不跑命令。
+pub(crate) const AGY_SINGLE_WRITER_NOTE: &str =
+    "不能执行命令，改完文件后直接汇报，验证由引擎跑。";
+
+/// `>= 1.5.0` 的 agy 落在只读或带文件盲位置时附加的说明：只调只读文件工具，
+/// 避免模型尝试 `run_command` 触发无头模式自动拒绝而中断整轮。
+pub(crate) const AGY_READONLY_NOTE: &str =
+    "只用只读文件工具（read_file、view_file、list_dir、find_by_name、grep_search），不能执行命令或修改文件。";
+
+/// agy 1.5.6 工具模式。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AgyToolMode {
+    /// `< 1.5.0` 或 <=200 KB 纯文本已全内联的盲位置：不给工具。
+    #[default]
+    NoTools,
+    /// `>= 1.5.0` 读目录 / >200 KB / `project/` 只读副本，配合 `--settings` 禁止写入与命令。
+    ReadOnlyFiles,
+    /// `>= 1.5.0` 单写者：配合 `--settings` 只允许写工作目录并禁止命令。
+    SingleWriter,
+}
+
+/// 生成盲 / 只读位置用的 `--settings` JSON：即使工作目录位于
+/// `trustedWorkspaces`，也显式禁止全部写工具与命令执行。
+pub(crate) fn agy_readonly_settings_json() -> String {
+    serde_json::to_string_pretty(&json!({
+        "permissions": {
+            "deny": [
+                "write_file",
+                "write_to_file",
+                "replace_file_content",
+                "multi_replace_file_content",
+                "sed_file",
+                "edit_file",
+                "notebook_edit",
+                "command",
+                "unsandboxed",
+                "run_command",
+            ]
+        }
+    }))
+    .unwrap_or_default()
+}
+
+/// 把工作目录规范成 `write_file(<dir>/)` 规则字符串：剥离 Windows `\\?\`
+/// 扩展前缀、统一 `/` 分隔、末尾仅保留一个 `/`（2026-11-13 agy 1.5.6 实测：
+/// `*` / `**` 通配规则全部被拒，只有正斜杠加结尾 `/` 的目录前缀规则生效）。
+pub(crate) fn agy_write_allow_rule(workdir: &Path) -> String {
+    let canonical = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let raw = canonical.to_string_lossy();
+    let stripped = if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") {
+        format!("//{unc}")
+    } else {
+        raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
+    };
+    let slash = stripped.replace('\\', "/");
+    let trimmed = slash.trim_end_matches('/');
+    format!("write_file({trimmed}/)")
+}
+
+/// 生成单写者位置用的 `--settings` JSON：仅放行当前工作目录内写文件，拒绝全部命令。
+pub(crate) fn agy_single_writer_settings_json(workdir: &Path) -> String {
+    serde_json::to_string_pretty(&json!({
+        "permissions": {
+            "allow": [agy_write_allow_rule(workdir)],
+            "deny": ["command", "unsandboxed", "run_command"]
+        }
+    }))
+    .unwrap_or_default()
+}
 
 /// 是不是本模块接管的 agent。
 pub(super) fn handles(agent: &str) -> bool {
     matches!(agent, "agy" | "cursor" | "codebuddy" | "copilot" | "qoder")
 }
 
-/// 拼命令。非盲位置直接拒（原因取支持清单）；未实测四家返回「未实测通道」。
+/// 拼命令（兼容旧测试调用，按无 `--settings` 的 `< 1.5.0` 纯文本盲审路径）。
+#[cfg(test)]
 pub(super) fn spec(
     agent: &str,
     model: &str,
@@ -33,7 +108,40 @@ pub(super) fn spec(
     prompt: &str,
     timeout: Duration,
 ) -> Result<InvocationSpec, String> {
-    if !blind {
+    spec_with_agy(
+        agent,
+        model,
+        thinking,
+        blind,
+        if blind { "只读" } else { "" },
+        prompt,
+        timeout,
+        AgyToolMode::NoTools,
+        None,
+    )
+}
+
+/// 拼命令；支持 agy `>= 1.5.0` 经 `--settings` 放行盲目录读、共享只读或单写者。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn spec_with_agy(
+    agent: &str,
+    model: &str,
+    thinking: &str,
+    blind: bool,
+    write: &str,
+    prompt: &str,
+    timeout: Duration,
+    agy_mode: AgyToolMode,
+    agy_settings: Option<&Path>,
+) -> Result<InvocationSpec, String> {
+    if agent == "agy" {
+        if agy_settings.is_none() && !blind {
+            return Err(crate::agent_catalog::AGY_BLIND_ONLY_REASON.to_string());
+        }
+        if !blind && write == "worktree" {
+            return Err(crate::agent_catalog::AGY_NO_WORKTREE_REASON.to_string());
+        }
+    } else if !blind {
         let reason = crate::agent_catalog::blind_only_reason(agent)
             .unwrap_or(crate::agent_catalog::UNTESTED_BLIND_ONLY);
         return Err(reason.to_string());
@@ -42,16 +150,34 @@ pub(super) fn spec(
         return Err(format!("{agent} 通道缺少模型"));
     }
     match agent {
-        "agy" => Ok(agy_spec(model, thinking, prompt, timeout)),
+        "agy" => Ok(agy_spec(model, thinking, prompt, timeout, agy_mode, agy_settings)),
         _ => Err(untested_error(agent, model)),
     }
 }
 
-fn agy_spec(model: &str, thinking: &str, prompt: &str, timeout: Duration) -> InvocationSpec {
+fn agy_spec(
+    model: &str,
+    thinking: &str,
+    prompt: &str,
+    timeout: Duration,
+    agy_mode: AgyToolMode,
+    agy_settings: Option<&Path>,
+) -> InvocationSpec {
     let mut prompt = prompt.to_string();
-    if !prompt.contains(AGY_NO_TOOLS) {
-        prompt.push_str("\n\n");
-        prompt.push_str(AGY_NO_TOOLS);
+    match agy_mode {
+        AgyToolMode::NoTools => {
+            if !prompt.contains(AGY_NO_TOOLS) {
+                prompt.push_str("\n\n");
+                prompt.push_str(AGY_NO_TOOLS);
+            }
+        }
+        AgyToolMode::ReadOnlyFiles => {}
+        AgyToolMode::SingleWriter => {
+            if !prompt.contains(AGY_SINGLE_WRITER_NOTE) {
+                prompt.push_str("\n\n");
+                prompt.push_str(AGY_SINGLE_WRITER_NOTE);
+            }
+        }
     }
     let line = json!({
         "event": "user",
@@ -72,6 +198,12 @@ fn agy_spec(model: &str, thinking: &str, prompt: &str, timeout: Duration) -> Inv
     // `--model … conflicts with --effort=…`，status ERROR。
     if let Some(effort) = agy_effort(thinking).filter(|_| !model_has_effort_suffix(model)) {
         args.extend(["--effort".into(), effort.into()]);
+    }
+    if let Some(settings_path) = agy_settings {
+        args.extend([
+            "--settings".into(),
+            settings_path.to_string_lossy().into_owned(),
+        ]);
     }
     InvocationSpec {
         binary: "agy",
@@ -269,13 +401,41 @@ pub(super) fn parse(agent: &str, result: &ProcessResult) -> Option<Result<Channe
     })
 }
 
+fn contains_output_token_limit(text: &str) -> bool {
+    text.to_ascii_lowercase()
+        .contains("exceeded the output token limit")
+}
+
+fn extract_jetski_no_output(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .find(|line| line.contains("jetski: no output produced"))
+        .map(|line| line.trim().chars().take(300).collect())
+}
+
 /// agy stream-json：取最后一行 `{"event":"result"}`。退出码是 0 也可能没答
 /// （工具全被拒时 `status: SUCCESS` 但 `response` 为空），所以只看这一行。
 fn parse_agy(result: &ProcessResult) -> Result<ChannelOutput, String> {
-    let event = json_lines(&result.stdout)
+    let event = match json_lines(&result.stdout)
         .filter(|value| value.get("event").and_then(Value::as_str) == Some("result"))
         .last()
-        .ok_or_else(|| format!("agy 没给出回答：没有 result 事件；{}", nonempty_error(result, "无输出")))?;
+    {
+        Some(event) => event,
+        None => {
+            if contains_output_token_limit(&result.stderr)
+                || contains_output_token_limit(&result.stdout)
+            {
+                return Err("回答超过输出上限".into());
+            }
+            if let Some(jetski) = extract_jetski_no_output(&result.stderr) {
+                return Err(format!("agy 没给出回答：没有 result 事件；{jetski}"));
+            }
+            return Err(format!(
+                "agy 没给出回答：没有 result 事件；{}",
+                nonempty_error(result, "无输出")
+            ));
+        }
+    };
     let body = event.get("result").unwrap_or(&Value::Null);
     let status = body.get("status").and_then(Value::as_str).unwrap_or("");
     let response = body
@@ -293,10 +453,23 @@ fn parse_agy(result: &ProcessResult) -> Result<ChannelOutput, String> {
                 other => other.to_string(),
             })
             .filter(|text| !text.trim().is_empty() && text != "null");
+        if error.as_deref().is_some_and(contains_output_token_limit)
+            || contains_output_token_limit(&result.stderr)
+            || contains_output_token_limit(&result.stdout)
+        {
+            return Err("回答超过输出上限".into());
+        }
         let status = if status.is_empty() { "（空）" } else { status };
-        return Err(match error {
-            Some(error) => format!("agy 没给出回答：status {status}，error {error}"),
-            None => format!("agy 没给出回答：status {status}，回答为空"),
+        let jetski = extract_jetski_no_output(&result.stderr);
+        return Err(match (error, jetski) {
+            (Some(error), Some(jetski)) => {
+                format!("agy 没给出回答：status {status}，error {error}；{jetski}")
+            }
+            (Some(error), None) => format!("agy 没给出回答：status {status}，error {error}"),
+            (None, Some(jetski)) => {
+                format!("agy 没给出回答：status {status}，回答为空：{jetski}")
+            }
+            (None, None) => format!("agy 没给出回答：status {status}，回答为空"),
         });
     }
     let usage = body.get("usage").unwrap_or(&Value::Null);
@@ -601,5 +774,91 @@ mod tests {
         assert_eq!(effective_pi_thinking(&catalog, "demo", "m-no-med", "已调整为：中"), "已调整为：high");
         assert_eq!(effective_pi_thinking(&catalog, "demo", "m-no-med", "中"), "已调整为：low");
         assert_eq!(effective_pi_thinking(&catalog, "unknown", "m", "已调整为：中"), "已调整为：中");
+    }
+
+    #[test]
+    fn task74_agy_settings_modes_and_parse_errors() {
+        let ro: Value = serde_json::from_str(&agy_readonly_settings_json()).unwrap();
+        let deny = ro["permissions"]["deny"].as_array().unwrap();
+        assert!(deny.iter().any(|v| v == "write_file"));
+        assert!(deny.iter().any(|v| v == "run_command"));
+
+        assert_eq!(
+            agy_write_allow_rule(Path::new(r"\\?\D:\work\demo\")),
+            "write_file(D:/work/demo/)"
+        );
+        let sw: Value = serde_json::from_str(&agy_single_writer_settings_json(Path::new(r"D:\work\demo"))).unwrap();
+        let allow = sw["permissions"]["allow"].as_array().unwrap();
+        assert_eq!(allow, &vec![json!("write_file(D:/work/demo/)")]);
+        assert!(!allow[0].as_str().unwrap().contains('*'));
+        assert!(sw["permissions"]["deny"].as_array().unwrap().iter().any(|v| v == "run_command"));
+
+        let settings = Path::new("D:/run/agy-settings/n1.json");
+        let built_read = spec_with_agy(
+            "agy",
+            "gemini-4-carbon-low",
+            "中",
+            true,
+            "只读",
+            "请检查代码",
+            Duration::from_secs(60),
+            AgyToolMode::ReadOnlyFiles,
+            Some(settings),
+        )
+        .unwrap();
+        assert!(built_read.args.windows(2).any(|w| w == ["--settings", "D:/run/agy-settings/n1.json"]));
+        assert!(!built_read.args.iter().any(|a| a.contains("dangerously")));
+        assert!(!built_read.input.as_deref().unwrap().contains(AGY_NO_TOOLS));
+
+        let built_sw = spec_with_agy(
+            "agy",
+            "gemini-4-carbon-low",
+            "中",
+            false,
+            "单写者",
+            "修改 a.txt",
+            Duration::from_secs(60),
+            AgyToolMode::SingleWriter,
+            Some(settings),
+        )
+        .unwrap();
+        let sw_input = built_sw.input.unwrap();
+        assert!(sw_input.contains(AGY_SINGLE_WRITER_NOTE));
+        assert!(!sw_input.contains(AGY_NO_TOOLS));
+
+        let worktree_err = spec_with_agy(
+            "agy",
+            "gemini-4-carbon-low",
+            "中",
+            false,
+            "worktree",
+            "修改 a.txt",
+            Duration::from_secs(60),
+            AgyToolMode::SingleWriter,
+            Some(settings),
+        )
+        .unwrap_err();
+        assert_eq!(worktree_err, crate::agent_catalog::AGY_NO_WORKTREE_REASON);
+
+        let long_reason = "x".repeat(350);
+        let mut proc = process(
+            "{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"\"}}\n",
+            Some(0),
+        );
+        proc.stderr = format!("other log\njetski: no output produced — {long_reason}\ntail\n");
+        let err = parse_agy(&proc).unwrap_err();
+        assert!(err.contains("jetski: no output produced"), "{err}");
+        let suffix = err.split("回答为空：").nth(1).unwrap();
+        assert_eq!(suffix.chars().count(), 300, "{suffix}");
+
+        let limit_proc = process(
+            "{\"event\":\"result\",\"result\":{\"status\":\"ERROR\",\"response\":\"\",\"error\":\"Model response exceeded the output token limit.\"}}\n",
+            Some(0),
+        );
+        assert_eq!(parse_agy(&limit_proc).unwrap_err(), "回答超过输出上限");
+
+        let mut limit_no_result = process("", Some(1));
+        limit_no_result.stderr = "Error: exceeded the output token limit while generating".into();
+        assert_eq!(parse_agy(&limit_no_result).unwrap_err(), "回答超过输出上限");
     }
 }

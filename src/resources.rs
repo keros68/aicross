@@ -1981,11 +1981,91 @@ fn claude_third_party_endpoint() -> bool {
 thread_local! {
     /// 测试里的 claude 端点判据（修正轮 R1）。
     static CLAUDE_THIRD_PARTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// 测试里按 agent 覆盖探测版本号（TASK-74），避免读宿主全局 `AICROSS_HOME/resources.json`。
+    static AGENT_VERSION_STUB: std::cell::RefCell<HashMap<String, Option<String>>> =
+        std::cell::RefCell::new(HashMap::new());
 }
 
 #[cfg(test)]
 fn set_claude_third_party(value: bool) {
     CLAUDE_THIRD_PARTY.with(|cell| cell.set(value));
+}
+
+#[cfg(test)]
+pub(crate) fn with_agent_version_stub<T>(
+    agent_id: &str,
+    version: Option<&str>,
+    f: impl FnOnce() -> T,
+) -> T {
+    struct Guard {
+        key: String,
+        previous: Option<Option<String>>,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            AGENT_VERSION_STUB.with(|cell| {
+                let mut map = cell.borrow_mut();
+                match self.previous.take() {
+                    Some(prev) => {
+                        map.insert(self.key.clone(), prev);
+                    }
+                    None => {
+                        map.remove(&self.key);
+                    }
+                }
+            });
+        }
+    }
+    let key = agent_id.trim().to_ascii_lowercase();
+    let previous = AGENT_VERSION_STUB.with(|cell| {
+        cell.borrow_mut()
+            .insert(key.clone(), version.map(str::to_string))
+    });
+    let _guard = Guard { key, previous };
+    f()
+}
+
+pub(crate) fn agent_version_in(store: &ResourceStore, agent_id: &str) -> Option<String> {
+    store
+        .agents
+        .iter()
+        .find(|agent| agent.id.eq_ignore_ascii_case(agent_id.trim()))
+        .map(|agent| agent.version.trim())
+        .filter(|version| !version.is_empty())
+        .map(str::to_string)
+}
+
+pub(crate) fn agent_version_from_root(root: &Path, agent_id: &str) -> Option<String> {
+    get_resources_at(&root.join("resources.json"))
+        .ok()
+        .and_then(|store| agent_version_in(&store, agent_id))
+}
+
+pub(crate) fn detected_agent_version(agent_id: &str) -> Option<String> {
+    #[cfg(test)]
+    {
+        let key = agent_id.trim().to_ascii_lowercase();
+        if let Some(stub) = AGENT_VERSION_STUB.with(|cell| cell.borrow().get(&key).cloned()) {
+            return stub;
+        }
+        None
+    }
+    #[cfg(not(test))]
+    {
+        aicross_root()
+            .ok()
+            .and_then(|root| agent_version_from_root(&root, agent_id))
+    }
+}
+
+struct SmokeSettingsFile(Option<PathBuf>);
+
+impl Drop for SmokeSettingsFile {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn claude_base_url_from_settings(contents: &str) -> Option<String> {
@@ -2017,13 +2097,34 @@ fn run_smoke_registered(
     if let Some(dir) = &session_dir {
         let _ = fs::create_dir_all(dir);
     }
-    let invocation = channels::build_invocation(
+    // agy 在本次调用专属的空目录里跑（fix-61-r1 3），返回前（含失败、超时）
+    // 由 SmokeScratch 的 Drop 删掉；>= 1.5.0 时在 scratch 下写一份只读 settings
+    // 文件（位于专属空目录之外），返回前随 SmokeSettingsFile 的 Drop 清理。
+    let agy_1_5 = model.agent.trim().eq_ignore_ascii_case("agy")
+        && crate::agent_catalog::agy_at_least_1_5(detected_agent_version("agy").as_deref());
+    let settings_guard = if agy_1_5 {
+        if let Ok(root) = aicross_root() {
+            let scratch_root = root.join("scratch");
+            let _ = fs::create_dir_all(&scratch_root);
+            let settings_path = scratch_root.join(format!("smoke-agy-settings-{}.json", Uuid::new_v4()));
+            fs::write(&settings_path, channels::agy_readonly_settings_json())
+                .map_err(|error| format!("写入冒烟权限文件失败 {}：{error}", settings_path.display()))?;
+            SmokeSettingsFile(Some(settings_path))
+        } else {
+            SmokeSettingsFile(None)
+        }
+    } else {
+        SmokeSettingsFile(None)
+    };
+    let invocation = channels::build_invocation_full(
         &model.agent,
         &model.provider,
         &model.id,
         "",
         "低",
         true,
+        false,
+        "只读",
         None,
         SMOKE_PROMPT,
         None,
@@ -2031,9 +2132,9 @@ fn run_smoke_registered(
         None,
         false, // 冒烟只读，不给写工具（第 4 期新增 writable 参数）
         Duration::from_secs(SMOKE_TIMEOUT_SECS),
+        channels::AgyToolMode::NoTools,
+        settings_guard.0.as_deref(),
     )?;
-    // agy 在本次调用专属的空目录里跑（fix-61-r1 3），返回前（含失败、超时）
-    // 由 SmokeScratch 的 Drop 删掉；其余 agent 照旧在系统临时目录跑。
     let scratch = match aicross_root() {
         Ok(root) => SmokeScratch::create_in(&root, &model.agent)?,
         Err(_) => None,
@@ -2090,7 +2191,7 @@ struct SmokeScratch {
 
 impl SmokeScratch {
     fn create_in(root: &Path, agent: &str) -> Result<Option<SmokeScratch>, String> {
-        if !crate::agent_catalog::is_text_only(agent) {
+        if !agent.trim().eq_ignore_ascii_case("agy") && !crate::agent_catalog::is_text_only(agent) {
             return Ok(None);
         }
         let path = root

@@ -1018,16 +1018,26 @@ pub(crate) fn fill_seats(
     roles: &RoleSettings,
     seat_stages: Option<&Vec<Vec<Option<SeatChoice>>>>,
 ) -> (Preset, Vec<Vec<&'static str>>) {
-    let (filled, sources, _) = fill_seats_explained(preset, roles, seat_stages);
-    (filled, sources)
+    let agy_version = crate::resources::detected_agent_version("agy");
+    fill_seats_with_version(preset, roles, seat_stages, agy_version.as_deref())
 }
 
-/// 同 [`fill_seats`]，另返回每个位置「未指定」的原因（角色默认因位置
-/// 硬规则未采用时有值，其余为 None），与 sources 同形。
-pub(crate) fn fill_seats_explained(
+pub(crate) fn fill_seats_with_version(
     preset: &Preset,
     roles: &RoleSettings,
     seat_stages: Option<&Vec<Vec<Option<SeatChoice>>>>,
+    agy_version: Option<&str>,
+) -> (Preset, Vec<Vec<&'static str>>) {
+    let (filled, sources, _) =
+        fill_seats_explained_with_version(preset, roles, seat_stages, agy_version);
+    (filled, sources)
+}
+
+pub(crate) fn fill_seats_explained_with_version(
+    preset: &Preset,
+    roles: &RoleSettings,
+    seat_stages: Option<&Vec<Vec<Option<SeatChoice>>>>,
+    agy_version: Option<&str>,
 ) -> (Preset, Vec<Vec<&'static str>>, Vec<Vec<Option<String>>>) {
     let mut filled = preset.clone();
     // 「角色」这档对照 apply_role_defaults 的结果：整份跳过与角色匹配都由
@@ -1042,10 +1052,12 @@ pub(crate) fn fill_seats_explained(
             let template = &role_template.stages[i].nodes[j];
             let role_violation = (!template.model.trim().is_empty())
                 .then(|| {
-                    crate::agent_catalog::position_violation(
+                    crate::agent_catalog::position_violation_for(
                         &template.agent,
                         &target.role,
                         &target.visibility,
+                        &target.write,
+                        agy_version,
                     )
                 })
                 .flatten();
@@ -1682,10 +1694,17 @@ fn build_request(
             // 原样保留，这段只追加在末尾。TASK-74：出方案位置按方案要求改写。
             prompt.push_str("\n\n");
             prompt.push_str(honest_reporting_for_role(&target.role));
-            // TASK-61：agy 无头下工具全被拒，同一处再拼「不要使用任何工具」。
+            // TASK-61 / TASK-74：agy 按位置权限拼收尾句：单写者提示只改文件不跑
+            // 命令；盲位置先附「不要使用任何工具」（dispatch 遇到 >200 KB 或
+            // 只读副本时会摘掉改走 read_file）；非盲只读位置不附。
             if crate::channels::normalize_agent(&target.agent) == "agy" {
-                prompt.push_str("\n");
-                prompt.push_str(crate::channels::AGY_NO_TOOLS);
+                if target.write == "单写者" {
+                    prompt.push('\n');
+                    prompt.push_str(crate::channels::AGY_SINGLE_WRITER_NOTE);
+                } else if target.visibility == "盲" {
+                    prompt.push('\n');
+                    prompt.push_str(crate::channels::AGY_NO_TOOLS);
+                }
             }
             let fallback = target
                 .fallback

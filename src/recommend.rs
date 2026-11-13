@@ -293,17 +293,45 @@ fn participates_in_vendor_rules(vendor: &str) -> bool {
     !vendor.is_empty() && vendor != "其他" && vendor != resources::VENDOR_UNKNOWN
 }
 
-/// 位置硬规则（TASK-61 / fix-61-r1）：违反时返回原因，候选与角色默认都按它筛。
-/// - 只接盲的 agent 不进非盲位置；
+/// TASK-74：Antigravity `-high` / `-xhigh` 档位容易在长审查里耗尽额度或
+/// 无响应，一键推荐在验收 / 验证位置不选这两档。
+fn agy_is_high_variant(model: &str) -> bool {
+    let model = model.trim().to_ascii_lowercase();
+    model.ends_with("-high") || model.ends_with("-xhigh")
+}
+
+/// 位置硬规则（TASK-61 / fix-61-r1 / TASK-74）：违反时返回原因，候选与角色默认都按它筛。
+/// - `< 1.5.0` 的 agy 与未实测四家：只接盲位置；`< 1.5.0` 的 agy 不填验收位；
+/// - `>= 1.5.0` 的 agy：支持盲 / 只读 / 单写者位置，不支持 `worktree` 位置；
+/// - 一键推荐在验收 / 验证位置不选 agy 的 `-high` / `-xhigh` 模型；
 /// - 未实测的 agent 不进推荐；
-/// - 只看得到文字的 agent（agy）不填验收位（验收要读项目副本、跑验证）；
 /// - 厂商「未知」的模型只当执行位（出方案 / 拆分 / 顾问 / 审查位都不进）。
-fn seat_rule_violation(agent: &str, vendor: &str, role: &str, visibility: &str) -> Option<String> {
-    if let Some(reason) = crate::agent_catalog::position_violation(agent, role, visibility) {
+fn seat_rule_violation_for(
+    agent: &str,
+    model: &str,
+    vendor: &str,
+    role: &str,
+    visibility: &str,
+    write: &str,
+    agy_version: Option<&str>,
+) -> Option<String> {
+    if let Some(reason) = crate::agent_catalog::position_violation_for(
+        agent,
+        role,
+        visibility,
+        write,
+        agy_version,
+    ) {
         return Some(reason);
     }
     if crate::agent_catalog::is_untested(agent) {
         return Some(format!("{agent} 是未实测通道，不进推荐"));
+    }
+    if matches!(role, "验收" | "验证")
+        && agent.trim().eq_ignore_ascii_case("agy")
+        && agy_is_high_variant(model)
+    {
+        return Some("Antigravity -high/-xhigh 模型不用于验收/验证推荐".to_string());
     }
     if normalized_vendor(vendor) == resources::VENDOR_UNKNOWN && role != "执行" {
         return Some("厂商未知，只当执行位".to_string());
@@ -312,13 +340,33 @@ fn seat_rule_violation(agent: &str, vendor: &str, role: &str, visibility: &str) 
 }
 
 /// 某个位置的候选：候选池里不违反位置硬规则的那些（保持原顺序）。
-fn seat_pool(pool: &[Candidate], role: &str, visibility: &str) -> Vec<Candidate> {
+fn seat_pool_for(
+    pool: &[Candidate],
+    role: &str,
+    visibility: &str,
+    write: &str,
+    agy_version: Option<&str>,
+) -> Vec<Candidate> {
     pool.iter()
         .filter(|candidate| {
-            seat_rule_violation(&candidate.agent, &candidate.vendor, role, visibility).is_none()
+            seat_rule_violation_for(
+                &candidate.agent,
+                &candidate.model,
+                &candidate.vendor,
+                role,
+                visibility,
+                write,
+                agy_version,
+            )
+            .is_none()
         })
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+fn seat_pool(pool: &[Candidate], role: &str, visibility: &str) -> Vec<Candidate> {
+    seat_pool_for(pool, role, visibility, "只读", None)
 }
 
 /// 审查位同人判断用的键：agent/provider/model，provider 空时为空串。
@@ -356,6 +404,7 @@ pub(crate) fn recommend_into(
 ) -> (Vec<PresetPicks>, Vec<String>) {
     let table = TierTable::load();
     let pool = candidate_pool(store, &table);
+    let agy_version = resources::agent_version_in(store, "agy");
     let unverified_total: usize = unverified_counts(store)
         .iter()
         .map(|(_, count)| count)
@@ -374,14 +423,22 @@ pub(crate) fn recommend_into(
         }
         // TASK-56：按该主 agent 调整后的形状推荐，写出的人选与派发同形。
         let preset = &crate::orchestration::shaped_preset(preset, section);
-        let (filled, sources) =
-            crate::engine::fill_seats(preset, roles, section.and_then(|s| s.seats.get(&preset.id)));
+        let (filled, sources) = crate::engine::fill_seats_with_version(
+            preset,
+            roles,
+            section.and_then(|s| s.seats.get(&preset.id)),
+            agy_version.as_deref(),
+        );
         // 角色默认模板：推荐后仍空着的位置若它会补位，那个人照样跑，
         // 厂商要占位并在 notes 写明。
         // 违反位置硬规则的角色默认不进模板（与派发同一份补人），原因在
         // role_reasons。
-        let (role_template, _, role_reasons) =
-            crate::engine::fill_seats_explained(preset, roles, None);
+        let (role_template, _, role_reasons) = crate::engine::fill_seats_explained_with_version(
+            preset,
+            roles,
+            None,
+            agy_version.as_deref(),
+        );
         let old_seats = section.and_then(|s| s.seats.get(&preset.id));
         let seat_at = |i: usize, j: usize| -> Option<&SeatChoice> {
             old_seats
@@ -460,8 +517,14 @@ pub(crate) fn recommend_into(
                     }
                 }
                 let empty_models = HashSet::new();
-                // 位置硬规则（TASK-61 / fix-61-r1）筛掉不合规的候选。
-                let seat_pool = seat_pool(&pool, &target.role, &target.visibility);
+                // 位置硬规则（TASK-61 / fix-61-r1 / TASK-74）筛掉不合规的候选。
+                let seat_pool = seat_pool_for(
+                    &pool,
+                    &target.role,
+                    &target.visibility,
+                    &target.write,
+                    agy_version.as_deref(),
+                );
                 let pick = choose_candidate(
                     &seat_pool,
                     &target.role,
@@ -558,11 +621,14 @@ pub(crate) fn recommend_into(
                             let default_target = &role_template.stages[i].nodes[j];
                             // 推荐自己的挑人规则（未实测、厂商未知等）只管推荐
                             // 不选它；派发时角色默认照样补位，照实写明。
-                            let soft = seat_rule_violation(
+                            let soft = seat_rule_violation_for(
                                 &default_target.agent,
+                                &default_target.model,
                                 &effective_vendor(store, default_target),
                                 &target.role,
                                 &target.visibility,
+                                &target.write,
+                                agy_version.as_deref(),
                             );
                             let vendor = normalized_vendor(&comparison_vendor_of_target(
                                 store, default_target, host, host_vendor, host_vendor_known,
@@ -2023,6 +2089,7 @@ mod tests {
                     detected: true,
                     models: vec![
                         model("agy", "", "gemini-3.8-flash-high", "Google", "native"),
+                        model("agy", "", "gemini-3.8-flash-medium", "Google", "native"),
                         model("agy", "", "claude-opus-5-5-high", "Anthropic", "native"),
                     ],
                     ..ResourceAgent::default()
@@ -2052,9 +2119,9 @@ mod tests {
             }
         }
         // 验收：agy 读不到项目副本不填（fix-61-r1 1），未知厂商不进 → 留空；
-        // 验证：主 agent 厂商 Anthropic 避开（含 agy 的 claude 档）→ agy 的 Gemini
+        // 验证：主 agent 厂商 Anthropic 避开（含 agy 的 claude 档），且验证位跳过 agy 的 -high 档 → agy 的 medium 档
         assert!(seats[2][0].is_none(), "{:?}", seats[2]);
-        assert_eq!(seat_desc(seats[2][1].as_ref().unwrap()), "agy//gemini-3.8-flash-high");
+        assert_eq!(seat_desc(seats[2][1].as_ref().unwrap()), "agy//gemini-3.8-flash-medium");
         // 未知厂商只当执行位：出方案 / 拆分 / 顾问 / 审查位都筛掉（fix-61-r1 6）
         let only_unknown = vec![Candidate {
             agent: "pi".into(),
@@ -2164,5 +2231,114 @@ mod tests {
                 "{notes:?}"
             );
         }
+    }
+
+    #[test]
+    fn task74_agy_carbon_tiers_and_1_5_seat_recommendation() {
+        let table = TierTable::load();
+        assert_eq!(table.tier_of("agy", "", "gemini-4-carbon-high"), "高");
+        assert_eq!(table.tier_of("agy", "", "gemini-4-carbon-medium"), "中");
+        assert_eq!(table.tier_of("agy", "", "gemini-4-carbon-low"), "低");
+        assert_eq!(table.tier_of("agy", "", "gemini-4-carbon"), "中");
+
+        let store = ResourceStore {
+            extra_hosts: Vec::new(),
+            version: 1,
+            agents: vec![ResourceAgent {
+                id: "agy".into(),
+                name: "Antigravity".into(),
+                detected: true,
+                version: "1.5.6".into(),
+                models: vec![
+                    model("agy", "", "gemini-4-carbon-high", "Google", "native"),
+                    model("agy", "", "gemini-4-carbon-medium", "Google", "native"),
+                    model("agy", "", "gemini-4-hydrogen-xhigh", "Google", "native"),
+                ],
+                ..ResourceAgent::default()
+            }],
+            detected_at: None,
+        };
+        let custom_wt = crate::orchestration::Preset {
+            id: "custom-wt".into(),
+            name: "worktree验证".into(),
+            description: String::new(),
+            builtin: false,
+            stages: vec![
+                crate::orchestration::Stage {
+                    nodes: vec![crate::orchestration::Target {
+                        role: "执行".into(),
+                        thinking: "中".into(),
+                        visibility: "共享".into(),
+                        write: "worktree".into(),
+                        ..crate::orchestration::Target::default()
+                    }],
+                },
+                crate::orchestration::Stage {
+                    nodes: vec![crate::orchestration::Target {
+                        role: "验收".into(),
+                        thinking: "中".into(),
+                        visibility: "盲".into(),
+                        write: "只读".into(),
+                        ..crate::orchestration::Target::default()
+                    }],
+                },
+            ],
+        };
+        let presets = vec![preset("builtin-economy"), custom_wt];
+        let (picks, _) = recommend_into(
+            &store,
+            &fixture_modes(),
+            "claude",
+            "Anthropic",
+            true,
+            &presets,
+            &crate::orchestration::RoleSettings::default(),
+            None,
+            false,
+        );
+        let economy = &pick_of(&picks, "builtin-economy").seats;
+        // 出方案（只读）仍可选 -high；执行（单写者）偏好中低档；验收（盲+project/）跳过 -high/-xhigh；
+        // 验证位与验收位同属第 3 阶段审查位且同厂商 Google 去重，空位后再由下方手动占住验收位测验证位。
+        assert_eq!(seat_desc(economy[0][0].as_ref().unwrap()), "agy//gemini-4-carbon-high");
+        assert_eq!(seat_desc(economy[1][0].as_ref().unwrap()), "agy//gemini-4-carbon-medium");
+        assert_eq!(seat_desc(economy[2][0].as_ref().unwrap()), "agy//gemini-4-carbon-medium");
+        assert!(economy[2][1].is_none());
+
+        let mut verify_modes = fixture_modes();
+        verify_modes.hosts.get_mut("claude").unwrap().seats.insert(
+            "builtin-economy".into(),
+            vec![
+                vec![],
+                vec![],
+                vec![
+                    Some(SeatChoice {
+                        agent: "pi".into(),
+                        provider: Some("zai".into()),
+                        model: "glm-4.7".into(),
+                        origin: SEAT_ORIGIN_MANUAL.into(),
+                        ..SeatChoice::default()
+                    }),
+                    None,
+                ],
+            ],
+        );
+        let (verify_picks, _) = recommend_into(
+            &store,
+            &verify_modes,
+            "claude",
+            "Anthropic",
+            true,
+            &[preset("builtin-economy")],
+            &crate::orchestration::RoleSettings::default(),
+            None,
+            false,
+        );
+        let economy_verify = &pick_of(&verify_picks, "builtin-economy").seats;
+        assert_eq!(seat_desc(economy_verify[2][1].as_ref().unwrap()), "agy//gemini-4-carbon-medium");
+
+        let wt_picks = &pick_of(&picks, "custom-wt").seats;
+        // worktree 阶段：agy >= 1.5.0 也不填，但下一阶段盲验收仍可填（且跳过 -high/-xhigh）
+        assert!(wt_picks[0].iter().all(Option::is_none), "{:?}", wt_picks[0]);
+        assert_eq!(seat_desc(wt_picks[1][0].as_ref().unwrap()), "agy//gemini-4-carbon-medium");
     }
 }

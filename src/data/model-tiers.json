@@ -12,7 +12,11 @@
     { "agent": "pi", "provider": "zai", "model": "glm-4", "tier": "中" },
     { "agent": "pi", "provider": "bigmodel", "tier": "中" },
     { "agent": "pi", "provider": "deepseek", "tier": "中" },
-    { "agent": "pi", "provider": "opencode", "tier": "中" }
+    { "agent": "pi", "provider": "opencode", "tier": "中" },
+    { "agent": "agy", "model": "gemini-4-carbon-high", "tier": "高" },
+    { "agent": "agy", "model": "gemini-4-carbon-medium", "tier": "中" },
+    { "agent": "agy", "model": "gemini-4-carbon-low", "tier": "低" },
+    { "agent": "agy", "model": "gemini-4-carbon", "tier": "中" }
   ],
   "billing": [
     { "agent": "claude", "billing": "订阅" },

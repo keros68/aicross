@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -522,16 +523,85 @@ def pi_supported_thinking(pick):
         return None
 
 
+AGY_INLINE_LIMIT = 200 * 1024
+AGY_READONLY_NOTE = "只用只读文件工具（read_file、view_file、list_dir、find_by_name、grep_search），不能执行命令或修改文件。"
+AGY_READONLY_DENY = (
+    "write_file",
+    "write_to_file",
+    "replace_file_content",
+    "multi_replace_file_content",
+    "sed_file",
+    "edit_file",
+    "notebook_edit",
+    "command",
+    "unsandboxed",
+    "run_command",
+)
+
+
+def agy_at_least_1_5(version):
+    if not version:
+        return False
+    trimmed = str(version).strip().lstrip("vV")
+    parts = trimmed.split(".")
+    try:
+        major = int(parts[0])
+    except (ValueError, IndexError):
+        return False
+    minor = 0
+    if len(parts) > 1:
+        digits = "".join(ch for ch in parts[1] if ch.isdigit())
+        if not digits:
+            digits = ""
+        if not digits:
+            return False
+        minor = int(digits)
+    return (major, minor) >= (1, 5)
+
+
+def _extract_jetski_no_output(stderr):
+    for line in (stderr or "").splitlines():
+        if "jetski: no output produced" in line:
+            return line.strip()[:300]
+    return None
+
+
+def _contains_output_token_limit(*texts):
+    return any("exceeded the output token limit" in (text or "").lower() for text in texts)
+
+
 def call_agy(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     out = base_result()
-    if tools:
+    agy_1_5 = agy_at_least_1_5(pick.get("version"))
+    if tools and not agy_1_5:
         out["status"] = "skipped"
         out["error"] = "agy 在无头模式下连读文件都会被拒，不能让它自己进项目读；换一个条目，或把材料用 --file 附上"
         return out
-    line = json.dumps({"event": "user", "message": {"role": "user", "content": prompt}}, ensure_ascii=False) + "\n"
+    sent_prompt = prompt
+    if agy_1_5 and blind and len(prompt.encode("utf-8")) > AGY_INLINE_LIMIT:
+        (Path(cwd) / "REQUEST.md").write_text(prompt, encoding="utf-8", newline="\n")
+        sent_prompt = f"完整任务与待审材料在当前目录的 REQUEST.md，请先完整读取后再按其要求作答。\n\n{AGY_READONLY_NOTE}"
+    elif agy_1_5 and tools:
+        sent_prompt = f"{prompt}\n\n{AGY_READONLY_NOTE}"
+    line = json.dumps({"event": "user", "message": {"role": "user", "content": sent_prompt}}, ensure_ascii=False) + "\n"
     cmd = [exe(pick), "--model", pick["model"], "--print-timeout", f"{max(1, timeout // 60)}m",
            "--input-format", "stream-json", "--output-format", "stream-json"]
-    out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout + 30, line)
+    settings_path = None
+    try:
+        if agy_1_5:
+            scratch = inventory.data_root() / "scratch"
+            scratch.mkdir(parents=True, exist_ok=True)
+            settings_path = scratch / f"agy-readonly-{uuid.uuid4().hex}.json"
+            settings_path.write_text(
+                json.dumps({"permissions": {"deny": list(AGY_READONLY_DENY)}}, ensure_ascii=False),
+                encoding="utf-8",
+                newline="\n",
+            )
+            cmd.extend(["--settings", str(settings_path)])
+        out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout + 30, line)
+    finally:
+        if settings_path is not None:
+            settings_path.unlink(missing_ok=True)
     if err:
         out["error"] = err
         return out
@@ -540,16 +610,26 @@ def call_agy(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
         if event.get("event") == "result":
             result = event.get("result") or {}
     if not result:
-        out["error"] = out["stderr"].strip()[:300] or f"agy 没有给出结果（退出码 {out['exit_code']}）"
+        if _contains_output_token_limit(out["stderr"], out["raw"]):
+            out["error"] = "回答超过输出上限"
+            return out
+        jetski = _extract_jetski_no_output(out["stderr"])
+        out["error"] = jetski or out["stderr"].strip()[:300] or f"agy 没有给出结果（退出码 {out['exit_code']}）"
         return out
     usage = result.get("usage") or {}
     out["tokens_in"], out["tokens_out"] = usage.get("input_tokens", 0), usage.get("output_tokens", 0)
     out["cache_read"] = usage.get("cache_read_tokens", 0)
     out["answer"] = result.get("response") or ""
     if result.get("status") != "SUCCESS" or not out["answer"].strip():
-        # 退出码是 0 也可能没答：无头模式下工具全被拒时 response 为空
+        # 退出码是 0 也可能没答：无头模式下工具被拒时 response 为空
         out["answer"] = ""
-        out["error"] = f"agy 状态 {result.get('status')}，回答为空"
+        err_text = result.get("error")
+        if _contains_output_token_limit(str(err_text or ""), out["stderr"], out["raw"]):
+            out["error"] = "回答超过输出上限"
+            return out
+        jetski = _extract_jetski_no_output(out["stderr"])
+        base_err = f"agy 状态 {result.get('status')}，回答为空"
+        out["error"] = f"{base_err}：{jetski}" if jetski else base_err
     return out
 
 
@@ -920,10 +1000,12 @@ def cmd_run(args):
         if not read_dir.is_dir():
             inventory.fail(f"--read-dir 指的目录不存在：{args.read_dir}")
         base = pick["channel"].split(":", 1)[0]
-        if base in ("kimi", "agy", "manual"):
+        agy_can_read = base == "agy" and agy_at_least_1_5(pick.get("version"))
+        if base in ("kimi", "manual") or (base == "agy" and not agy_can_read):
             usable = "、".join(e["id"] for e in data["entries"]
-                             if e["channel"].split(":", 1)[0] in ("claude", "codex", "pi", "cc-switch"))
-            inventory.fail(f"{pick['id']} 不能进目录只读（kimi 没有只读档，agy 无头模式读不了文件）。"
+                             if e["channel"].split(":", 1)[0] in ("claude", "codex", "pi", "cc-switch")
+                             or (e["channel"].split(":", 1)[0] == "agy" and agy_at_least_1_5(e.get("version"))))
+            inventory.fail(f"{pick['id']} 不能进目录只读（kimi 没有只读档，1.5.0 以下的 agy 无头模式读不了文件）。"
                            f"换一个条目：{usable or '（清单里没有支持只读的通道）'}", 1)
     project = Path(args.project or read_dir or os.getcwd())
     if read_dir:
@@ -1073,7 +1155,7 @@ def main():
     x.add_argument("--task-file", dest="task_file", required=True, help="任务文本（UTF-8 文件，要自包含）")
     x.add_argument("--file", action="append", help="随任务附上的参考材料（UTF-8 文本文件，可重复）")
     x.add_argument("--read-dir", dest="read_dir",
-                   help="让执行者进这个目录自己读文件（只读：能读能搜，不能改）；支持 claude / codex / pi / cc-switch 通道")
+                   help="让执行者进这个目录自己读文件（只读：能读能搜，不能改）；支持 claude / codex / pi / cc-switch 与 agy 1.5.0+")
     x.add_argument("--entry", help="点名执行者（manifest 条目名）；不写就用默认执行者")
     x.add_argument("--tier", choices=inventory.TIERS, help="档位；默认用设默认执行者时定的档，点名时默认 low")
     x.add_argument("--thinking", choices=["off", "low", "mid", "high"], default="low",

@@ -182,6 +182,74 @@
 - 多步任务检测（`is_multi_step_task`）是按编号行与文件扩展名数目的粗略启发式，未做语义解析。
 - 阶段 4 本期未单独拉起完整真机经济模式流水线；真实多厂商端到端运行行为将在阶段 2、阶段 3 完成后统一复核。
 
-## 阶段 2–3
+## 阶段 2：Antigravity 1.5.6
+
+### 2026-11-13 真机核实结论（`gemini-4-carbon-low`，共消耗 10 次独立探针，未碰全局 `settings.json`）
+
+- `--settings <临时文件路径>` 传入 `permissions.allow` 时，不在 `trustedWorkspaces` 中的临时目录：使用 `*` / `**` 通配规则全部被拒；改为不带通配符的正斜杠结尾目录前缀 `"write_file(D:/path/to/dir/)"` 后，根目录与子目录写文件均可放行，`deny` 仍可锁死 `["command", "unsandboxed", "run_command"]`。
+- 位于 `trustedWorkspaces`（`D:\work\aicross`）内的目录，经 `--settings` 传入 `permissions.deny` 禁用写文件与命令执行工具后，`write_to_file` 被无头模式自动拒绝并退出（exit 0、空 `response`、stderr 出现 `jetski: no output produced — a tool required the "write_file" permission...`），文件未写入。
+- 约 314 KB（2,281 行）测试文件放在未受信任的工作目录内由 agy 自主读取时，`read_file` 自动分页完成（共 3 次分页读完），回答与末行口令完整准确。
+- 端到端补充发现（`069cee5d-685d-48d9-8d7a-3b841319b51a` 首次验收试跑）：`agy` 1.5.6 未提供只隐藏工具表的命令行开关，`--settings` 只在工具调用时拒绝，不从 `init.tools` 列表删掉 `run_command`；只读验收位若不在提示词中明确禁止命令，模型可能自发调用 `run_command`（如 `Get-ChildItem`），一旦命中 `permissions.deny` 即触发无头模式中止（`jetski: no output produced`）。因此在 `AGY_READONLY_NOTE` 与 `dispatch.py` 中补充只用只读文件工具、严禁执行命令或修改文件的说明。
+
+### 改动
+
+- 版本门槛与通道参数（`src/agent_catalog.rs`、`src/resources.rs`、`src/channels/cli_agents.rs`、`src/channels/mod.rs`、`src/engine/mod.rs`、`src/dispatch.rs`）：
+  - `agy_at_least_1_5` 解析 `resources` 探测到的 `agy` 版本；`< 1.5.0` 保持纯文本盲审、200 KB 上限、`project/` 与非盲拒发。
+  - `>= 1.5.0` 在盲目录内联 `<= 200 KB` 纯文本时走 `AgyToolMode::NoTools`（追加 `AGY_NO_TOOLS`）；超过 200 KB 纯文本写 `REQUEST.md`，含二进制附件或需读 `project/` 只读副本时走 `AgyToolMode::ReadOnlyFiles`（追加 `AGY_READONLY_NOTE`），配合写入运行时目录 `run_root/agy-settings/` 的只读 `--settings`（绝不写进盲目录或项目目录，绝不传 `--dangerously-skip-permissions`）。
+  - `>= 1.5.0` 放行「单写者」与「只读」位置：单写者走 `AgyToolMode::SingleWriter`（`write_file(<dir>/)` + 禁用 `command` / `unsandboxed` / `run_command` + 末尾追加 `AGY_SINGLE_WRITER_NOTE`）；`worktree` 位置因无法跑命令在派发前继续拒绝。
+  - 解析 `agy` 输出时，stderr 含 `jetski: no output produced` 保留该行原因（截到 300 字符），错误正文含 `exceeded the output token limit` 时统一报「回答超过输出上限」。
+- 档位与推荐过滤（`src/data/model-tiers.json`、`src/recommend.rs`）：
+  - 补齐 `gemini-4-carbon-{high,medium,low}`（及无后缀回落「中」）档位映射。
+  - 一键推荐在 `role` 为「验收」或「验证」时跳过 agy 的 `-high`、`-xhigh` 模型。
+- skill、文档与内置包同步（`skills/ai-cross/references/inventory.py`、`skills/ai-cross/references/dispatch.py`、`skills/ai-cross/references/channels.md`、`docs/CONSOLE-CHANNEL.md`）：
+  - `inventory.describe` 透传 `version`；`dispatch.py` `call_agy` 与 `cmd_run` 对接 `>= 1.5.0` 只读 `--settings`、`> 200 KB` 写 `REQUEST.md`、`--read-dir` 放行及两条错误解析；运行 `python scripts/sync-skill.py` 同步 21 个文件到 `skill-bundle/ai-cross`。
+
+### 既有测试改动说明
+
+- `recommend::tests::task61_recommend_skips_untested_unknown_vendor_reviewers_and_blind_only_shared`：该测试原只在 `agy` 下挂了 `gemini-3.8-flash-high` 测「验证」位偏好已验证 Google 模型。阶段 2 按任务书第 8 条在验收/验证位特意跳过 `-high`/`-xhigh`，因此补充同名已验证的 `gemini-3.8-flash-medium`（未改动原测目标：仍断言已验证官方 `agy` 胜出而非回落未验证模型或仅剩的 `gpt-oss`）。
+
+### 新增测试
+
+- `agent_catalog::tests::task74_agy_version_gates_text_only_and_seat_rules`
+- `channels::cli_agents::tests::task74_agy_settings_modes_and_parse_errors`
+- `dispatch::tests::task74_agy_1_5_6_blind_large_project_copy_single_writer_and_worktree_gate`
+- `recommend::tests::task74_agy_carbon_tiers_and_1_5_seat_recommendation`
+- `console_cli::tests::task74_agy_1_5_6_allows_readonly_and_single_writer_but_blocks_worktree`
+- `skills/ai-cross/tests/test_dispatch.py::test_agy_1_5_6_reads_files_passes_readonly_settings_and_parses_errors`
+
+### 验证
+
+- Rust（定稿后实跑）：
+  - `cargo check`：
+
+    ```text
+    Checking aicross v0.3.8 (D:\work\aicross-task74)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.41s
+    ```
+
+    零警告。
+  - `cargo test`：
+
+    ```text
+    test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    test result: ok. 792 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 74.05s
+    ```
+
+  - `cargo build`：`Finished dev profile [unoptimized + debuginfo] target(s) in 4.73s`。
+- skill 脚本与同步（定稿后实跑）：
+  - `python scripts/sync-skill.py`：`已同步 21 个文件：D:\work\aicross-task74\skills\ai-cross -> D:\work\aicross-task74\skill-bundle\ai-cross`。
+  - `cd skills/ai-cross && python -m pytest -q tests`：`83 passed in 4.46s`。
+- 真机验证（使用 `D:\work\aicross-task74\target\debug\aicross.exe`）：
+  1. 经济模式单写者改 1 文件 + 带 `project/` 只读副本盲验收（临时 git 仓库 `hello.txt` 由 `version = 1` 改为 `version = 2`，`run_id: 03b6ca06-96ee-473a-9467-3de02d507295`，`status: done`）：
+     - 执行位 `agy::gemini-4-carbon-low`（`write: 单写者`）：`status: ok`，未执行命令，精确把 `hello.txt` 改为 `version = 2`。
+     - 验收位 `agy::gemini-4-carbon-medium`（`visibility: 盲`，`materials: [REQUEST.md, diff.patch, changed/, project/]`）：`status: ok`，读取 `REQUEST.md`、`diff.patch`、`changed/hello.txt` 及 `project/hello.txt`，未触发被禁命令，给出逐维审查意见与 `PASS`。
+  2. 受信任目录（`AICROSS_HOME=D:\work\aicross\.aicross-s2-tmp`，位于 `trustedWorkspaces` 内）盲审尝试写入文件测试（`run_id: dd7896db-4e98-48e3-a27c-8d38e36ca2c8`，`agy::gemini-4-carbon-low`）：
+     - 任务要求调用 `write_to_file` 新建 `forbidden-blind.txt`；节点遵守外层边界返回 `NEEDS_FIX`，核对目录及父仓库均未出现 `forbidden-blind.txt`（底层 `--settings` `permissions.deny` 拦截 `write_to_file` 触发 `jetski: no output produced` 已于 11-13 前置探针及 `069cee5d` 自动拒权中分别实证）。
+
+### 未做与不确定处
+
+- `--settings` 在受信任目录内拒绝 `write_to_file` 与「盲位置单写者改 `hello.txt`」均在 Windows 11 + `agy 1.5.6` 上实测；macOS / Linux 的路径前缀格式未实测。
+
+## 阶段 3
 
 未做。

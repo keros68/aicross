@@ -1148,11 +1148,18 @@ fn run_config_set_role(
                 return code;
             }
         };
-    // fix-61-r1 2：planning / execution 的角色默认补的是出方案、拆分、执行
-    // 这些共享位置，只接盲的 agent 不能设成这两个角色（否则角色默认会绕过
-    // set-seat 的限制）；acceptance 补的验收 / 验证位是盲位置，照常允许。
+    // fix-61-r1 2 / TASK-74：planning / execution 的角色默认补的是出方案、拆分
+    // （共享只读）、执行（单写者 / worktree），只接盲的 agent（< 1.5.0 的 agy 与
+    // 未实测四家）不能设成这两个角色；>= 1.5.0 的 agy 支持共享只读与单写者，允许设置。
     if role != "acceptance" {
-        if let Some(reason) = crate::agent_catalog::blind_only_reason(&agent_id) {
+        let agy_version = resources::agent_version_from_root(root, "agy");
+        let write = if role == "execution" { "单写者" } else { "只读" };
+        if let Some(reason) = crate::agent_catalog::seat_violation_for(
+            &agent_id,
+            "共享",
+            write,
+            agy_version.as_deref(),
+        ) {
             let _ = writeln!(
                 stderr,
                 "{reason}：{role} 角色补的是共享位置，{agent_id} 只能设为 acceptance 或放在盲位置"
@@ -1336,15 +1343,33 @@ fn resource_state_of(store: Option<&ResourceStore>, target: &Target) -> String {
     state.to_string()
 }
 
-/// 生效人选与它的备选是否违反位置硬规则（只接盲的 agent 落在非盲位置）。
-/// 返回给 `config show` 的说明；合规为 None。
-fn seat_invalid_reason(target: &Target) -> Option<String> {
+/// 生效人选与它的备选是否违反位置硬规则（只接盲的 agent 落在非盲位置，或
+/// `>= 1.5.0` 的 agy 落在 `worktree` 位置）。返回给 `config show` 的说明；合规为 None。
+fn seat_invalid_reason(target: &Target, agy_version: Option<&str>) -> Option<String> {
     let fallback_agent = target.fallback.as_ref().map(|fallback| fallback.agent.as_str());
     std::iter::once(target.agent.as_str())
         .chain(fallback_agent)
         .find_map(|agent| {
-            crate::agent_catalog::seat_violation(agent, &target.visibility).map(|reason| {
-                format!("{reason}：{agent} 不能放在可见性为「{}」的位置", target.visibility)
+            crate::agent_catalog::seat_violation_for(
+                agent,
+                &target.visibility,
+                &target.write,
+                agy_version,
+            )
+            .map(|reason| {
+                if target.write == "worktree"
+                    && crate::agent_catalog::agy_at_least_1_5(agy_version)
+                {
+                    format!(
+                        "{reason}：{agent} 不能放在写入方式为「{}」的位置",
+                        target.write
+                    )
+                } else {
+                    format!(
+                        "{reason}：{agent} 不能放在可见性为「{}」的位置",
+                        target.visibility
+                    )
+                }
             })
         })
 }
@@ -1365,8 +1390,13 @@ fn mode_entry(
 ) -> Value {
     let shaped = crate::orchestration::shaped_preset(preset, section);
     let seat_stages = section.and_then(|section| section.seats.get(&preset.id));
-    let (filled, sources, unfilled_reasons) =
-        crate::engine::fill_seats_explained(&shaped, roles, seat_stages);
+    let agy_version = store.and_then(|s| resources::agent_version_in(s, "agy"));
+    let (filled, sources, unfilled_reasons) = crate::engine::fill_seats_explained_with_version(
+        &shaped,
+        roles,
+        seat_stages,
+        agy_version.as_deref(),
+    );
     // 走查 #7：评审模式各位置的视角按扁平序取生效值（TASK-59 起主 agent
     // 配置可改，缺省回安全 / 性能 / 需求覆盖的默认表；超出为空串）；取值
     // 与盖章文本共用 engine 的一张表；其余模式一律空串。
@@ -1428,7 +1458,7 @@ fn mode_entry(
                             "state": resource_state_of(store, target),
                             // fix-61-r1 2：生效人选（含角色默认）或备选违反位置硬规则
                             // 时的原因；合规为 null。
-                            "invalid": seat_invalid_reason(target),
+                            "invalid": seat_invalid_reason(target, agy_version.as_deref()),
                         })
                     };
                     // 预设本身给这个位置定的思考强度（人选未覆盖前的值），
@@ -2506,20 +2536,34 @@ fn place_seat(
             ),
         ));
     }
-    // TASK-61：只接盲位置的 agent（agy 与未实测四家）不许写进共享 /
-    // 单写者位置；人选与备选都查。
+    // TASK-61 / TASK-74：只接盲位置的 agent（< 1.5.0 的 agy 与未实测四家）不许
+    // 写进共享 / 单写者位置；>= 1.5.0 的 agy 只拒 worktree 位置；人选与备选都查。
+    let agy_version = resources::agent_version_from_root(root, "agy");
     let visibility = &node.visibility;
+    let write = &node.write;
     let chosen_agents = std::iter::once(agent_id.as_str())
         .chain(fallback.as_ref().map(|fallback| fallback.agent.as_str()));
     for agent in chosen_agents {
-        if let Some(reason) = crate::agent_catalog::seat_violation(agent, visibility) {
-            return Err((
-                2,
+        if let Some(reason) = crate::agent_catalog::seat_violation_for(
+            agent,
+            visibility,
+            write,
+            agy_version.as_deref(),
+        ) {
+            let detail = if write == "worktree"
+                && crate::agent_catalog::agy_at_least_1_5(agy_version.as_deref())
+            {
+                format!(
+                    "{reason}：{} 第 {stage} 阶段第 {index} 个位置写入方式为「{write}」，{agent} 只支持盲、只读或单写者位置",
+                    preset.name
+                )
+            } else {
                 format!(
                     "{reason}：{} 第 {stage} 阶段第 {index} 个位置可见性为「{visibility}」，{agent} 只能放在盲位置",
                     preset.name
-                ),
-            ));
+                )
+            };
+            return Err((2, detail));
         }
     }
     let section = crate::orchestration::host_section_mut(modes, host);
@@ -7253,6 +7297,65 @@ mod tests {
         let (code, _, stderr) = run_with(&root, &bad_slice, &ResourcesOps::production());
         assert_eq!(code, 2, "{stderr}");
         assert!(stderr.contains("--read-only-task"), "{stderr}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task74_agy_1_5_6_allows_readonly_and_single_writer_but_blocks_worktree() {
+        let root = fixture_root("t74-agy-156");
+        fs::write(
+            root.join("resources.json"),
+            r#"{"version":1,"detectedAt":"2026-11-13T09:00:00+08:00","agents":[
+                {"id":"agy","name":"Antigravity","kind":"内置","detected":true,"version":"1.5.6","models":[
+                    {"id":"gemini-4-carbon-medium","agent":"agy","provider":"","vendor":"Google","verification":"native"},
+                    {"id":"gemini-4-carbon-low","agent":"agy","provider":"","vendor":"Google","verification":"native"}
+                ]}
+            ]}"#,
+        )
+        .unwrap();
+        let acp = AcpOps::production();
+        for role in ["planning", "execution", "acceptance"] {
+            let (code, _, stderr) = run_config_acp(
+                &root,
+                &[
+                    "aicross",
+                    "config",
+                    "set-role",
+                    role,
+                    "--agent",
+                    "agy",
+                    "--model",
+                    "gemini-4-carbon-medium",
+                ],
+                &acp,
+            );
+            assert_eq!(code, 0, "{role}: {stderr}");
+        }
+        let agy = |model: &str| SeatChoice {
+            agent: "agy".into(),
+            model: model.into(),
+            ..SeatChoice::default()
+        };
+        let shared = config_set_seat_at(&root, "claude", "shared", 1, 1, agy("gemini-4-carbon-low")).unwrap();
+        assert_eq!(shared["stages"][0][0]["seat"]["agent"], "agy");
+        let econ_plan = config_set_seat_at(&root, "claude", "economy", 1, 1, agy("gemini-4-carbon-medium")).unwrap();
+        assert_eq!(econ_plan["stages"][0][0]["seat"]["agent"], "agy");
+        let econ_exec = config_set_seat_at(&root, "claude", "economy", 2, 1, agy("gemini-4-carbon-low")).unwrap();
+        assert_eq!(econ_exec["stages"][1][0]["seat"]["agent"], "agy");
+        let econ_accept = config_set_seat_at(&root, "claude", "economy", 3, 1, agy("gemini-4-carbon-medium")).unwrap();
+        assert_eq!(econ_accept["stages"][2][0]["seat"]["agent"], "agy");
+
+        let arena = config_set_seat_at(&root, "claude", "builtin-arena", 1, 1, agy("gemini-4-carbon-low")).unwrap();
+        assert_eq!(arena["stages"][0][0]["seat"]["agent"], "agy");
+
+        fs::write(
+            root.join("presets.json"),
+            r#"{"version":1,"presets":[{"id":"custom-wt","name":"自定义工作树","builtin":false,"stages":[{"nodes":[{"role":"执行","thinking":"中","visibility":"共享","write":"worktree"}]}]}]}"#,
+        )
+        .unwrap();
+        let (code, message) = config_set_seat_at(&root, "claude", "custom-wt", 1, 1, agy("gemini-4-carbon-low")).unwrap_err();
+        assert_eq!(code, 2);
+        assert!(message.contains("不能执行命令") && message.contains("worktree"), "{message}");
         let _ = fs::remove_dir_all(root);
     }
 }

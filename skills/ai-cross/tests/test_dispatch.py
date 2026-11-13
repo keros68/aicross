@@ -265,6 +265,51 @@ class TestChannels(DBase):
         with self.fake({"": (0, empty, "")}):
             self.assertEqual(dispatch.call(agy, "材料", str(self.home), 120, "high", "p")["status"], "error")
 
+    def test_agy_1_5_6_reads_files_passes_readonly_settings_and_parses_errors(self):
+        agy = {"id": "agy.google", "channel": "agy", "kind": "cli", "vendor": "Google",
+               "billing": "subscription", "tier": "mid", "model": "gemini-4-carbon-medium", "version": "1.5.6"}
+        ok = jl({"event": "result", "result": {"status": "SUCCESS", "response": "PASS\n",
+                                               "usage": {"input_tokens": 20, "output_tokens": 5}}})
+        seen_settings = []
+
+        def run_process(cmd, cwd, timeout, stdin_text=None, **kwargs):
+            self.calls.append((cmd, cwd, stdin_text))
+            spath = Path(cmd[cmd.index("--settings") + 1])
+            seen_settings.append((spath, json.loads(spath.read_text(encoding="utf-8")), (Path(cwd) / "REQUEST.md").exists()))
+            return 0, ok, "", None
+
+        workdir = self.home / "blind-big"
+        workdir.mkdir()
+        with mock.patch.object(dispatch, "run_process", run_process):
+            r = dispatch.call(agy, "A" * (205 * 1024), str(workdir), 120, "high", "p", blind=True, tools=False)
+        self.assertEqual(r["status"], "ok")
+        spath, sjson, has_req = seen_settings[0]
+        self.assertFalse(spath.exists(), "临时 settings 文件跑完应清理")
+        self.assertNotIn(str(workdir), str(spath))
+        self.assertIn("write_file", sjson["permissions"]["deny"])
+        self.assertTrue(has_req)
+        self.assertIn("REQUEST.md", json.loads(self.calls[0][2])["message"]["content"])
+
+        self.calls.clear()
+        with self.fake({"": (0, ok, "")}):
+            r2 = dispatch.call(agy, "只读任务", str(self.project), 120, "low", "p", blind=False, tools=True)
+        self.assertEqual(r2["status"], "ok")
+        self.assertIn("--settings", self.calls[0][0])
+
+        long_jetski = "jetski: no output produced — " + ("x" * 350)
+        empty = jl({"event": "result", "result": {"status": "SUCCESS", "response": "", "usage": {}}})
+        with self.fake({"": (0, empty, f"other line\n{long_jetski}\n")}):
+            r3 = dispatch.call(agy, "材料", str(self.home), 120, "low", "p")
+        self.assertEqual(r3["status"], "error")
+        self.assertIn("jetski: no output produced", r3["error"])
+        self.assertLessEqual(len(r3["error"].split("：", 1)[1]), 300)
+
+        limit_err = jl({"event": "result", "result": {"status": "ERROR", "response": "",
+                                                      "error": "Your previous response was cut off because it exceeded the output token limit"}})
+        with self.fake({"": (0, limit_err, "")}):
+            r4 = dispatch.call(agy, "材料", str(self.home), 120, "high", "p")
+        self.assertEqual((r4["status"], r4["error"]), ("error", "回答超过输出上限"))
+
     def test_kimi_over_argv_limit_is_skipped_without_calling(self):
         kimi = inventory.describe({"id": "kimi.moonshot", "channel": "kimi", "kind": "cli", "vendor": "Moonshot",
                                    "billing": "subscription", "tiers": {"high": "kimi-code/k3"}}, "high")
