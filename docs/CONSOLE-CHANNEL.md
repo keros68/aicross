@@ -235,7 +235,7 @@ worktree 节点给 `worktree` 路径，原样保留；图上没有产物时按�
 
 退出码：0 成功；1 run 仍在运行（提示等它结束或先 `aicross cancel`）或回滚有
 失败；run 已是 `done` 时退出 0，说明「无需核对」。快照只存普通文件：排除目录
-（.git/node_modules/target/dist…）与链接里的改动不在快照内；超过单文件上限
+（.git/node_modules/target/dist…）、git 项目派发前被忽略的路径与链接里的改动不在快照内；超过单文件上限
 的文件只记路径不存内容，这些位置的变化无法自动恢复，会列在 `unrestorable`。
 
 单写者执行期间，该次派发目录的 `.snapshots/` 下会有 `<node>.inflight/`
@@ -298,6 +298,8 @@ aicross resources set-path pi
 aicross config show --host claude
 aicross config set-role execution --agent pi --model glm-4.7 --provider zai-coding-cn
 aicross config set timeoutSecs 900
+aicross config set execTimeoutSecs 1800
+aicross config set idleTimeoutSecs 300
 aicross config set-default-mode blind --host claude
 aicross config set-count blind 3 --host claude
 aicross config set-focus --host claude --mode builtin-jury --index 2 --focus 规范
@@ -399,10 +401,19 @@ planning / execution 时退出 2（这两个角色默认补的是共享位置）
 需手动指定；角色默认只是不在推荐范围（如厂商未知、未实测通道）时派发照样
 补位，notes 写「使用角色默认 X（不在推荐范围：原因）」。`config set` 只认
 `dispatch-settings.json` 的键
-（`timeoutSecs`、`concurrency`、`maxRequests`、`fixRoundLimit`、`swarmLimit`、
+（`timeoutSecs`、`execTimeoutSecs`、`idleTimeoutSecs`、`concurrency`、`maxRequests`、`fixRoundLimit`、`swarmLimit`、
 `consoleRunLimit`、`validationCommand`、`redact`、`writeProjectDispatch`、
 `acpEnabled`、`ccSwitchPath`、`classificationModel`、`classifyProposals`）；
 越界夹取与小数取整在 stderr 说明，未知键退出 2；文件损坏时退出 1，不覆盖。
+`timeoutSecs` 默认 600 秒，供只读与盲位置使用；`execTimeoutSecs` 默认 1800 秒，供非盲的可写位置（单写者、worktree）使用；
+`idleTimeoutSecs` 默认 300 秒，限制连续无输出时间，目前只用于 pi 的只读与盲位置。总时长到限时错误为「执行超过 N 秒」，
+无输出到限时错误为「连续 N 秒无输出」。三项上限均为 3600 秒。
+
+pi 思考档位读取 `~/.pi/agent/models-store.json` 中模型的 `thinkingLevelMap`：所设档位不受支持时按最近可用档位调整（不降到 `off`，除非设的就是「关」），派发记录、run 摘要节点的 `thinking`（仅调整时写出）与 `config show` 的 `effective.thinking` 记为「已调整为：<档位>」；受支持或读不到元数据时保持原值。pi 输出过滤 `message_update` 事件，最终消息 `stopReason` 为 `length` 或 `aborted` 时判输出未完成，stderr 的 `No project session found` 警告不作为错误正文。
+单路输出超过 4 MB 时按行边界保留开头 1 MB 与结尾 3 MB，中间丢弃。stdout 被截断且输出解析失败（不带模型真身或额度信息）时错误为「输出超过 4 MB，中间被截断」（仅 stderr 被截断时不改写）；codex、kimi 正文解析成功但 stdout 被截断时，节点备注追加「输出超过 4 MB，中间被丢弃，回答可能不完整」。
+
+git 项目的目录快照只包含已跟踪文件和未被忽略的未跟踪文件。快照超出总量上限时，错误会列出占用最大的三个顶层目录及其大小。
+执行中快照 `manifest.json` 可包含 `ignored`（派发前被忽略的路径）与 `used_git`（是否使用 git 文件清单）字段；旧清单可不含这两项。
 
 ACP 默认关闭，派发走各家 CLI 自带的续聊。`config set acpEnabled true` 写入设置
 后当场检查并安装 claude、codex 的 ACP 适配器（npm 装进 `~/.aicross/acp`，版本

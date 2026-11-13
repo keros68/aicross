@@ -51,23 +51,83 @@ fn sample_result(node_id: &str, text: &str) -> DispatchNodeResult {
 // ── 保留的老测试 ──────────────────────────────────────────────────────────
 
 #[test]
+fn task74_timeout_settings_default_and_clamp() {
+    let defaults = super::settings_from_value(&serde_json::Map::new());
+    assert_eq!((defaults.exec_timeout_secs, defaults.idle_timeout_secs), (1800, 300));
+    let values = serde_json::from_str::<serde_json::Value>(r#"{"execTimeoutSecs":9999,"idleTimeoutSecs":0}"#).unwrap();
+    let settings = super::settings_from_value(values.as_object().unwrap());
+    assert_eq!((settings.exec_timeout_secs, settings.idle_timeout_secs), (3600, 1));
+}
+
+#[test]
+fn inflight_ignored_files_are_not_added_or_removed_by_rollback() {
+    let root = temp("inflight-ignored");
+    let project = root.join("project");
+    let inflight = root.join("inflight");
+    fs::create_dir_all(project.join("secret")).unwrap();
+    fs::create_dir_all(inflight.join("files")).unwrap();
+    fs::write(project.join("secret/key.txt"), "keep").unwrap();
+    fs::write(project.join("base.txt"), "before").unwrap();
+    fs::write(inflight.join("files/base.txt"), "before").unwrap();
+    fs::write(inflight.join("manifest.json"), r#"{
+      "schema":"aicross-inflight/1",
+      "used_git":true,
+      "ignored":["secret/"],
+      "files":[{"path":"base.txt","size":6,"stored":true}]
+    }"#).unwrap();
+
+    let manifest = read_inflight_manifest(&inflight).unwrap();
+    let changed = changed_files_against_inflight(&project, &inflight, &manifest);
+    assert!(!changed.0.contains(&"secret/key.txt".to_string()));
+    rollback_inflight_snapshot(&project, &inflight, &manifest.files, (&changed.0, &changed.1, &changed.2)).unwrap();
+    assert_eq!(fs::read_to_string(project.join("secret/key.txt")).unwrap(), "keep");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn inflight_manifest_without_ignored_field_keeps_legacy_added_file_behavior() {
+    let root = temp("inflight-legacy");
+    let project = root.join("project");
+    let inflight = root.join("inflight");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(inflight.join("files")).unwrap();
+    fs::write(project.join("base.txt"), "before").unwrap();
+    fs::write(project.join("created.txt"), "new").unwrap();
+    fs::write(inflight.join("files/base.txt"), "before").unwrap();
+    fs::write(inflight.join("manifest.json"), r#"{
+      "schema":"aicross-inflight/1",
+      "files":[{"path":"base.txt","size":6,"stored":true}]
+    }"#).unwrap();
+
+    let manifest = read_inflight_manifest(&inflight).unwrap();
+    assert!(manifest.ignored.is_empty());
+    let changed = changed_files_against_inflight(&project, &inflight, &manifest);
+    assert_eq!(changed.0, vec!["created.txt"]);
+    rollback_inflight_snapshot(&project, &inflight, &manifest.files, (&changed.0, &changed.1, &changed.2)).unwrap();
+    assert!(!project.join("created.txt").exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn settings_missing_invalid_and_clamped() {
     let root = temp("settings");
     assert_eq!(load_settings(&root), EngineSettings::default());
     fs::write(root.join("dispatch-settings.json"), "{").unwrap();
     assert_eq!(load_settings(&root), EngineSettings::default());
-    fs::write(root.join("dispatch-settings.json"),r#"{"timeoutSecs":0,"concurrency":99,"maxRequests":101,"swarmLimit":0,"consoleRunLimit":9,"fixRoundLimit":12.8,"redact":false}"#).unwrap();
+    fs::write(root.join("dispatch-settings.json"),r#"{"timeoutSecs":0,"execTimeoutSecs":9999,"idleTimeoutSecs":0,"concurrency":99,"maxRequests":101,"swarmLimit":0,"consoleRunLimit":9,"fixRoundLimit":12.8,"redact":false}"#).unwrap();
     let s = load_settings(&root);
     assert_eq!(
         (
             s.timeout_secs,
+            s.exec_timeout_secs,
+            s.idle_timeout_secs,
             s.concurrency,
             s.max_requests,
             s.swarm_limit,
             s.console_run_limit,
             s.fix_round_limit
         ),
-        (1, 3, 100, 1, 3, 3)
+        (1, 3600, 1, 3, 100, 1, 3, 3)
     );
     assert!(!s.redact);
     let _ = fs::remove_dir_all(root);
@@ -770,7 +830,45 @@ fn file_sink<'a>(root: &'a Path, run: &'a mut EngineRun) -> FileSink<'a> {
         run,
         active: Arc::new(Mutex::new(Vec::new())),
         committed: None,
+        pending_write: false,
     }
+}
+
+#[test]
+fn file_sink_retries_pending_nonterminal_write_and_keeps_latest_state() {
+    let root = temp("pending-run-write");
+    let mut run = EngineRun {
+        run_id: "pending".into(),
+        graph_id: "g1".into(),
+        ..EngineRun::default()
+    };
+    let target = run_path(&root, &run.run_id);
+    fs::create_dir_all(&target).unwrap();
+    let mut sink = file_sink(&root, &mut run);
+    let first = RunUpdate { run_id: "pending".into(), status: "running".into(), reason: "first".into(), ..RunUpdate::default() };
+    assert!(sink.update(&first).is_ok());
+    assert!(sink.pending_write);
+    fs::remove_dir_all(&target).unwrap();
+    let latest = RunUpdate { run_id: "pending".into(), status: "running".into(), reason: "latest".into(), ..RunUpdate::default() };
+    sink.update(&latest).unwrap();
+    assert!(!sink.pending_write);
+    let saved: EngineRun = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+    assert_eq!(saved.reason, "latest");
+}
+
+#[test]
+fn file_sink_returns_error_when_terminal_write_fails() {
+    let root = temp("terminal-run-write");
+    let mut run = EngineRun {
+        run_id: "terminal".into(),
+        graph_id: "g1".into(),
+        ..EngineRun::default()
+    };
+    let target = run_path(&root, &run.run_id);
+    fs::create_dir_all(&target).unwrap();
+    let mut sink = file_sink(&root, &mut run);
+    let terminal = RunUpdate { run_id: "terminal".into(), status: "done".into(), ..RunUpdate::default() };
+    assert!(sink.update(&terminal).is_err());
 }
 
 #[test]

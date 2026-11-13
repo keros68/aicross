@@ -809,7 +809,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
                 .and_then(|_| file.sync_all())
                 .map_err(|e| format!("写入临时文件失败：{e}"))?;
         }
-        match fs::rename(&temporary, path) {
+        match crate::paths::replace_file_with_retry(&temporary, path) {
             Ok(()) => Ok(()),
             Err(first) => {
                 // rename 一般可覆盖目标；失败多是目标被占用，删目标后兜底重试一次。

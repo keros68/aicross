@@ -1,6 +1,6 @@
 use crate::channels::{self, ChannelErrorKind, ChannelOutput};
 use crate::paths::aicross_root;
-use crate::process::{cancel_registered, run_process_registered, run_process_registered_with_activity, ProcessActivity};
+use crate::process::{cancel_registered, run_process_registered, ProcessActivity, ProcessOptions};
 use chrono::{DateTime, Local, SecondsFormat};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,10 @@ use uuid::Uuid;
 pub struct DispatchSettings {
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    #[serde(default = "default_exec_timeout")]
+    pub exec_timeout_secs: u64,
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_secs: u64,
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
     #[serde(default = "default_true")]
@@ -45,6 +49,8 @@ impl Default for DispatchSettings {
     fn default() -> Self {
         Self {
             timeout_secs: default_timeout(),
+            exec_timeout_secs: default_exec_timeout(),
+            idle_timeout_secs: default_idle_timeout(),
             concurrency: default_concurrency(),
             redact: true,
             write_project_dispatch: true,
@@ -64,6 +70,8 @@ fn default_fix_round_limit() -> usize {
 fn default_timeout() -> u64 {
     600
 }
+fn default_exec_timeout() -> u64 { 1800 }
+fn default_idle_timeout() -> u64 { 300 }
 fn default_concurrency() -> usize {
     3
 }
@@ -366,7 +374,7 @@ struct DispatchRecord {
 /// 记录格式：/2 起记录放在 `.aicross/runs/<派发>/`；读旧的 /1 照常。
 pub(crate) const RECORD_SCHEMA: &str = "aicross-dispatch/2";
 
-fn excluded_snapshot_directory(name: &str) -> bool {
+pub(crate) fn excluded_snapshot_directory(name: &str) -> bool {
     matches!(
         name,
         ".git"
@@ -456,6 +464,66 @@ fn existing_project_files(root: &Path) -> Result<Vec<String>, String> {
     walk(root, root, &mut files)?;
     files.sort();
     Ok(files)
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SnapshotScope {
+    pub used_git: bool,
+    pub ignored: Vec<String>,
+}
+
+pub(crate) fn snapshot_scope(root: &Path) -> Result<(Vec<String>, SnapshotScope), String> {
+    let timeout = Duration::from_secs(30);
+    let is_git = git_result_with_timeout(&["rev-parse", "--is-inside-work-tree"], root, None, timeout)
+        .is_ok_and(|result| process_succeeded(&result) && result.stdout.trim() == "true");
+    if is_git {
+        if let Ok(result) = git_result_with_timeout(
+            &["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            root,
+            None,
+            timeout,
+        ) {
+            if let Some(files) = parse_snapshot_git_listing(&result) {
+                if let Ok(ignored_result) = git_result_with_timeout(
+                    &["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"],
+                    root, None, timeout,
+                ) {
+                    if process_succeeded(&ignored_result) && !ignored_result.truncated {
+                        let ignored = ignored_result.stdout.split('\0').filter(|s| !s.is_empty())
+                            .map(|s| s.replace('\\', "/")).collect();
+                        if files.is_empty() {
+                            let walked = existing_project_files(root)?;
+                            if !walked.is_empty() {
+                                return Ok((walked, SnapshotScope::default()));
+                            }
+                        }
+                        return Ok((files, SnapshotScope { used_git: true, ignored }));
+                    }
+                }
+            }
+        }
+    }
+    existing_project_files(root).map(|files| (files, SnapshotScope::default()))
+}
+
+fn parse_snapshot_git_listing(result: &crate::process::ProcessResult) -> Option<Vec<String>> {
+    if !process_succeeded(result) || result.truncated {
+        return None;
+    }
+    let mut files = Vec::new();
+    for path in result.stdout.split('\0').filter(|path| !path.is_empty()) {
+        let normalized = path.replace('\\', "/");
+        if normalized.split('/').any(excluded_snapshot_directory) {
+            continue;
+        }
+        if Path::new(&normalized).is_absolute() || normalized.split('/').any(|part| part == "..") {
+            return None;
+        }
+        files.push(normalized);
+    }
+    files.sort();
+    files.dedup();
+    Some(files)
 }
 
 /// 项目里未提交的改动与未跟踪文件共几处（每个文件算一处）。不是 git 仓库、
@@ -1010,95 +1078,128 @@ fn is_link_or_junction(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
+#[cfg(test)]
 fn snapshot_directory(root: &Path) -> Result<DirectorySnapshot, String> {
-    snapshot_directory_with_limits(root, SNAPSHOT_FILE_LIMIT, SNAPSHOT_TOTAL_LIMIT)
+    snapshot_directory_scoped(root, SNAPSHOT_FILE_LIMIT, SNAPSHOT_TOTAL_LIMIT, None, None).map(|(files, _)| files)
 }
 
+fn snapshot_directory_after(root: &Path, before: &DirectorySnapshot, scope: &SnapshotScope) -> Result<DirectorySnapshot, String> {
+    snapshot_directory_scoped(root, SNAPSHOT_FILE_LIMIT, SNAPSHOT_TOTAL_LIMIT, Some(before), Some(scope)).map(|(files, _)| files)
+}
+
+#[cfg(test)]
 fn snapshot_directory_with_limits(
     root: &Path,
     file_limit: u64,
     total_limit: u64,
 ) -> Result<DirectorySnapshot, String> {
-    fn walk(
-        root: &Path,
-        current: &Path,
-        out: &mut DirectorySnapshot,
-        file_limit: u64,
-        total_limit: u64,
-        total_read: &mut u64,
-    ) -> Result<(), String> {
-        for entry in fs::read_dir(current)
-            .map_err(|error| format!("读取目录快照失败 {}：{error}", current.display()))?
-        {
-            let entry = entry.map_err(|error| format!("读取目录项失败：{error}"))?;
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let metadata = fs::symlink_metadata(&path)
-                .map_err(|error| format!("读取快照元数据失败 {}：{error}", path.display()))?;
-            if is_link_or_junction(&metadata) {
-                continue;
-            }
-            if metadata.is_dir() {
-                if excluded_snapshot_directory(&name) {
-                    continue;
-                }
-                let relative = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                out.insert(format!("{relative}/"), SnapshotFile { is_directory: true, ..SnapshotFile::default() });
-                walk(root, &path, out, file_limit, total_limit, total_read)?;
-            } else if metadata.is_file() {
-                let relative = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let bytes = if metadata.len() > file_limit {
-                    None
-                } else {
-                    if total_read.saturating_add(metadata.len()) > total_limit {
-                        return Err(format!(
-                            "目录快照超过总字节上限 {} MB",
-                            total_limit / (1024 * 1024)
-                        ));
-                    }
-                    *total_read += metadata.len();
-                    Some(fs::read(&path).map_err(|error| {
-                        format!("读取快照文件失败 {}：{error}", path.display())
-                    })?)
-                };
-                let modified_ns = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_nanos())
-                    .unwrap_or_default();
-                #[cfg(unix)]
-                let mode = {
-                    use std::os::unix::fs::PermissionsExt;
-                    metadata.permissions().mode()
-                };
-                #[cfg(not(unix))]
-                let mode = 0;
-                out.insert(relative, SnapshotFile { bytes, size: metadata.len(), modified_ns, mode, is_directory: false });
-            }
-        }
-        Ok(())
-    }
+    snapshot_directory_scoped(root, file_limit, total_limit, None, None).map(|(files, _)| files)
+}
 
+fn snapshot_directory_scoped(
+    root: &Path, file_limit: u64, total_limit: u64,
+    before: Option<&DirectorySnapshot>, prior_scope: Option<&SnapshotScope>,
+) -> Result<(DirectorySnapshot, SnapshotScope), String> {
+    let (mut paths, scope) = if let (Some(before), Some(scope)) = (before, prior_scope) {
+        if scope.used_git {
+            let (current, _) = snapshot_scope(root)?;
+            let mut combined: HashSet<String> = current.into_iter().collect();
+            combined.extend(before.iter().filter(|(_, f)| !f.is_directory).map(|(p, _)| p.clone()).filter(|p| root.join(p).is_file()));
+            let files = combined.into_iter().filter(|path| !is_ignored_snapshot_path(path, &scope.ignored)).collect();
+            (files, scope.clone())
+        } else {
+            (existing_project_files(root)?, scope.clone())
+        }
+    } else { snapshot_scope(root)? };
+    paths.retain(|path| !is_ignored_snapshot_path(path, &scope.ignored));
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    let mut directory_sizes: HashMap<String, u64> = HashMap::new();
+    for relative in paths {
+        let path = root.join(&relative);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() && !is_link_or_junction(&metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(_) => continue,
+            Err(error) => return Err(format!("读取快照元数据失败 {}：{error}", path.display())),
+        };
+        total = total.saturating_add(metadata.len());
+        let top = relative.split('/').next().unwrap_or("");
+        let key = if relative.contains('/') { format!("{top}/") } else { "(根目录)".to_string() };
+        *directory_sizes.entry(key).or_default() += metadata.len();
+        files.push((relative, path, metadata));
+    }
+    if total > total_limit {
+        let mut largest: Vec<_> = directory_sizes.into_iter().collect();
+        largest.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let details = largest.into_iter().take(3).map(|(name, size)| {
+            format!("{name} {} MB", size.div_ceil(1024 * 1024))
+        }).collect::<Vec<_>>().join("、");
+        return Err(format!("目录快照超过总字节上限 {} MB；占用最大的目录：{details}", total_limit / (1024 * 1024)));
+    }
     let mut snapshot = HashMap::new();
-    let mut total_read = 0;
-    walk(
-        root,
-        root,
-        &mut snapshot,
-        file_limit,
-        total_limit,
-        &mut total_read,
-    )?;
-    Ok(snapshot)
+    if !scope.used_git {
+        fn add_directories(root: &Path, current: &Path, snapshot: &mut DirectorySnapshot) -> Result<(), String> {
+            for entry in fs::read_dir(current).map_err(|error| format!("读取目录快照失败 {}：{error}", current.display()))? {
+                let entry = entry.map_err(|error| format!("读取目录项失败：{error}"))?;
+                let path = entry.path();
+                let metadata = fs::symlink_metadata(&path).map_err(|error| format!("读取快照元数据失败 {}：{error}", path.display()))?;
+                if metadata.is_dir() && !is_link_or_junction(&metadata) {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if excluded_snapshot_directory(&name) { continue; }
+                    let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                    snapshot.insert(format!("{relative}/"), SnapshotFile { is_directory: true, ..SnapshotFile::default() });
+                    add_directories(root, &path, snapshot)?;
+                }
+            }
+            Ok(())
+        }
+        add_directories(root, root, &mut snapshot)?;
+    } else {
+        fn add_git_directories(root: &Path, current: &Path, scope: &SnapshotScope, snapshot: &mut DirectorySnapshot) -> Result<(), String> {
+            for entry in fs::read_dir(current).map_err(|error| format!("读取目录快照失败 {}：{error}", current.display()))? {
+                let entry = entry.map_err(|error| format!("读取目录项失败：{error}"))?;
+                let path = entry.path();
+                let metadata = fs::symlink_metadata(&path).map_err(|error| format!("读取快照元数据失败 {}：{error}", path.display()))?;
+                if !metadata.is_dir() || is_link_or_junction(&metadata) { continue; }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if excluded_snapshot_directory(&name) { continue; }
+                let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                if is_ignored_snapshot_path(&format!("{relative}/"), &scope.ignored) { continue; }
+                snapshot.insert(format!("{relative}/"), SnapshotFile { is_directory: true, ..SnapshotFile::default() });
+                add_git_directories(root, &path, scope, snapshot)?;
+            }
+            Ok(())
+        }
+        add_git_directories(root, root, &scope, &mut snapshot)?;
+    }
+    for (relative, path, metadata) in files {
+        let mut parent = Path::new(&relative).parent();
+        while let Some(dir) = parent {
+            if dir.as_os_str().is_empty() { break; }
+            snapshot.entry(format!("{}/", dir.to_string_lossy().replace('\\', "/")))
+                .or_insert_with(|| SnapshotFile { is_directory: true, ..SnapshotFile::default() });
+            parent = dir.parent();
+        }
+        let bytes = if metadata.len() > file_limit { None } else {
+            Some(fs::read(&path).map_err(|error| format!("读取快照文件失败 {}：{error}", path.display()))?)
+        };
+        let modified_ns = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or_default();
+        #[cfg(unix)]
+        let mode = { use std::os::unix::fs::PermissionsExt; metadata.permissions().mode() };
+        #[cfg(not(unix))]
+        let mode = 0;
+        snapshot.insert(relative, SnapshotFile { bytes, size: metadata.len(), modified_ns, mode, is_directory: false });
+    }
+    Ok((snapshot, scope))
+}
+
+pub(crate) fn is_ignored_snapshot_path(path: &str, ignored: &[String]) -> bool {
+    let path = path.trim_end_matches('/');
+    ignored.iter().any(|item| {
+        let ignored = item.trim_end_matches('/');
+        path == ignored || path.strip_prefix(ignored).is_some_and(|rest| rest.starts_with('/'))
+    })
 }
 
 fn snapshot_file_unchanged(old_file: Option<&SnapshotFile>, new_file: Option<&SnapshotFile>) -> bool {
@@ -1268,6 +1369,7 @@ fn persist_inflight_snapshot(
     run_id: &str,
     node_id: &str,
     snapshot: &DirectorySnapshot,
+    scope: &SnapshotScope,
 ) -> Result<PathBuf, String> {
     let run_dir = crate::project_dir::run_dir(project, run_id)?.0;
     let root = crate::project_dir::snapshot_dir(&run_dir, &safe_name(node_id), "inflight");
@@ -1311,7 +1413,12 @@ fn persist_inflight_snapshot(
                 "stored": file.bytes.is_some(),
             }));
         }
-        let manifest = serde_json::json!({ "schema": "aicross-inflight/1", "files": files });
+        let manifest = serde_json::json!({
+            "schema": "aicross-inflight/1",
+            "files": files,
+            "ignored": scope.ignored,
+            "used_git": scope.used_git,
+        });
         let bytes = serde_json::to_vec_pretty(&manifest)
             .map_err(|error| format!("生成执行中快照清单失败：{error}"))?;
         fs::write(root.join("manifest.json"), bytes)
@@ -2616,6 +2723,9 @@ fn run_one_attempt(
     }
     let isolation = channels::isolation_for(&node.agent, blind).to_string();
     let timeout = Duration::from_secs(settings.timeout_secs.clamp(1, 3600));
+    let writable = node.write != "只读";
+    let executable_writable = !blind && writable;
+    let channel_timeout = Duration::from_secs(if executable_writable { settings.exec_timeout_secs } else { settings.timeout_secs }.clamp(1, 3600));
     // 09-15 口径：第三方端点的模型第一次被派发到时，先真发一个短请求核对真身，
     // 结果记进资源库。失败即本节点失败、不自动重试（用户可用 `aicross resources smoke`
     // 手动重验）；
@@ -2631,7 +2741,7 @@ fn run_one_attempt(
     // 派发前直接失败，不验证、不建 worktree、不铺材料。
     let blind_only = crate::agent_catalog::seat_violation(&node.agent, &node.visibility);
     // fix-61-r1 5：agy 模型自带档位时思考强度由模型决定，留痕记实际生效值。
-    node.thinking = channels::effective_thinking(&node.agent, &node.model, &node.thinking);
+    node.thinking = channels::effective_thinking(&node.agent, &node.provider, &node.model, &node.thinking);
     if is_cancelled(&cancel_key) {
         verify_error = "派发已取消".to_string();
     } else if let Some(reason) = blind_only {
@@ -2709,17 +2819,17 @@ fn run_one_attempt(
     } else {
         (String::new(), None)
     };
-    let (before_snapshot, snapshot_error) = if verified
+    let (before_snapshot, before_scope, snapshot_error) = if verified
         && write_lock_error.is_none()
         && !blind
         && node.write != "只读"
     {
-        match snapshot_directory(&workdir) {
-            Ok(snapshot) => (Some(snapshot), None),
-            Err(error) => (None, Some(error)),
+        match snapshot_directory_scoped(&workdir, SNAPSHOT_FILE_LIMIT, SNAPSHOT_TOTAL_LIMIT, None, None) {
+            Ok((snapshot, scope)) => (Some(snapshot), Some(scope), None),
+            Err(error) => (None, None, Some(error)),
         }
     } else {
-        (None, None)
+        (None, None, None)
     };
     let task_dir = run_root.join("tasks");
     let task_file = task_dir.join(format!("{}.txt", safe_name(&node.node_id)));
@@ -2827,7 +2937,10 @@ fn run_one_attempt(
     let inflight_dir = if needs_oneshot && node.write == "单写者" {
         match before_snapshot.as_ref() {
             Some(snapshot) => {
-                match persist_inflight_snapshot(project, run_id, &node.node_id, snapshot) {
+                let scope = before_scope.clone().unwrap_or_default();
+                match persist_inflight_snapshot(
+                    project, run_id, &node.node_id, snapshot, &scope,
+                ) {
                     Ok(path) => Some(path),
                     Err(persist_error) => {
                         append_runner_note(
@@ -2858,9 +2971,9 @@ fn run_one_attempt(
             (!node.session_id.is_empty()).then_some(node.session_id.as_str()),
             &outbound,
             &workdir,
-            timeout,
+            channel_timeout,
             &node.thinking,
-            node.write != "只读",
+                writable,
             blind,
             node.interactive,
             &cancel_key,
@@ -2938,19 +3051,20 @@ fn run_one_attempt(
             session_dir.as_deref(),
             (!settings.cc_switch_path.trim().is_empty())
                 .then(|| Path::new(settings.cc_switch_path.trim())),
-            node.write != "只读",
-            timeout,
+            writable,
+            channel_timeout,
         ) {
             Ok(invocation) => {
                 entered_channel = true;
-                match run_process_registered_with_activity(
+                match crate::process::run_process_registered_with_options(
                 &invocation.program,
                 &invocation.args,
                 invocation.input.as_deref(),
-                timeout,
+                channel_timeout,
                 Some(&workdir),
                 Some(&cancel_key),
                 Some(activity.clone()),
+                ProcessOptions { stdout_skip: invocation.stdout_skip, idle_timeout: channels::streams_output_for_seat(&node.agent, &node.visibility, &node.write).then(|| Duration::from_secs(settings.idle_timeout_secs.clamp(1, 3600))) },
             ) {
                 Ok(process) => {
                     raw_stdout = process.stdout.clone();
@@ -2960,7 +3074,7 @@ fn run_one_attempt(
                     timed_out = process.timed_out;
                     if process.timed_out {
                         status = "timeout".into();
-                        error = format!("执行超过 {} 秒", process.timeout.as_secs());
+                        error = crate::process::timeout_message(&process);
                     } else {
                         match channels::parse_output(
                             &node.agent,
@@ -2970,6 +3084,7 @@ fn run_one_attempt(
                         ) {
                             Ok(output) => {
                                 channel_output = output;
+                                note_truncated_answer(&node.agent, process.stdout_truncated, &mut runner_note);
                                 if channels::normalize_agent(&node.agent) == "pi"
                                     && channel_output.session_id.is_empty()
                                 {
@@ -3029,7 +3144,9 @@ fn run_one_attempt(
     let mut before_dir = String::new();
     let mut snapshots_for_red_green = None;
     if let Some(before) = before_snapshot {
-        let built = snapshot_directory(&workdir).and_then(|after| {
+        let fallback_scope = SnapshotScope::default();
+        let scope = before_scope.as_ref().unwrap_or(&fallback_scope);
+        let built = snapshot_directory_after(&workdir, &before, scope).and_then(|after| {
             if entered_channel {
                 match persist_before_snapshot_with_note(project, log_dir, run_id, &node.node_id, &before, &after) {
                     Ok(saved) => {
@@ -4306,6 +4423,12 @@ fn append_runner_note(target: &mut String, note: &str) {
     target.push_str(note);
 }
 
+fn note_truncated_answer(agent: &str, stdout_truncated: bool, runner_note: &mut String) {
+    if stdout_truncated && matches!(channels::normalize_agent(agent), "codex" | "kimi") {
+        append_runner_note(runner_note, "输出超过 4 MB，中间被丢弃，回答可能不完整");
+    }
+}
+
 fn append_result_runner_note(result: &mut DispatchNodeResult, note: &str) {
     append_runner_note(&mut result.runner_note, note);
     if result.dispatch_file.is_empty() || result.frontmatter.is_empty() {
@@ -4516,7 +4639,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("写入临时文件失败：{error}"))?;
     file.sync_all()
         .map_err(|error| format!("同步临时文件失败：{error}"))?;
-    match fs::rename(&temporary, path) {
+    match crate::paths::replace_file_with_retry(&temporary, path) {
         Ok(()) => Ok(()),
         Err(first) => {
             if path.exists() {
@@ -4568,6 +4691,13 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn task74_codex_stdout_truncation_adds_incomplete_answer_note() {
+        let mut note = String::new();
+        note_truncated_answer("codex", true, &mut note);
+        assert_eq!(note, "输出超过 4 MB，中间被丢弃，回答可能不完整");
+    }
 
     fn git_available() -> bool {
         std::process::Command::new("git").arg("--version").output().is_ok_and(|output| output.status.success())
@@ -5474,6 +5604,86 @@ mod tests {
         (request, settings, oneshot.with_extension("count"))
     }
 
+    fn pi_run_one_fixture(root: &Path, script_body: &str) -> DispatchNodeRequest {
+        let script = root.join("pi_oneshot_stub.py");
+        fs::write(&script, script_body).unwrap();
+        let mut request = node(Vec::new());
+        request.agent = "pi".into();
+        request.provider = format!("__aicross_test__||{}", script.display());
+        request.model = "fake-model".into();
+        request.visibility = "共享".into();
+        request.write = "单写者".into();
+        request
+    }
+
+    #[test]
+    fn task74_pi_idle_timeout_marks_node_timeout_with_idle_message() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t74-idle-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let request = pi_run_one_fixture(&root, "import time\nprint('first line', flush=True)\ntime.sleep(10)\n");
+        let mut request = request;
+        request.write = "只读".into();
+        let settings = DispatchSettings {
+            timeout_secs: 10,
+            exec_timeout_secs: 10,
+            idle_timeout_secs: 1,
+            ..DispatchSettings::default()
+        };
+        let result = run_one("t74-idle", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "timeout");
+        assert_eq!(result.error, "连续 1 秒无输出");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task74_pi_writable_seat_ignores_idle_limit_until_total_timeout() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t74-writable-idle-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        let request = pi_run_one_fixture(&root, "import time\ntime.sleep(10)\n");
+        let settings = DispatchSettings { timeout_secs: 3, exec_timeout_secs: 3, idle_timeout_secs: 1, ..DispatchSettings::default() };
+        let result = run_one("t74-writable-idle", &project, &root.join("runs"), &log_dir, &settings, request);
+        assert_eq!(result.status, "timeout");
+        assert_eq!(result.error, "执行超过 3 秒");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task74_pi_total_timeout_uses_exec_timeout_only_for_writable_seat() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        for (visibility, write, expected_seconds) in [
+            ("共享", "单写者", 2),
+            ("共享", "只读", 1),
+            ("盲", "单写者", 1),
+        ] {
+            let root = crate::paths::test_temp_dir().join(format!("aicross-t74-total-{}", Uuid::new_v4()));
+            let project = root.join("project");
+            let log_dir = root.join("logs");
+            fs::create_dir_all(&project).unwrap();
+            fs::create_dir_all(&log_dir).unwrap();
+            let mut request = pi_run_one_fixture(&root, "import time\ntime.sleep(10)\n");
+            request.visibility = visibility.into();
+            request.write = write.into();
+            let settings = DispatchSettings {
+                timeout_secs: 1,
+                exec_timeout_secs: 2,
+                idle_timeout_secs: 10,
+                ..DispatchSettings::default()
+            };
+            let result = run_one("t74-total", &project, &root.join("runs"), &log_dir, &settings, request);
+            assert_eq!(result.status, "timeout", "{visibility}/{write}: {}", result.error);
+            assert_eq!(result.error, format!("执行超过 {expected_seconds} 秒"));
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
     #[test]
     fn run_one_interactive_claude_uses_acp_even_with_acp_switch_off_and_asks_the_user() {
         let _pool_guard = channels::acp::test_pool_guard();
@@ -5952,7 +6162,7 @@ mod tests {
     fn r1_parse_output_populates_dispatch_cache_read() {
         let process = crate::process::ProcessResult {
             code: Some(0), stdout: "answer".into(), stderr: "[usage] input=2 cache_read=42 output=1".into(),
-            timed_out: false, truncated: false, timeout: Duration::from_secs(1),
+            timed_out: false, truncated: false, stdout_truncated: false, timeout: Duration::from_secs(1), idle_timed_out: false, idle_timeout: None,
         };
         let output = channels::parse_output("cc-switch", "", "", &process).unwrap();
         let result = DispatchNodeResult { cache_read: output.usage.cache_read, ..DispatchNodeResult::default() };
@@ -6095,15 +6305,21 @@ mod tests {
         fs::write(project.join("a.txt"), "before").unwrap();
         fs::create_dir_all(project.join("sub")).unwrap();
         fs::write(project.join("sub").join("b.txt"), "nested").unwrap();
-        let mut snapshot = snapshot_directory(&project).unwrap();
+        let (mut snapshot, _) = snapshot_directory_scoped(&project, SNAPSHOT_FILE_LIMIT, SNAPSHOT_TOTAL_LIMIT, None, None).unwrap();
         // 模拟超过单文件上限：内存快照里有路径、没有内容。
         if !snapshot.contains_key("big.bin") {
             snapshot.insert("big.bin".into(), SnapshotFile { size: 100, ..SnapshotFile::default() });
         }
         snapshot.get_mut("big.bin").unwrap().bytes = None;
-        let dir = persist_inflight_snapshot(&project, "run", "node-1", &snapshot).unwrap();
+        let scope = SnapshotScope { used_git: true, ignored: vec!["secret/".into()] };
+        let dir = persist_inflight_snapshot(&project, "run", "node-1", &snapshot, &scope).unwrap();
         let manifest: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["ignored"], serde_json::json!(["secret/"]));
+        assert_eq!(manifest["used_git"], true);
+        let read_back = crate::engine::read_inflight_manifest(&dir).unwrap();
+        assert_eq!(read_back.ignored, vec!["secret/"]);
+        assert!(read_back.used_git);
         let files = manifest["files"].as_array().unwrap();
         let find = |path: &str| {
             files
@@ -6522,6 +6738,146 @@ mod tests {
             .unwrap_err()
             .contains("总字节上限"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_snapshot_excludes_ignored_files_and_includes_untracked_files() {
+        if !require_git("git_snapshot_excludes_ignored_files_and_includes_untracked_files") { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-git-snapshot-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("ignored-big")).unwrap();
+        fs::write(root.join(".gitignore"), "ignored-big/\n").unwrap();
+        fs::write(root.join("ignored-big/huge"), vec![0u8; 4096]).unwrap();
+        fs::write(root.join("new.txt"), b"new").unwrap();
+        assert_eq!(git_result(&["init"], &root, None).unwrap().code, Some(0));
+        let snapshot = snapshot_directory_with_limits(&root, 8192, 16).unwrap();
+        assert!(snapshot.contains_key("new.txt"));
+        assert!(!snapshot.keys().any(|path| path.starts_with("ignored-big")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_limit_error_lists_three_largest_directories() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-snapshot-tops-{}", Uuid::new_v4()));
+        for (dir, size) in [("a", 9usize), ("b", 7), ("c", 5), ("d", 3)] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+            fs::write(root.join(dir).join("data"), vec![b'x'; size]).unwrap();
+        }
+        let error = snapshot_directory_with_limits(&root, 32, 10).unwrap_err();
+        assert!(error.contains("目录快照超过总字节上限 0 MB"));
+        assert!(error.contains("a/ 1 MB、b/ 1 MB、c/ 1 MB"));
+        assert!(!error.contains("d/"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_snapshot_listing_failure_falls_back_to_directory_walk() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-git-fallback-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("ordinary.txt"), b"ordinary").unwrap();
+        let failed = crate::process::ProcessResult {
+            code: Some(1), stdout: String::new(), stderr: "ls-files failed".into(),
+            timed_out: false, truncated: false, stdout_truncated: false, timeout: Duration::from_secs(30),
+            idle_timed_out: false, idle_timeout: None,
+        };
+        assert!(parse_snapshot_git_listing(&failed).is_none());
+        assert_eq!(existing_project_files(&root).unwrap(), vec!["ordinary.txt"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recover_project_files_uses_git_snapshot_scope() {
+        if !require_git("recover_project_files_uses_git_snapshot_scope") { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-recover-scope-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("ignored" )).unwrap();
+        fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
+        fs::write(root.join("ignored/new.txt"), b"ignored").unwrap();
+        fs::write(root.join("tracked.txt"), b"tracked").unwrap();
+        assert_eq!(git_result(&["init"], &root, None).unwrap().code, Some(0));
+        let current = crate::engine::project_files(&root);
+        assert!(!current.contains_key("ignored/new.txt"));
+        assert!(current.contains_key("tracked.txt"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn after_snapshot_keeps_previously_ignored_paths_out_after_ignore_rule_is_removed() {
+        if !require_git("after_snapshot_keeps_previously_ignored_paths_out_after_ignore_rule_is_removed") { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-ignore-stable-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("secret")).unwrap();
+        fs::write(root.join(".gitignore"), "secret/\n").unwrap();
+        fs::write(root.join("secret/key.txt"), b"keep secret").unwrap();
+        assert_eq!(git_result(&["init"], &root, None).unwrap().code, Some(0));
+        let (before, scope) = snapshot_directory_scoped(&root, 1024, 4096, None, None).unwrap();
+        fs::write(root.join(".gitignore"), "").unwrap();
+        fs::write(root.join("created.txt"), b"created").unwrap();
+        let after = snapshot_directory_after(&root, &before, &scope).unwrap();
+        let changed = changed_snapshot_paths(&before, &after);
+        assert!(changed.contains(&".gitignore".to_string()));
+        assert!(changed.contains(&"created.txt".to_string()));
+        assert!(!changed.contains(&"secret/key.txt".to_string()));
+        assert_eq!(fs::read(root.join("secret/key.txt")).unwrap(), b"keep secret");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn after_snapshot_keeps_previously_included_file_when_new_ignore_rule_covers_it() {
+        if !require_git("after_snapshot_keeps_previously_included_file_when_new_ignore_rule_covers_it") { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-ignore-added-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), b"keep").unwrap();
+        assert_eq!(git_result(&["init"], &root, None).unwrap().code, Some(0));
+        let (before, scope) = snapshot_directory_scoped(&root, 1024, 4096, None, None).unwrap();
+        fs::write(root.join(".gitignore"), "a.txt\n").unwrap();
+        let after = snapshot_directory_after(&root, &before, &scope).unwrap();
+        assert!(after.contains_key("a.txt"));
+        assert!(!changed_snapshot_paths(&before, &after).contains(&"a.txt".to_string()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn after_snapshot_excludes_new_files_under_previously_ignored_directory() {
+        if !require_git("after_snapshot_excludes_new_files_under_previously_ignored_directory") { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-ignore-new-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("secret")).unwrap();
+        fs::write(root.join(".gitignore"), "secret/\n").unwrap();
+        assert_eq!(git_result(&["init"], &root, None).unwrap().code, Some(0));
+        let (before, scope) = snapshot_directory_scoped(&root, 1024, 4096, None, None).unwrap();
+        fs::write(root.join("secret/new.txt"), b"hidden").unwrap();
+        let after = snapshot_directory_after(&root, &before, &scope).unwrap();
+        assert!(!after.contains_key("secret/new.txt"));
+        assert!(!changed_snapshot_paths(&before, &after).contains(&"secret/new.txt".to_string()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn after_non_git_snapshot_keeps_directory_walk_scope_after_git_init() {
+        if !require_git("after_non_git_snapshot_keeps_directory_walk_scope_after_git_init") { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-nongit-scope-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), b"keep").unwrap();
+        let (before, scope) = snapshot_directory_scoped(&root, 1024, 4096, None, None).unwrap();
+        assert!(!scope.used_git);
+        assert_eq!(git_result(&["init"], &root, None).unwrap().code, Some(0));
+        fs::write(root.join(".gitignore"), "a.txt\n").unwrap();
+        let after = snapshot_directory_after(&root, &before, &scope).unwrap();
+        assert!(after.contains_key("a.txt"));
+        assert!(!changed_snapshot_paths(&before, &after).contains(&"a.txt".to_string()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn empty_git_listing_for_ignored_project_falls_back_to_filesystem_walk() {
+        if !require_git("empty_git_listing_for_ignored_project_falls_back_to_filesystem_walk") { return; }
+        let parent = crate::paths::test_temp_dir().join(format!("aicross-ignored-parent-{}", Uuid::new_v4()));
+        let root = parent.join("project");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(parent.join(".gitignore"), "project/\n").unwrap();
+        fs::write(root.join("present.txt"), b"present").unwrap();
+        assert_eq!(git_result(&["init"], &parent, None).unwrap().code, Some(0));
+        let (files, scope) = snapshot_scope(&root).unwrap();
+        assert!(!scope.used_git);
+        assert!(files.contains(&"present.txt".to_string()));
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
@@ -8894,6 +9250,8 @@ mod tests {
     fn live_settings(concurrency: usize) -> DispatchSettings {
         DispatchSettings {
             timeout_secs: 600,
+            exec_timeout_secs: 1800,
+            idle_timeout_secs: 300,
             concurrency,
             redact: true,
             write_project_dispatch: true,
@@ -9449,6 +9807,12 @@ mod tests {
         assert_eq!(settings.fix_round_limit, 3);
         let json = serde_json::to_value(DispatchSettings::default()).unwrap();
         assert_eq!(json["fixRoundLimit"], 1);
+        assert_eq!(settings.exec_timeout_secs, 1800);
+        assert_eq!(DispatchSettings::default().idle_timeout_secs, 300);
+        assert_eq!(json["execTimeoutSecs"], 1800);
+        assert_eq!(json["idleTimeoutSecs"], 300);
+        let configured: DispatchSettings = serde_json::from_str(r#"{"execTimeoutSecs":3600,"idleTimeoutSecs":1}"#).unwrap();
+        assert_eq!((configured.exec_timeout_secs, configured.idle_timeout_secs), (3600, 1));
     }
 
     #[test]

@@ -632,7 +632,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
                 .and_then(|_| file.sync_all())
                 .map_err(|e| format!("写入临时文件失败：{e}"))?;
         }
-        match fs::rename(&temporary, path) {
+        match crate::paths::replace_file_with_retry(&temporary, path) {
             Ok(()) => Ok(()),
             Err(first) => {
                 let _ = fs::remove_file(path);
@@ -3811,7 +3811,7 @@ exit 2
     fn task17_pi_status_fixtures_match_live_output_shape() {
         let result = |stdout: &str, code| ProcessResult {
             code: Some(code), stdout: stdout.to_string(), stderr: String::new(), timed_out: false,
-            truncated: false, timeout: Duration::from_secs(1),
+            truncated: false, stdout_truncated: false, timeout: Duration::from_secs(1), idle_timed_out: false, idle_timeout: None,
         };
         assert_eq!(
             pi_login_from_check(Ok(result(include_str!("../fixtures/resources/pi_auth_check_ready.json"), 0))),
@@ -4019,7 +4019,10 @@ exit 2
             stderr: String::new(),
             timed_out: false,
             truncated: false,
+            stdout_truncated: false,
             timeout: Duration::from_secs(1),
+            idle_timed_out: false,
+            idle_timeout: None,
         };
         assert_eq!(pi_login_from_check(Ok(result)), ResourceLogin::LoggedOut);
     }
@@ -4111,7 +4114,10 @@ exit 2
             stderr: String::new(),
             timed_out: true,
             truncated: false,
+            stdout_truncated: false,
             timeout: Duration::from_secs(20),
+            idle_timed_out: false,
+            idle_timeout: None,
         };
         assert_eq!(process_error_summary(&timeout), "20 秒超时");
     }

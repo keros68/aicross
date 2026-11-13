@@ -8,6 +8,8 @@
       "preset": "builtin-shared"
     },
     "settings": {
+      "execTimeoutSecs": 1800,
+      "idleTimeoutSecs": 300,
       "timeoutSecs": 600,
       "concurrency": 3,
       "maxRequests": 8,
@@ -345,6 +347,8 @@
         "stage": 4,
         "projectDir": "D:/project",
         "settings": {
+          "execTimeoutSecs": 1800,
+          "idleTimeoutSecs": 300,
           "timeoutSecs": 600,
           "concurrency": 3,
           "maxRequests": 8,

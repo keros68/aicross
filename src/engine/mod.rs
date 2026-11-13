@@ -56,6 +56,8 @@ const STARTUP_WINDOW_SECS: i64 = 30;
 #[serde(rename_all = "camelCase")]
 pub struct EngineSettings {
     pub timeout_secs: u64,
+    pub exec_timeout_secs: u64,
+    pub idle_timeout_secs: u64,
     pub concurrency: usize,
     pub max_requests: usize,
     pub classification_model: String,
@@ -78,6 +80,8 @@ impl Default for EngineSettings {
     fn default() -> Self {
         Self {
             timeout_secs: 600,
+            exec_timeout_secs: 1800,
+            idle_timeout_secs: 300,
             concurrency: 3,
             max_requests: 8,
             classification_model: String::new(),
@@ -99,6 +103,8 @@ impl EngineSettings {
     fn dispatch(&self) -> DispatchSettings {
         DispatchSettings {
             timeout_secs: self.timeout_secs,
+            exec_timeout_secs: self.exec_timeout_secs,
+            idle_timeout_secs: self.idle_timeout_secs,
             concurrency: self.concurrency,
             redact: self.redact,
             write_project_dispatch: self.write_project_dispatch,
@@ -130,6 +136,8 @@ pub(crate) fn settings_from_value(map: &serde_json::Map<String, Value>) -> Engin
     };
     EngineSettings {
         timeout_secs: finite_number(map.get("timeoutSecs"), 600.0).clamp(1.0, 3600.0) as u64,
+        exec_timeout_secs: finite_number(map.get("execTimeoutSecs"), 1800.0).clamp(1.0, 3600.0) as u64,
+        idle_timeout_secs: finite_number(map.get("idleTimeoutSecs"), 300.0).clamp(1.0, 3600.0) as u64,
         concurrency: finite_number(map.get("concurrency"), 3.0).clamp(1.0, 3.0) as usize,
         max_requests: finite_number(map.get("maxRequests"), 8.0).clamp(1.0, 100.0) as usize,
         classification_model: string("classificationModel"),
@@ -280,36 +288,12 @@ pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<
         file.write_all(&bytes)
             .and_then(|_| file.sync_all())
             .map_err(|e| format!("写入临时文件失败：{e}"))?;
-        replace_file(&tmp, path).map_err(|e| format!("替换 {} 失败：{e}", path.display()))
+        crate::paths::replace_file_with_retry(&tmp, path).map_err(|e| format!("替换 {} 失败：{e}", path.display()))
     })();
     if result.is_err() {
         let _ = fs::remove_file(tmp);
     }
     result
-}
-
-#[cfg(not(windows))]
-fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
-    fs::rename(source, target)
-}
-
-#[cfg(windows)]
-fn replace_file(source: &Path, target: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::core::PCWSTR;
-    use windows::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    unsafe {
-        MoveFileExW(
-            PCWSTR(source.as_ptr()),
-            PCWSTR(target.as_ptr()),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    }
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))
 }
 
 fn parse_time(value: &str) -> Option<DateTime<Utc>> {
@@ -504,6 +488,7 @@ pub(crate) fn node_summary(graph: &Graph, ids: impl IntoIterator<Item = String>)
                 thinking: {
                     let effective = crate::channels::effective_thinking(
                         &target.agent,
+                        target.provider.as_deref().unwrap_or(""),
                         &target.model,
                         &target.thinking,
                     );
@@ -3607,6 +3592,7 @@ struct FileSink<'a> {
     /// 本 run 上一次提交的图（R2-2 合并写的基准；None 表示首笔提交，
     /// 全部节点都算改动）。
     committed: Option<Graph>,
+    pending_write: bool,
 }
 
 impl<'a> FileSink<'a> {
@@ -3623,6 +3609,7 @@ impl<'a> FileSink<'a> {
             run,
             active,
             committed: Some(baseline),
+            pending_write: false,
         }
     }
 }
@@ -3640,7 +3627,17 @@ impl PipelineSink for FileSink<'_> {
         self.run.in_flight_node_ids = update.in_flight_node_ids.clone();
         self.run.reason = update.reason.clone();
         self.run.updated_at = now();
-        write_run(self.root, self.run)
+        match write_run(self.root, self.run) {
+            Ok(()) => {
+                self.pending_write = false;
+                Ok(())
+            }
+            Err(error) if matches!(update.status.as_str(), "done" | "failed") => Err(error),
+            Err(_) => {
+                self.pending_write = true;
+                Ok(())
+            }
+        }
     }
     fn dispatch(&mut self, request: &DispatchStageRequest) -> Result<DispatchStageResult, String> {
         // TASK-43：验收条件随请求下发（run 文件 → 本阶段请求）。金标准夹具走的
@@ -3903,28 +3900,6 @@ fn snapshot_files(before_dir: &Path) -> HashMap<String, u64> {
     out
 }
 
-fn recover_excluded_directory(name: &str) -> bool {
-    // 与 dispatch.rs `excluded_snapshot_directory` 保持同一份清单：快照不含
-    // 这些目录，核对时也不把它们当成新增。
-    matches!(
-        name,
-        ".git"
-            | ".dispatch"
-            | ".aicross"
-            | ".aicross-runtime"
-            | ".pytest_cache"
-            | "__pycache__"
-            | "node_modules"
-            | "target"
-            | "dist"
-            | ".venv"
-            | "build"
-            | "coverage"
-            | ".next"
-            | "vendor"
-    )
-}
-
 fn recover_is_link(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
@@ -3939,27 +3914,55 @@ fn recover_is_link(metadata: &fs::Metadata) -> bool {
 
 /// 项目目录里的文件清单（相对路径 → 字节数）；排除目录与链接按快照同口径，
 /// 链接与 junction 不走进去。
-fn project_files(project: &Path) -> HashMap<String, u64> {
+pub(crate) fn project_files(project: &Path) -> HashMap<String, u64> {
+    let mut out = HashMap::new();
+    match crate::dispatch::snapshot_scope(project) {
+        Ok((files, _)) => {
+            for relative in files {
+                let path = project.join(&relative);
+                let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
+                if metadata.is_file() && !recover_is_link(&metadata) {
+                    out.insert(relative, metadata.len());
+                }
+            }
+        }
+        Err(_) => {
+            fn walk(dir: &Path, base: &Path, out: &mut HashMap<String, u64>) {
+                let Ok(entries) = fs::read_dir(dir) else { return };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
+                    if recover_is_link(&metadata) { continue; }
+                    if metadata.is_dir() {
+                        if !crate::dispatch::excluded_snapshot_directory(&entry.file_name().to_string_lossy()) {
+                            walk(&path, base, out);
+                        }
+                    }
+                    else if metadata.is_file() {
+                        let relative = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+                        out.insert(relative, metadata.len());
+                    }
+                }
+            }
+            walk(project, project, &mut out);
+        }
+    }
+    out
+}
+
+fn project_files_walk(project: &Path) -> HashMap<String, u64> {
     fn walk(dir: &Path, base: &Path, out: &mut HashMap<String, u64>) {
         let Ok(entries) = fs::read_dir(dir) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
             let Ok(metadata) = fs::symlink_metadata(&path) else { continue };
-            if recover_is_link(&metadata) {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
+            if recover_is_link(&metadata) { continue; }
             if metadata.is_dir() {
-                if recover_excluded_directory(&name) {
-                    continue;
+                if !crate::dispatch::excluded_snapshot_directory(&entry.file_name().to_string_lossy()) {
+                    walk(&path, base, out);
                 }
-                walk(&path, base, out);
             } else if metadata.is_file() {
-                let relative = path
-                    .strip_prefix(base)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let relative = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().replace('\\', "/");
                 out.insert(relative, metadata.len());
             }
         }
@@ -4014,10 +4017,17 @@ fn changed_files_against_before_snapshot(
 }
 
 /// 执行中快照清单里的一条文件记录。
-struct RecoverInflightFile {
-    path: String,
-    size: u64,
-    stored: bool,
+pub(crate) struct RecoverInflightFile {
+    pub path: String,
+    pub size: u64,
+    pub stored: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct RecoverInflightManifest {
+    pub files: Vec<RecoverInflightFile>,
+    pub ignored: Vec<String>,
+    pub used_git: bool,
 }
 
 /// 执行中快照目录：与 `.before` 同一根目录规则，执行结束即删。
@@ -4026,7 +4036,7 @@ fn inflight_dir_for(project: &Path, run_id: &str, node_id: &str) -> PathBuf {
 }
 
 /// 读执行中快照清单；损坏按 Err 返回（回滚时进 failures）。
-fn read_inflight_manifest(dir: &Path) -> Result<Vec<RecoverInflightFile>, String> {
+pub(crate) fn read_inflight_manifest(dir: &Path) -> Result<RecoverInflightManifest, String> {
     let bytes = fs::read(dir.join("manifest.json"))
         .map_err(|error| format!("读取执行中快照清单失败：{error}"))?;
     let value: Value =
@@ -4035,7 +4045,7 @@ fn read_inflight_manifest(dir: &Path) -> Result<Vec<RecoverInflightFile>, String
         .get("files")
         .and_then(Value::as_array)
         .ok_or_else(|| "执行中快照清单没有 files".to_string())?;
-    files
+    let files = files
         .iter()
         .map(|item| {
             Ok(RecoverInflightFile {
@@ -4051,7 +4061,11 @@ fn read_inflight_manifest(dir: &Path) -> Result<Vec<RecoverInflightFile>, String
                     .unwrap_or(false),
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    let ignored = value.get("ignored").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(Value::as_str).map(str::to_string).collect();
+    let used_git = value.get("used_git").and_then(Value::as_bool).unwrap_or(false);
+    Ok(RecoverInflightManifest { files, ignored, used_git })
 }
 
 /// 执行中断的单写者节点：项目当前内容对比执行中快照清单。清单里有、项目里
@@ -4060,13 +4074,23 @@ fn read_inflight_manifest(dir: &Path) -> Result<Vec<RecoverInflightFile>, String
 fn changed_files_against_inflight(
     project: &Path,
     dir: &Path,
-    files: &[RecoverInflightFile],
+    manifest: &RecoverInflightManifest,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
-    let current = project_files(project);
+    let mut current = if manifest.used_git { project_files(project) } else { project_files_walk(project) };
+    if manifest.used_git {
+        for file in &manifest.files {
+            if let Ok(metadata) = fs::symlink_metadata(project.join(&file.path)) {
+                if metadata.is_file() && !recover_is_link(&metadata) {
+                    current.insert(file.path.clone(), metadata.len());
+                }
+            }
+        }
+    }
+    current.retain(|path, _| !crate::dispatch::is_ignored_snapshot_path(path, &manifest.ignored));
     let mut added = Vec::new();
     let mut modified = Vec::new();
     let mut removed = Vec::new();
-    for file in files {
+    for file in &manifest.files {
         match current.get(&file.path) {
             None => removed.push(file.path.clone()),
             Some(&now_size) => {
@@ -4082,9 +4106,11 @@ fn changed_files_against_inflight(
             }
         }
     }
-    let manifest: HashSet<&str> = files.iter().map(|file| file.path.as_str()).collect();
+    let manifest_paths: HashSet<&str> = manifest.files.iter().map(|file| file.path.as_str()).collect();
     for path in current.keys() {
-        if !manifest.contains(path.as_str()) {
+        if !manifest_paths.contains(path.as_str())
+            && !crate::dispatch::is_ignored_snapshot_path(path, &manifest.ignored)
+        {
             added.push(path.clone());
         }
     }
@@ -4247,10 +4273,10 @@ pub(crate) fn recover(root: &Path, run_id: &str, rollback: bool) -> Result<Recov
                                 ));
                             }
                         }
-                        Ok(files) => {
+                        Ok(manifest) => {
                             let (added, modified, removed) =
-                                changed_files_against_inflight(&project, &inflight, &files);
-                            let mut unrestorable: Vec<String> = files
+                                changed_files_against_inflight(&project, &inflight, &manifest);
+                            let mut unrestorable: Vec<String> = manifest.files
                                 .iter()
                                 .filter(|file| {
                                     !file.stored && modified.iter().any(|path| path == &file.path)
@@ -4268,7 +4294,7 @@ pub(crate) fn recover(root: &Path, run_id: &str, rollback: bool) -> Result<Recov
                                 match rollback_inflight_snapshot(
                                     &project,
                                     &inflight,
-                                    &files,
+                                    &manifest.files,
                                     (&added, &modified, &removed),
                                 ) {
                                     Ok((restored, removed_added, unfinished)) => {

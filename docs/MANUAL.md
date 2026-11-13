@@ -50,6 +50,9 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 验证命令、脱敏、派发记录位置等），用 `aicross config show` 看全量，`config set`
 逐项改。角色（出方案 / 执行 / 验收）在 `~/.aicross/roles.json`，用
 `config set-role` 改；三个角色一次定好，之后每次派发复用。
+`timeoutSecs` 默认 600 秒，用于只读与盲位置；`execTimeoutSecs` 默认 1800 秒，用于可写位置；
+`idleTimeoutSecs` 默认 300 秒，限制连续无输出时间，目前只用于 pi 的只读与盲位置。总时长超限提示「执行超过 N 秒」，
+连续无输出超限提示「连续 N 秒无输出」。
 
 ACP 默认关闭，派发走各家 CLI 自带的续聊。要用 ACP 时执行
 `aicross config set acpEnabled true`：写入设置后当场安装 claude、codex 的 ACP
@@ -277,5 +280,8 @@ aicross 在项目里只建一个目录 `.aicross/`：
 | 模型限额已触发 | 额度用尽 | 资源输出、查看页卡片 |
 | 模型额度重新可用的时间 | 恢复时间 | 资源输出、查看页卡片 |
 | pi provider 登录状态 | 已登录 / 未登录 / 未检查 | 资源输出 |
+| 派发总时长超限 | 执行超过 N 秒 | 派发记录、查看页卡片 |
+| 连续无输出超限 | 连续 N 秒无输出 | 派发记录、查看页卡片 |
+| pi 思考档位调整 | 已调整为：<档位> | 派发记录、`aicross status`、`aicross config show` |
 
 不在界面上出现的词：留痕、对账、口径、判定、闸门、门禁、落库、wire、G1–G4、修正轮编号与任务编号。

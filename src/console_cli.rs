@@ -994,7 +994,7 @@ enum SettingKind {
 /// 派发设置的键（与 dispatch-settings.json 字段同名）及其取值类型。
 fn setting_kind(key: &str) -> Option<SettingKind> {
     Some(match key {
-        "timeoutSecs" | "concurrency" | "maxRequests" | "fixRoundLimit" | "swarmLimit"
+        "timeoutSecs" | "execTimeoutSecs" | "idleTimeoutSecs" | "concurrency" | "maxRequests" | "fixRoundLimit" | "swarmLimit"
         | "consoleRunLimit" => SettingKind::Number,
         "redact" | "writeProjectDispatch" | "acpEnabled" | "classifyProposals" => {
             SettingKind::Bool
@@ -1420,6 +1420,7 @@ fn mode_entry(
                             // fix-61-r1 5：实际生效值（agy 模型自带档位时由模型决定）
                             "thinking": crate::channels::effective_thinking(
                                 &target.agent,
+                                target.provider.as_deref().unwrap_or(""),
                                 &target.model,
                                 &target.thinking,
                             ),
@@ -2819,6 +2820,8 @@ fn clamp_setting_value(key: &str, number: f64) -> Value {
     let settings = crate::engine::settings_from_value(&map);
     match key {
         "timeoutSecs" => json!(settings.timeout_secs),
+        "execTimeoutSecs" => json!(settings.exec_timeout_secs),
+        "idleTimeoutSecs" => json!(settings.idle_timeout_secs),
         "concurrency" => json!(settings.concurrency),
         "maxRequests" => json!(settings.max_requests),
         "fixRoundLimit" => json!(settings.fix_round_limit),
@@ -4248,6 +4251,8 @@ mod tests {
         assert_eq!(parsed["roles"]["version"], 1);
         assert_eq!(parsed["roles"]["execution"]["agent"], "");
         assert_eq!(parsed["dispatch"]["timeoutSecs"], 600);
+        assert_eq!(parsed["dispatch"]["execTimeoutSecs"], 1800);
+        assert_eq!(parsed["dispatch"]["idleTimeoutSecs"], 300);
         assert_eq!(parsed["dispatch"]["concurrency"], 3);
         assert_eq!(parsed["dispatch"]["redact"], true);
 
@@ -4263,6 +4268,8 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
         assert_eq!(parsed["roles"]["execution"]["model"], "glm-4.7");
         assert_eq!(parsed["dispatch"]["timeoutSecs"], 90);
+        assert_eq!(parsed["dispatch"]["execTimeoutSecs"], 1800);
+        assert_eq!(parsed["dispatch"]["idleTimeoutSecs"], 300);
         assert_eq!(parsed["dispatch"]["concurrency"], 3);
         let _ = fs::remove_dir_all(root);
     }
@@ -4377,6 +4384,16 @@ mod tests {
         let saved: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(root.join("dispatch-settings.json")).unwrap()).unwrap();
         assert_eq!(saved["timeoutSecs"], 3600);
+
+        for (key, value) in [("execTimeoutSecs", "3600"), ("idleTimeoutSecs", "7")] {
+            let (code, _, stderr) = run_with(&root, &["aicross", "config", "set", key, value], &ResourcesOps::production());
+            assert_eq!(code, 0, "{stderr}");
+        }
+        let (code, stdout, stderr) = run_with(&root, &["aicross", "config", "show"], &ResourcesOps::production());
+        assert_eq!(code, 0, "{stderr}");
+        let shown: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(shown["dispatch"]["execTimeoutSecs"], 3600);
+        assert_eq!(shown["dispatch"]["idleTimeoutSecs"], 7);
 
         // 正常值 + 布尔 + 字符串：按 JSON 类型写入；未知键保留不删
         fs::write(

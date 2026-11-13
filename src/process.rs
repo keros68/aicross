@@ -397,7 +397,41 @@ pub struct ProcessResult {
     pub stderr: String,
     pub timed_out: bool,
     pub truncated: bool,
+    pub stdout_truncated: bool,
     pub timeout: Duration,
+    pub idle_timed_out: bool,
+    pub idle_timeout: Option<Duration>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProcessOptions {
+    pub idle_timeout: Option<Duration>,
+    pub stdout_skip: Option<fn(&[u8]) -> bool>,
+}
+
+pub fn timeout_message(result: &ProcessResult) -> String {
+    if result.idle_timed_out {
+        let seconds = result.idle_timeout.unwrap_or_default();
+        format!("连续 {} 秒无输出", seconds.as_secs() + u64::from(seconds.subsec_nanos() > 0))
+    } else {
+        format!("执行超过 {} 秒", result.timeout.as_secs() + u64::from(result.timeout.subsec_nanos() > 0))
+    }
+}
+
+pub fn pi_message_update_line(line: &[u8]) -> bool {
+    let mut rest = line;
+    let ws = |b: u8| matches!(b, b' ' | b'\t' | b'\r' | b'\n');
+    while rest.first().is_some_and(|b| ws(*b)) { rest = &rest[1..]; }
+    if rest.first() != Some(&b'{') { return false; }
+    rest = &rest[1..];
+    while rest.first().is_some_and(|b| ws(*b)) { rest = &rest[1..]; }
+    if !rest.starts_with(b"\"type\"") { return false; }
+    rest = &rest[6..];
+    while rest.first().is_some_and(|b| ws(*b)) { rest = &rest[1..]; }
+    if rest.first() != Some(&b':') { return false; }
+    rest = &rest[1..];
+    while rest.first().is_some_and(|b| ws(*b)) { rest = &rest[1..]; }
+    rest.starts_with(b"\"message_update\"")
 }
 
 fn running_processes() -> &'static Mutex<HashMap<String, u32>> {
@@ -413,7 +447,19 @@ pub fn run_process(
     timeout: Duration,
     cwd: Option<&Path>,
 ) -> Result<ProcessResult, String> {
-    run_process_registered(program, args, input, timeout, cwd, None)
+    run_process_with_options(program, args, input, timeout, cwd, None, ProcessOptions::default())
+}
+
+pub fn run_process_with_options(
+    program: &Path,
+    args: &[String],
+    input: Option<&str>,
+    timeout: Duration,
+    cwd: Option<&Path>,
+    activity: Option<ProcessActivity>,
+    options: ProcessOptions,
+) -> Result<ProcessResult, String> {
+    run_process_registered_with_options(program, args, input, timeout, cwd, None, activity, options)
 }
 
 pub fn run_process_registered(
@@ -424,10 +470,10 @@ pub fn run_process_registered(
     cwd: Option<&Path>,
     registry_key: Option<&str>,
 ) -> Result<ProcessResult, String> {
-    run_process_registered_with_activity(program, args, input, timeout, cwd, registry_key, None)
+    run_process_registered_with_options(program, args, input, timeout, cwd, registry_key, None, ProcessOptions::default())
 }
 
-pub fn run_process_registered_with_activity(
+pub fn run_process_registered_with_options(
     program: &Path,
     args: &[String],
     input: Option<&str>,
@@ -435,6 +481,7 @@ pub fn run_process_registered_with_activity(
     cwd: Option<&Path>,
     registry_key: Option<&str>,
     activity: Option<ProcessActivity>,
+    options: ProcessOptions,
 ) -> Result<ProcessResult, String> {
     let mut command = process_command(program, args);
     command
@@ -472,8 +519,9 @@ pub fn run_process_registered_with_activity(
         .stderr
         .take()
         .ok_or_else(|| "读取子进程 stderr 失败".to_string())?;
-    let stdout_reader = bounded_reader(stdout, activity.clone());
-    let stderr_reader = bounded_reader(stderr, activity);
+    let last_output = Arc::new(Mutex::new(Instant::now()));
+    let stdout_reader = bounded_reader(stdout, activity.clone(), last_output.clone(), options.stdout_skip);
+    let stderr_reader = bounded_reader(stderr, activity, last_output.clone(), None);
     let stdin_writer = input.and_then(|input| {
         child.stdin.take().map(|mut stdin| {
             let input = input.as_bytes().to_vec();
@@ -484,12 +532,21 @@ pub fn run_process_registered_with_activity(
         })
     });
     let mut timed_out = false;
+    let mut idle_timed_out = false;
     let code = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status.code(),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
             Ok(None) => {
+                let now = Instant::now();
+                let total_timed_out = now >= deadline;
+                let idle_elapsed = last_output.lock().map(|last| now.duration_since(*last)).unwrap_or_default();
+                let idle_limit_reached = options.idle_timeout.is_some_and(|idle| idle_elapsed >= idle);
+                if !total_timed_out && !idle_limit_reached {
+                    thread::sleep(Duration::from_millis(25));
+                    continue;
+                }
                 timed_out = true;
+                idle_timed_out = !total_timed_out && idle_limit_reached;
                 terminate_process_tree(&mut child);
                 break None;
             }
@@ -513,7 +570,10 @@ pub fn run_process_registered_with_activity(
         stderr: String::from_utf8_lossy(&stderr).to_string(),
         timed_out,
         truncated: stdout_truncated || stderr_truncated,
+        stdout_truncated,
         timeout,
+        idle_timed_out,
+        idle_timeout: options.idle_timeout,
     })
 }
 
@@ -567,31 +627,76 @@ pub fn version_with_arg(binary: &Path, version_arg: &str) -> Option<String> {
 
 type Reader = (thread::JoinHandle<()>, mpsc::Receiver<(Vec<u8>, bool)>);
 
-fn bounded_reader<R: Read + Send + 'static>(mut reader: R, activity: Option<ProcessActivity>) -> Reader {
+fn bounded_reader<R: Read + Send + 'static>(mut reader: R, activity: Option<ProcessActivity>, last_output: Arc<Mutex<Instant>>, skip: Option<fn(&[u8]) -> bool>) -> Reader {
     let (sender, receiver) = mpsc::channel();
     let handle = thread::spawn(move || {
         let mut output = Vec::new();
-        let mut limited = (&mut reader).take(MAX_PROCESS_OUTPUT);
+        let mut head = Vec::new();
+        let mut tail = std::collections::VecDeque::new();
+        let mut overflow = false;
+        let mut line_prefix = Vec::with_capacity(128);
+        let mut dropping = false;
+        let mut decided_line = false;
         let mut chunk = [0_u8; 8192];
-        loop {
-            let Ok(read) = limited.read(&mut chunk) else { break };
-            if read == 0 { break; }
-            output.extend_from_slice(&chunk[..read]);
-            if let Some(activity) = &activity { activity.mark_output(); }
-        }
-        let mut probe = [0_u8; 1];
-        let truncated = matches!(reader.read(&mut probe), Ok(n) if n > 0);
-        if truncated {
-            if let Some(activity) = &activity { activity.mark_output(); }
-        }
         loop {
             let Ok(read) = reader.read(&mut chunk) else { break };
             if read == 0 { break; }
+            if let Ok(mut last) = last_output.lock() { *last = Instant::now(); }
             if let Some(activity) = &activity { activity.mark_output(); }
+            for &byte in &chunk[..read] {
+                if dropping {
+                    if byte == b'\n' { dropping = false; line_prefix.clear(); decided_line = false; }
+                    continue;
+                }
+                if decided_line {
+                    append_output(&[byte], &mut output, &mut head, &mut tail, &mut overflow);
+                    if byte == b'\n' { decided_line = false; }
+                    continue;
+                }
+                line_prefix.push(byte);
+                if byte == b'\n' || line_prefix.len() == 128 {
+                    if skip.is_some_and(|filter| filter(&line_prefix)) {
+                        dropping = byte != b'\n';
+                        line_prefix.clear();
+                        continue;
+                    }
+                    append_output(&line_prefix, &mut output, &mut head, &mut tail, &mut overflow);
+                    line_prefix.clear();
+                    decided_line = byte != b'\n';
+                }
+            }
+        }
+        if !line_prefix.is_empty() { append_output(&line_prefix, &mut output, &mut head, &mut tail, &mut overflow); }
+        let truncated = overflow;
+        if overflow {
+            if let Some(index) = tail.iter().position(|b| *b == b'\n') {
+                if index + 1 < tail.len() {
+                    for _ in 0..=index { tail.pop_front(); }
+                }
+            }
+            output = head;
+            output.extend(tail);
         }
         let _ = sender.send((output, truncated));
     });
     (handle, receiver)
+}
+
+fn append_output(bytes: &[u8], output: &mut Vec<u8>, head: &mut Vec<u8>, tail: &mut std::collections::VecDeque<u8>, overflow: &mut bool) {
+    const HEAD: usize = 1024 * 1024;
+    const TAIL: usize = 3 * 1024 * 1024;
+    if !*overflow {
+        output.extend_from_slice(bytes);
+        if output.len() <= MAX_PROCESS_OUTPUT as usize { return; }
+        *overflow = true;
+        head.extend_from_slice(&output[..HEAD]);
+        if let Some(index) = head.iter().rposition(|b| *b == b'\n') { head.truncate(index + 1); }
+        tail.extend(output[output.len().saturating_sub(TAIL)..].iter().copied());
+        output.clear();
+    } else {
+        tail.extend(bytes.iter().copied());
+    }
+    while tail.len() > TAIL { tail.pop_front(); }
 }
 
 fn finish_bounded_reader(reader: Reader) -> (Vec<u8>, bool) {
@@ -640,6 +745,11 @@ mod tests {
     use uuid::Uuid;
 
     #[cfg(windows)]
+    const TEST_NEWLINE: &str = "\r\n";
+    #[cfg(not(windows))]
+    const TEST_NEWLINE: &str = "\n";
+
+    #[cfg(windows)]
     #[test]
     fn cmd_script_under_a_path_with_spaces_runs_and_receives_arguments() {
         let dir = crate::paths::test_temp_dir().join(format!("aicross cmd {}", Uuid::new_v4()));
@@ -673,7 +783,7 @@ mod tests {
         }
     }
 
-    /// 一次性派发路径（run_process → run_process_registered_with_activity）
+    /// 一次性派发路径（run_process → run_process_registered_with_options）
     /// spawn 后必须把子进程挂进 kill-on-close Job（TASK-42）：直启子进程再拉
     /// 一个孙子后退出，孙子靠继承留在同一个 Job 里。改回不挂 Job，这条就红。
     #[cfg(windows)]
@@ -713,6 +823,7 @@ mod tests {
         let result = run_process(&program, &args, None, Duration::from_millis(100), None)
             .expect("timeout result");
         assert!(result.timed_out);
+        assert_eq!(timeout_message(&result), "执行超过 1 秒");
         thread::sleep(Duration::from_millis(3000));
         assert!(!marker.exists(), "timed-out process left a running child");
     }
@@ -734,6 +845,135 @@ mod tests {
             .expect("large output");
         assert_eq!(result.stdout.len(), MAX_PROCESS_OUTPUT as usize);
         assert!(result.truncated);
+    }
+
+    fn run_script_with_options(script: String, options: ProcessOptions) -> ProcessResult {
+        let (program, mut args) = shell();
+        args.push(script);
+        run_process_registered_with_options(&program, &args, None, Duration::from_secs(15), None, None, None, options).unwrap()
+    }
+
+    #[test]
+    fn line_filter_drops_matching_lines_and_keeps_others() {
+        #[cfg(windows)]
+        let script = "[Console]::Out.WriteLine('{\"type\":\"message_update\",\"delta\":1}'); [Console]::Out.WriteLine('keep')";
+        #[cfg(not(windows))]
+        let script = "printf '{\"type\":\"message_update\",\"delta\":1}\\nkeep\\n'";
+        let result = run_script_with_options(
+            script.into(),
+            ProcessOptions { stdout_skip: Some(pi_message_update_line), ..Default::default() },
+        );
+        assert_eq!(result.stdout, format!("keep{TEST_NEWLINE}"));
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn filtered_lines_do_not_count_toward_output_limit() {
+        #[cfg(windows)]
+        let script = format!("[Console]::Out.Write(('{{\"type\":\"message_update\",\"x\":\"' + ('x' * {}) + '\"}}' + [Environment]::NewLine + 'keep' + [Environment]::NewLine))", MAX_PROCESS_OUTPUT + 100);
+        #[cfg(not(windows))]
+        let script = format!("printf '{{\"type\":\"message_update\",\"x\":\"'; head -c {} /dev/zero | tr '\\0' x; printf '\"}}\\nkeep\\n'", MAX_PROCESS_OUTPUT + 100);
+        let result = run_script_with_options(
+            script,
+            ProcessOptions { stdout_skip: Some(pi_message_update_line), ..Default::default() },
+        );
+        assert_eq!(result.stdout, format!("keep{TEST_NEWLINE}"));
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn overlong_filtered_line_is_discarded_without_buffering() {
+        #[cfg(windows)]
+        let script = format!("[Console]::Out.Write(('{{\"type\":\"message_update\",\"x\":\"' + ('x' * {}) + '\"}}' + [Environment]::NewLine + 'keep' + [Environment]::NewLine))", MAX_PROCESS_OUTPUT * 3);
+        #[cfg(not(windows))]
+        let script = format!("printf '{{\"type\":\"message_update\",\"x\":\"'; head -c {} /dev/zero | tr '\\0' x; printf '\"}}\\nkeep\\n'", MAX_PROCESS_OUTPUT * 3);
+        let result = run_script_with_options(
+            script,
+            ProcessOptions { stdout_skip: Some(pi_message_update_line), ..Default::default() },
+        );
+        assert_eq!(result.stdout, format!("keep{TEST_NEWLINE}"));
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn oversized_output_keeps_head_and_tail_and_final_line() {
+        let (program, mut args) = shell();
+        #[cfg(windows)]
+        args.push("[Console]::Out.Write((('head' + [Environment]::NewLine) * 250000) + ('MIDDLE-START' + [Environment]::NewLine) + ('x' * 6000000) + [Environment]::NewLine + ('FINAL-COMPLETE' + [Environment]::NewLine))".into());
+        #[cfg(not(windows))]
+        args.push("yes head | head -n 250000; printf 'MIDDLE-START\\n'; head -c 6000000 /dev/zero | tr '\\0' x; printf '\\nFINAL-COMPLETE\\n'".into());
+        let result = run_process(&program, &args, None, Duration::from_secs(15), None).unwrap();
+        assert!(result.truncated);
+        assert!(result.stdout.starts_with(&format!("head{TEST_NEWLINE}")));
+        assert!(result.stdout.contains(&format!("FINAL-COMPLETE{TEST_NEWLINE}")));
+        assert!(!result.stdout.contains("MIDDLE-START"));
+        assert!(result.stdout.len() <= MAX_PROCESS_OUTPUT as usize);
+        assert!(result.stdout.ends_with(&format!("FINAL-COMPLETE{TEST_NEWLINE}")));
+    }
+
+    #[test]
+    fn oversized_single_final_line_keeps_its_tail_when_it_ends_with_newline() {
+        let (program, mut args) = shell();
+        #[cfg(windows)]
+        args.push(format!("[Console]::Out.Write((('head' + [Environment]::NewLine) * 200000) + ('x' * {}) + [Environment]::NewLine)", 3_500_000));
+        #[cfg(not(windows))]
+        args.push("yes head | head -n 200000; head -c 3500000 /dev/zero | tr '\\0' x; printf '\\n'".into());
+        let result = run_process(&program, &args, None, Duration::from_secs(15), None).unwrap();
+        assert!(result.truncated);
+        assert!(result.stdout.ends_with(&format!("x{}", TEST_NEWLINE)));
+        assert!(result.stdout.contains(&"x".repeat(64)));
+    }
+
+    #[test]
+    fn oversized_multiline_output_has_no_blank_gap_between_head_and_tail() {
+        let (program, mut args) = shell();
+        #[cfg(windows)]
+        args.push(format!("[Console]::Out.Write((('head' + [Environment]::NewLine) * 250000) + ('tail' + [Environment]::NewLine) + ('x' * {}))", MAX_PROCESS_OUTPUT));
+        #[cfg(not(windows))]
+        args.push(format!("yes head | head -n 250000; printf 'tail\\n'; head -c {} /dev/zero | tr '\\0' x", MAX_PROCESS_OUTPUT));
+        let result = run_process(&program, &args, None, Duration::from_secs(15), None).unwrap();
+        assert!(result.truncated);
+        assert!(!result.stdout.contains(&format!("{TEST_NEWLINE}{TEST_NEWLINE}")));
+    }
+
+    #[test]
+    fn idle_timeout_terminates_silent_process_and_marks_idle() {
+        #[cfg(windows)]
+        let script = "[Console]::Out.WriteLine('started'); Start-Sleep -Seconds 5";
+        #[cfg(not(windows))]
+        let script = "echo started; sleep 5";
+        let result = run_script_with_options(
+            script.into(),
+            ProcessOptions { idle_timeout: Some(Duration::from_secs(1)), ..Default::default() },
+        );
+        assert!(result.timed_out);
+        assert!(result.idle_timed_out);
+        assert_eq!(timeout_message(&result), "连续 1 秒无输出");
+        assert!(result.stdout.contains("started"));
+    }
+
+    #[test]
+    fn continuous_output_does_not_trigger_idle_timeout() {
+        let (program, mut args) = shell();
+        #[cfg(windows)]
+        args.push("while ($true) { [Console]::Out.WriteLine('tick'); Start-Sleep -Milliseconds 100 }".into());
+        #[cfg(not(windows))]
+        args.push("while true; do echo tick; sleep 0.1; done".into());
+        let result = run_process_registered_with_options(
+            &program, &args, None, Duration::from_secs(5), None, None, None,
+            ProcessOptions { idle_timeout: Some(Duration::from_secs(2)), ..Default::default() },
+        ).unwrap();
+        assert!(result.timed_out);
+        assert!(!result.idle_timed_out);
+        assert!(result.stdout.lines().count() > 2);
+    }
+
+    #[test]
+    fn pi_message_update_filter_matches_expected_prefix() {
+        assert!(pi_message_update_line(b" {  \"type\"  :  \"message_update\",\"x\":1}"));
+        assert!(pi_message_update_line(b"{\"type\":\"message_update\""));
+        assert!(!pi_message_update_line(b"{\"type\":\"agent_settled\"}"));
+        assert!(!pi_message_update_line(b"prefix {\"type\":\"message_update\"}"));
     }
 
     #[test]
@@ -778,9 +1018,9 @@ mod tests {
             return;
         };
         let activity = ProcessActivity::new();
-        run_process_registered_with_activity(
+        run_process_registered_with_options(
             &python, &["-c".into(), "import time; print('first', flush=True); time.sleep(2.1)".into()], None,
-            Duration::from_secs(5), None, None, Some(activity.clone()),
+            Duration::from_secs(5), None, None, Some(activity.clone()), ProcessOptions::default(),
         ).unwrap();
         assert!(activity.snapshot().1 >= 2000);
     }
@@ -792,9 +1032,9 @@ mod tests {
             return;
         };
         let activity = ProcessActivity::new();
-        run_process_registered_with_activity(
+        run_process_registered_with_options(
             &python, &["-c".into(), "import time; print('first', flush=True); time.sleep(2.1); print('second', flush=True)".into()], None,
-            Duration::from_secs(5), None, None, Some(activity.clone()),
+            Duration::from_secs(5), None, None, Some(activity.clone()), ProcessOptions::default(),
         ).unwrap();
         assert!(activity.snapshot().1 < 500);
     }

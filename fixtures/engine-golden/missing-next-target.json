@@ -8,6 +8,8 @@
       "preset": "custom-advisor"
     },
     "settings": {
+      "execTimeoutSecs": 1800,
+      "idleTimeoutSecs": 300,
       "timeoutSecs": 600,
       "concurrency": 3,
       "maxRequests": 8,
@@ -264,6 +266,8 @@
         "stage": 1,
         "projectDir": "D:/project",
         "settings": {
+          "execTimeoutSecs": 1800,
+          "idleTimeoutSecs": 300,
           "timeoutSecs": 600,
           "concurrency": 3,
           "maxRequests": 8,

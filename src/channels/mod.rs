@@ -27,6 +27,16 @@ pub struct Invocation {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub input: Option<String>,
+    pub stdout_skip: Option<fn(&[u8]) -> bool>,
+}
+
+/// 连续无输出上限仅对 pi 启用；真机核实该通道作答期间持续有输出后再加入。
+pub fn streams_output(agent: &str) -> bool {
+    normalize_agent(agent) == "pi"
+}
+
+pub fn streams_output_for_seat(agent: &str, visibility: &str, write: &str) -> bool {
+    streams_output(agent) && (visibility == "盲" || write == "只读")
 }
 
 #[derive(Clone, Debug)]
@@ -260,18 +270,19 @@ pub fn build_invocation(
             program,
             args: spec.args,
             input: spec.input,
+            stdout_skip: None,
         });
     }
     #[cfg(test)]
-    if normalize_agent(agent) == "kimi" {
+    if matches!(normalize_agent(agent), "kimi" | "pi") {
         if let Some((_, oneshot, _)) = test_provider_parts(provider) {
             let program = resolve_binary("python", None)?;
             let mut args = vec![oneshot];
             args.extend(build_invocation_spec(
-                "kimi", "", model, tier, thinking, blind, session_id, prompt,
+                normalized, if normalized == "pi" { "test" } else { "" }, model, tier, thinking, blind, session_id, prompt,
                 task_file, session_dir, cc_switch_path, writable,
             )?.args);
-            return Ok(Invocation { program, args, input: None });
+            return Ok(Invocation { program, args, input: None, stdout_skip: None });
         }
     }
     let spec = build_invocation_spec(
@@ -296,6 +307,7 @@ pub fn build_invocation(
         program,
         args: spec.args,
         input: spec.input,
+        stdout_skip: (normalized == "pi").then_some(crate::process::pi_message_update_line),
     })
 }
 
@@ -525,22 +537,21 @@ pub fn parse_output(
     result: &ProcessResult,
 ) -> Result<ChannelOutput, ChannelParseError> {
     if result.timed_out {
-        return Err(ChannelParseError::new(format!(
-            "执行超过 {} 秒",
-            result.timeout.as_secs()
-        )));
+        return Err(ChannelParseError::new(crate::process::timeout_message(result)));
     }
-    if let Some(parsed) = cli_agents::parse(normalize_agent(agent), result) {
-        return parsed.map_err(ChannelParseError::new);
-    }
-    match normalize_agent(agent) {
+    let parsed = if let Some(parsed) = cli_agents::parse(normalize_agent(agent), result) {
+        parsed.map_err(ChannelParseError::new)
+    } else { match normalize_agent(agent) {
         "claude" => parse_claude(result).map_err(ChannelParseError::new),
         "codex" => parse_codex(result).map_err(ChannelParseError::new),
         "kimi" => parse_kimi(result).map_err(ChannelParseError::new),
         "pi" => parse_pi(result, provider, model),
         "cc-switch" => parse_cc_switch(result).map_err(ChannelParseError::new),
         _ => Err(ChannelParseError::new("无法解析未知通道输出")),
-    }
+    }};
+    parsed.map_err(|error| if result.stdout_truncated && error.identity.is_empty() && error.kind == ChannelErrorKind::Output {
+        ChannelParseError::new("输出超过 4 MB，中间被截断")
+    } else { error })
 }
 
 pub(crate) fn normalize_agent(agent: &str) -> &str {
@@ -567,12 +578,15 @@ fn codex_effort(thinking: &str) -> &'static str {
     }
 }
 
-fn pi_thinking(thinking: &str) -> &'static str {
-    match thinking {
-        "关" => "off",
-        "低" => "low",
-        "中" => "medium",
-        "高" => "high",
+pub(crate) fn pi_thinking(thinking: &str) -> &'static str {
+    match thinking.strip_prefix("已调整为：").unwrap_or(thinking) {
+        "关" | "off" => "off",
+        "minimal" => "minimal",
+        "低" | "low" => "low",
+        "中" | "medium" => "medium",
+        "高" | "high" => "high",
+        "xhigh" => "xhigh",
+        "max" => "max",
         _ => "medium",
     }
 }
@@ -761,10 +775,7 @@ fn parse_pi(
         .iter()
         .any(|v| v.get("type").and_then(Value::as_str) == Some("agent_settled"))
     {
-        return Err(ChannelParseError::new(nonempty_error(
-            result,
-            "pi 未完成响应",
-        )));
+        return Err(ChannelParseError::new(pi_error_text(result, "pi 未完成响应")));
     }
     let message = values
         .iter()
@@ -788,6 +799,9 @@ fn parse_pi(
             .and_then(Value::as_str)
             .unwrap_or("pi 返回错误");
         return Err(ChannelParseError::with_identity(error, identity));
+    }
+    if let Some(reason @ ("length" | "aborted")) = message.get("stopReason").and_then(Value::as_str) {
+        return Err(ChannelParseError::with_identity(format!("pi 输出未完成：stopReason={reason}"), identity));
     }
     if (actual_provider != provider || actual_model != model)
         && !known_model_route(provider, model, actual_model)
@@ -844,6 +858,11 @@ fn parse_pi(
             .unwrap_or("")
             .to_string(),
     })
+}
+
+fn pi_error_text(result: &ProcessResult, fallback: &str) -> String {
+    let text = result.stderr.lines().filter(|line| !line.contains("No project session found")).collect::<Vec<_>>().join("\n");
+    if text.trim().is_empty() { fallback.into() } else { text }
 }
 
 fn parse_kimi(result: &ProcessResult) -> Result<ChannelOutput, String> {
@@ -1157,7 +1176,71 @@ mod tests {
             stderr: String::new(),
             timed_out: false,
             truncated: false,
+            stdout_truncated: false,
             timeout: Duration::from_secs(10),
+            idle_timed_out: false,
+            idle_timeout: None,
+        }
+    }
+
+    #[test]
+    fn streams_output_is_enabled_only_for_pi() {
+        assert!(streams_output("pi"));
+        for agent in ["codex", "kimi", "agy", "claude", "cc-switch"] {
+            assert!(!streams_output(agent));
+        }
+    }
+
+    #[test]
+    fn pi_error_text_omits_session_warning() {
+        let mut r = result(""); r.stderr = "Warning: No project session found with id x".into();
+        assert_eq!(pi_error_text(&r, "pi 未完成响应"), "pi 未完成响应");
+        r.stderr.push_str("\nreal failure");
+        assert_eq!(pi_error_text(&r, "fallback"), "real failure");
+    }
+
+    #[test]
+    fn pi_truncated_failure_is_rewritten_but_identity_mismatch_is_preserved() {
+        let mut r = result("{}"); r.truncated = true; r.stdout_truncated = true;
+        assert_eq!(parse_output("codex", "", "", &r).unwrap_err().message, "输出超过 4 MB，中间被截断");
+        let mismatch = "{\"type\":\"agent_settled\"}\n{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"provider\":\"other\",\"model\":\"other\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}}";
+        let mut r = result(mismatch); r.truncated = true; r.stdout_truncated = true;
+        assert!(parse_output("pi", "asked", "model", &r).unwrap_err().message.starts_with("真身不符"));
+    }
+
+    #[test]
+    fn pi_missing_settled_with_truncation_reports_truncation() {
+        let mut r = result("{\"type\":\"message_start\"}");
+        r.truncated = true;
+        r.stdout_truncated = true;
+        r.stderr = "provider failure".into();
+        assert_eq!(parse_output("pi", "p", "m", &r).unwrap_err().message, "输出超过 4 MB，中间被截断");
+    }
+
+    #[test]
+    fn stderr_only_truncation_does_not_rewrite_parse_error() {
+        let mut r = result("{}");
+        r.truncated = true;
+        assert_eq!(parse_output("codex", "", "", &r).unwrap_err().message, "Codex 未返回正文");
+    }
+
+    #[test]
+    fn pi_length_stop_reason_remains_incomplete_when_stdout_is_truncated() {
+        let output = "{\"type\":\"agent_settled\"}\n{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"provider\":\"p\",\"model\":\"m\",\"stopReason\":\"length\",\"content\":[{\"type\":\"text\",\"text\":\"partial\"}]}}";
+        let mut r = result(output);
+        r.truncated = true;
+        r.stdout_truncated = true;
+        let error = parse_output("pi", "p", "m", &r).unwrap_err();
+        assert!(error.message.contains("输出未完成"));
+        assert_eq!(error.identity, "p/m");
+    }
+
+    #[test]
+    fn pi_incomplete_stop_reasons_fail_with_identity() {
+        for reason in ["length", "aborted"] {
+            let output = format!("{{\"type\":\"agent_settled\"}}\n{{\"type\":\"message_end\",\"message\":{{\"role\":\"assistant\",\"provider\":\"p\",\"model\":\"m\",\"stopReason\":\"{reason}\",\"content\":[{{\"type\":\"text\",\"text\":\"partial\"}}]}}}}");
+            let error = parse_pi(&result(&output), "p", "m").unwrap_err();
+            assert!(error.message.contains("pi 输出未完成")); assert_eq!(error.identity, "p/m");
         }
     }
 

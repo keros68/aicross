@@ -308,7 +308,10 @@ mod tests {
             stderr: stderr.to_string(),
             timed_out: false,
             truncated: false,
+            stdout_truncated: false,
             timeout: Duration::from_secs(1800),
+            idle_timed_out: false,
+            idle_timeout: None,
         }
     }
 

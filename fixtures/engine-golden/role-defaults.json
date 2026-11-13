@@ -8,6 +8,8 @@
       "preset": "builtin-blind"
     },
     "settings": {
+      "execTimeoutSecs": 1800,
+      "idleTimeoutSecs": 300,
       "timeoutSecs": 600,
       "concurrency": 3,
       "maxRequests": 8,

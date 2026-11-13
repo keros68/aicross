@@ -97,13 +97,52 @@ fn model_effort_suffix(model: &str) -> Option<&'static str> {
 /// 实际生效的思考强度（fix-61-r1 5）：agy 的模型 id 自带档位时由模型决定，
 /// 记成「由模型决定：low」；其余原样返回位置 / 角色设的值。留痕、run 摘要与
 /// `config show` 的 effective 都记这个值。
-pub(crate) fn effective_thinking(agent: &str, model: &str, thinking: &str) -> String {
+pub(crate) fn effective_thinking(agent: &str, provider: &str, model: &str, thinking: &str) -> String {
+    if super::normalize_agent(agent.trim()).eq_ignore_ascii_case("pi") {
+        return read_pi_catalog().map_or_else(|| thinking.to_string(), |catalog| {
+            effective_pi_thinking(&catalog, provider, model, thinking)
+        });
+    }
     if super::normalize_agent(agent.trim()).eq_ignore_ascii_case("agy") {
         if let Some(level) = model_effort_suffix(model) {
             return format!("{MODEL_DECIDED_PREFIX}{level}");
         }
     }
     thinking.to_string()
+}
+
+fn read_pi_catalog() -> Option<Value> {
+    let path = dirs::home_dir()?.join(".pi/agent/models-store.json");
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+fn effective_pi_thinking(catalog: &Value, provider: &str, model: &str, thinking: &str) -> String {
+    let was_adjusted = thinking.starts_with("已调整为：");
+    let requested = thinking.strip_prefix("已调整为：").unwrap_or(thinking);
+    let (level, adjusted) = resolve_pi_thinking(catalog, provider, model, requested);
+    if was_adjusted || adjusted { format!("已调整为：{level}") } else { thinking.to_string() }
+}
+
+fn resolve_pi_thinking(catalog: &Value, provider: &str, model_id: &str, requested: &str) -> (String, bool) {
+    const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let requested = requested.strip_prefix("已调整为：").unwrap_or(requested);
+    let old = super::pi_thinking(requested);
+    let Some(model) = catalog.get(provider).and_then(|p| p.get("models")).and_then(Value::as_array)
+        .and_then(|models| models.iter().find(|m| m.get("id").and_then(Value::as_str) == Some(model_id))) else { return (old.into(), false) };
+    let Some(reasoning) = model.get("reasoning").and_then(Value::as_bool) else { return (old.into(), false) };
+    let supported: Vec<&str> = if !reasoning { vec!["off"] } else {
+        let map = model.get("thinkingLevelMap").and_then(Value::as_object);
+        LEVELS.into_iter().filter(|level| {
+            map.and_then(|m| m.get(*level)).is_none_or(|v| !v.is_null())
+                && (!matches!(*level, "xhigh" | "max") || map.is_some_and(|m| m.contains_key(*level)))
+        }).collect()
+    };
+    if supported.contains(&old) { return (old.into(), false); }
+    let index = LEVELS.iter().position(|l| *l == old).unwrap_or(3);
+    let chosen = supported.iter().rev().find(|l| LEVELS.iter().position(|x| *x == **l).unwrap_or(0) < index && (**l != "off" || old == "off"))
+        .or_else(|| supported.iter().find(|l| LEVELS.iter().position(|x| *x == **l).unwrap_or(0) > index))
+        .copied().unwrap_or("off");
+    (chosen.into(), chosen != old)
 }
 
 const MODEL_DECIDED_PREFIX: &str = "由模型决定：";
@@ -268,7 +307,10 @@ mod tests {
             stderr: String::new(),
             timed_out: false,
             truncated: false,
+            stdout_truncated: false,
             timeout: Duration::from_secs(5),
+            idle_timed_out: false,
+            idle_timeout: None,
         }
     }
 
@@ -319,14 +361,54 @@ mod tests {
     /// fix-61-r1 5：agy 模型 id 自带档位时，实际生效的思考强度由模型决定。
     #[test]
     fn task61_r1_effective_thinking_follows_model_suffix_for_agy() {
-        assert_eq!(effective_thinking("agy", "gemini-3.8-flash-low", "高"), "由模型决定：low");
-        assert_eq!(effective_thinking("agy", "gpt-oss-120b-medium", ""), "由模型决定：medium");
-        assert_eq!(effective_thinking("agy", "claude-opus-5-5-high", "低"), "由模型决定：high");
-        assert_eq!(effective_thinking("agy", "gemini-next", "中"), "中");
+        assert_eq!(effective_thinking("agy", "", "gemini-3.8-flash-low", "高"), "由模型决定：low");
+        assert_eq!(effective_thinking("agy", "", "gpt-oss-120b-medium", ""), "由模型决定：medium");
+        assert_eq!(effective_thinking("agy", "", "claude-opus-5-5-high", "低"), "由模型决定：high");
+        assert_eq!(effective_thinking("agy", "", "gemini-next", "中"), "中");
         // 其它 agent 不改：codex 模型名里出现 -high 也照样用设的值
-        assert_eq!(effective_thinking("codex", "gpt-5-high", "中"), "中");
+        assert_eq!(effective_thinking("codex", "", "gpt-5-high", "中"), "中");
         // 已是生效值的再算一次不变（备选改派、重复经过时幂等）
-        assert_eq!(effective_thinking("agy", "gemini-3.8-flash-low", "由模型决定：low"), "由模型决定：low");
+        assert_eq!(effective_thinking("agy", "", "gemini-3.8-flash-low", "由模型决定：low"), "由模型决定：low");
+    }
+
+    #[test]
+    fn pi_thinking_uses_nearest_supported_level_and_is_idempotent() {
+        let catalog = json!({
+            "supports_off": {"models": [{"id":"off", "reasoning":true, "thinkingLevelMap":{"off":true,"minimal":null,"low":null,"medium":null,"high":true,"xhigh":null,"max":true} }]},
+            "sparse": {"models": [{"id":"sparse", "reasoning":true, "thinkingLevelMap":{"off":null,"minimal":null,"low":true,"medium":null,"high":true,"xhigh":null,"max":true} }]},
+            "supports_medium": {"models": [{"id":"medium", "reasoning":true, "thinkingLevelMap":{"off":null,"minimal":null,"low":true,"medium":true,"high":true,"xhigh":null,"max":true} }]},
+            "only_off": {"models": [{"id":"only_off", "reasoning":false}]}
+        });
+        let cases = [
+            ("supports_off", "off", "关", "关", "off", false),
+            ("supports_off", "off", "中", "已调整为：high", "high", true),
+            ("sparse", "sparse", "关", "已调整为：low", "low", true),
+            ("sparse", "sparse", "中", "已调整为：low", "low", true),
+            ("sparse", "sparse", "高", "高", "high", false),
+            ("sparse", "sparse", "低", "低", "low", false),
+            ("supports_medium", "medium", "中", "中", "medium", false),
+        ];
+        for (provider, model, requested, expected_record, expected_arg, adjusted) in cases {
+            let record = effective_pi_thinking(&catalog, provider, model, requested);
+            assert_eq!(record, expected_record);
+            assert_eq!(super::super::pi_thinking(&record), expected_arg);
+            assert_eq!(resolve_pi_thinking(&catalog, provider, model, requested).1, adjusted);
+        }
+        let missing = effective_pi_thinking(&Value::Null, "missing", "m", "中");
+        assert_eq!(missing, "中");
+        assert_eq!(super::super::pi_thinking(&missing), "medium");
+        assert!(!resolve_pi_thinking(&Value::Null, "missing", "m", "中").1);
+        let prefixed = "已调整为：low";
+        assert_eq!(effective_pi_thinking(&catalog, "sparse", "sparse", prefixed), prefixed);
+        assert_eq!(effective_pi_thinking(&catalog, "supports_off", "off", "low"), "已调整为：high");
+        assert_eq!(effective_pi_thinking(&catalog, "supports_off", "off", "high"), "high");
+        assert_eq!(super::super::pi_thinking("off"), "off");
+        assert_eq!(super::super::pi_thinking("high"), "high");
+        let adjusted = effective_pi_thinking(&catalog, "supports_off", "off", "已调整为：medium");
+        assert_eq!(adjusted, "已调整为：high");
+        let changed_model = effective_pi_thinking(&catalog, "only_off", "only_off", &adjusted);
+        assert_eq!(changed_model, "已调整为：off");
+        assert_eq!(effective_pi_thinking(&catalog, "only_off", "only_off", &changed_model), changed_model);
     }
 
     #[test]
