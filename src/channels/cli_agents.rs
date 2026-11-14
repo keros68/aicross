@@ -4,11 +4,14 @@
 //!
 //! - Antigravity（`agy`）：
 //!   - `1.3.1` 实测：无头模式下工具全被拒，只接纯文本盲审；
-//!   - `1.5.6`（2026-11-13 真机实测）：无头模式已放行只读工具（`read_file` /
-//!     `view_file` / `list_dir` / `grep_search` / `find_by_name`，可分页读 >300 KB
-//!     文件）；`--settings <file>` 传 `permissions.deny` 可在 `trustedWorkspaces`
-//!     内挡住写文件与命令执行；`permissions.allow` 用带结尾 `/` 的正斜杠目录
-//!     `write_file(D:/path/)`（不认 `*` 通配）并拒绝命令工具时可跑单写者位置；
+//!   - `1.5.6` / `1.5.8`（2026-11-13、11-14 真机实测）：无头模式已放行只读工具
+//!     （`read_file` / `view_file` / `list_dir` / `grep_search` / `find_by_name`，
+//!     可分页读 >300 KB 文件）。权限规则写成「类别(目标)」，类别有 `write_file`、
+//!     `command`、`mcp`；只写类别名的规则不生效。`--settings <file>` 传
+//!     `permissions.deny: ["write_file(*)", "command(*)", "mcp(*)"]` 可在
+//!     `trustedWorkspaces` 内挡住写文件与命令执行，被挡的工具向模型返回
+//!     `Permission denied`，本轮继续；`permissions.allow` 用带结尾 `/` 的正斜杠
+//!     目录 `write_file(D:/path/)` 并拒绝命令时可跑单写者位置；
 //!     **绝不加 `--dangerously-skip-permissions`**。
 //! - Cursor / CodeBuddy / Copilot / Qoder：命令模板只照官方文档写，本机没装、
 //!   没跑通；prompt 经 stdin 或文件传入的方式也没核实，所以派发直接失败并
@@ -44,23 +47,19 @@ pub(crate) enum AgyToolMode {
     SingleWriter,
 }
 
+/// 禁止写文件的规则。agy 的规则必须带目标：1.5.8 真机实测只写 `write_file`
+/// 时文件照样写出，`write_file(*)` 才拦住新建与修改。
+const AGY_DENY_WRITE: &str = "write_file(*)";
+/// 禁止命令与 MCP 工具的规则，同样必须带目标：只写 `command` 时，用户全局
+/// 设置里放行过的命令（如 `git status`）照样执行。
+const AGY_DENY_COMMAND: [&str; 2] = ["command(*)", "mcp(*)"];
+
 /// 生成盲 / 只读位置用的 `--settings` JSON：即使工作目录位于
-/// `trustedWorkspaces`，也显式禁止全部写工具与命令执行。
+/// `trustedWorkspaces`，也显式禁止写文件、命令执行与 MCP 工具。
 pub(crate) fn agy_readonly_settings_json() -> String {
     serde_json::to_string_pretty(&json!({
         "permissions": {
-            "deny": [
-                "write_file",
-                "write_to_file",
-                "replace_file_content",
-                "multi_replace_file_content",
-                "sed_file",
-                "edit_file",
-                "notebook_edit",
-                "command",
-                "unsandboxed",
-                "run_command",
-            ]
+            "deny": [AGY_DENY_WRITE, AGY_DENY_COMMAND[0], AGY_DENY_COMMAND[1]]
         }
     }))
     .unwrap_or_default()
@@ -87,7 +86,7 @@ pub(crate) fn agy_single_writer_settings_json(workdir: &Path) -> String {
     serde_json::to_string_pretty(&json!({
         "permissions": {
             "allow": [agy_write_allow_rule(workdir)],
-            "deny": ["command", "unsandboxed", "run_command"]
+            "deny": AGY_DENY_COMMAND
         }
     }))
     .unwrap_or_default()
@@ -779,9 +778,11 @@ mod tests {
     #[test]
     fn task74_agy_settings_modes_and_parse_errors() {
         let ro: Value = serde_json::from_str(&agy_readonly_settings_json()).unwrap();
-        let deny = ro["permissions"]["deny"].as_array().unwrap();
-        assert!(deny.iter().any(|v| v == "write_file"));
-        assert!(deny.iter().any(|v| v == "run_command"));
+        // 规则必须带目标；只写类别名的规则在真机上不生效。
+        assert_eq!(
+            ro["permissions"]["deny"],
+            json!(["write_file(*)", "command(*)", "mcp(*)"])
+        );
 
         assert_eq!(
             agy_write_allow_rule(Path::new(r"\\?\D:\work\demo\")),
@@ -791,7 +792,7 @@ mod tests {
         let allow = sw["permissions"]["allow"].as_array().unwrap();
         assert_eq!(allow, &vec![json!("write_file(D:/work/demo/)")]);
         assert!(!allow[0].as_str().unwrap().contains('*'));
-        assert!(sw["permissions"]["deny"].as_array().unwrap().iter().any(|v| v == "run_command"));
+        assert_eq!(sw["permissions"]["deny"], json!(["command(*)", "mcp(*)"]));
 
         let settings = Path::new("D:/run/agy-settings/n1.json");
         let built_read = spec_with_agy(

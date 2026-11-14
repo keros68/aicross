@@ -286,7 +286,7 @@ class TestChannels(DBase):
         spath, sjson, has_req = seen_settings[0]
         self.assertFalse(spath.exists(), "临时 settings 文件跑完应清理")
         self.assertNotIn(str(workdir), str(spath))
-        self.assertIn("write_file", sjson["permissions"]["deny"])
+        self.assertEqual(sjson["permissions"]["deny"], ["write_file(*)", "command(*)", "mcp(*)"])
         self.assertTrue(has_req)
         self.assertIn("REQUEST.md", json.loads(self.calls[0][2])["message"]["content"])
 

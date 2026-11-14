@@ -196,7 +196,7 @@
 - 版本门槛与通道参数（`src/agent_catalog.rs`、`src/resources.rs`、`src/channels/cli_agents.rs`、`src/channels/mod.rs`、`src/engine/mod.rs`、`src/dispatch.rs`）：
   - `agy_at_least_1_5` 解析 `resources` 探测到的 `agy` 版本；`< 1.5.0` 保持纯文本盲审、200 KB 上限、`project/` 与非盲拒发。
   - `>= 1.5.0` 在盲目录内联 `<= 200 KB` 纯文本时走 `AgyToolMode::NoTools`（追加 `AGY_NO_TOOLS`）；超过 200 KB 纯文本写 `REQUEST.md`，含二进制附件或需读 `project/` 只读副本时走 `AgyToolMode::ReadOnlyFiles`（追加 `AGY_READONLY_NOTE`），配合写入运行时目录 `run_root/agy-settings/` 的只读 `--settings`（绝不写进盲目录或项目目录，绝不传 `--dangerously-skip-permissions`）。
-  - `>= 1.5.0` 放行「单写者」与「只读」位置：单写者走 `AgyToolMode::SingleWriter`（`write_file(<dir>/)` + 禁用 `command` / `unsandboxed` / `run_command` + 末尾追加 `AGY_SINGLE_WRITER_NOTE`）；`worktree` 位置因无法跑命令在派发前继续拒绝。
+  - `>= 1.5.0` 放行「单写者」与「只读」位置：单写者走 `AgyToolMode::SingleWriter`（`allow: write_file(<dir>/)` + `deny: command(*)`、`mcp(*)` + 末尾追加 `AGY_SINGLE_WRITER_NOTE`）；`worktree` 位置因无法跑命令在派发前继续拒绝。
   - 解析 `agy` 输出时，stderr 含 `jetski: no output produced` 保留该行原因（截到 300 字符），错误正文含 `exceeded the output token limit` 时统一报「回答超过输出上限」。
 - 档位与推荐过滤（`src/data/model-tiers.json`、`src/recommend.rs`）：
   - 补齐 `gemini-4-carbon-{high,medium,low}`（及无后缀回落「中」）档位映射。
@@ -311,3 +311,48 @@
 
 - 共享与单写者位置写 `.aicross/runs/<派发>/kimi-task-*.md` 的路径已由 Python 桩集成单测 `task74_kimi_long_prompt_uses_task_file_and_marks_unreported_usage` 覆盖，未再单独拉起真机 Kimi 非盲派发；Kimi ACP 通道在本阶段未另做真机复测。
 - 上述真机验证仅在 Windows 11 + `kimi 2.6.0` 下执行。
+
+## 验收复核：Antigravity 权限规则与只读任务标记（2026-11-14）
+
+### 真机核实结论（`agy 1.5.8`，`gemini-4-carbon-low`，共 8 次探针，未碰全局 `settings.json`）
+
+受信任目录取 `D:\work\aicross\.aicross\runs\` 下的临时目录，不受信任目录取 `D:\aicross-data\scratch\` 下的临时目录；`--settings` 传文件路径。
+
+| `--settings` 内容 | 目录 | 结果 |
+|---|---|---|
+| `deny: ["write_file", "write_to_file", …, "command", "unsandboxed", "run_command"]` | 受信任 | `write_file` 工具执行成功，文件写出 |
+| `deny: ["write_file"]` 加 `trustedWorkspaces: []` | 受信任 | 文件写出 |
+| `deny: ["write_file(*)"]` | 受信任 | 写入被拒，文件未出现 |
+| `deny: ["write_file(D:/work/aicross/)"]` | 受信任 | 写入被拒，文件未出现 |
+| `deny: ["command", "unsandboxed", "run_command"]` | 受信任 | `git status` 执行成功（全局设置里有 `command(git status)` 放行规则） |
+| `deny: ["command(*)"]` | 受信任 | 命令被拒 |
+| `deny: ["write_file(*)", "command(*)", "mcp(*)"]` | 受信任 | 读 `a.txt` 成功；修改 `a.txt`、新建 `b.txt`、`git status` 均被拒，文件未变 |
+| `allow: ["write_file(<目录>/)"]` + `deny: ["command(*)", "mcp(*)"]` | 不受信任 | 修改 `a.txt`、新建 `b.txt` 成功；`git status` 被拒 |
+
+- 权限规则写成「类别(目标)」，只写类别名的规则不生效。
+- 命中禁止规则的工具向模型返回 `Permission denied for write_file(<路径>). Matches user-configured deny rule.`，本轮继续并正常给出回答，不出现 `jetski: no output produced`。
+- 阶段 2 记录的「1.5.6 上只写类别名的 `permissions.deny` 可拒绝写入」在 1.5.8 上不成立；1.5.6 已无法回溯。
+
+### 改动
+
+- `src/channels/cli_agents.rs`：盲 / 只读位置的设置为 `deny: ["write_file(*)", "command(*)", "mcp(*)"]`；单写者位置的设置为 `allow: ["write_file(<dir>/)"]` 加 `deny: ["command(*)", "mcp(*)"]`。首次验证（`src/resources.rs`）用同一份只读设置。
+- `skills/ai-cross/references/dispatch.py`：`AGY_READONLY_DENY` 同步为上述三条。
+- `skills/ai-cross/references/channels.md`：引擎派发步骤「选模式」下写明只要回答、不改文件的任务加 `--read-only-task`，以及不加时的结果；Antigravity 一节按上表更新。
+- `docs/CONSOLE-CHANNEL.md`、`src/agent_catalog.rs` 与 `src/channels/cli_agents.rs` 的文件头注释：按上表更新。
+
+### 既有测试改动说明
+
+- `channels::cli_agents::tests::task74_agy_settings_modes_and_parse_errors`、`dispatch::tests::task74_agy_1_5_6_blind_large_project_copy_single_writer_and_worktree_gate`、`test_dispatch.py::test_agy_1_5_6_reads_files_passes_readonly_settings_and_parses_errors`：原断言只检查禁止列表里有 `write_file`、`run_command` 这些名字；改为断言带目标的规则（`write_file(*)`、`command(*)`、`mcp(*)`）。
+
+### 验证
+
+- `cargo check`：`Finished dev profile [unoptimized + debuginfo] target(s) in 2.51s`，零警告。
+- `cargo test`：`test result: ok. 793 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 66.58s`。
+- `cd skills/ai-cross && python -m pytest -q tests`：`83 passed in 5.59s`。
+- `python scripts/sync-skill.py`：`已同步 21 个文件`。
+
+### 未做与不确定处
+
+- 新规则由上表最后两行的手工探针核实，设置内容与引擎生成的一致；没有另跑一次经引擎派发、让盲位置的 agy 实际尝试写文件的端到端验证。
+- 受信任目录内的单写者位置：`trustedWorkspaces` 里的其他目录对 agy 同样可写，`allow` 规则不能把写入范围收窄到工作目录。
+- `mcp(*)` 规则的写法取自 agy 自带说明，探针里没有触发 MCP 工具。

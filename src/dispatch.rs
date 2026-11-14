@@ -10951,7 +10951,8 @@ mod tests {
             let sp1 = PathBuf::from(c1["settings_path"].as_str().unwrap());
             assert!(sp1.starts_with(run_root.join("agy-settings")) && !sp1.starts_with(&workdir1));
             let s1: Value = serde_json::from_str(c1["settings_body"].as_str().unwrap()).unwrap();
-            assert!(s1["permissions"]["deny"].as_array().unwrap().iter().any(|v| v == "write_file"));
+            assert!(s1["permissions"]["deny"].as_array().unwrap().iter().any(|v| v == "write_file(*)"));
+            assert!(s1["permissions"]["deny"].as_array().unwrap().iter().any(|v| v == "command(*)"));
             assert!(!c1["prompt"].as_str().unwrap().contains(channels::AGY_NO_TOOLS));
             assert!(c1["prompt"].as_str().unwrap().contains(channels::AGY_READONLY_NOTE));
 
@@ -10986,6 +10987,7 @@ mod tests {
             let s3: Value = serde_json::from_str(c3["settings_body"].as_str().unwrap()).unwrap();
             let allow = s3["permissions"]["allow"][0].as_str().unwrap();
             assert!(allow.starts_with("write_file(") && allow.ends_with("/)") && !allow.contains('*'), "{allow}");
+            assert!(s3["permissions"]["deny"].as_array().unwrap().iter().any(|v| v == "command(*)"));
             assert!(!project.join("agy-settings").exists());
 
             // 4. worktree 位置派发前直接拒绝。

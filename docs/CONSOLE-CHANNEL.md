@@ -119,7 +119,7 @@ cursor、codebuddy、copilot、qoder 与 1.5.0 以下的 agy 只接盲位置：�
 1.5.0 以下的 agy 读不了文件：盲目录里的材料（REQUEST.md、diff.patch、changed/、ANSWER.md、
 ACCEPT.md、VALIDATION.txt、附件）全部以文本内联进提示词（提示词里已有的不重复），
 提示词与材料合计上限 200 KB；超上限、有二进制材料、或节点要读项目只读副本
-（如有上游产物的盲验收）时派发前失败，不发出。1.5.0 及以上（1.5.6 实测）可读文件并分页读取超过 300 KB 的大文件：盲位置材料不超过 200 KB 纯文本时照旧内联；超过 200 KB、含二进制附件或需读 `project/` 只读副本时不再拒发（纯文本超 200 KB 写入盲目录 `REQUEST.md`），改传运行目录外生成的 `--settings <文件>`（`permissions.deny` 禁止所有写文件与命令执行工具，覆盖 `trustedWorkspaces`）；非盲「单写者」位置允许派发，经 `--settings` 的 `permissions.allow` 仅放行当前工作目录（`write_file(<dir>/)`，正斜杠目录前缀、不用通配）并禁止命令工具；仍不支持 `worktree` 位置；任何情况下绝不传 `--dangerously-skip-permissions`。模型 id 自带档位时思考强度由
+（如有上游产物的盲验收）时派发前失败，不发出。1.5.0 及以上（1.5.6、1.5.8 实测）可读文件并分页读取超过 300 KB 的大文件：盲位置材料不超过 200 KB 纯文本时照旧内联；超过 200 KB、含二进制附件或需读 `project/` 只读副本时不再拒发（纯文本超 200 KB 写入盲目录 `REQUEST.md`），改传运行目录外生成的 `--settings <文件>`（`permissions.deny` 写 `write_file(*)`、`command(*)`、`mcp(*)`，在 `trustedWorkspaces` 内同样生效；规则必须带目标，只写类别名不生效）；非盲「单写者」位置允许派发，经 `--settings` 的 `permissions.allow` 仅放行当前工作目录（`write_file(<dir>/)`，正斜杠目录前缀）并以 `command(*)`、`mcp(*)` 禁止命令；仍不支持 `worktree` 位置；任何情况下绝不传 `--dangerously-skip-permissions`。模型 id 自带档位时思考强度由
 模型决定，留痕的 `thinking`、run 摘要节点的 `thinking`（仅此时写出）与
 `config show` 的 `effective.thinking` 都记「由模型决定：low」这类实际生效值。
 cursor、codebuddy、copilot、qoder 是未实测通道，派发直接失败并提示「未实测通道」。

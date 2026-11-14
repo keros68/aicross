@@ -8,12 +8,13 @@
 //! Antigravity（`agy`）实测分版本处理：
 //! - `< 1.5.0`（2026-09-16 1.2.3/1.3.1 实测）：无头模式下工具全被拒，只接盲位置且
 //!   只能接收内联纯文本。
-//! - `>= 1.5.0`（2026-11-13 1.5.6 实测）：无头模式下 read 工具可用（含 >300 KB
-//!   文件分页读取）；`--settings <file>` 配合 `permissions.deny` 可在
-//!   `trustedWorkspaces` 内禁止写盘与命令；`permissions.allow: ["write_file(<dir>/)"]`
-//!   （正斜杠加结尾 `/`、不支持 `*` 通配）配合 `deny: ["command","unsandboxed","run_command"]`
-//!   可放行单写者目录内写文件且禁止命令；不支持需要跑命令的 `worktree` 位置；
-//!   绝不传 `--dangerously-skip-permissions`。
+//! - `>= 1.5.0`（2026-11-13 1.5.6、11-14 1.5.8 实测）：无头模式下 read 工具可用
+//!   （含 >300 KB 文件分页读取）；`--settings <file>` 配合
+//!   `permissions.deny: ["write_file(*)","command(*)","mcp(*)"]` 可在
+//!   `trustedWorkspaces` 内禁止写盘与命令（规则必须带目标，只写类别名不生效）；
+//!   `permissions.allow: ["write_file(<dir>/)"]`（正斜杠加结尾 `/`）配合
+//!   `deny: ["command(*)","mcp(*)"]` 可放行单写者目录内写文件且禁止命令；
+//!   不支持需要跑命令的 `worktree` 位置；绝不传 `--dangerously-skip-permissions`。
 
 use std::path::PathBuf;
 

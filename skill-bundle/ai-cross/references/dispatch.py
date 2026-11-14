@@ -552,18 +552,8 @@ def pi_supported_thinking(pick):
 
 AGY_INLINE_LIMIT = 200 * 1024
 AGY_READONLY_NOTE = "只用只读文件工具（read_file、view_file、list_dir、find_by_name、grep_search），不能执行命令或修改文件。"
-AGY_READONLY_DENY = (
-    "write_file",
-    "write_to_file",
-    "replace_file_content",
-    "multi_replace_file_content",
-    "sed_file",
-    "edit_file",
-    "notebook_edit",
-    "command",
-    "unsandboxed",
-    "run_command",
-)
+# 规则必须带目标：agy 1.5.8 实测只写类别名（如 "write_file"）时不生效。
+AGY_READONLY_DENY = ("write_file(*)", "command(*)", "mcp(*)")
 
 
 def agy_at_least_1_5(version):

@@ -165,7 +165,7 @@ cat in.ndjson | "$AGY" --model gemini-3.8-flash-high --print-timeout 5m \
 - **默认档与推荐过滤**：模型清单包含 `gemini-4-carbon-{low,medium,high}`、`gemini-3.8-flash-*`、`claude-*-5-5-*`、`gpt-oss-120b-medium` 等；引擎一键推荐在验收 / 验证位置不选 agy 的 `-high`、`-xhigh` 模型（`1.5.6` 历史上 `-high` 易触发输出 token 上限或空退失败）。
 - **无头模式分版本能力**：
   - `1.3.1`（`< 1.5.0`）：无头模式下连读文件都会被自动拒绝，只能当纯文本盲审者，材料全部内联进 prompt（上限 200 KB）并加「不要使用任何工具」，盲目录超过 200 KB 或需要读 `project/` 时拒发。
-  - `1.5.6`（`>= 1.5.0`，2026-11-13 实测）：无头模式已放行只读工具（`read_file`/`view_file`/`list_dir`/`grep_search`/`find_by_name`，实测约 314 KB / 2281 行文件可自动分 3 页读完）。但落在 `trustedWorkspaces` 里时默认可写盘，且 `--settings` 只在执行时拒绝、不会从 `init.tools` 工具表隐藏 `run_command` 等工具（一触碰被拒工具整轮即以 `jetski: no output produced` 中止）：必须经 `--settings <临时文件路径>`（放在运行/临时目录下、不进工作目录）传 `permissions.deny` 锁死写文件与命令执行，并在只读/带文件盲位置提示里写明只用只读文件工具、禁止命令与写入，才可安全跑盲目录（>200 KB 时由 `REQUEST.md` 转交）、`project/` 只读副本及 `--read-dir` 只读目录；传 `permissions.allow: ["write_file(D:/path/)"]`（正斜杠目录前缀、末尾加 `/`、不认 `*` 通配）并拒绝命令工具时可跑单写者位置（提示词写明不能执行命令），仍不支持需要跑命令的 `worktree` 位置。
+  - `1.5.6` / `1.5.8`（`>= 1.5.0`，2026-11-13、11-14 实测）：无头模式已放行只读工具（`read_file`/`view_file`/`list_dir`/`grep_search`/`find_by_name`，实测约 314 KB / 2281 行文件可自动分 3 页读完）。但落在 `trustedWorkspaces` 里时默认可写盘，用户全局设置里放行过的命令也会执行，且 `--settings` 不会从 `init.tools` 工具表隐藏工具：必须经 `--settings <临时文件路径>`（放在运行/临时目录下、不进工作目录）传 `permissions.deny: ["write_file(*)", "command(*)", "mcp(*)"]`。规则写成「类别(目标)」，只写类别名（如 `write_file`）不生效。命中禁止规则的工具向模型返回 `Permission denied`，本轮继续；需要授权而没有规则覆盖的工具会让整轮以 `jetski: no output produced` 中止，所以只读/带文件盲位置的提示里仍写明只用只读文件工具、禁止命令与写入。这样可跑盲目录（>200 KB 时由 `REQUEST.md` 转交）、`project/` 只读副本及 `--read-dir` 只读目录；传 `permissions.allow: ["write_file(D:/path/)"]`（正斜杠目录前缀、末尾加 `/`）并以 `command(*)`、`mcp(*)` 禁止命令时可跑单写者位置（提示词写明不能执行命令），仍不支持需要跑命令的 `worktree` 位置。
 - **固定足迹约 1.3 万 token/次**（工具定义 + 系统提示），比 pi 的 405 贵一个量级，但走订阅额度不花钱——对订阅用户按「省额度」而不是「省钱」记账。
 - **绝不加 `--dangerously-skip-permissions`**：用户全局 `settings.json` 的 `permissions.allow` 里可能有 `command(...)` 一类规则，放开后会在无头下自动执行，绝不使用；也不要去改那份全局配置。
 - **退出码 0 仍可能没给出结果**：工具被拒时 stderr 出现 `jetski: no output produced …`，但 stdout 的 `{"event":"result"}` 可能仍为 `status: SUCCESS`、空 `response`；解析时必须检查 `result.status` 与非空 `response`，stderr 含 `jetski: no output produced` 时保留该行原因（截到 300 字符），遇到 `exceeded the output token limit` 时判失败「回答超过输出上限」。
@@ -357,6 +357,7 @@ aicross 是 ai-cross 的桌面配套程序，安装包在 GitHub Release（安�
 1. **选模式**：看用户要的是审还是干活。
    - 审（盲审、第二意见、"让别家看看"）：默认模式是盲审模式或评审模式就用它，否则用盲审模式（`--preset blind`）。
    - 干活：默认模式是共享、经济、擂台、蜂群模式之一就用它，否则用经济模式（`--preset economy`）。
+   - 干活的任务只要回答、不要对方改文件（分析代码、查原因、对比方案、读文献）：加 `--read-only-task`。不加时，执行位置没有文件改动会记成 `no_changes`（「执行没有产物」），审查不再发出，整次派发以 `failed` 结束。会新建或修改文件的任务不加。
    - 用户这次点名了模式（"这次用擂台模式"），就加 `--preset <模式 id>`。
    - 用默认模式时不加 `--preset`，引擎自己读默认模式。
    - 任务有多种做法、要从中挑一个（界面方案、命名、写法取舍），而默认模式不是擂台模式：开场那行后加一句「这类问题可以用擂台模式让几家各出一版」，用户要才加 `--preset` 换，只对这一次。
