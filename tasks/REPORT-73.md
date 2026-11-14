@@ -1,38 +1,27 @@
-# TASK-73 · Pi 长请求与超时处理
+# REPORT-73 不留会话的派发另记用量
 
-## 结果
+## 改了什么
 
-Pi 子进程派发、思考档位校验及完成状态判断已在源仓修复，内置 skill 包已同步。项目通过本地入口使用修复版，DeepSeek 与 GLM 的五类预算材料分批请求均已取得完整正文、身份和用量。没有修改凭据、代理或用户默认模型，没有提交、推送或发布。
+- `skills/ai-cross/references/dispatch.py`：新增 `usage_part`、`record_usage`；`call_claude`、`call_cc_switch`、`call_codex`、`call_pi` 填 `out["usage"]`；`call()` 增加可选的 `project`、`run_id`，跑完后追加用量记录；`cmd_review`、`cmd_run` 传入项目与派发编号。
+- `skills/ai-cross/tests/test_dispatch.py`：新增两条测试，覆盖四条路径的分量、按实际模型记录、无用量的失败调用与 agy 不写记录。
+- `skills/ai-cross/references/channels.md`：新增「不留会话的派发另记用量」一段。
+- `skill-bundle/` 由 `python scripts/sync-skill.py` 重新生成。
 
-## 原因证据
+## 怎么验证的
 
-- 两路短请求正常，DeepSeek 约6.28秒、GLM约1.53秒，均返回预期身份；未观察到鉴权或连接错误。
-- 长请求持续产生 thinking_delta。两个模型均不支持 medium：DeepSeek 支持 off/high/max，GLM支持 low/high/max；Pi会将 medium 向上取 high。
-- Pi模型默认最大输出分别达384000与131072。大材料和高思考组合会持续生成，超过原600秒窗口。当前Pi 1.3已压缩流式增量，缓存不是本次生成延迟的主要来源。
-- Windows原调用超时后包装进程的后代仍持有管道，曾将实际返回拖到约715秒。这是独立的进程清理问题。
+- `cd skills/ai-cross/tests && python3 -m unittest -q`：`Ran 77 tests … OK`（改动前 75）。本机没有装 pytest，用 unittest 跑的同一批测试。
+- 真机（macOS，`AICROSS_HOME` 指向临时目录）经 `dispatch.call` 各派一次：
+  - claude（haiku）：记录 `input_uncached 2 / cache_read 649 / cache_write 2363 / output 4`，合计 3018，等于 `tokens_in 3014 + tokens_out 4`。
+  - codex（gpt-5.6-luna）：记录 `input_uncached 10122 / cache_read 11008 / cache_write 0 / output 5`，合计 21135，等于 `tokens_in 21130 + tokens_out 5`。
 
-## 修复
+## 没做
 
-- Pi专用Popen读取路径在接收时过滤 message_update，保留完整最终事件、身份、用量和错误。写入线程支持大段Unicode stdin。
-- 超时按当前调用的进程树清理，Windows使用定向taskkill，Unix使用独立进程组；读取与收尾等待均有界，保留已完成事件。
-- 只读本地模型目录元数据，拒绝不受支持的思考档位，避免静默上调。
-- stopReason为length或aborted时返回失败，即使已有部分文字也不算成功。
-- AICROSS_PROGRESS=1只输出阶段、耗时、更新次数及空闲时长，不输出思考正文。
-- 固定审查模板要求精确数值结论附可运行核验代码。无工具时由宿主执行，不把审查者未执行当成材料缺陷。
+- pi 与 cc-switch 路径没有真机派发，只有伪造输出的测试；pi 的分量定义沿用 pi 会话日志（`input` 不含缓存读写）。
+- 引擎 `src/channels/mod.rs` 的派发不写这份记录。
+- `cargo test`、前端构建没跑（没有改 Rust 与前端）；Windows 上没验证。
+- 没有提交，也没有 push。
 
-## 项目调用
+## 不确定处
 
-`预算对照_20261108/retry_dispatch.py`调用维护源仓。受控本地Pi扩展只设置请求的输出上限：DeepSeek32768、GLM24576，记录模型、档位、上限及工具数；不改模型、提示词、鉴权或请求地址。批次独立隔离，无工具、无MCP、无技能加载。GLM曾触发8192上限，被正确判为截断失败；提高有限上限后取得完整结果。任务输出上限没有改写全局默认值。
-
-## 验证
-
-- `python -m unittest discover -s tests -p test_dispatch.py`：35项通过。
-- `python -m unittest discover -s tests -p test_pi_process.py`：5项通过，含真实本地子进程的增量过滤、Unicode输入、超时有界返回与进程树终止。
-- 源仓与内置包dispatch.py SHA256一致：`060E3D614B3750BC9F27397F646991E7A25460C00868E5BB665E833FC2E3A17A`。
-- DeepSeek v4 pro及GLM 5.3 Flash各完成原预算、候选调整、费用总计、报告对应、分图斑数量五类独立核对；完整身份及用量在项目`.aicross/runs/`。
-- 预算成品在原生Excel完成60项检查，56条原预算量价金额及当前采用值逐项保持。模型指出的真实问题已修复，并执行Decimal独立核算。
-- 最终相关单元格两路完整返回：DeepSeek high 349.473秒、3120/20797 token；GLM low 63.430秒、2998/3153 token。两路身份正确。大份高思考DeepSeek整合请求仍触发600秒，但在600.526秒完成清理；37080次流式更新说明仍在生成，不是连接中断。该失败不计为审查通过，未返回的用量不按零消耗记录。
-
-## 边界
-
-输出上限和材料拆分约束请求量，不能保证任意大材料在固定时间内完成。未发布修复版本；全局已安装skill仍按正常分发流程更新，本项目已明确使用修复源入口。未读取密钥文件，未把思考流写入项目记录。预算单价和工程依据的缺失不由调用修复代替。
+- smoke 路径（`cmd_smoke`）也经过 `call()`，会写记录但没有项目与派发编号。
+- 用量文件按月追加、不清理；长期体积未评估。
