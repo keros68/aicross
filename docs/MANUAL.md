@@ -32,6 +32,7 @@ macOS 与 Linux 目前只保证能编译，安装包未做验证。
 | `aicross open <run_id>` | 打开该 run 的查看页 |
 | `aicross resources [detect \| smoke <agent> \| find <名字> \| set-path <agent> [<路径>] \| note <模型> [--tags …] [--note …]]` | 看资源库 / 重新探测 / 冒烟验证 / 按名字找模型 / 指定可执行文件路径 / 标注用途 |
 | `aicross stats [--kind <任务类型>]` | 各模型按任务类型的使用记录 |
+| `aicross leftovers` | 列出各家 CLI 历史里指向 aicross 数据目录的遗留条目 |
 | `aicross config show \| set-role \| set` | 看与改角色、派发设置 |
 
 `--preset` 认 `shared` / `economy` / `blind`（共享 / 经济 / 盲审），也可以直接
@@ -220,6 +221,18 @@ aicross 在项目里只建一个目录 `.aicross/`：
 `.aicross/.gitignore` 只忽略 `runs/`，`decided.md` 照常进版本库。不想把派发记录
 写进项目，用 `aicross config set writeProjectDispatch false` 改写到
 `~/.aicross/runs/`。旧版本的 `.dispatch/` 在下一次派发时自动迁入 `runs/`。
+
+## 清理 CLI 历史遗留条目
+
+盲审位置复用固定槽位目录（`blind/kimi-1..8`、`blind/agy-1..8`）或不保存会话；
+非盲位置首次外发的文本首行是 `[aicross 派发]`，在项目自己的历史列表里据此
+识别派发对话。各家 CLI 历史里指向 aicross 数据目录的其他条目用
+`aicross leftovers` 查看，命令只列清单，不删除。要清理时按各家 CLI 的保存方式
+手动处理：
+
+- **Claude Code**：确认对应派发已结束后，直接删除列出的 `~/.claude/projects/<目录>`。
+- **Kimi Code**：先退出全部 `kimi` 进程，备份后编辑 `~/.kimi-code/workspaces.json` 与 `~/.kimi-code/projects.json`，从 `workspaces`、`projects` 中删掉对应条目（或把对应键名加入 `deleted_workspace_ids`、`deleted_project_ids`）。
+- **Antigravity**：先退出全部 `agy` 进程，备份后编辑 `~/.gemini/antigravity-cli/cache/last_conversations.json`，删掉对应的工作区路径键。
 
 ## 审查结论与独立性
 

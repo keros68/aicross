@@ -1,12 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent_catalog;
+mod blind_slot;
 mod channels;
 mod console_cli;
 mod dispatch;
 mod engine;
 mod file_lock;
 mod hosts;
+mod leftovers;
 mod model_find;
 mod orchestration;
 mod paths;

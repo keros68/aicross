@@ -105,6 +105,8 @@ class TestExec(Base):
         cmd = call.args[0]
         self.assertIn("--output-format", cmd)                 # 唯一能查 is_error 的形式
         self.assertIn("json", cmd)
+        self.assertIn("--no-session-persistence", cmd)
+        self.assertEqual(cmd[cmd.index("--settings") + 1], '{"autoMemoryEnabled":false}')
         self.assertIn("--tools", cmd)
         self.assertEqual(cmd[cmd.index("--model") + 1], "glm-5-turbo")  # haiku 档映射
         self.assertEqual(call.kwargs["input"], "任务")        # task 走 stdin 不进 argv

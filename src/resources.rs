@@ -2097,9 +2097,10 @@ fn run_smoke_registered(
     if let Some(dir) = &session_dir {
         let _ = fs::create_dir_all(dir);
     }
-    // agy 在本次调用专属的空目录里跑（fix-61-r1 3），返回前（含失败、超时）
-    // 由 SmokeScratch 的 Drop 删掉；>= 1.5.0 时在 scratch 下写一份只读 settings
-    // 文件（位于专属空目录之外），返回前随 SmokeSettingsFile 的 Drop 清理。
+    // agy 冒烟走固定盲审槽位 `$AICROSS_HOME/blind/agy-1..8`（TASK-75 阶段 2），
+    // 结束前由 Drop 清空并放锁；其余纯文本未实测通道仍在专属空目录里跑，
+    // 返回前（含失败、超时）由 SmokeScratch 的 Drop 删掉；>= 1.5.0 时在 scratch
+    // 下写一份只读 settings 文件（位于工作目录之外），返回前随 SmokeSettingsFile 的 Drop 清理。
     let agy_1_5 = model.agent.trim().eq_ignore_ascii_case("agy")
         && crate::agent_catalog::agy_at_least_1_5(detected_agent_version("agy").as_deref());
     let settings_guard = if agy_1_5 {
@@ -2136,11 +2137,16 @@ fn run_smoke_registered(
         settings_guard.0.as_deref(),
     )?;
     let scratch = match aicross_root() {
-        Ok(root) => SmokeScratch::create_in(&root, &model.agent)?,
+        Ok(root) => SmokeScratch::create_in_with(
+            &root,
+            &model.agent,
+            Duration::from_secs(SMOKE_TIMEOUT_SECS),
+            || registry_key.is_some_and(crate::dispatch::is_cancelled),
+        )?,
         Err(_) => None,
     };
     let temp = std::env::temp_dir();
-    let cwd = scratch.as_ref().map_or(temp.as_path(), |scratch| scratch.path.as_path());
+    let cwd = scratch.as_ref().map_or(temp.as_path(), SmokeScratch::path);
     let result = run_process_registered(
         &invocation.program,
         &invocation.args,
@@ -2183,15 +2189,43 @@ fn run_smoke_registered(
     }
 }
 
-/// 冒烟专属空目录（fix-61-r1 3）：只给只看得到文字的 agent（agy）建，位置
-/// `$AICROSS_HOME/scratch/smoke-<agent>-<uuid>`；离开作用域即删除。
-struct SmokeScratch {
-    path: PathBuf,
+/// 冒烟隔离目录（fix-61-r1 3 / TASK-75 阶段 2）：agy 抢占 `$AICROSS_HOME/blind/agy-1..8`
+/// 固定槽位（离开作用域清空并放锁），其余只看文字的未实测 agent 用一次性
+/// `$AICROSS_HOME/scratch/smoke-<agent>-<uuid>`（离开作用域删除）。
+enum SmokeScratch {
+    Slot(crate::blind_slot::BlindSlotGuard),
+    TempDir(PathBuf),
 }
 
 impl SmokeScratch {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Slot(guard) => guard.dir(),
+            Self::TempDir(path) => path.as_path(),
+        }
+    }
+
+    #[cfg(test)]
     fn create_in(root: &Path, agent: &str) -> Result<Option<SmokeScratch>, String> {
-        if !agent.trim().eq_ignore_ascii_case("agy") && !crate::agent_catalog::is_text_only(agent) {
+        Self::create_in_with(root, agent, Duration::from_secs(SMOKE_TIMEOUT_SECS), || false)
+    }
+
+    fn create_in_with(
+        root: &Path,
+        agent: &str,
+        timeout: Duration,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<Option<SmokeScratch>, String> {
+        if agent.trim().eq_ignore_ascii_case("agy") {
+            let guard = crate::blind_slot::BlindSlotGuard::acquire_with_cancel(
+                &root.join("blind"),
+                "agy",
+                timeout,
+                is_cancelled,
+            )?;
+            return Ok(Some(Self::Slot(guard)));
+        }
+        if !crate::agent_catalog::is_text_only(agent) {
             return Ok(None);
         }
         let path = root
@@ -2199,13 +2233,15 @@ impl SmokeScratch {
             .join(format!("smoke-{}-{}", agent.trim().to_ascii_lowercase(), Uuid::new_v4()));
         fs::create_dir_all(&path)
             .map_err(|error| format!("创建冒烟目录失败 {}：{error}", path.display()))?;
-        Ok(Some(SmokeScratch { path }))
+        Ok(Some(Self::TempDir(path)))
     }
 }
 
 impl Drop for SmokeScratch {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        if let Self::TempDir(path) = self {
+            let _ = fs::remove_dir_all(path);
+        }
     }
 }
 
@@ -6020,27 +6056,29 @@ gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n\
         assert!(qoder.iter().all(|model| model.vendor == VENDOR_UNKNOWN));
     }
 
-    /// fix-61-r1 3：agy 冒烟在 `$AICROSS_HOME/scratch/` 下的专属空目录里跑，
-    /// 离开作用域（成功、失败、超时都一样）即删除；其余 agent 不建。
+    /// fix-61-r1 3 / TASK-75 阶段 2：agy 冒烟改走 `$AICROSS_HOME/blind/agy-1..8`
+    /// 固定槽位，离开作用域（成功、失败、超时都一样）即清空并放锁；未实测只看文字的
+    /// cursor 等仍在 `$AICROSS_HOME/scratch/` 建专属空目录并在离开作用域删除；其余 agent 不建。
     #[test]
     fn task61_r1_agy_smoke_scratch_is_private_and_removed() {
         let root = crate::paths::test_temp_dir().join(format!("aicross-t61-smoke-{}", Uuid::new_v4()));
         let first = SmokeScratch::create_in(&root, "agy").unwrap().unwrap();
         let second = SmokeScratch::create_in(&root, "agy").unwrap().unwrap();
-        assert_ne!(first.path, second.path, "每次调用专属");
-        assert!(first.path.starts_with(root.join("scratch")));
-        assert!(fs::read_dir(&first.path).unwrap().next().is_none(), "空目录");
-        let (first_path, second_path) = (first.path.clone(), second.path.clone());
+        assert_eq!(first.path(), root.join("blind").join("agy-1"));
+        assert_eq!(second.path(), root.join("blind").join("agy-2"));
+        assert!(fs::read_dir(first.path()).unwrap().next().is_none(), "空目录");
+        fs::write(first.path().join("dirty.txt"), b"leftover").unwrap();
+        let first_path = first.path().to_path_buf();
         drop(first);
-        assert!(!first_path.exists());
-        // 提前返回（失败、超时）同样经 Drop 清理
-        let failed = || -> Result<(), String> {
-            let _scratch = second;
-            Err("冒烟超时（180 秒）".into())
-        };
-        assert!(failed().is_err());
-        assert!(!second_path.exists());
-        for agent in ["claude", "codex", "kimi", "pi"] {
+        assert!(fs::read_dir(&first_path).unwrap().next().is_none(), "离开作用域应清空槽位");
+        // 放锁后下一路可立即复用 1 号槽位
+        let reused = SmokeScratch::create_in(&root, "agy").unwrap().unwrap();
+        assert_eq!(reused.path(), first_path);
+        drop(reused);
+        drop(second);
+
+        // 非 agy 不建（未实测与其余内置通道 is_text_only 为 false）
+        for agent in ["claude", "codex", "kimi", "pi", "cursor"] {
             assert!(SmokeScratch::create_in(&root, agent).unwrap().is_none(), "{agent}");
         }
         let _ = fs::remove_dir_all(root);

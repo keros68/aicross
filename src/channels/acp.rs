@@ -162,13 +162,20 @@ struct SessionState {
 struct ClientSlot {
     client: Mutex<Option<AcpClient>>,
     pid: AtomicU32,
+    cwd: PathBuf,
 }
 
 impl ClientSlot {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn empty() -> Self {
+        Self::with_cwd(PathBuf::new())
+    }
+
+    fn with_cwd(cwd: PathBuf) -> Self {
         Self {
             client: Mutex::new(None),
             pid: AtomicU32::new(0),
+            cwd,
         }
     }
 }
@@ -215,7 +222,7 @@ pub fn run(
         .lock()
         .map_err(|_| AcpError::new(AcpErrorKind::Process, "ACP 进程池不可用"))?
         .entry(key.clone())
-        .or_insert_with(|| Arc::new(ClientSlot::empty()))
+        .or_insert_with(|| Arc::new(ClientSlot::with_cwd(cwd.to_path_buf())))
         .clone();
     let mut guard = acquire_slot(&shared, deadline, registry_key)?;
     if crate::dispatch::is_cancelled(registry_key) {
@@ -1129,23 +1136,64 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
     }
 }
 
-pub fn shutdown_all() {
-    let clients = pool().lock().map(|mut clients| std::mem::take(&mut *clients)).unwrap_or_default();
-    for shared in clients.values() {
-        match shared.client.try_lock() {
-            Ok(mut slot) => {
-                if let Some(client) = slot.as_mut() {
-                    client.close_all_sessions(Instant::now() + Duration::from_millis(100));
-                    client.process.terminate();
-                }
+fn same_cwd(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn close_and_terminate_slot(shared: &ClientSlot, wait_if_busy: bool) {
+    match shared.client.try_lock() {
+        Ok(mut slot) => {
+            if let Some(mut client) = slot.take() {
+                client.close_all_sessions(Instant::now() + Duration::from_millis(100));
+                client.process.terminate();
             }
-            Err(_) => {
-                let pid = shared.pid.load(Ordering::Acquire);
-                if pid != 0 {
-                    let _ = crate::process::terminate_process_id(pid);
+        }
+        Err(_) => {
+            let pid = shared.pid.load(Ordering::Acquire);
+            if pid != 0 {
+                let _ = crate::process::terminate_process_id(pid);
+            }
+            if wait_if_busy {
+                if let Ok(mut slot) = shared.client.lock() {
+                    if let Some(mut client) = slot.take() {
+                        client.process.terminate();
+                    }
                 }
             }
         }
+    }
+}
+
+/// 清理并关闭所有工作目录为 `cwd` 的 ACP 常驻进程，防止 Windows 文件/目录占用阻塞归档。
+pub fn close_by_cwd(cwd: &Path) {
+    let matched: Vec<Arc<ClientSlot>> = match pool().lock() {
+        Ok(mut clients) => {
+            let keys: Vec<String> = clients
+                .iter()
+                .filter(|(_, shared)| same_cwd(&shared.cwd, cwd))
+                .map(|(key, _)| key.clone())
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| clients.remove(&key))
+                .collect()
+        }
+        Err(_) => return,
+    };
+    for shared in matched {
+        close_and_terminate_slot(&shared, true);
+    }
+}
+
+pub fn shutdown_all() {
+    let clients = pool().lock().map(|mut clients| std::mem::take(&mut *clients)).unwrap_or_default();
+    for shared in clients.values() {
+        close_and_terminate_slot(shared, false);
     }
 }
 
@@ -1503,7 +1551,7 @@ mod tests {
         shutdown_all();
         let Some(client) = fake_client() else { return };
         let pid = client.process.process_id();
-        let slot = Arc::new(ClientSlot { client: Mutex::new(Some(client)), pid: AtomicU32::new(pid) });
+        let slot = Arc::new(ClientSlot { client: Mutex::new(Some(client)), pid: AtomicU32::new(pid), cwd: PathBuf::new() });
         pool()
             .lock()
             .unwrap()
@@ -1527,7 +1575,7 @@ mod tests {
         shutdown_all();
         let Some(client) = fake_client() else { return };
         let pid = client.process.process_id();
-        let slot = Arc::new(ClientSlot { client: Mutex::new(Some(client)), pid: AtomicU32::new(pid) });
+        let slot = Arc::new(ClientSlot { client: Mutex::new(Some(client)), pid: AtomicU32::new(pid), cwd: PathBuf::new() });
         pool().lock().unwrap().insert("busy-shutdown-test".into(), slot.clone());
         let _guard = slot.client.lock().unwrap();
         let started = Instant::now();
@@ -1544,7 +1592,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         client.prompt("fake-model", None, "first", &cwd, Instant::now() + Duration::from_secs(5), "中", false, false, "").unwrap();
         let pid = client.process.process_id();
-        let slot = Arc::new(ClientSlot { client: Mutex::new(Some(client)), pid: AtomicU32::new(pid) });
+        let slot = Arc::new(ClientSlot { client: Mutex::new(Some(client)), pid: AtomicU32::new(pid), cwd: PathBuf::new() });
         pool().lock().unwrap().insert("close-test".into(), slot);
         shutdown_all();
         assert!(marker.exists());

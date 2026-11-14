@@ -136,8 +136,9 @@ def cmd_exec(args):
     # 始终用 --output-format json：这是唯一能可靠拿到 is_error/api_error_status 的形式。
     # 否则 API 报错（400 模型不存在 / 529 过载）会 exit 0 并把错误文本伪装成正常回答塞进 stdout。
     # 下游拿到的仍是纯答案（我们只吐 data["result"]），输出契约不变。
-    # 一问一答不续接，不留会话：否则每个空目录都会在 Claude 的项目列表里多一项
-    cmd = [claude_bin, "-p", "--model", model, "--output-format", "json", "--no-session-persistence"]
+    # 一问一答不续接，不留会话与自动记忆目录：否则每个临时目录都会在 ~/.claude/projects/ 里多一项
+    cmd = [claude_bin, "-p", "--model", model, "--output-format", "json",
+           "--no-session-persistence", "--settings", '{"autoMemoryEnabled":false}']
     # 只读护栏：--tools 作用在工具注册层（连 --permission-mode bypassPermissions 都压不过它），
     # 是 codex `-s read-only` 的等效物。--permission-mode 没有只读档，别用它。
     # 空串 = 禁用全部工具（纯文本任务最省）。

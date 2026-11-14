@@ -26,7 +26,7 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
     }
     if !matches!(
         command,
-        Some("dispatch" | "status" | "adopt" | "cancel" | "recover" | "propose" | "resources" | "config" | "hosts" | "skill" | "slash" | "preset" | "stats" | "decided" | "__run")
+        Some("dispatch" | "status" | "adopt" | "cancel" | "recover" | "propose" | "resources" | "config" | "hosts" | "skill" | "slash" | "preset" | "stats" | "leftovers" | "decided" | "__run")
     ) {
         return None;
     }
@@ -70,6 +70,7 @@ fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
          \x20 open        打开该 run 的查看页\n\
          \x20 resources   看资源库 / 重新探测 / 冒烟验证 / 按名字找模型 / 指定路径 / 标注用途\n\
          \x20 stats       各模型按任务类型的使用记录\n\
+         \x20 leftovers   列出各家 CLI 历史里指向 aicross 数据目录的遗留条目\n\
          \x20 config     看与改角色、派发设置、模式人选\n\
          \x20 hosts       看与改主 agent\n\
          \x20 skill       skill status / install / upgrade / uninstall\n\
@@ -135,6 +136,7 @@ fn run_at_with(
         Some("slash") => return run_slash(root, args, stdout, stderr),
         Some("preset") => return run_preset(root, args, stdout, stderr),
         Some("stats") => return run_stats(root, args, ops, stdout, stderr),
+        Some("leftovers") => return run_leftovers(root, args, stdout, stderr),
         Some("decided") => return run_decided(args, stdout, stderr),
         Some("adopt") if args.iter().any(|arg| arg == "--verdict-file") => {
             return run_adopt_verdict(root, args, stdout, stderr)
@@ -382,6 +384,28 @@ fn run_stats(root: &Path, args: &[String], ops: &ResourcesOps, stdout: &mut dyn 
             1
         }
     }
+}
+
+fn run_leftovers(root: &Path, args: &[String], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
+    if let Some(message) = extra_arg_error(args, 2) {
+        let _ = writeln!(stderr, "{message}");
+        return 2;
+    }
+    let value = crate::leftovers::collect(root);
+    let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
+    let summary: Vec<String> = ["claude", "kimi", "agy"]
+        .into_iter()
+        .map(|name| {
+            if value[name]["error"].is_string() {
+                format!("{name} 读不到")
+            } else {
+                let count = value[name]["count"].as_u64().unwrap_or(0);
+                format!("{name} {count} 条")
+            }
+        })
+        .collect();
+    let _ = writeln!(stderr, "已列出历史遗留条目：{}", summary.join("，"));
+    0
 }
 
 /// TASK-69 `aicross resources note <agent>:<provider>:<model> [--tags …] [--note …]`。
@@ -3404,7 +3428,7 @@ mod tests {
             let mut out = Vec::new();
             assert_eq!(top_level_info(flag, &mut out), 0);
             let text = String::from_utf8(out).unwrap();
-            for word in ["dispatch", "status", "open", "resources", "preset"] {
+            for word in ["dispatch", "status", "open", "resources", "preset", "leftovers"] {
                 assert!(text.contains(word), "{word} 不在帮助里：{text}");
             }
             assert!(!text.contains("propose"), "{text}");
@@ -7356,6 +7380,29 @@ mod tests {
         let (code, message) = config_set_seat_at(&root, "claude", "custom-wt", 1, 1, agy("gemini-4-carbon-low")).unwrap_err();
         assert_eq!(code, 2);
         assert!(message.contains("不能执行命令") && message.contains("worktree"), "{message}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn leftovers_command_outputs_json_and_rejects_extra_args() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-cli-leftovers-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let bad_args = vec!["aicross".into(), "leftovers".into(), "--extra".into()];
+        assert_eq!(run_at(&bad_args, &root, &mut stdout, &mut stderr), 2);
+        assert!(stdout.is_empty());
+
+        stderr.clear();
+        let ok_args = vec!["aicross".into(), "leftovers".into()];
+        assert_eq!(run_at(&ok_args, &root, &mut stdout, &mut stderr), 0);
+        let parsed: Value = serde_json::from_slice(&stdout).unwrap();
+        for cli in ["claude", "kimi", "agy"] {
+            assert!(parsed[cli]["count"].is_u64(), "{parsed}");
+            assert!(parsed[cli]["paths"].is_array(), "{parsed}");
+        }
+        let err_text = String::from_utf8(stderr).unwrap();
+        assert!(err_text.contains("已列出历史遗留条目："), "{err_text}");
         let _ = fs::remove_dir_all(root);
     }
 }

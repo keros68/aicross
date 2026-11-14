@@ -297,10 +297,12 @@ def json_lines(text):
 
 def call_claude(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     out = base_result()
-    # --restricted 挡住用户级 CLAUDE.md：盲审要挡，执行者不必
+    # --restricted 挡住用户级 CLAUDE.md：盲审要挡，执行者不必；
+    # 未加 --restricted（run）时 autoMemory 仍会建空 ~/.claude/projects/<cwd>/memory/，显式关掉
     cmd = [exe(pick), "-p", "--model", pick["model"], "--tools", READ_TOOLS if tools else ""] \
         + (["--restricted"] if blind else []) \
-        + ["--output-format", "json", "--no-session-persistence"]
+        + ["--output-format", "json", "--no-session-persistence",
+           "--settings", '{"autoMemoryEnabled":false}']
     out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout, prompt)
     if err:
         out["error"] = err
@@ -369,6 +371,31 @@ def call_codex(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     return out
 
 
+def _try_lock_handle(handle):
+    if os.name == "nt":
+        import msvcrt
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_handle(handle):
+    if os.name == "nt":
+        import msvcrt
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _reset_dir(path):
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+
+
 class kimi_oneshot_dir:
     """独占并清空 <AICROSS_HOME>/kimi-oneshot，退出时再清空。锁文件放在目录外，清空时不受影响。"""
 
@@ -378,34 +405,13 @@ class kimi_oneshot_dir:
         self.workdir = self.root / "kimi-oneshot"
         self.handle = None
 
-    def _try_lock(self):
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-    def _unlock(self):
-        if os.name == "nt":
-            import msvcrt
-            self.handle.seek(0)
-            msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
-
-    def _reset(self):
-        shutil.rmtree(self.workdir, ignore_errors=True)
-        self.workdir.mkdir(parents=True, exist_ok=True)
-
     def __enter__(self):
         self.root.mkdir(parents=True, exist_ok=True)
         self.handle = open(self.root / "kimi-oneshot.lock", "a+")
         deadline = time.monotonic() + self.timeout
         while True:
             try:
-                self._try_lock()
+                _try_lock_handle(self.handle)
                 break
             except OSError:
                 if time.monotonic() >= deadline:
@@ -413,16 +419,67 @@ class kimi_oneshot_dir:
                     self.handle = None
                     return None, f"等了 {self.timeout} 秒，另一路 kimi 派发还没结束，这一路没派"
                 time.sleep(0.5)
-        self._reset()
+        _reset_dir(self.workdir)
         return self.workdir, None
 
     def __exit__(self, *exc):
         if self.handle is None:
             return False
         try:
-            self._reset()
+            _reset_dir(self.workdir)
         finally:
-            self._unlock()
+            _unlock_handle(self.handle)
+            self.handle.close()
+        return False
+
+
+class agy_blind_slot:
+    """为不进项目只读目录的 agy 调用复用 <AICROSS_HOME>/blind/agy-1..8，进入与退出时清空。"""
+
+    SLOT_COUNT = 8
+
+    def __init__(self, timeout):
+        self.timeout = timeout
+        self.blind_root = inventory.data_root() / "blind"
+        self.workdir = None
+        self.handle = None
+
+    def __enter__(self):
+        self.blind_root.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + max(0, self.timeout)
+        while True:
+            for index in range(1, self.SLOT_COUNT + 1):
+                lock_path = self.blind_root / f"agy-{index}.lock"
+                handle = open(lock_path, "a+")
+                try:
+                    _try_lock_handle(handle)
+                except OSError:
+                    handle.close()
+                    continue
+                workdir = self.blind_root / f"agy-{index}"
+                try:
+                    _reset_dir(workdir)
+                    clean = not any(workdir.iterdir())
+                except OSError:
+                    clean = False
+                if not clean:  # 清不干净的槽位不给盲位置用：放锁，换下一个
+                    _unlock_handle(handle)
+                    handle.close()
+                    continue
+                self.handle = handle
+                self.workdir = workdir
+                return self.workdir, None
+            if time.monotonic() >= deadline:
+                return None, f"等了 {self.timeout} 秒，8 个 agy 盲审槽位都在使用中，这一路没派"
+            time.sleep(0.2)
+
+    def __exit__(self, *exc):
+        if self.handle is None:
+            return False
+        try:
+            _reset_dir(self.workdir)
+        finally:
+            _unlock_handle(self.handle)
             self.handle.close()
         return False
 
@@ -594,15 +651,10 @@ def call_agy(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
         out["status"] = "skipped"
         out["error"] = "agy 在无头模式下连读文件都会被拒，不能让它自己进项目读；换一个条目，或把材料用 --file 附上"
         return out
-    sent_prompt = prompt
-    if agy_1_5 and blind and len(prompt.encode("utf-8")) > AGY_INLINE_LIMIT:
-        (Path(cwd) / "REQUEST.md").write_text(prompt, encoding="utf-8", newline="\n")
-        sent_prompt = f"完整任务与待审材料在当前目录的 REQUEST.md，请先完整读取后再按其要求作答。\n\n{AGY_READONLY_NOTE}"
-    elif agy_1_5 and tools:
-        sent_prompt = f"{prompt}\n\n{AGY_READONLY_NOTE}"
-    line = json.dumps({"event": "user", "message": {"role": "user", "content": sent_prompt}}, ensure_ascii=False) + "\n"
     cmd = [exe(pick), "--model", pick["model"], "--print-timeout", f"{max(1, timeout // 60)}m",
            "--input-format", "stream-json", "--output-format", "stream-json"]
+    if blind:
+        cmd.extend(["--project", "aicross"])
     settings_path = None
     try:
         if agy_1_5:
@@ -615,7 +667,21 @@ def call_agy(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
                 newline="\n",
             )
             cmd.extend(["--settings", str(settings_path)])
-        out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout + 30, line)
+        if tools:
+            sent_prompt = f"{prompt}\n\n{AGY_READONLY_NOTE}" if agy_1_5 else prompt
+            line = json.dumps({"event": "user", "message": {"role": "user", "content": sent_prompt}}, ensure_ascii=False) + "\n"
+            out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout + 30, line)
+        else:
+            with agy_blind_slot(timeout) as (slot_dir, lock_error):
+                if lock_error:
+                    out["error"] = lock_error
+                    return out
+                sent_prompt = prompt
+                if agy_1_5 and blind and len(prompt.encode("utf-8")) > AGY_INLINE_LIMIT:
+                    (slot_dir / "REQUEST.md").write_text(prompt, encoding="utf-8", newline="\n")
+                    sent_prompt = f"完整任务与待审材料在当前目录的 REQUEST.md，请先完整读取后再按其要求作答。\n\n{AGY_READONLY_NOTE}"
+                line = json.dumps({"event": "user", "message": {"role": "user", "content": sent_prompt}}, ensure_ascii=False) + "\n"
+                out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, str(slot_dir), timeout + 30, line)
     finally:
         if settings_path is not None:
             settings_path.unlink(missing_ok=True)

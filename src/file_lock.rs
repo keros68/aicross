@@ -21,20 +21,36 @@ pub(crate) struct FileLock {
 }
 
 impl FileLock {
-    /// 打开（没有就建）`path` 并加独占锁；已被别的句柄锁住时轮询等待，
-    /// 最多等 `timeout`，到时返回错误。锁文件所在目录不存在时先建。
-    pub(crate) fn acquire(path: &Path, timeout: Duration) -> Result<Self, String> {
+    fn open_lock_file(path: &Path) -> Result<fs::File, String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("创建目录 {} 失败：{error}", parent.display()))?;
         }
-        let file = fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(path)
-            .map_err(|error| format!("打开锁文件 {} 失败：{error}", path.display()))?;
+            .map_err(|error| format!("打开锁文件 {} 失败：{error}", path.display()))
+    }
+
+    /// 尝试立即拿锁：已被别人锁住返回 `Ok(None)`，其它 I/O 错误返回 `Err`。
+    pub(crate) fn try_acquire(path: &Path) -> Result<Option<Self>, String> {
+        let file = Self::open_lock_file(path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(error)) => {
+                Err(format!("锁定 {} 失败：{error}", path.display()))
+            }
+        }
+    }
+
+    /// 打开（没有就建）`path` 并加独占锁；已被别的句柄锁住时轮询等待，
+    /// 最多等 `timeout`，到时返回错误。锁文件所在目录不存在时先建。
+    pub(crate) fn acquire(path: &Path, timeout: Duration) -> Result<Self, String> {
+        let file = Self::open_lock_file(path)?;
         let started = Instant::now();
         loop {
             match file.try_lock() {

@@ -200,6 +200,8 @@ class TestChannels(DBase):
         self.assertEqual((r["status"], r["answer"], r["tokens_in"]), ("ok", "没有发现问题", 6581))
         cmd = self.calls[0][0]
         self.assertIn("--restricted", cmd)
+        self.assertIn("--no-session-persistence", cmd)
+        self.assertEqual(cmd[cmd.index("--settings") + 1], '{"autoMemoryEnabled":false}')
         self.assertEqual(cmd[cmd.index("--tools") + 1], "")
         bad = json.dumps({"is_error": True, "api_error_status": 529, "result": "API Error: overloaded"})
         r = self.run_one("claude.anthropic", (0, bad, ""))
@@ -309,6 +311,62 @@ class TestChannels(DBase):
         with self.fake({"": (0, limit_err, "")}):
             r4 = dispatch.call(agy, "材料", str(self.home), 120, "high", "p")
         self.assertEqual((r4["status"], r4["error"]), ("error", "回答超过输出上限"))
+
+    def test_agy_uses_blind_slots_and_project_flag(self):
+        agy = {"id": "agy.google", "channel": "agy", "kind": "cli", "vendor": "Google",
+               "billing": "subscription", "tier": "low", "model": "gemini-4-carbon-low", "version": "1.5.8"}
+        ok = jl({"event": "result", "result": {"status": "SUCCESS", "response": "OK\n",
+                                               "usage": {"input_tokens": 10, "output_tokens": 1}}})
+        slot1 = inventory.data_root() / "blind" / "agy-1"
+        slot1.mkdir(parents=True)
+        (slot1 / "stale.txt").write_text("dirty", encoding="utf-8")
+        seen = []
+
+        def fake_run(cmd, cwd, timeout, stdin_text=None, **kwargs):
+            seen.append((list(cmd), cwd, sorted(os.listdir(cwd))))
+            Path(cwd, "out.txt").write_text("x", encoding="utf-8")
+            return 0, ok, "", None
+
+        with mock.patch.object(dispatch, "run_process", fake_run):
+            r_blind = dispatch.call(agy, "材料", str(self.home / "unused"), 10, "low", "p", blind=True, tools=False)
+            r_run_text = dispatch.call(agy, "材料", str(self.home / "unused2"), 10, "low", "p", blind=False, tools=False)
+            r_run_dir = dispatch.call(agy, "材料", str(self.project), 10, "low", "p", blind=False, tools=True)
+
+        self.assertEqual((r_blind["status"], r_run_text["status"], r_run_dir["status"]), ("ok", "ok", "ok"))
+        self.assertEqual(seen[0][1:], (str(slot1), []))
+        self.assertEqual(seen[1][1:], (str(slot1), []))
+        self.assertEqual(seen[2][1], str(self.project))
+        self.assertEqual(os.listdir(slot1), [])
+        self.assertEqual(seen[0][0][seen[0][0].index("--project") + 1], "aicross")
+        self.assertNotIn("--project", seen[1][0])
+        self.assertNotIn("--project", seen[2][0])
+
+        # 槽位 1 被占时拿到槽位 2
+        with dispatch.agy_blind_slot(2) as (held, lock_err):
+            self.assertIsNone(lock_err)
+            self.assertEqual(held, slot1)
+            seen.clear()
+            with mock.patch.object(dispatch, "run_process", fake_run):
+                r_slot2 = dispatch.call(agy, "材料", str(self.home), 2, "low", "p", blind=True, tools=False)
+            self.assertEqual(r_slot2["status"], "ok")
+            self.assertEqual(seen[0][1], str(inventory.data_root() / "blind" / "agy-2"))
+
+        # 槽位 1 清不干净时跳过它，锁放开
+        real_reset = dispatch._reset_dir
+
+        def sticky_reset(path):
+            real_reset(path)
+            if path == slot1:
+                (path / "held.txt").write_text("x", encoding="utf-8")
+
+        with mock.patch.object(dispatch, "_reset_dir", sticky_reset):
+            with dispatch.agy_blind_slot(2) as (got, lock_err):
+                self.assertIsNone(lock_err)
+                self.assertEqual(got, inventory.data_root() / "blind" / "agy-2")
+                with dispatch.agy_blind_slot(2) as (again, _):
+                    self.assertEqual(again, inventory.data_root() / "blind" / "agy-3")
+        with dispatch.agy_blind_slot(2) as (free, _):
+            self.assertEqual(free, slot1)
 
     def test_kimi_over_utf16_limit_writes_task_file_and_marks_unreported_usage(self):
         kimi = inventory.describe({"id": "kimi.moonshot", "channel": "kimi", "kind": "cli", "vendor": "Moonshot",
@@ -460,7 +518,10 @@ class TestRun(DBase):
     def test_named_executor_and_claude_not_restricted(self):
         code, out, _ = self.run_task({"claude": (0, CLAUDE_OUT, "")}, entry="claude.anthropic", go=True)
         self.assertEqual(code, 0)
-        self.assertNotIn("--restricted", self.calls[0][0])
+        cmd = self.calls[0][0]
+        self.assertNotIn("--restricted", cmd)
+        self.assertIn("--no-session-persistence", cmd)
+        self.assertEqual(cmd[cmd.index("--settings") + 1], '{"autoMemoryEnabled":false}')
         self.assertIn("同厂商", out)                                # 宿主就是 Claude 时提醒可用内部通道
 
     def test_read_dir_runs_in_project_with_read_only_tools(self):

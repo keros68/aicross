@@ -25,12 +25,12 @@ python <本skill目录>/references/dispatch.py smoke --all | --entry <条目>
 
 | 通道 | 脚本实际执行的写法 | 备注 |
 |---|---|---|
-| claude | `claude -p --model M --tools "" --restricted --output-format json --no-session-persistence`，材料走 stdin | 查 `is_error`，出错不当回答 |
+| claude | `claude -p --model M --tools "" --restricted --output-format json --no-session-persistence --settings '{"autoMemoryEnabled":false}'`，材料走 stdin | 查 `is_error`，出错不当回答 |
 | codex | `codex exec -m M -c model_reasoning_effort=… -s read-only --skip-git-repo-check --json --ephemeral -`，材料走 stdin | 回答取全部非空 `agent_message`（正文常在倒数第二条） |
 | pi:<provider> | `pi --provider P --model M -p --no-tools --no-extensions --mode json --no-session --no-context-files --thinking …`，材料走 stdin | 只认 `text` 块；`responseModel` 与请求不符判 `identity_mismatch` |
-| agy | `--input-format stream-json --output-format stream-json`，材料是 stdin 的一行 NDJSON | `response` 为空判失败 |
+| agy | `agy --model M --print-timeout … --input-format stream-json --output-format stream-json [--project aicross] [--settings …]`，材料是 stdin 的一行 NDJSON；不进 `--read-dir` 时 cwd 固定为 `<AICROSS_HOME>/blind/agy-1..8` | `response` 为空判失败；`review` / `smoke` 传 `--project aicross`，`run` 不传 |
 | kimi | `kimi -p <材料> -m M --output-format stream-json`，cwd 固定为 `<AICROSS_HOME>/kimi-oneshot` | 材料超过约 30KB 这一路跳过（没有 stdin 入口）；同一时间只跑一路 |
-| cc-switch:<名字> | `cc_switch.py exec --provider … --model M --task-file … --tools ""` | key 由桥注入；没有 `--restricted`，隔离记为部分 |
+| cc-switch:<名字> | `cc_switch.py exec --provider … --model M --task-file … --tools ""`（内部传 `--no-session-persistence --settings '{"autoMemoryEnabled":false}'`） | key 由桥注入；没有 `--restricted`，隔离记为部分 |
 
 - 每路各在 `${AICROSS_HOME:-~/.aicross}/scratch/<时间>-blind/<条目>/` 这个空目录里跑，带 `AI_CROSS_PEER=1`，跑完目录即删。
 - prompt 只有冻结模板加原始材料原文，外发前做六类脱敏（私钥块、Bearer、口令与密钥字面量、环境变量式赋值、`AKIA…`、带口令的数据库 URL）；脱敏只处理字面量，是兜底不是保证。
@@ -58,7 +58,7 @@ cd - && rm -rf "$d"
 
 **一次性文件统一放 `scratch/`**：派发用的任务文本、验收条件、`blind.txt`、盲验空目录，一律建在 `${AICROSS_HOME:-~/.aicross}/scratch/` 下，按「日期时间-用途」命名，结果读回后删除；不往系统临时目录、盘符根目录或项目目录里散放。`AICROSS_HOME` 与 aicross 引擎共用，未设时落在 `~/.aicross`。
 
-**一次性派发不留会话**：各家 CLI 按工作目录保存会话，每个空目录都会在它们的历史里变成一个新项目。不续接的派发一律加关会话参数：claude `--no-session-persistence`，codex `--ephemeral`，pi `--no-session`。kimi 没有这个参数，脚本让所有 kimi 派发都在固定目录 `${AICROSS_HOME:-~/.aicross}/kimi-oneshot/` 里跑，它的历史里只多这一个项目：用锁文件 `kimi-oneshot.lock`（放在目录外）保证同一时间只跑一路，每路运行前后清空目录，各路看到的仍是空目录；并发的 kimi 派发因此排队，等满超时就不派。要续接的执行者不加。
+**一次性派发不留会话**：各家 CLI 按工作目录保存会话，每个空目录都会在它们的历史里变成一个新项目。不续接的派发一律加关会话参数：claude `--no-session-persistence --settings '{"autoMemoryEnabled":false}'`（不加 `--restricted` 时，claude 默认自动记忆仍会在 `~/.claude/projects/` 下建空 `memory/` 目录），codex `--ephemeral`，pi `--no-session`。kimi 与 agy 没有这个参数，各自按工作目录记索引：脚本让 `dispatch.py` 的 kimi 跑在固定目录 `${AICROSS_HOME:-~/.aicross}/kimi-oneshot/`（锁文件 `kimi-oneshot.lock` 放在目录外，同一时间只跑一路，运行前后清空）；agy 在不进 `--read-dir` 时复用 `${AICROSS_HOME:-~/.aicross}/blind/agy-1..8/`（槽位锁 `agy-<n>.lock` 放在目录外，进入与退出时清空），且 `review` / `smoke` 附 `--project aicross`（`run` 仍留在用户项目的默认行为里，不传 `--project`）。要续接的执行者不加。
 
 `cc_switch.py exec` 的 cwd 就是调用时的目录，同样先 `cd` 进空目录再调。执行者（本来就要改项目文件的活）不受此限。
 
@@ -171,7 +171,8 @@ cat in.ndjson | "$AGY" --model gemini-3.8-flash-high --print-timeout 5m \
 - **退出码 0 仍可能没给出结果**：工具被拒时 stderr 出现 `jetski: no output produced …`，但 stdout 的 `{"event":"result"}` 可能仍为 `status: SUCCESS`、空 `response`；解析时必须检查 `result.status` 与非空 `response`，stderr 含 `jetski: no output produced` 时保留该行原因（截到 300 字符），遇到 `exceeded the output token limit` 时判失败「回答超过输出上限」。
 - 输出解析：`--output-format json` 给单个对象（`response` / `usage` / `duration_seconds` / `status`）；stream-json 逐步给 `step_update`，最后一行 `{"event":"result"}`。两种都带 `usage`，可直接记 token。
 - 真身核对：`init` 事件里的 `model` 是**请求值回显**，不是响应侧值，不能当真身证据；它是 Google 第一方端点，不是第三方兼容层，静默降级风险低于覆写端点，但要程序化确认时仍应在 prompt 里要它自报型号并比对（实测请求 `gemini-3.8-flash-low`，自报「Google Gemini 3.8 Flash」）。
-- 其它开关：`--effort low|medium|high`（与档位正交的思考旋钮）、`--mode plan|accept-edits`（**`plan` 未验证是否只读，别按只读档用**——kimi 的 plan 模式就不是）、`--sandbox`（只限制终端，不解决权限拒绝）、`--json-schema`（结构化输出）、`-c` / `--conversation` 续聊。
+- **历史与项目归组（2026-11-14 v1.5.8 实测）**：无头模式每换一个 `cwd` 就会在 `~/.gemini/antigravity-cli/cache/last_conversations.json` 与 `conversation_summaries.db` 的 `workspace_uris` 里多记一个工作区，默认落到 `default-cli-project`；仅用 `--new-project` 在目录名 `aicross` 下创建同名项目时，后续在其他目录加 `--project aicross` 才会把对话归到该项目下（项目不存在时静默回退到 `default-cli-project`，不影响执行）。因此盲位置 / `smoke` / 无 `--read-dir` 派发复用 `<AICROSS_HOME>/blind/agy-1..8` 固定槽位并按需传 `--project aicross`，非盲 `run` / 共享与单写者位置不传 `--project`。
+- **其它开关**：`--effort low|medium|high`（与档位正交的思考旋钮）、`--mode plan|accept-edits`（**`plan` 未验证是否只读，别按只读档用**——kimi 的 plan 模式就不是）、`--sandbox`（只限制终端，不解决权限拒绝）、`--json-schema`（结构化输出）、`-c` / `--conversation` 续聊。
 
 ## pi（外部 agent harness，接多家 coding plan）
 

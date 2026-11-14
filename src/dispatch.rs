@@ -1039,7 +1039,7 @@ impl Drop for ClassificationRunCleanup {
     }
 }
 
-fn mark_cancelled(key: &str) {
+pub(crate) fn mark_cancelled(key: &str) {
     if let Ok(mut cancelled) = cancelled_dispatches().lock() {
         cancelled.insert(key.to_string());
     }
@@ -2756,6 +2756,21 @@ fn first_use_verification(
     crate::resources::verify_on_first_use(agent, provider, model, Some(cancel_key))
 }
 
+fn rewrite_blind_slot_paths(text: &str, archive_workdir: &Path, exec_workdir: &Path) -> String {
+    if archive_workdir == exec_workdir {
+        return text.to_string();
+    }
+    let archive_raw = archive_workdir.to_string_lossy();
+    let slot_raw = exec_workdir.to_string_lossy();
+    let archive_slash = archive_raw.replace('\\', "/");
+    let slot_slash = slot_raw.replace('\\', "/");
+    let mut rewritten = text.replace(archive_raw.as_ref(), slot_raw.as_ref());
+    if archive_slash != archive_raw.as_ref() {
+        rewritten = rewritten.replace(&archive_slash, &slot_slash);
+    }
+    rewritten
+}
+
 fn run_one_attempt(
     run_id: &str,
     project: &Path,
@@ -2863,7 +2878,27 @@ fn run_one_attempt(
     let mut worktree_warning = String::new();
     let mut worktree_path = None;
     let mut uses_single_writer = node.write == "单写者";
-    let workdir = if blind {
+    let archive_workdir = if blind {
+        Some(run_root.join(&node.node_id))
+    } else {
+        None
+    };
+    let (mut blind_slot_guard, slot_error) = if blind && verified {
+        if let Some(prefix) = crate::blind_slot::blind_slot_prefix(&node.agent) {
+            let blind_root = crate::blind_slot::blind_root_for(run_root);
+            match crate::blind_slot::BlindSlotGuard::acquire(&blind_root, prefix, timeout, &cancel_key) {
+                Ok(guard) => (Some(guard), None),
+                Err(error) => (None, Some(error)),
+            }
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+    let workdir = if let Some(guard) = blind_slot_guard.as_ref() {
+        guard.dir().to_path_buf()
+    } else if blind {
         run_root.join(&node.node_id)
     } else if node.write == "worktree" && verified {
         let path = run_root.join(&node.node_id).join("wt");
@@ -2920,7 +2955,7 @@ fn run_one_attempt(
     node.prompt = strip_engine_closing(&node.agent, &node.prompt);
     // 首次验证没过就不铺材料：REQUEST.md / diff.patch / changed 白铺一份，
     // 节点还是 error。
-    let prepared = if verified {
+    let prepared = if verified && slot_error.is_none() {
         prepare_outbound(
             &node,
             settings.redact,
@@ -3004,26 +3039,32 @@ fn run_one_attempt(
     } else {
         (prepared, channels::AgyToolMode::NoTools)
     };
-    let effective_session =
-        if channels::normalize_agent(&node.agent) == "pi" && node.session_id.is_empty() {
-            Uuid::new_v4().to_string()
-        } else {
-            node.session_id.clone()
-        };
+    let suppress_blind_session =
+        blind && crate::blind_slot::blind_slot_prefix(&node.agent).is_some();
+    let effective_session = if suppress_blind_session {
+        String::new()
+    } else if channels::normalize_agent(&node.agent) == "pi" && node.session_id.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        node.session_id.clone()
+    };
 
     // fix-fullcheck B5：固定收尾在最终外发文本上统一处理（材料说明、验证
     // 输出、内联材料都已拼完；ACP 回退用的完整上下文也取这份）。
+    let continuing = is_continuing(&node);
     let (prompt, material_names, prepared_redacted, preparation_error) = match prepared {
-        Ok(OutboundPreparation::Materialized(prompt, names, count)) => (
-            with_closing_for_node(&node.agent, &node.role, agy_mode, &prompt),
-            names,
-            count,
-            String::new(),
-        ),
+        Ok(OutboundPreparation::Materialized(prompt, names, count)) => {
+            let prompt = with_closing_for_node(&node.agent, &node.role, agy_mode, &prompt);
+            let prompt = if should_prepend_session_tag(&node.agent, blind, continuing) {
+                format!("{NON_BLIND_SESSION_TAG}\n{prompt}")
+            } else {
+                prompt
+            };
+            (prompt, names, count, String::new())
+        }
         Ok(OutboundPreparation::Unsent) => ("(未发送)".into(), Vec::new(), 0, String::new()),
         Err(error) => ("(未发送)".into(), Vec::new(), 0, error),
     };
-    let continuing = is_continuing(&node);
     let (outbound, mut redacted) = if continuing {
         if node.current_message.is_empty() {
             (prompt.clone(), prepared_redacted)
@@ -3056,7 +3097,8 @@ fn run_one_attempt(
     let mut oneshot_session = effective_session.clone();
     let mut oneshot_outbound = outbound.clone();
     let mut error = if verified {
-        write_lock_error
+        slot_error
+            .or(write_lock_error)
             .or(rollback_error)
             .or(snapshot_error)
             .unwrap_or(preparation_error)
@@ -3101,12 +3143,16 @@ fn run_one_attempt(
     }
     if needs_oneshot && uses_acp {
         entered_channel = true;
+        let sent_acp_outbound = match archive_workdir.as_deref().filter(|_| blind_slot_guard.is_some()) {
+            Some(archive_dir) => rewrite_blind_slot_paths(&outbound, archive_dir, &workdir),
+            None => outbound.clone(),
+        };
         let attempt = channels::acp::run(
             &node.agent,
             &node.provider,
             &node.model,
-            (!node.session_id.is_empty()).then_some(node.session_id.as_str()),
-            &outbound,
+            (!suppress_blind_session && !node.session_id.is_empty()).then_some(node.session_id.as_str()),
+            &sent_acp_outbound,
             &workdir,
             channel_timeout,
             &node.thinking,
@@ -3175,14 +3221,18 @@ fn run_one_attempt(
 
     if needs_oneshot {
         let _ = fs::write(&task_file, oneshot_outbound.as_bytes());
-        let blind_files = blind && blind_has_uninlined_files(&oneshot_outbound, Some(&workdir), &material_names);
+        let sent_oneshot = match archive_workdir.as_deref().filter(|_| blind_slot_guard.is_some()) {
+            Some(archive_dir) => rewrite_blind_slot_paths(&oneshot_outbound, archive_dir, &workdir),
+            None => oneshot_outbound.clone(),
+        };
+        let blind_files = blind && blind_has_uninlined_files(&sent_oneshot, Some(&workdir), &material_names);
         // TASK-74 阶段 3：Kimi 超过 24,000 个 UTF-16 码元不再裁剪，改为落盘到独立任务文件，
         // 命令行只传单行短指路句；盲位置写盲目录 KIMI_TASK.md，共享/单写者写 .aicross/runs/<派发>/。
         let cli_outbound = if channels::normalize_agent(&node.agent) == "kimi"
-            && oneshot_outbound.encode_utf16().count() > channels::KIMI_UTF16_PROMPT_LIMIT
+            && sent_oneshot.encode_utf16().count() > channels::KIMI_UTF16_PROMPT_LIMIT
         {
             if blind {
-                write_atomic(&workdir.join("KIMI_TASK.md"), oneshot_outbound.as_bytes())
+                write_atomic(&workdir.join("KIMI_TASK.md"), sent_oneshot.as_bytes())
                     .map(|()| channels::kimi_pointer_prompt("KIMI_TASK.md"))
             } else {
                 crate::project_dir::run_dir(&workdir, run_id).and_then(|(kimi_run_dir, _)| {
@@ -3195,14 +3245,14 @@ fn run_one_attempt(
                     let rel = path
                         .strip_prefix(&workdir)
                         .map_err(|e| format!("Kimi 任务文件相对路径计算失败：{e}"))?;
-                    write_atomic(&path, oneshot_outbound.as_bytes())?;
+                    write_atomic(&path, sent_oneshot.as_bytes())?;
                     Ok(channels::kimi_pointer_prompt(
                         &rel.to_string_lossy().replace('\\', "/"),
                     ))
                 })
             }
         } else {
-            Ok(oneshot_outbound.clone())
+            Ok(sent_oneshot.clone())
         };
         // TASK-74：agy >= 1.5.0 在运行时目录（run_root/agy-settings）写入 --settings，
         // 绝不写进盲审工作目录或项目目录。
@@ -3444,6 +3494,15 @@ fn run_one_attempt(
         pinned_note = Some(outcome.note);
     }
 
+    if let Some(guard) = blind_slot_guard.take() {
+        channels::acp::close_by_cwd(guard.dir());
+        if let Some(archive_dir) = archive_workdir.as_ref() {
+            if let Err(archive_error) = guard.archive_and_release(archive_dir) {
+                append_runner_note(&mut runner_note, &archive_error);
+            }
+        }
+    }
+
     annotate_kimi_metadata(&node.agent, &mut channel_output, &mut runner_note);
 
     // CLI 输出可能回显请求头或配置片段。无论外发脱敏开关如何，留痕与
@@ -3466,6 +3525,7 @@ fn run_one_attempt(
     } else {
         String::new()
     };
+    let record_workdir = archive_workdir.as_ref().unwrap_or(&workdir);
     let record = DispatchRecord {
         schema: RECORD_SCHEMA.into(),
         run_id: run_id.into(),
@@ -3483,7 +3543,7 @@ fn run_one_attempt(
         isolation: isolation.clone(),
         runner: runner.clone(),
         runner_note: runner_note.clone(),
-        workdir: workdir.to_string_lossy().into_owned(),
+        workdir: record_workdir.to_string_lossy().into_owned(),
         materials: material_names,
         redacted,
         truncated,
@@ -3556,7 +3616,7 @@ fn run_one_attempt(
         isolation,
         runner,
         runner_note,
-        workdir: workdir.to_string_lossy().into_owned(),
+        workdir: record_workdir.to_string_lossy().into_owned(),
         dispatch_file,
         frontmatter,
         output_preview: raw_stdout.chars().take(2000).collect(),
@@ -3921,6 +3981,17 @@ fn with_closing_for_node(
     } else {
         format!("{text}\n\n{closing}")
     }
+}
+
+const NON_BLIND_SESSION_TAG: &str = "[aicross 派发]";
+
+fn should_prepend_session_tag(agent: &str, blind: bool, continuing: bool) -> bool {
+    !blind
+        && !continuing
+        && matches!(
+            channels::normalize_agent(agent),
+            "claude" | "codex" | "kimi" | "agy"
+        )
 }
 
 #[cfg(test)]
@@ -10939,7 +11010,7 @@ mod tests {
         };
 
         crate::resources::with_agent_version_stub("agy", Some("1.5.6"), || {
-            // 1. 盲位置 > 200 KB 纯文本：写入 REQUEST.md，不加 AGY_NO_TOOLS，--settings 在 run_root/agy-settings 下。
+            // 1. 盲位置 > 200 KB 纯文本：写入 REQUEST.md，走固定槽位 blind/agy-1，跑完归档并清空，传 --project aicross。
             let mut large = base_agy();
             large.node_id = "agy-large".into();
             large.prompt = "A".repeat(210 * 1024);
@@ -10947,7 +11018,10 @@ mod tests {
             assert_eq!(res1.status, "ok", "{}", res1.error);
             let c1: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
             let workdir1 = PathBuf::from(c1["cwd"].as_str().unwrap());
-            assert!(workdir1.join("REQUEST.md").is_file());
+            assert_eq!(workdir1, root.join("blind").join("agy-1"));
+            assert!(fs::read_dir(&workdir1).unwrap().next().is_none(), "跑完槽位应清空");
+            assert!(PathBuf::from(&res1.workdir).join("REQUEST.md").is_file());
+            assert!(c1["argv"].as_array().unwrap().windows(2).any(|w| w == ["--project", "aicross"]));
             let sp1 = PathBuf::from(c1["settings_path"].as_str().unwrap());
             assert!(sp1.starts_with(run_root.join("agy-settings")) && !sp1.starts_with(&workdir1));
             let s1: Value = serde_json::from_str(c1["settings_body"].as_str().unwrap()).unwrap();
@@ -10956,7 +11030,7 @@ mod tests {
             assert!(!c1["prompt"].as_str().unwrap().contains(channels::AGY_NO_TOOLS));
             assert!(c1["prompt"].as_str().unwrap().contains(channels::AGY_READONLY_NOTE));
 
-            // 2. 盲验收含 project/ 只读副本：不再拒发，不加 AGY_NO_TOOLS，传只读 --settings。
+            // 2. 盲验收含 project/ 只读副本：不再拒发，走槽位并归档，传只读 --settings 与 --project aicross。
             let mut accept = base_agy();
             accept.node_id = "agy-accept".into();
             accept.role = "验收".into();
@@ -10970,9 +11044,13 @@ mod tests {
             let c2: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
             assert!(!c2["prompt"].as_str().unwrap().contains(channels::AGY_NO_TOOLS));
             assert!(c2["prompt"].as_str().unwrap().contains(channels::AGY_READONLY_NOTE));
-            assert!(PathBuf::from(c2["cwd"].as_str().unwrap()).join("project").is_dir());
+            let workdir2 = PathBuf::from(c2["cwd"].as_str().unwrap());
+            assert_eq!(workdir2, root.join("blind").join("agy-1"));
+            assert!(fs::read_dir(&workdir2).unwrap().next().is_none());
+            assert!(PathBuf::from(&res2.workdir).join("project").is_dir());
+            assert!(c2["argv"].as_array().unwrap().windows(2).any(|w| w == ["--project", "aicross"]));
 
-            // 3. 单写者位置允许派发，带禁止命令说明与目录前缀 allow 规则，绝不含 --dangerously-skip-permissions。
+            // 3. 单写者位置允许派发，带禁止命令说明与目录前缀 allow 规则，不带 --project aicross，绝不含 --dangerously-skip-permissions。
             let mut sw = base_agy();
             sw.node_id = "agy-sw".into();
             sw.role = "执行".into();
@@ -10983,6 +11061,7 @@ mod tests {
             assert_eq!(res3.status, "ok", "{}", res3.error);
             let c3: Value = serde_json::from_str(&fs::read_to_string(&captured).unwrap()).unwrap();
             assert!(c3["prompt"].as_str().unwrap().contains(channels::AGY_SINGLE_WRITER_NOTE));
+            assert!(!c3["argv"].as_array().unwrap().iter().any(|a| a == "--project"));
             assert!(!c3["argv"].as_array().unwrap().iter().any(|a| a == "--dangerously-skip-permissions"));
             let s3: Value = serde_json::from_str(c3["settings_body"].as_str().unwrap()).unwrap();
             let allow = s3["permissions"]["allow"][0].as_str().unwrap();
@@ -11066,7 +11145,11 @@ mod tests {
         let p1 = c1["p_arg"].as_str().unwrap();
         assert_eq!(p1, "完整任务在 KIMI_TASK.md，先读完再按其要求完成。");
         assert!(c1["task_text"].as_str().unwrap().contains("中段标记-74KIMI"));
-        assert!(PathBuf::from(c1["cwd"].as_str().unwrap()).join("KIMI_TASK.md").is_file());
+        let slot_dir = PathBuf::from(c1["cwd"].as_str().unwrap());
+        assert!(slot_dir.ends_with(Path::new("blind").join("kimi-1")), "{}", slot_dir.display());
+        assert!(!slot_dir.join("KIMI_TASK.md").exists());
+        assert_eq!(PathBuf::from(&res_blind.workdir), run_root.join("kimi-blind"));
+        assert!(PathBuf::from(&res_blind.workdir).join("KIMI_TASK.md").is_file());
         assert!(!project.join("KIMI_TASK.md").exists());
         assert!(res_blind.frontmatter.contains("tokens_in: 未报告"), "{}", res_blind.frontmatter);
         assert!(res_blind.frontmatter.contains("tokens_out: 未报告"), "{}", res_blind.frontmatter);
@@ -11092,6 +11175,530 @@ mod tests {
         assert!(c2["task_text"].as_str().unwrap().contains("中段标记-74KIMI"));
         assert!(!project.join("KIMI_TASK.md").exists());
         assert!(!project.join("kimi-task-kimi-shared-主.md").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task75_kimi_blind_concurrent_dispatches_use_distinct_slots_rewrite_paths_and_archive() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t75-conc-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs").join("r-conc");
+        let log_dir = root.join("logs");
+        let blind_root = root.join("blind");
+        let attach = root.join("attach.txt");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(&attach, "附件内容").unwrap();
+
+        let stub = root.join("kimi_conc_stub.py");
+        let sync_dir = root.join("sync");
+        fs::create_dir_all(&sync_dir).unwrap();
+        let script_body = format!(
+            "import json, pathlib, sys, time\n\
+             argv = sys.argv[1:]\n\
+             p_arg = argv[argv.index('-p') + 1]\n\
+             tag = 'n1' if 'TAG-NODE-1' in p_arg else 'n2'\n\
+             sync = pathlib.Path(r'{}')\n\
+             (sync / f'{{tag}}.ready').write_text(str(pathlib.Path.cwd()), encoding='utf-8')\n\
+             other = 'n2' if tag == 'n1' else 'n1'\n\
+             deadline = time.time() + 5.0\n\
+             while not (sync / f'{{other}}.ready').exists() and time.time() < deadline:\n    \
+                 time.sleep(0.05)\n\
+             pathlib.Path(f'agent-{{tag}}.txt').write_text('done', encoding='utf-8')\n\
+             (sync / f'{{tag}}.json').write_text(json.dumps({{'cwd': str(pathlib.Path.cwd()), 'argv': argv, 'p_arg': p_arg}}, ensure_ascii=False), encoding='utf-8')\n\
+             print(json.dumps({{'role': 'assistant', 'content': f'PASS-{{tag}}'}}, ensure_ascii=False))\n",
+            sync_dir.display()
+        );
+        fs::write(&stub, script_body).unwrap();
+
+        let settings = DispatchSettings { timeout_secs: 15, ..DispatchSettings::default() };
+        let provider = format!("__aicross_test__||{}", stub.display());
+        let mk_node = |id: &str, tag: &str| {
+            let mut req = node(vec![attach.to_string_lossy().into_owned()]);
+            req.node_id = id.into();
+            req.agent = "kimi".into();
+            req.provider = provider.clone();
+            req.model = "kimi-code/k".into();
+            req.session_id = "should-not-pass-session".into();
+            let archive_path = run_root.join(id);
+            req.prompt = format!("{tag} 参考路径：{}", archive_path.display());
+            req
+        };
+        let req1 = mk_node("k1", "TAG-NODE-1");
+        let req2 = mk_node("k2", "TAG-NODE-2");
+        let (p1, r1, l1, s1) = (project.clone(), run_root.clone(), log_dir.clone(), settings.clone());
+        let r2 = run_root.clone();
+        let h1 = thread::spawn(move || run_one("r-conc", &p1, &r1, &l1, &s1, req1));
+        let h2 = thread::spawn(move || run_one("r-conc", &project, &r2, &log_dir, &settings, req2));
+        let res1 = h1.join().unwrap();
+        let res2 = h2.join().unwrap();
+        assert_eq!(res1.status, "ok", "{}", res1.error);
+        assert_eq!(res2.status, "ok", "{}", res2.error);
+
+        let seen1: Value = serde_json::from_str(&fs::read_to_string(sync_dir.join("n1.json")).unwrap()).unwrap();
+        let seen2: Value = serde_json::from_str(&fs::read_to_string(sync_dir.join("n2.json")).unwrap()).unwrap();
+        let cwd1 = PathBuf::from(seen1["cwd"].as_str().unwrap());
+        let cwd2 = PathBuf::from(seen2["cwd"].as_str().unwrap());
+        assert_ne!(cwd1, cwd2);
+        let mut names = vec![
+            cwd1.file_name().unwrap().to_string_lossy().into_owned(),
+            cwd2.file_name().unwrap().to_string_lossy().into_owned(),
+        ];
+        names.sort();
+        assert_eq!(names, vec!["kimi-1", "kimi-2"]);
+
+        for (seen, cwd, res, tag_file, expected_archive) in [
+            (&seen1, &cwd1, &res1, "agent-n1.txt", run_root.join("k1")),
+            (&seen2, &cwd2, &res2, "agent-n2.txt", run_root.join("k2")),
+        ] {
+            let argv: Vec<&str> = seen["argv"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+            assert!(!argv.iter().any(|arg| matches!(*arg, "-S" | "--session" | "--continue")), "{argv:?}");
+            let sent_p = seen["p_arg"].as_str().unwrap();
+            assert!(sent_p.contains(&cwd.to_string_lossy().into_owned()), "{sent_p}");
+            assert!(!sent_p.contains(&expected_archive.to_string_lossy().into_owned()), "{sent_p}");
+
+            assert_eq!(PathBuf::from(&res.workdir), expected_archive);
+            assert!(!res.frontmatter.contains("kimi-1") && !res.frontmatter.contains("kimi-2"), "{}", res.frontmatter);
+            let record_body = fs::read_to_string(&res.dispatch_file).unwrap();
+            assert!(record_body.contains(&expected_archive.to_string_lossy().into_owned()), "{record_body}");
+            assert!(!record_body.contains(&cwd.to_string_lossy().into_owned()), "{record_body}");
+
+            assert!(expected_archive.join("attach.txt").is_file());
+            assert!(expected_archive.join(tag_file).is_file());
+            assert!(fs::read_dir(cwd).unwrap().next().is_none(), "槽位用完未清空：{}", cwd.display());
+            assert!(crate::file_lock::FileLock::try_acquire(&blind_root.join(format!("{}.lock", cwd.file_name().unwrap().to_string_lossy()))).unwrap().is_some());
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task75_kimi_blind_all_slots_busy_times_out_and_cancel_stops_immediately() {
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t75-busy-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs").join("r-busy");
+        let log_dir = root.join("logs");
+        let blind_root = root.join("blind");
+        let attach = root.join("attach.txt");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(&attach, "busy").unwrap();
+
+        let _locks: Vec<_> = (1..=crate::blind_slot::SLOT_COUNT)
+            .map(|idx| crate::file_lock::FileLock::acquire(&blind_root.join(format!("kimi-{idx}.lock")), Duration::from_secs(1)).unwrap())
+            .collect();
+
+        let mut req = node(vec![attach.to_string_lossy().into_owned()]);
+        req.node_id = "k-busy".into();
+        req.agent = "kimi".into();
+        req.model = "kimi-code/k".into();
+        let settings_1s = DispatchSettings { timeout_secs: 1, ..DispatchSettings::default() };
+        let res = run_one("r-busy", &project, &run_root, &log_dir, &settings_1s, req);
+        assert_eq!(res.status, "error");
+        assert_eq!(res.error, "盲审目录都在使用中");
+        assert_eq!(PathBuf::from(&res.workdir), run_root.join("k-busy"));
+        assert!(!run_root.join("k-busy").join("attach.txt").exists());
+
+        let mut cancel_req = node(vec![attach.to_string_lossy().into_owned()]);
+        cancel_req.node_id = "k-cancel".into();
+        cancel_req.agent = "kimi".into();
+        cancel_req.model = "kimi-code/k".into();
+        let settings_30s = DispatchSettings { timeout_secs: 30, ..DispatchSettings::default() };
+        let (p2, r2, l2) = (project.clone(), run_root.clone(), log_dir.clone());
+        let handle = thread::spawn(move || run_one("r-cancel", &p2, &r2, &l2, &settings_30s, cancel_req));
+        thread::sleep(Duration::from_millis(120));
+        cancel_dispatch_node("r-cancel".into(), "k-cancel".into());
+        let started = Instant::now();
+        let cancel_res = handle.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(cancel_res.status, "error");
+        assert_eq!(cancel_res.error, "派发已取消");
+        assert!(!run_root.join("k-cancel").join("attach.txt").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task75_kimi_blind_wipes_crash_leftovers_before_use() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t75-wipe-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs").join("r-wipe");
+        let log_dir = root.join("logs");
+        let slot1 = root.join("blind").join("kimi-1");
+        let attach = root.join("attach.txt");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::create_dir_all(slot1.join("stale-sub")).unwrap();
+        fs::write(slot1.join("crash-leftover.txt"), "stale").unwrap();
+        fs::write(slot1.join("stale-sub").join("old.txt"), "stale").unwrap();
+        fs::write(&attach, "fresh").unwrap();
+
+        let stub = root.join("kimi_wipe_stub.py");
+        fs::write(
+            &stub,
+            "import json, os\n\
+if os.path.exists('crash-leftover.txt') or os.path.exists('stale-sub'):\n    \
+    raise SystemExit('found crash leftover')\n\
+print(json.dumps({'role': 'assistant', 'content': 'CLEAN'}))\n",
+        )
+        .unwrap();
+
+        let settings = DispatchSettings { timeout_secs: 10, ..DispatchSettings::default() };
+        let mut req = node(vec![attach.to_string_lossy().into_owned()]);
+        req.node_id = "k-clean".into();
+        req.agent = "kimi".into();
+        req.provider = format!("__aicross_test__||{}", stub.display());
+        req.model = "kimi-code/k".into();
+        let res = run_one("r-wipe", &project, &run_root, &log_dir, &settings, req);
+        assert_eq!(res.status, "ok", "{}", res.error);
+        let archive = run_root.join("k-clean");
+        assert!(archive.join("attach.txt").is_file());
+        assert!(!archive.join("crash-leftover.txt").exists());
+        assert!(!archive.join("stale-sub").exists());
+        assert!(fs::read_dir(&slot1).unwrap().next().is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task75_kimi_blind_failure_timeout_and_acp_archive_and_unlock() {
+        let _pool_guard = channels::acp::test_pool_guard();
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t75-end-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs").join("r-end");
+        let log_dir = root.join("logs");
+        let blind_root = root.join("blind");
+        let slot1 = blind_root.join("kimi-1");
+        let lock1 = blind_root.join("kimi-1.lock");
+        let attach = root.join("attach.txt");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(&attach, "keep").unwrap();
+
+        let err_stub = root.join("err_stub.py");
+        fs::write(&err_stub, "import pathlib, sys\npathlib.Path('err-out.txt').write_text('e')\nsys.exit(1)\n").unwrap();
+        let mut req_err = node(vec![attach.to_string_lossy().into_owned()]);
+        req_err.node_id = "k-err".into();
+        req_err.agent = "kimi".into();
+        req_err.provider = format!("__aicross_test__||{}", err_stub.display());
+        req_err.model = "kimi-code/k".into();
+        let settings = DispatchSettings { timeout_secs: 10, ..DispatchSettings::default() };
+        let res_err = run_one("r-end", &project, &run_root, &log_dir, &settings, req_err);
+        assert_eq!(res_err.status, "error");
+        assert!(run_root.join("k-err").join("attach.txt").is_file());
+        assert!(run_root.join("k-err").join("err-out.txt").is_file());
+        assert!(fs::read_dir(&slot1).unwrap().next().is_none());
+        assert!(crate::file_lock::FileLock::try_acquire(&lock1).unwrap().is_some());
+
+        let to_stub = root.join("to_stub.py");
+        fs::write(&to_stub, "import pathlib, time\npathlib.Path('to-out.txt').write_text('t')\ntime.sleep(5)\n").unwrap();
+        let mut req_to = node(vec![attach.to_string_lossy().into_owned()]);
+        req_to.node_id = "k-to".into();
+        req_to.agent = "kimi".into();
+        req_to.provider = format!("__aicross_test__||{}", to_stub.display());
+        req_to.model = "kimi-code/k".into();
+        let settings_1s = DispatchSettings { timeout_secs: 1, ..DispatchSettings::default() };
+        let res_to = run_one("r-end", &project, &run_root, &log_dir, &settings_1s, req_to);
+        assert_eq!(res_to.status, "timeout");
+        assert!(run_root.join("k-to").join("attach.txt").is_file());
+        assert!(run_root.join("k-to").join("to-out.txt").is_file());
+        assert!(fs::read_dir(&slot1).unwrap().next().is_none());
+        assert!(crate::file_lock::FileLock::try_acquire(&lock1).unwrap().is_some());
+
+        let close_marker = root.join("acp-closed");
+        let close_arg = format!("--close-file={}", close_marker.display());
+        let (mut req_acp, mut acp_settings, oneshot_count) = acp_run_one_fixture(&root, &[&close_arg]);
+        req_acp.node_id = "k-acp".into();
+        req_acp.visibility = "盲".into();
+        req_acp.write = "只读".into();
+        req_acp.session_id = "bogus-session".into();
+        req_acp.materials = vec![attach.to_string_lossy().into_owned()];
+        acp_settings.timeout_secs = 5;
+        let res_acp = run_one("r-end", &project, &run_root, &log_dir, &acp_settings, req_acp);
+        assert_eq!(res_acp.status, "ok", "{}", res_acp.error);
+        assert_eq!(res_acp.runner, "acp");
+        assert_eq!(res_acp.session_id, "fake-session-1");
+        assert!(!oneshot_count.exists());
+        assert!(close_marker.is_file(), "归档前未关闭并终止槽位里的 ACP 进程");
+        assert!(run_root.join("k-acp").join("attach.txt").is_file());
+        assert_eq!(PathBuf::from(&res_acp.workdir), run_root.join("k-acp"));
+        assert!(fs::read_dir(&slot1).unwrap().next().is_none());
+        assert!(crate::file_lock::FileLock::try_acquire(&lock1).unwrap().is_some());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task75_non_kimi_blind_dir_unchanged() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t75-claude-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs").join("r-claude");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+
+        let captured = root.join("cwd.txt");
+        let stub = root.join("claude_stub.py");
+        fs::write(
+            &stub,
+            format!(
+                "import json, pathlib, sys\n\
+_ = sys.stdin.read()\n\
+pathlib.Path(r'{}').write_text(str(pathlib.Path.cwd()), encoding='utf-8')\n\
+print(json.dumps({{'type': 'result', 'subtype': 'success', 'result': 'OK'}}))\n",
+                captured.display()
+            ),
+        )
+        .unwrap();
+
+        let settings = DispatchSettings { timeout_secs: 10, ..DispatchSettings::default() };
+        let mut req = node(Vec::new());
+        req.node_id = "c-blind".into();
+        req.agent = "claude".into();
+        req.provider = format!("__aicross_test__||{}", stub.display());
+        req.model = "sonnet".into();
+        let res = run_one("r-claude", &project, &run_root, &log_dir, &settings, req);
+        assert_eq!(res.status, "ok", "{}", res.error);
+        let expected = run_root.join("c-blind");
+        assert_eq!(PathBuf::from(fs::read_to_string(&captured).unwrap()), expected);
+        assert_eq!(PathBuf::from(&res.workdir), expected);
+        assert!(!root.join("blind").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task75_agy_blind_slots_archive_and_project_flag() {
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t75-agy-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs").join("r-agy");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+
+        let stub = root.join("agy_slot_stub.py");
+        fs::write(
+            &stub,
+            "import json, pathlib, sys, time\n\
+             req = json.loads(sys.stdin.readline())\n\
+             cwd = pathlib.Path.cwd()\n\
+             time.sleep(0.35)\n\
+             (cwd / 'note.txt').write_text('ok', encoding='utf-8')\n\
+             argv_file = cwd / 'argv.json'\n\
+             argv_file.write_text(json.dumps({'argv': sys.argv[1:], 'cwd': str(cwd)}), encoding='utf-8')\n\
+             print(json.dumps({'event': 'result', 'result': {'status': 'SUCCESS', 'response': 'PASS', 'usage': {'input_tokens': 5, 'output_tokens': 1}}}))\n",
+        )
+        .unwrap();
+
+        let settings = DispatchSettings { timeout_secs: 10, ..DispatchSettings::default() };
+        let provider = format!("__aicross_test__||{}", stub.display());
+        let make_agy = |id: &str| {
+            let mut r = node(Vec::new());
+            r.node_id = id.into();
+            r.agent = "agy".into();
+            r.provider = provider.clone();
+            r.model = "gemini-4-carbon-low".into();
+            r
+        };
+
+        let p1 = project.clone();
+        let rr1 = run_root.clone();
+        let lg1 = log_dir.clone();
+        let st1 = settings.clone();
+        let n1 = make_agy("agy-1");
+        let t1 = std::thread::spawn(move || run_one("r-agy", &p1, &rr1, &lg1, &st1, n1));
+
+        let p2 = project.clone();
+        let rr2 = run_root.clone();
+        let lg2 = log_dir.clone();
+        let st2 = settings.clone();
+        let n2 = make_agy("agy-2");
+        let t2 = std::thread::spawn(move || run_one("r-agy", &p2, &rr2, &lg2, &st2, n2));
+
+        let r1 = t1.join().unwrap();
+        let r2 = t2.join().unwrap();
+        assert_eq!(r1.status, "ok", "{}", r1.error);
+        assert_eq!(r2.status, "ok", "{}", r2.error);
+
+        let a1: Value = serde_json::from_str(&fs::read_to_string(run_root.join("agy-1").join("argv.json")).unwrap()).unwrap();
+        let a2: Value = serde_json::from_str(&fs::read_to_string(run_root.join("agy-2").join("argv.json")).unwrap()).unwrap();
+        let cwds: std::collections::HashSet<PathBuf> = [
+            PathBuf::from(a1["cwd"].as_str().unwrap()),
+            PathBuf::from(a2["cwd"].as_str().unwrap()),
+        ].into_iter().collect();
+        let slot1 = root.join("blind").join("agy-1");
+        let slot2 = root.join("blind").join("agy-2");
+        assert_eq!(cwds, [slot1.clone(), slot2.clone()].into_iter().collect());
+        assert!(fs::read_dir(&slot1).unwrap().next().is_none());
+        assert!(fs::read_dir(&slot2).unwrap().next().is_none());
+        assert_eq!(PathBuf::from(&r1.workdir), run_root.join("agy-1"));
+        assert_eq!(PathBuf::from(&r2.workdir), run_root.join("agy-2"));
+        assert!(a1["argv"].as_array().unwrap().windows(2).any(|w| w == ["--project", "aicross"]));
+        assert!(a2["argv"].as_array().unwrap().windows(2).any(|w| w == ["--project", "aicross"]));
+
+        // 非盲共享只读位置（>= 1.5.0）不走槽位、不传 --project aicross。
+        crate::resources::with_agent_version_stub("agy", Some("1.5.8"), || {
+            let mut ro = make_agy("agy-ro");
+            ro.role = "执行".into();
+            ro.visibility = "共享".into();
+            ro.write = "只读".into();
+            let res_ro = run_one("r-agy-ro", &project, &root.join("runs").join("r-agy-ro"), &log_dir, &settings, ro);
+            assert_eq!(res_ro.status, "ok", "{}", res_ro.error);
+            let aro: Value = serde_json::from_str(&fs::read_to_string(project.join("argv.json")).unwrap()).unwrap();
+            assert_eq!(PathBuf::from(aro["cwd"].as_str().unwrap()), project);
+            assert!(!aro["argv"].as_array().unwrap().iter().any(|v| v == "--project"));
+        });
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task75_non_blind_session_tag_rules() {
+        assert!(should_prepend_session_tag("claude", false, false));
+        assert!(should_prepend_session_tag("codex", false, false));
+        assert!(should_prepend_session_tag("kimi", false, false));
+        assert!(should_prepend_session_tag("agy", false, false));
+        assert!(!should_prepend_session_tag("claude", true, false));
+        assert!(!should_prepend_session_tag("claude", false, true));
+        assert!(!should_prepend_session_tag("pi", false, false));
+        assert!(!should_prepend_session_tag("cc-switch", false, false));
+
+        if channels::resolve_binary("python", None).is_err() { return; }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t75-tag-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+
+        let captured = root.join("captured_prompt.txt");
+        let stub = root.join("tag_stub.py");
+        let stub_src = r#"import json, pathlib, sys
+if '--input-format' in sys.argv:
+    kind = 'agy'
+    prompt = json.loads(sys.stdin.read())['message']['content']
+elif 'exec' in sys.argv:
+    kind = 'codex'
+    prompt = sys.stdin.read()
+elif '--mode' in sys.argv:
+    kind = 'pi'
+    prompt = sys.stdin.read()
+elif '-m' in sys.argv:
+    kind = 'kimi'
+    prompt = sys.argv[sys.argv.index('-p') + 1]
+else:
+    kind = 'claude'
+    prompt = sys.stdin.read()
+pathlib.Path(r'__CAP__').write_text(prompt, encoding='utf-8', newline='\n')
+if kind == 'claude':
+    print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'OK'}))
+elif kind == 'codex':
+    print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'OK'}}))
+elif kind == 'kimi':
+    print(json.dumps({'role': 'assistant', 'content': [{'type': 'text', 'text': 'OK'}]}))
+elif kind == 'agy':
+    print(json.dumps({'event': 'result', 'result': {'status': 'SUCCESS', 'response': 'OK', 'usage': {'input_tokens': 1, 'output_tokens': 1}}}))
+else:
+    print(json.dumps({'type': 'message_end', 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'OK'}], 'stopReason': 'stop', 'model': 'm', 'usage': {'input': 1, 'output': 1}}}))
+"#
+        .replace("__CAP__", &captured.to_string_lossy());
+        fs::write(&stub, stub_src).unwrap();
+
+        let settings = DispatchSettings { timeout_secs: 10, ..DispatchSettings::default() };
+        let provider = format!("__aicross_test__||{}", stub.display());
+        let make = |id: &str, agent: &str, vis: &str, write: &str| {
+            let mut r = node(Vec::new());
+            r.node_id = id.into();
+            r.agent = agent.into();
+            r.provider = provider.clone();
+            r.model = match agent {
+                "agy" => "gemini-4-carbon-low",
+                "kimi" => "kimi-code/k3",
+                _ => "m",
+            }
+            .into();
+            r.role = "执行".into();
+            r.visibility = vis.into();
+            r.write = write.into();
+            r.prompt = "请检查代码".into();
+            r
+        };
+
+        // 1. 首次非盲（claude / codex / kimi / agy）首行带 [aicross 派发]
+        for agent in ["claude", "codex", "kimi", "agy"] {
+            let _ = fs::remove_file(&captured);
+            let run_id = format!("t75-{agent}");
+            let res = crate::resources::with_agent_version_stub("agy", Some("1.5.8"), || {
+                run_one(&run_id, &project, &root.join("runs").join(&run_id), &log_dir, &settings, make(&format!("n-{agent}"), agent, "共享", "只读"))
+            });
+            assert_eq!(res.status, "ok", "{agent}: {}", res.error);
+            let sent = fs::read_to_string(&captured).unwrap();
+            assert!(sent.starts_with("[aicross 派发]\n请检查代码"), "{agent} sent: {sent:?}");
+            let record = fs::read_to_string(&res.dispatch_file).unwrap();
+            assert!(record.contains("## 任务全文\n\n[aicross 派发]\n请检查代码"), "{agent} record: {record}");
+        }
+
+        // 2. pi 非盲不加
+        let _ = fs::remove_file(&captured);
+        let res_pi = run_one("t75-pi", &project, &root.join("runs").join("t75-pi"), &log_dir, &settings, make("n-pi", "pi", "共享", "只读"));
+        let sent_pi = fs::read_to_string(&captured).unwrap();
+        assert!(!sent_pi.contains("[aicross 派发]"), "pi sent: {sent_pi:?}");
+        assert!(sent_pi.starts_with("请检查代码"), "{sent_pi:?}");
+        let _ = res_pi;
+
+        // 3. 盲派发（claude / kimi）不加
+        for agent in ["claude", "kimi"] {
+            let _ = fs::remove_file(&captured);
+            let run_id = format!("t75-blind-{agent}");
+            let res = run_one(&run_id, &project, &root.join("runs").join(&run_id), &log_dir, &settings, make(&format!("b-{agent}"), agent, "盲", "只读"));
+            assert_eq!(res.status, "ok", "{agent}: {}", res.error);
+            let sent = fs::read_to_string(&captured).unwrap();
+            assert!(!sent.contains("[aicross 派发]"), "blind {agent}: {sent:?}");
+        }
+
+        // 4. 续接轮（含 ACP 回退）不加
+        let _ = fs::remove_file(&captured);
+        let mut cont = make("n-cont", "claude", "共享", "只读");
+        cont.session_id = "prev-cli-session".into();
+        cont.current_message = "继续追问".into();
+        let res_cont = run_one("t75-cont", &project, &root.join("runs").join("t75-cont"), &log_dir, &settings, cont);
+        assert_eq!(res_cont.status, "ok", "{}", res_cont.error);
+        let sent_cont = fs::read_to_string(&captured).unwrap();
+        assert!(!sent_cont.contains("[aicross 派发]"), "cont: {sent_cont:?}");
+        assert!(sent_cont.starts_with("继续追问"), "{sent_cont:?}");
+
+        let _ = fs::remove_file(&captured);
+        let mut acp_fb = make("n-acp-fb", "claude", "共享", "只读");
+        acp_fb.session_id = "old-acp-session".into();
+        acp_fb.previous_runner = "acp".into();
+        acp_fb.prompt = "完整上下文\n继续追问".into();
+        acp_fb.current_message = "继续追问".into();
+        let res_acp_fb = run_one("t75-acp-fb", &project, &root.join("runs").join("t75-acp-fb"), &log_dir, &settings, acp_fb);
+        assert_eq!(res_acp_fb.status, "ok", "{}", res_acp_fb.error);
+        let sent_acp_fb = fs::read_to_string(&captured).unwrap();
+        assert!(!sent_acp_fb.contains("[aicross 派发]"), "acp fallback cont: {sent_acp_fb:?}");
+        assert!(sent_acp_fb.starts_with("完整上下文\n继续追问"), "{sent_acp_fb:?}");
+
+        // 5. (未发送) 不加（即便是非盲 agent，未进入外发也不能带标记）
+        let mut unsent = node(Vec::new());
+        unsent.node_id = "n-unsent".into();
+        unsent.agent = "agy".into();
+        unsent.provider = provider;
+        unsent.model = "gemini-4-carbon-low".into();
+        unsent.role = "执行".into();
+        unsent.visibility = "共享".into();
+        unsent.write = "worktree".into();
+        let res_unsent = crate::resources::with_agent_version_stub("agy", Some("1.5.8"), || {
+            run_one("t75-unsent", &project, &root.join("runs").join("t75-unsent"), &log_dir, &settings, unsent)
+        });
+        let record_unsent = fs::read_to_string(&res_unsent.dispatch_file).unwrap();
+        assert!(record_unsent.contains("## 任务全文\n\n(未发送)"), "{record_unsent}");
+        assert!(!record_unsent.contains("[aicross 派发]"), "{record_unsent}");
 
         let _ = fs::remove_dir_all(root);
     }

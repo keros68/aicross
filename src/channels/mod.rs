@@ -378,15 +378,21 @@ pub(crate) fn build_invocation_full(
         });
     }
     #[cfg(test)]
-    if matches!(normalize_agent(agent), "kimi" | "pi") {
+    if matches!(normalize_agent(agent), "claude" | "codex" | "kimi" | "pi") {
         if let Some((_, oneshot, _)) = test_provider_parts(provider) {
             let program = resolve_binary("python", None)?;
             let mut args = vec![oneshot];
-            args.extend(build_invocation_spec_with_blind_files(
+            let spec = build_invocation_spec_with_blind_files(
                 normalized, if normalized == "pi" { "test" } else { "" }, model, tier, thinking, blind, blind_files, session_id, prompt,
                 task_file, session_dir, cc_switch_path, writable,
-            )?.args);
-            return Ok(Invocation { program, args, input: None, stdout_skip: None });
+            )?;
+            args.extend(spec.args);
+            return Ok(Invocation {
+                program,
+                args,
+                input: spec.input,
+                stdout_skip: (normalized == "pi").then_some(crate::process::pi_message_update_line),
+            });
         }
     }
     let spec = build_invocation_spec_with_blind_files(
@@ -553,8 +559,10 @@ fn build_invocation_spec_with_blind_files(
                 "--output-format".into(),
                 "stream-json".into(),
             ];
-            if let Some(id) = session_id.filter(|id| !id.is_empty()) {
-                args.extend(["-S".into(), id.into()]);
+            if !blind {
+                if let Some(id) = session_id.filter(|id| !id.is_empty()) {
+                    args.extend(["-S".into(), id.into()]);
+                }
             }
             Ok(InvocationSpec {
                 binary: "kimi",
@@ -1647,6 +1655,26 @@ mod tests {
             .position(|value| value == "-S")
             .unwrap();
         assert_eq!(invocation.args[session + 1], "session-1234");
+    }
+
+    #[test]
+    fn kimi_blind_omits_session_flags() {
+        let invocation = build_invocation_spec(
+            "kimi",
+            "",
+            "kimi-code/k",
+            "中",
+            "中",
+            true,
+            Some("session-1234"),
+            "x",
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!invocation.args.iter().any(|arg| matches!(arg.as_str(), "-S" | "--session" | "--continue")));
     }
 
     #[test]

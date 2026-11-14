@@ -149,7 +149,7 @@ pub(super) fn spec_with_agy(
         return Err(format!("{agent} 通道缺少模型"));
     }
     match agent {
-        "agy" => Ok(agy_spec(model, thinking, prompt, timeout, agy_mode, agy_settings)),
+        "agy" => Ok(agy_spec(model, thinking, blind, prompt, timeout, agy_mode, agy_settings)),
         _ => Err(untested_error(agent, model)),
     }
 }
@@ -157,6 +157,7 @@ pub(super) fn spec_with_agy(
 fn agy_spec(
     model: &str,
     thinking: &str,
+    blind: bool,
     prompt: &str,
     timeout: Duration,
     agy_mode: AgyToolMode,
@@ -197,6 +198,11 @@ fn agy_spec(
     // `--model … conflicts with --effort=…`，status ERROR。
     if let Some(effort) = agy_effort(thinking).filter(|_| !model_has_effort_suffix(model)) {
         args.extend(["--effort".into(), effort.into()]);
+    }
+    // TASK-75 阶段 2 真机核实：agy 无头模式下 `--project aicross` 可把对话归入同名项目
+    // （该项目尚未创建时静默回退 `default-cli-project`，不影响执行）；盲位置、冒烟与首次验证带它，非盲位置不带。
+    if blind {
+        args.extend(["--project".into(), "aicross".into()]);
     }
     if let Some(settings_path) = agy_settings {
         args.extend([
@@ -566,6 +572,7 @@ mod tests {
             vec![
                 "--model", "gemini-next", "--input-format", "stream-json",
                 "--output-format", "stream-json", "--print-timeout", "300s", "--effort", "high",
+                "--project", "aicross",
             ]
         );
         assert!(!built.args.iter().any(|arg| arg.contains("dangerously")));
@@ -808,6 +815,7 @@ mod tests {
         )
         .unwrap();
         assert!(built_read.args.windows(2).any(|w| w == ["--settings", "D:/run/agy-settings/n1.json"]));
+        assert!(built_read.args.windows(2).any(|w| w == ["--project", "aicross"]));
         assert!(!built_read.args.iter().any(|a| a.contains("dangerously")));
         assert!(!built_read.input.as_deref().unwrap().contains(AGY_NO_TOOLS));
 
@@ -823,6 +831,7 @@ mod tests {
             Some(settings),
         )
         .unwrap();
+        assert!(!built_sw.args.iter().any(|a| a == "--project"));
         let sw_input = built_sw.input.unwrap();
         assert!(sw_input.contains(AGY_SINGLE_WRITER_NOTE));
         assert!(!sw_input.contains(AGY_NO_TOOLS));
