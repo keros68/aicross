@@ -66,7 +66,7 @@ class DBase(Base):
     def review(self, outputs=None, **over):
         args = dict(host="claude-code", file=[str(self.material)], text_file=None, kind="code", author=None,
                     n=None, entry=None, tier=None, thinking="high", project=str(self.project), timeout=5,
-                    json=False, go=False)
+                    json=False, full=False, go=False)
         args.update(over)
         with self.fake(outputs or {}):
             return self.call(dispatch.cmd_review, **args)
@@ -81,7 +81,8 @@ class TestReview(DBase):
         self.assertEqual(code, 0)
         self.assertEqual(self.calls, [])
         self.assertIn("路由决策行", out)
-        self.assertIn("pi:zai-coding-cn / glm-5.3（Zhipu）", out)
+        self.assertIn("盲审 → Zhipu glm-5.3（经 pi） ｜ 高档 · thinking=高", out)
+        self.assertNotIn("新模型", out)                            # 检查新模型的提醒不进每次派发
         self.assertIn("尚未发送", out)
         self.assertFalse((self.project / ".aicross").exists())
 
@@ -123,7 +124,8 @@ class TestReview(DBase):
         self.assertNotIn("草稿里的答案", trace)                    # 思考草稿不当答案
         self.assertEqual((self.project / ".aicross" / ".gitignore").read_text(encoding="utf-8"), "runs/\n")
         self.assertIn("审查意见分两节写", trace)                     # 两类结论的要求随模板发出
-        self.assertIn("独立性：", out)
+        self.assertIn("- 审查：Zhipu glm-5.3（经 pi，独立，", out)
+        self.assertNotIn("账单", out)                              # 用量只在记录里
         smoke = {e["id"]: e["smoke"]["status"] for e in self.manifest()["entries"]}
         self.assertEqual(smoke["pi-zai-coding-cn.zhipu"], "ok")    # 成功的派发顺带刷新冒烟
 
@@ -131,19 +133,58 @@ class TestReview(DBase):
         outputs = {"--provider": (0, pi_out(), ""), "exec": (0, CODEX_OUT.replace("空列表会除零", ""), "boom")}
         code, out, _ = self.review(outputs, go=True, n=2)
         self.assertEqual(code, 0)                                  # 一路成功即 0
-        self.assertIn("状态 error", out)
+        self.assertIn("｜ error ｜", out)
         self.assertIn("只算第二意见", out)
         self.assertEqual(len(self.traces()), 2)                    # 失败的一路也留痕
+
+    def test_go_shows_only_the_will_break_section(self):
+        answer = ("未运行任何脚本。\n\n## 会出错\n\n1. 空列表会除零。\n   出错场景：average([]) 抛 ZeroDivisionError。\n\n"
+                  "## 建议\n\n- 变量名 nums 可以更具体。\n")
+        code, out, _ = self.review({"--provider": (0, pi_out(answer), "")}, go=True)
+        self.assertEqual(code, 0)
+        self.assertIn("未运行任何脚本", out)                        # 开头段留着：没运行、没做完的说明在这里
+        self.assertIn("average([]) 抛 ZeroDivisionError", out)
+        self.assertNotIn("变量名 nums", out)                       # 建议不进对话
+        self.assertIn("「建议」一节", out)
+        self.assertIn("另有 1 路的建议没有展开", out)
+        self.assertIn("变量名 nums", self.traces()[0].read_text(encoding="utf-8"))   # 整篇在记录里
+        code, out, _ = self.review({"--provider": (0, pi_out(answer), "")}, go=True, full=True)
+        self.assertIn("变量名 nums", out)
+
+    def test_answer_without_the_two_sections_is_shown_whole(self):
+        self.assertIsNone(dispatch.split_answer("结论：没有问题。\n依据：逐行读过。"))
+        self.assertEqual(dispatch.split_answer("**会出错**\n无\n\n**建议**\n无"), ("", "**会出错**\n无", "无"))
+        lead, wrong, advice = dispatch.split_answer("总评\n### 一、会出错：\nA\n这一条会出错的原因是……\n### 二、建议\nB")
+        self.assertEqual((lead, advice), ("总评", "B"))
+        self.assertIn("这一条会出错的原因", wrong)                   # 正文里出现这三个字不当标题
+
+    def test_failed_route_goes_to_the_back_until_it_succeeds(self):
+        first = lambda: inventory.choose_reviewers(self.manifest(), "claude-code")["picked"][0]["id"]
+        before = first()
+        self.review({"--provider": (0, "", "boom")}, go=True)
+        res = inventory.choose_reviewers(self.manifest(), "claude-code")
+        self.assertNotEqual(res["picked"][0]["id"], before)
+        self.assertTrue(any("已排到后面" in n and before in n for n in res["notes"]))
+        self.review({"--provider": (0, pi_out(), "")}, go=True, entry=[before])
+        self.assertEqual(first(), before)                          # 成功一次即恢复原来的顺序
+
+    def test_legacy_migration_runs_once_per_project(self):
+        dispatch._MIGRATED.clear()
+        with mock.patch.object(dispatch, "migrate_legacy") as migrate:
+            dispatch.runs_root(self.project)
+            dispatch.runs_root(self.project)
+        self.assertEqual(migrate.call_count, 1)
 
     def test_all_failed_exits_1(self):
         code, out, _ = self.review({"--provider": (1, "", "network down")}, go=True)
         self.assertEqual(code, 1)
         self.assertIn("没有可用的结果", out)
+        self.assertNotIn("要你拍板", out)                          # 没有结果就不给小结的骨架
 
     def test_named_entries_same_vendor_flagged(self):
         code, out, _ = self.review(entry=["codex.openai"])
-        self.assertIn("codex / gpt-6.1-sol（OpenAI）", out)
-        self.assertIn("用户点名", out)
+        self.assertIn("OpenAI gpt-6.1-sol（经 codex）", out)
+        self.assertNotIn("用户点名", out)                          # 用户自己点的名，不用再告诉他
 
     def test_no_material_and_no_reviewer(self):
         self.assertEqual(self.review(file=None)[0], 2)
@@ -534,7 +575,7 @@ class TestRun(DBase):
         self.setm(executor="pi-zai-coding-cn.zhipu:low")
         code, out, _ = self.run_task()
         self.assertEqual((code, self.calls), (0, []))              # 不带 --go 不发送
-        self.assertIn("[ai-cross] 执行 → pi:zai-coding-cn / glm-5.3-flash（Zhipu）", out)
+        self.assertIn("[ai-cross] 执行 → Zhipu glm-5.3-flash（经 pi）", out)
         code, out, _ = self.run_task({"--provider": (0, pi_out("def slugify(title): ...", model="glm-5.3-flash"), "")},
                                      go=True, file=[str(self.material)])
         self.assertEqual(code, 0)

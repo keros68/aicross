@@ -736,7 +736,9 @@ def choose_reviewers(data, host, author=None, n=None, tier=None):
     count = n or (1 if author else 2)
 
     picked, seen, skipped = [], set(), []
-    for entry_id in reviewer_order(data):
+    order = reviewer_order(data)
+    late = [i for i in order if recently_failed(entries[i])]  # 上次派发没结果的排到后面，成功一次即恢复
+    for entry_id in [i for i in order if i not in late] + late:
         entry = entries[entry_id]
         if entry["vendor"] == author or entry["vendor"] in seen:
             continue
@@ -750,6 +752,9 @@ def choose_reviewers(data, host, author=None, n=None, tier=None):
 
     if skipped:
         notes.append("冒烟失败的条目已跳过：" + "、".join(skipped))
+    behind = [i for i in late if i not in skipped and entries[i]["vendor"] != author]
+    if behind:
+        notes.append("上次派发没有结果、已排到后面：" + "、".join(behind))
     if explicit_author and host_vendor and host_vendor != explicit_author:
         notes.append(f"宿主自己（{host_vendor}）与被审产出不同厂商，也可以充当一方。")
     if any(p["billing"] == "per-call" for p in picked):
@@ -768,6 +773,24 @@ def mark_smoke(data, entry_id, status, reason=None):
     entry["smoke"] = {"status": status, "date": today()}
     if reason:
         entry["smoke"]["reason"] = reason
+    if status == "ok":
+        entry.pop("last_failure", None)
+
+
+FAILURE_DAYS = 1  # 派发没结果后，这么多天内选人时排到后面
+
+
+def mark_failure(data, entry_id, reason):
+    """一次派发超时或出错：不算冒烟失败（可能只是额度或网络），只在选人时暂时排后。"""
+    find_entry(data, entry_id)["last_failure"] = {"date": today(), "reason": (reason or "")[:100]}
+
+
+def recently_failed(entry):
+    try:
+        days = (date.today() - date.fromisoformat((entry.get("last_failure") or {})["date"])).days
+    except (KeyError, TypeError, ValueError):
+        return False
+    return days <= FAILURE_DAYS
 
 
 def cmd_pick(args):
