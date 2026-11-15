@@ -3871,3 +3871,81 @@ fn task74_multi_step_task_raises_execution_thinking_floor() {
     assert_eq!(single_summary[0].thinking, "");
     assert_eq!(single_req.nodes[0].thinking, "低");
 }
+
+#[test]
+fn task83_kimi_changed_files_note_propagates_to_run_summary_and_filesink() {
+    let root = temp("kimi-notes");
+    let mut graph = new_graph("D:/p", "g-notes".into(), "root".into(), now());
+    let created = vec!["k1".to_string()];
+    graph.nodes.insert("root".into(), GraphNode { id: "root".into(), kind: "material".into(), ..GraphNode::default() });
+    let mut kimi_node = turn("k1", &["root"], "验证", "2026-11-15T15:00:00Z");
+    kimi_node.target.as_mut().unwrap().agent = "kimi".into();
+    kimi_node.target.as_mut().unwrap().model = "kimi-code/k3-256k".into();
+    graph.nodes.insert("k1".into(), kimi_node);
+
+    let expected_note = "派发期间项目里这些文件有变化：probe.txt。kimi 没有只读档，核对是不是它改的。".to_string();
+    let mut run = EngineRun {
+        run_id: "run-kimi-note".into(),
+        graph_id: "g-notes".into(),
+        project: "D:/p".into(),
+        status: "running".into(),
+        started_at: now(),
+        updated_at: now(),
+        notes: vec!["保留启动提示".into()],
+        ..EngineRun::default()
+    };
+    write_run(&root, &run).unwrap();
+    let active = Arc::new(Mutex::new(Vec::new()));
+    let baseline = graph.clone();
+    struct StubDispatchSink<'a> {
+        inner: FileSink<'a>,
+        note: String,
+    }
+    impl PipelineSink for StubDispatchSink<'_> {
+        fn save_graph(&mut self, graph: &Graph) -> Result<Option<Graph>, String> { self.inner.save_graph(graph) }
+        fn update(&mut self, update: &RunUpdate) -> Result<(), String> { self.inner.update(update) }
+        fn dispatch(&mut self, request: &DispatchStageRequest) -> Result<DispatchStageResult, String> {
+            let mut r = sample_result(&request.nodes[0].node_id, "## 会出错\n无");
+            r.runner_note = format!("{}\nkimi 不报用量", self.note);
+            r.summary_notes = vec![self.note.clone()];
+            Ok(DispatchStageResult { run_id: request.run_id.clone(), results: vec![r], state_file: String::new() })
+        }
+    }
+    let mut sink = StubDispatchSink {
+        inner: FileSink::new(&root, &mut run, active, baseline),
+        note: expected_note.clone(),
+    };
+    let mut seq = 0usize;
+    let mut ids = || { seq += 1; format!("n-{seq}") };
+    let mut clock = || DateTime::parse_from_rfc3339("2026-11-15T15:00:01Z").unwrap().with_timezone(&Utc);
+    let outcome = run_pipeline("run-kimi-note", "D:/p", &EngineSettings::default(), graph, &created, &[], "t", &mut sink, &mut ids, &mut clock, &|| false).unwrap();
+    assert_eq!(outcome.error, "");
+    let saved = read_run(&root, "run-kimi-note").unwrap();
+    assert_eq!(saved.notes, vec!["保留启动提示".to_string(), expected_note]);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn task83_adopt_verdict_writes_to_project_exact_suffix_dir() {
+    let root = temp("adopt-suffix-home");
+    let project = temp("adopt-suffix-proj");
+    let run_id = "20261115-201451-2";
+    let expected_dir = project.join(".aicross/runs").join(run_id);
+    fs::create_dir_all(&expected_dir).unwrap();
+    let run = EngineRun {
+        run_id: run_id.into(),
+        project: project.to_string_lossy().into_owned(),
+        status: "done".into(),
+        started_at: now(),
+        updated_at: now(),
+        ..EngineRun::default()
+    };
+    write_run(&root, &run).unwrap();
+    let verdict = "| # | 位置 | 问题 | 选择 | 理由 |\n|---|---|---|---|---|\n| 1 | main.rs:1 | demo | 改 | ok |\n";
+    let written = adopt_verdict(&root, run_id, verdict).unwrap();
+    assert_eq!(written, expected_dir.join("裁决.md"));
+    assert!(written.is_file());
+    assert!(!root.join("runs").join(run_id).join("裁决.md").exists());
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(project);
+}

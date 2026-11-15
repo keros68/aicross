@@ -56,16 +56,27 @@ pub(crate) fn short_id(run_id: &str) -> String {
     if safe.is_empty() { "run".into() } else { safe }
 }
 
-/// 已有的派发目录（按后缀找），没有返回 None。
+/// 已有的派发目录：先按目录名完全相等找（覆及 `<时间>-2` 这类带序号目录），
+/// 再走 `-short_id` 后缀规则；没有返回 None。
 pub(crate) fn find_run_dir(project: &Path, run_id: &str) -> Option<PathBuf> {
+    let runs = runs_dir(project);
+    if crate::engine::valid_id(run_id) {
+        let exact = runs.join(run_id);
+        if exact.is_dir() {
+            return Some(exact);
+        }
+    }
     let suffix = format!("-{}", short_id(run_id));
-    let mut found: Vec<PathBuf> = fs::read_dir(runs_dir(project))
+    let mut found: Vec<PathBuf> = fs::read_dir(runs)
         .ok()?
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
             path.is_dir()
-                && path.file_name().and_then(|n| n.to_str()).is_some_and(|name| name.ends_with(&suffix))
+                && path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| name == run_id || name.ends_with(&suffix))
         })
         .collect();
     found.sort();
@@ -427,5 +438,20 @@ mod tests {
         assert!(add_decided(&project, "其他", "x", "y", "2026-11-02").is_err());
         assert!(add_decided(&project, "已定", " ", "y", "2026-11-02").is_err());
         assert!(add_decided(&project, "已定", &"长".repeat(201), "y", "2026-11-02").is_err());
+    }
+
+    #[test]
+    fn task83_find_run_dir_prefers_exact_match_before_short_id_suffix() {
+        let project = temp_project("exact-run-dir");
+        let dir_1 = project.join(".aicross/runs/20261115-201451");
+        let dir_2 = project.join(".aicross/runs/20261115-201451-2");
+        let dir_legacy = project.join(".aicross/runs/20261115-201450-abcd1234");
+        fs::create_dir_all(&dir_1).unwrap();
+        fs::create_dir_all(&dir_2).unwrap();
+        fs::create_dir_all(&dir_legacy).unwrap();
+
+        assert_eq!(find_run_dir(&project, "20261115-201451-2").as_deref(), Some(dir_2.as_path()));
+        assert_eq!(find_run_dir(&project, "abcd1234-5678-9012").as_deref(), Some(dir_legacy.as_path()));
+        assert!(find_run_dir(&project, "../escape").is_none());
     }
 }

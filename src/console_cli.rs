@@ -24,6 +24,11 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
         let mut stdout = std::io::stdout();
         return Some(top_level_info(flag, &mut stdout));
     }
+    if let Some(sub) = subcommand_help_requested(args) {
+        attach_parent_console();
+        let mut stdout = std::io::stdout();
+        return Some(write_subcommand_help(sub, &mut stdout));
+    }
     if !matches!(
         command,
         Some("dispatch" | "status" | "adopt" | "cancel" | "recover" | "propose" | "resources" | "config" | "hosts" | "skill" | "slash" | "preset" | "stats" | "leftovers" | "decided" | "__run")
@@ -37,6 +42,184 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
     }
     let root = crate::paths::aicross_root();
     Some(dispatch_root(args, root, &mut std::io::stdout(), &mut std::io::stderr()))
+}
+
+const USER_SUBCOMMANDS: [&str; 15] = [
+    "dispatch", "status", "adopt", "decided", "cancel", "recover", "open",
+    "resources", "stats", "leftovers", "config", "hosts", "skill", "slash", "preset",
+];
+
+const VALUE_OPTIONS: [&str; 29] = [
+    "--project", "--text-file", "--accept-file", "--preset", "--host", "--kind",
+    "--seat", "--verdict-file", "--text", "--reason", "--tags", "--note",
+    "--path", "--scope", "--file", "--name", "--mode", "--prefix", "--agent",
+    "--model", "--provider", "--tier", "--thinking", "--fallback-agent",
+    "--fallback-model", "--fallback-provider", "--timeout", "--index", "--focus",
+];
+
+/// 子命令是否请求了 `--help` / `-h`：仅识别面向用户的 15 个子命令，
+/// 跳过已知带值选项后面的参数值，避免把 `--text -h` 当成帮助参数。
+fn subcommand_help_requested(args: &[String]) -> Option<&str> {
+    let sub = args.get(1).map(String::as_str)?;
+    if !USER_SUBCOMMANDS.contains(&sub) {
+        return None;
+    }
+    let mut index = 2;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if arg == "--" {
+            break;
+        }
+        if matches!(arg, "--help" | "-h") {
+            return Some(sub);
+        }
+        if VALUE_OPTIONS.contains(&arg) {
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+fn subcommand_usage(sub: &str) -> &'static str {
+    match sub {
+        "dispatch" => concat!(
+            "用法：\n",
+            "  aicross dispatch --project <目录> --text-file <文件> [选项]\n\n",
+            "常用选项：\n",
+            "  --preset <模式>        指定预设 id 或别名（shared / economy / blind）\n",
+            "  --host <主 agent>      指定宿主配置（多于一份配置时必填）\n",
+            "  --seat <规格>          仅本次覆盖某位置，写法 <阶段>.<位置>=<agent>:<provider>:<model>\n",
+            "  --accept-file <文件>   附带验收条件全文\n",
+            "  --kind <类型>          记录任务类型\n",
+            "  --read-only-task       标明本次为只读任务\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "status" => concat!(
+            "用法：\n",
+            "  aicross status <run_id> [--wait] [--timeout <秒>]\n\n",
+            "常用选项：\n",
+            "  --wait                 等待本次派发结束再退出\n",
+            "  --timeout <秒>         最长等待秒数（正整数，默认 600）\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "adopt" => concat!(
+            "用法：\n",
+            "  aicross adopt <run_id> <node_id>\n",
+            "  aicross adopt <run_id> --verdict-file <裁决表.md>\n\n",
+            "选项：\n",
+            "  --verdict-file <文件>  记录用户裁决表，写入项目 .aicross/runs/<目录>/裁决.md\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "decided" => concat!(
+            "用法：\n",
+            "  aicross decided add [--project <目录>] --kind 已定|不做 --text <内容> --reason <理由>\n",
+            "  aicross decided show [--project <目录>]\n\n",
+            "选项：\n",
+            "  --project <目录>       项目目录（缺省取当前目录）\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "cancel" => concat!(
+            "用法：\n",
+            "  aicross cancel <run_id>\n\n",
+            "选项：\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "recover" => concat!(
+            "用法：\n",
+            "  aicross recover <run_id> [--rollback]\n\n",
+            "选项：\n",
+            "  --rollback             将未完成单写者改动的项目文件恢复到派发前快照\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "open" => concat!(
+            "用法：\n",
+            "  aicross open [<run_id>]\n\n",
+            "说明：\n",
+            "  打开窗口；传入 run_id 时直接打开该次派发的查看页。\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "resources" => concat!(
+            "用法：\n",
+            "  aicross resources\n",
+            "  aicross resources detect\n",
+            "  aicross resources smoke <agent> [--model <id> [--provider <p>]]\n",
+            "  aicross resources prune [--agent <agent>]\n",
+            "  aicross resources note <agent>:<provider>:<model> [--tags <标签>] [--note <说明>]\n",
+            "  aicross resources find <关键词>\n",
+            "  aicross resources set-path <agent> [<可执行文件路径>]\n\n",
+            "选项：\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "stats" => concat!(
+            "用法：\n",
+            "  aicross stats [--kind <类型>]\n\n",
+            "选项：\n",
+            "  --kind <类型>          只看指定任务类型的使用记录\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "leftovers" => concat!(
+            "用法：\n",
+            "  aicross leftovers\n\n",
+            "说明：\n",
+            "  列出各家 CLI 历史里仍指向 aicross 数据目录的遗留条目。\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "config" => concat!(
+            "用法：\n",
+            "  aicross config show [--host <h>]\n",
+            "  aicross config set <键> <值>\n",
+            "  aicross config set-role <planning|execution|acceptance> --agent <a> --model <m> [--provider <p>] [--tier <档>] [--thinking 关|低|中|高]\n",
+            "  aicross config set-default-mode <模式> [--host <h>]\n",
+            "  aicross config set-count <模式> <数量> [--host <h>]\n",
+            "  aicross config set-focus --mode <模式> --index <序号> --focus <视角> [--host <h>]\n",
+            "  aicross config set-seat <模式> <阶段> <位置> --agent <a> --model <m> [选项]\n",
+            "  aicross config clear-seat <模式> [<阶段> <位置>] [--host <h>]\n",
+            "  aicross config set-host-vendor <host> <厂商|auto>\n",
+            "  aicross config recommend [--host <h>] [--mode <模式>] [--all]\n\n",
+            "选项：\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "hosts" => concat!(
+            "用法：\n",
+            "  aicross hosts\n\n",
+            "说明：\n",
+            "  列出已检测到的宿主 agent 及其推定厂商和依据。\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "skill" => concat!(
+            "用法：\n",
+            "  aicross skill status [--project <目录>]\n",
+            "  aicross skill install --host <h> --scope global|project [--project <目录>]\n",
+            "  aicross skill upgrade --host <h> --path <旧安装路径>\n",
+            "  aicross skill uninstall --host <h> --scope global|project [--project <目录>]\n\n",
+            "选项：\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "slash" => concat!(
+            "用法：\n",
+            "  aicross slash list [--host <h>]\n",
+            "  aicross slash add --name <命令名> --mode <模式> [--note <说明>] [--host <h>]\n",
+            "  aicross slash remove --name <命令名> [--host <h>]\n",
+            "  aicross slash add-all [--prefix <前缀>] [--host <h>]\n\n",
+            "选项：\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        "preset" => concat!(
+            "用法：\n",
+            "  aicross preset save --file <json 文件> [--host <h>]\n",
+            "  aicross preset remove <预设 id>\n\n",
+            "选项：\n",
+            "  --help, -h             显示此用法\n",
+        ),
+        _ => "用法：aicross --help\n",
+    }
+}
+
+fn write_subcommand_help(sub: &str, out: &mut dyn Write) -> i32 {
+    let _ = write!(out, "{}", subcommand_usage(sub));
+    0
 }
 
 /// 是否挂接父进程控制台：面向用户的子命令要，后台 `__run` 不要。
@@ -90,6 +273,9 @@ fn dispatch_root(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> i32 {
+    if let Some(sub) = subcommand_help_requested(args) {
+        return write_subcommand_help(sub, stdout);
+    }
     match root {
         Ok(root) => run_at(args, &root, stdout, stderr),
         Err(_) => {
@@ -110,6 +296,9 @@ fn run_at_with(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> i32 {
+    if let Some(sub) = subcommand_help_requested(args) {
+        return write_subcommand_help(sub, stdout);
+    }
     if args.get(1).map(String::as_str) == Some("__run") {
         let Some(run_id) = args.get(2) else { return 2 };
         if !crate::engine::valid_id(run_id) {
@@ -843,7 +1032,7 @@ fn resources_prune_at(
         },
         None => None,
     };
-    let referenced = referenced_model_targets(root);
+    let referenced = referenced_model_targets(root)?;
     let outcome = (ops.prune_missing)(&store_file(root), agent_id.as_deref(), &referenced)
         .map_err(|message| (3, message))?;
     let mut value = resources_value(&outcome.store);
@@ -864,9 +1053,9 @@ fn resources_prune_at(
 
 /// modes.json 人选（含备选）与 roles.json 角色指向的模型清单，prune 用它
 /// 区分「删了但还被引用」的条目。agent 或 model 为空（没设）的指向不算。
-fn referenced_model_targets(root: &Path) -> Vec<resources::ModelReference> {
+fn referenced_model_targets(root: &Path) -> Result<Vec<resources::ModelReference>, (i32, String)> {
     let mut targets = Vec::new();
-    let modes = crate::orchestration::modes_from(root);
+    let modes = crate::orchestration::modes_from_strict(root).map_err(|message| (1, message))?;
     for section in modes.hosts.values() {
         for stages in section.seats.values() {
             for row in stages {
@@ -893,7 +1082,7 @@ fn referenced_model_targets(root: &Path) -> Vec<resources::ModelReference> {
     for role in [&roles.planning, &roles.execution, &roles.acceptance] {
         push_model_target(&mut targets, &role.agent, Some(&role.provider), &role.model);
     }
-    targets
+    Ok(targets)
 }
 
 fn push_model_target(
@@ -1873,7 +2062,7 @@ pub(crate) fn resolve_host_or_err(
     root: &Path,
     given: Option<&str>,
 ) -> Result<Option<String>, (i32, String)> {
-    let modes = crate::orchestration::modes_from(root);
+    let modes = crate::orchestration::modes_from_strict(root).map_err(|message| (1, message))?;
     if given.map(str::trim).filter(|host| !host.is_empty()).is_none() {
         // 没给 --host：只按 modes.json 的结构推定；资源库读不了时传空
         // detected（表示无法校验），不退出 3。
@@ -1980,8 +2169,9 @@ fn run_hosts_at(
             0
         }
         Err(message) => {
+            let code = if message.starts_with("modes.json ") { 1 } else { 3 };
             let _ = writeln!(stderr, "{message}");
-            3
+            code
         }
     }
 }
@@ -5357,10 +5547,12 @@ mod tests {
             assert!(stderr.contains("modes.json 无法解析"), "{args:?} → {stderr}");
             assert_eq!(fs::read_to_string(root.join("modes.json")).unwrap(), before);
         }
-        // 展示按宽松读取：损坏照样显示空配置，不报错。
-        let (code, stdout, _) = run_config_acp(&root, &["aicross", "config", "show"], &AcpOps::production());
-        assert_eq!(code, 0);
-        assert_eq!(parse_stdout(&stdout)["defaultMode"], "builtin-economy");
+        // 展示同样严格读取：modes.json 损坏时退出 1，stderr 写明路径与原因。
+        let (code, stdout, stderr) = run_config_acp(&root, &["aicross", "config", "show"], &AcpOps::production());
+        assert_eq!(code, 1, "{stderr}");
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(stderr.contains(&root.join("modes.json").display().to_string()), "{stderr}");
+        assert!(stderr.contains("modes.json 无法解析"), "{stderr}");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -7403,6 +7595,75 @@ mod tests {
         }
         let err_text = String::from_utf8(stderr).unwrap();
         assert!(err_text.contains("已列出历史遗留条目："), "{err_text}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task83_corrupt_modes_json_reports_path_and_reason_nonzero() {
+        let root = fixture_root("t83-corrupt-modes");
+        write_fixture_store(&root);
+        let expected_path = root.join("modes.json").display().to_string();
+        fs::write(root.join("modes.json"), "{ broken").unwrap();
+
+        for args in [
+            vec!["aicross", "config", "show", "--host", "claude"],
+            vec!["aicross", "config", "show"],
+            vec!["aicross", "hosts"],
+        ] {
+            let (code, stdout, stderr) = run_with(&root, &args, &ResourcesOps::production());
+            assert_ne!(code, 0, "{args:?}");
+            assert!(stdout.is_empty(), "{args:?} stdout={stdout}");
+            assert!(stderr.contains(&expected_path), "{args:?} stderr={stderr}");
+            assert!(stderr.contains("modes.json 无法解析"), "{args:?} stderr={stderr}");
+        }
+
+        // 缺失 modes.json 仍合法退出 0（按默认/空配置处理）。
+        fs::remove_file(root.join("modes.json")).unwrap();
+        let (code, stdout, stderr) = run_config_acp(&root, &["aicross", "config", "show", "--host", "claude"], &AcpOps::production());
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(parse_stdout(&stdout)["defaultMode"], "builtin-economy");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task83_all_subcommands_accept_help_and_short_h() {
+        let root = fixture_root("t83-subcmd-help");
+        for sub in USER_SUBCOMMANDS {
+            for flag in ["--help", "-h"] {
+                let (code, stdout, stderr) = run_with(&root, &["aicross", sub, flag], &ResourcesOps::production());
+                assert_eq!(code, 0, "{sub} {flag} stderr={stderr}");
+                assert!(stderr.is_empty(), "{sub} {flag} stderr={stderr}");
+                assert!(stdout.contains("用法："), "{sub} {flag} stdout={stdout}");
+                assert!(stdout.contains(sub), "{sub} {flag} stdout={stdout}");
+            }
+        }
+        // 子命令下层格式带 --help / -h 也返回用法。
+        for args in [
+            vec!["aicross", "config", "show", "--help"],
+            vec!["aicross", "resources", "smoke", "-h"],
+            vec!["aicross", "open", "--help"],
+            vec!["aicross", "open", "-h"],
+        ] {
+            let (code, stdout, stderr) = run_with(&root, &args, &ResourcesOps::production());
+            assert_eq!(code, 0, "{args:?} stderr={stderr}");
+            assert!(stderr.is_empty(), "{args:?}");
+            assert!(stdout.contains("用法："), "{args:?} stdout={stdout}");
+        }
+        // `--text -h` 把 `-h` 当参数值时不能误触发帮助（decided 正常走到自身校验，stdout 为空）。
+        let (code, stdout, stderr) = run_with(
+            &root,
+            &["aicross", "decided", "add", "--project", root.to_str().unwrap(), "--kind", "已定", "--text", "-h", "--reason", "测试"],
+            &ResourcesOps::production(),
+        );
+        assert_eq!(code, 2, "{stderr}");
+        assert!(stdout.is_empty(), "{stdout}");
+        let (code, stdout, stderr) = run_with(
+            &root,
+            &["aicross", "decided", "add", "--project", root.to_str().unwrap(), "--kind", "已定", "--text", "保留 -h 写法", "--reason", "测试"],
+            &ResourcesOps::production(),
+        );
+        assert_eq!(code, 0, "{stderr}");
+        assert!(!stdout.contains("用法："), "{stdout}");
         let _ = fs::remove_dir_all(root);
     }
 }

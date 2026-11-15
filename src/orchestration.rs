@@ -622,19 +622,26 @@ pub(crate) const MODES_VERSION: u32 = 2;
 pub(crate) fn modes_from_strict(root: &Path) -> Result<ModesFile, String> {
     // fix-46-r1 R2：与 `roles_from_strict` 同一处理——只有文件缺失回默认值，
     // 存在但读不了（非 UTF-8、无权限）报错拒写。
-    let text = match fs::read_to_string(modes_path(root)) {
+    let path = modes_path(root);
+    let text = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(ModesFile::default());
         }
-        Err(error) => return Err(format!("modes.json 读不了：{error}")),
+        Err(error) => return Err(format!("modes.json 读不了（{}）：{error}", path.display())),
     };
     match serde_json::from_str::<ModesFile>(&text) {
         Ok(modes) if modes.version == MODES_VERSION => Ok(modes),
-        Ok(_) if modes_file_version(&text) == 1 => Err(
-            "modes.json 是旧格式，删除后重新设置".to_string(),
-        ),
-        _ => Err("modes.json 无法解析".to_string()),
+        _ if modes_file_version(&text) == 1 => Err(format!(
+            "modes.json 是旧格式（{}），删除后重新设置",
+            path.display()
+        )),
+        Ok(modes) => Err(format!(
+            "modes.json 无法解析（{}）：不支持的 version {}",
+            path.display(),
+            modes.version
+        )),
+        Err(error) => Err(format!("modes.json 无法解析（{}）：{error}", path.display())),
     }
 }
 
@@ -1470,10 +1477,9 @@ mod tests {
         let v1 = r#"{"version":1,"defaultMode":"builtin-blind","seats":{"builtin-blind":[[{"agent":"pi","model":"glm-4.7"}]]}}"#;
         fs::write(modes_path(&root), v1).unwrap();
         assert_eq!(modes_from(&root), ModesFile::default());
-        assert_eq!(
-            modes_from_strict(&root),
-            Err("modes.json 是旧格式，删除后重新设置".into())
-        );
+        let v1_err = modes_from_strict(&root).unwrap_err();
+        assert!(v1_err.starts_with("modes.json 是旧格式"), "{v1_err}");
+        assert!(v1_err.contains(&modes_path(&root).display().to_string()), "{v1_err}");
         // 严格读取失败后写盘命令不会碰文件：内容原样。
         assert_eq!(fs::read_to_string(modes_path(&root)).unwrap(), v1);
     }
@@ -1483,12 +1489,18 @@ mod tests {
         let root = temp_root("modes-strict");
         // 缺失回默认值（与宽松读取一致）
         assert_eq!(modes_from_strict(&root), Ok(ModesFile::default()));
-        // 损坏拒写
+        let expected_path = modes_path(&root).display().to_string();
+        // 损坏拒写，报错含路径与原因
         fs::write(modes_path(&root), "{ 损坏").unwrap();
-        assert_eq!(modes_from_strict(&root), Err("modes.json 无法解析".into()));
-        // version 不认拒写
+        let broken_err = modes_from_strict(&root).unwrap_err();
+        assert!(broken_err.starts_with("modes.json 无法解析"), "{broken_err}");
+        assert!(broken_err.contains(&expected_path), "{broken_err}");
+        // version 不认拒写，报错含路径与原因
         fs::write(modes_path(&root), r#"{"version":9}"#).unwrap();
-        assert_eq!(modes_from_strict(&root), Err("modes.json 无法解析".into()));
+        let ver_err = modes_from_strict(&root).unwrap_err();
+        assert!(ver_err.contains("modes.json 无法解析"), "{ver_err}");
+        assert!(ver_err.contains(&expected_path), "{ver_err}");
+        assert!(ver_err.contains("version 9"), "{ver_err}");
         // save 校验 version
         let mut modes = ModesFile::default();
         modes.version = 1;
@@ -1502,7 +1514,8 @@ mod tests {
         let root = temp_root("modes-strict-non-utf8");
         fs::write(modes_path(&root), [0xff, 0xfe, b'{']).unwrap();
         let error = modes_from_strict(&root).unwrap_err();
-        assert!(error.starts_with("modes.json 读不了："), "{error}");
+        assert!(error.starts_with("modes.json 读不了"), "{error}");
+        assert!(error.contains(&modes_path(&root).display().to_string()), "{error}");
         assert_eq!(modes_from(&root), ModesFile::default(), "宽松读仍按空配置");
 
         fs::write(roles_path(&root), [0xff, 0xfe, b'{']).unwrap();

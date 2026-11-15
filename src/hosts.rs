@@ -226,7 +226,7 @@ pub(crate) fn list_hosts_at(
     claude_base_url_env: Option<&str>,
 ) -> Result<Vec<HostInfo>, String> {
     let store = resources::get_resources_at(&root.join("resources.json"))?;
-    let modes = crate::orchestration::modes_from(root);
+    let modes = crate::orchestration::modes_from_strict(root)?;
     Ok(collect_hosts(&store, &modes, home, claude_base_url_env))
 }
 

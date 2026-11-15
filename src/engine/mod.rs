@@ -3325,6 +3325,8 @@ pub(crate) struct RunUpdate {
     pub leftover: Vec<String>,
     pub in_flight_node_ids: Vec<String>,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 pub(crate) trait PipelineSink {
@@ -3353,6 +3355,7 @@ fn make_update(
     leftover: Vec<String>,
     in_flight: Vec<String>,
     reason: &str,
+    notes: Vec<String>,
 ) -> RunUpdate {
     RunUpdate {
         run_id: run_id.into(),
@@ -3362,6 +3365,7 @@ fn make_update(
         leftover,
         in_flight_node_ids: in_flight,
         reason: reason.into(),
+        notes,
     }
 }
 
@@ -3406,6 +3410,7 @@ pub(crate) fn run_pipeline(
     let mut retries: HashMap<String, usize> = HashMap::new();
     let mut processed: HashSet<String> = HashSet::new();
     let mut error = String::new();
+    let mut run_notes: Vec<String> = Vec::new();
 
     macro_rules! drain {
         () => {
@@ -3419,6 +3424,7 @@ pub(crate) fn run_pipeline(
                     leftover_lines(&graph),
                     in_flight.clone(),
                     "",
+                    run_notes.clone(),
                 ))?;
             }
         };
@@ -3446,6 +3452,7 @@ pub(crate) fn run_pipeline(
         vec![],
         vec![],
         "",
+        vec![],
     ))?;
 
     loop {
@@ -3503,6 +3510,7 @@ pub(crate) fn run_pipeline(
             vec![],
             in_flight.clone(),
             "",
+            run_notes.clone(),
         ))?;
         graph = mark_pending(&graph, &stage_ids);
         commit!();
@@ -3565,6 +3573,15 @@ pub(crate) fn run_pipeline(
         collected += output.results.len();
         for result in &output.results {
             push_unique(&mut all_run_ids, &result.node_id);
+            for note in &result.summary_notes {
+                push_unique(&mut run_notes, note);
+            }
+            for part in result.runner_note.split(['\n', '；']) {
+                let trimmed = part.trim();
+                if trimmed.starts_with(crate::dispatch::KIMI_CHANGED_FILES_PREFIX) {
+                    push_unique(&mut run_notes, trimmed);
+                }
+            }
         }
         in_flight = vec![];
         let read_only_task = settings.read_only_task || has_read_only_task_marker(original);
@@ -3640,6 +3657,7 @@ pub(crate) fn run_pipeline(
         leftover_lines(&graph),
         vec![],
         &final_reason,
+        run_notes,
     );
     let status = if !final_reason.is_empty()
         || summary
@@ -3739,7 +3757,7 @@ fn start_dispatch_with(
     let resources = orchestration::dispatchable_from(root);
     let presets = orchestration::raw_presets_from(root);
     let roles = orchestration::roles_from(root);
-    let mut modes = orchestration::modes_from(root);
+    let mut modes = orchestration::modes_from_strict(root).map_err(StartError::Unavailable)?;
     // TASK-50：主 agent 与它的配置段。给了 host 直接取；没给时 modes.json
     // 只有一个主 agent 的配置就用它，零或多于一个按无配置处理。
     let host = resolve_engine_host(input.host.as_deref(), &modes);
@@ -4034,6 +4052,11 @@ impl PipelineSink for FileSink<'_> {
         self.run.leftover = update.leftover.clone();
         self.run.in_flight_node_ids = update.in_flight_node_ids.clone();
         self.run.reason = update.reason.clone();
+        for note in &update.notes {
+            if !self.run.notes.iter().any(|existing| existing == note) {
+                self.run.notes.push(note.clone());
+            }
+        }
         self.run.updated_at = now();
         match write_run(self.root, self.run) {
             Ok(()) => {

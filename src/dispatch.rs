@@ -6,13 +6,13 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -258,6 +258,9 @@ pub struct DispatchNodeResult {
     /// 仅供引擎在本轮结束后通知前端刷新资源，不进入 IPC 契约。
     #[serde(skip)]
     pub(crate) resources_changed: bool,
+    /// 仅供引擎写进本次 run 摘要 `notes`，不改变既有 IPC 契约。
+    #[serde(skip)]
+    pub(crate) summary_notes: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -465,6 +468,80 @@ fn git_result_with_timeout(
         Some(cwd),
         registry_key,
     )
+}
+
+pub(crate) const KIMI_CHANGED_FILES_PREFIX: &str = "派发期间项目里这些文件有变化：";
+
+type GitFileStamp = (String, Option<SystemTime>, Option<u64>);
+
+pub(crate) fn format_kimi_changed_files_note(moved: &[String]) -> String {
+    let head = moved[..moved.len().min(8)].join("、");
+    let suffix = if moved.len() > 8 { "等" } else { "" };
+    format!("{KIMI_CHANGED_FILES_PREFIX}{head}{suffix}。kimi 没有只读档，核对是不是它改的。")
+}
+
+fn is_aicross_relative_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let trimmed = normalized.trim_end_matches('/');
+    trimmed == ".aicross" || trimmed.starts_with(".aicross/")
+}
+
+/// 取项目目录当前的 git 变更与文件时间戳，供 kimi 只读位置派发前后对照；
+/// 目录不在 git 仓库里或 git 不可用时静默返回 None，不报错。
+fn git_project_state(project: &Path) -> Option<BTreeMap<String, GitFileStamp>> {
+    let result = git_result_with_timeout(
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        project,
+        None,
+        Duration::from_secs(20),
+    )
+    .ok()?;
+    if !process_succeeded(&result) {
+        return None;
+    }
+    let mut state = BTreeMap::new();
+    let mut entries = result.stdout.split('\0');
+    while let Some(entry) = entries.next() {
+        if entry.is_empty() {
+            continue;
+        }
+        let bytes = entry.as_bytes();
+        if bytes.len() < 4 || bytes[2] != b' ' {
+            continue;
+        }
+        let xy = &entry[..2];
+        let path = &entry[3..];
+        let has_orig = xy.as_bytes().iter().take(2).any(|b| *b == b'R' || *b == b'C');
+        let orig = if has_orig { entries.next() } else { None };
+        for candidate in std::iter::once(Some(path)).chain(std::iter::once(orig)).flatten() {
+            if candidate.is_empty() || is_aicross_relative_path(candidate) {
+                continue;
+            }
+            let meta = fs::symlink_metadata(project.join(candidate)).ok();
+            let stamp = (
+                xy.to_string(),
+                meta.as_ref().and_then(|m| m.modified().ok()),
+                meta.as_ref().map(|m| m.len()),
+            );
+            state.insert(candidate.replace('\\', "/"), stamp);
+        }
+    }
+    Some(state)
+}
+
+fn git_changed_files(before: Option<&BTreeMap<String, GitFileStamp>>, project: &Path) -> Vec<String> {
+    let Some(before) = before else {
+        return Vec::new();
+    };
+    let Some(after) = git_project_state(project) else {
+        return Vec::new();
+    };
+    let paths: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    paths
+        .into_iter()
+        .filter(|path| before.get(*path) != after.get(*path))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -2422,6 +2499,7 @@ fn run_one_with_activity(
     candidates.retain(|(candidate, _, _, _)| seen.insert(crate::resources::resource_model_key(&candidate.agent, &candidate.provider, &candidate.model)));
 
     let mut result = primary;
+    let mut summary_notes = result.summary_notes.clone();
     let mut resources_changed = result.resources_changed;
     let mut previous_route = route_name(&node.agent, &node.provider, &node.model);
     let mut quota_notes = Vec::new();
@@ -2492,6 +2570,11 @@ fn run_one_with_activity(
             quota_notes.push(format!("备 {next_route}"));
         }
         result = next;
+        for note in &result.summary_notes {
+            if !summary_notes.iter().any(|existing| existing == note) {
+                summary_notes.push(note.clone());
+            }
+        }
         resources_changed |= result.resources_changed;
         current_attempt_rolled_back = false;
     }
@@ -2528,6 +2611,7 @@ fn run_one_with_activity(
         result.quota_resets_at = earliest_reset(quota_resets);
     }
     result.resources_changed = resources_changed;
+    result.summary_notes = summary_notes;
     clear_cancelled(&cancel_key);
     result
 }
@@ -3110,6 +3194,11 @@ fn run_one_attempt(
     }
 
     let mut needs_oneshot = error.is_empty();
+    let kimi_before = if !writable && needs_oneshot && channels::normalize_agent(&node.agent) == "kimi" {
+        git_project_state(project)
+    } else {
+        None
+    };
     // TASK-44 R1：单写者在拉起 CLI 之前把派发前快照落盘为执行中快照，引擎
     // 中途被杀时 `aicross recover --rollback` 才有据可回。落盘失败不阻断
     // 派发，只在 runner_note 记一笔。
@@ -3503,6 +3592,16 @@ fn run_one_attempt(
         }
     }
 
+    let mut summary_notes = Vec::new();
+    if entered_channel {
+        let moved = git_changed_files(kimi_before.as_ref(), project);
+        if !moved.is_empty() {
+            let note = format_kimi_changed_files_note(&moved);
+            append_runner_note(&mut runner_note, &note);
+            summary_notes.push(note);
+        }
+    }
+
     annotate_kimi_metadata(&node.agent, &mut channel_output, &mut runner_note);
 
     // CLI 输出可能回显请求头或配置片段。无论外发脱敏开关如何，留痕与
@@ -3631,6 +3730,7 @@ fn run_one_attempt(
         vendor: node.vendor.clone(),
         quota_resets_at,
         resources_changed,
+        summary_notes,
     };
     result
 }
@@ -11699,6 +11799,78 @@ else:
         let record_unsent = fs::read_to_string(&res_unsent.dispatch_file).unwrap();
         assert!(record_unsent.contains("## 任务全文\n\n(未发送)"), "{record_unsent}");
         assert!(!record_unsent.contains("[aicross 派发]"), "{record_unsent}");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn task83_kimi_readonly_warns_on_project_file_changes_and_skips_non_git() {
+        assert_eq!(
+            format_kimi_changed_files_note(&[
+                "a.txt".into(), "b.txt".into(), "c.txt".into(), "d.txt".into(),
+                "e.txt".into(), "f.txt".into(), "g.txt".into(), "h.txt".into(),
+                "i.txt".into(),
+            ]),
+            "派发期间项目里这些文件有变化：a.txt、b.txt、c.txt、d.txt、e.txt、f.txt、g.txt、h.txt等。kimi 没有只读档，核对是不是它改的。"
+        );
+
+        let plain_dir = crate::paths::test_temp_dir().join(format!("aicross-t83-nongit-{}", Uuid::new_v4()));
+        fs::create_dir_all(&plain_dir).unwrap();
+        assert!(git_project_state(&plain_dir).is_none());
+        assert!(git_changed_files(None, &plain_dir).is_empty());
+        let _ = fs::remove_dir_all(&plain_dir);
+
+        if channels::resolve_binary("python", None).is_err() || channels::resolve_binary("git", None).is_err() {
+            return;
+        }
+        let root = crate::paths::test_temp_dir().join(format!("aicross-t83-kimi-{}", Uuid::new_v4()));
+        let project = root.join("project");
+        let run_root = root.join("runs").join("t83-kimi");
+        let log_dir = root.join("logs");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+        ] {
+            let out = std::process::Command::new("git").args(args).current_dir(&project).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
+        fs::write(project.join("README.md"), "init\n").unwrap();
+        for args in [vec!["add", "README.md"], vec!["commit", "-q", "-m", "init"]] {
+            let out = std::process::Command::new("git").args(args).current_dir(&project).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
+
+        let stub = root.join("kimi_write_stub.py");
+        fs::write(
+            &stub,
+            "import json, pathlib, sys\n\
+_ = sys.stdin.read()\n\
+(pathlib.Path.cwd() / 'created.txt').write_text('oops\\n', encoding='utf-8')\n\
+print(json.dumps({'role': 'assistant', 'content': 'DONE'}))\n",
+        )
+        .unwrap();
+
+        let settings = DispatchSettings { timeout_secs: 15, acp_enabled: false, ..DispatchSettings::default() };
+        let mut req = node(Vec::new());
+        req.node_id = "k-ro".into();
+        req.agent = "kimi".into();
+        req.provider = format!("__aicross_test__||{}", stub.display());
+        req.model = "kimi-code/k3-256k".into();
+        req.role = "验证".into();
+        req.visibility = "共享".into();
+        req.write = "只读".into();
+
+        let res = run_one("t83-kimi", &project, &run_root, &log_dir, &settings, req);
+        assert_eq!(res.status, "ok", "{}", res.error);
+        let expected_note = "派发期间项目里这些文件有变化：created.txt。kimi 没有只读档，核对是不是它改的。";
+        assert!(res.runner_note.contains(expected_note), "runner_note={:?}", res.runner_note);
+        assert_eq!(res.summary_notes, vec![expected_note.to_string()]);
+        let record_text = fs::read_to_string(&res.dispatch_file).unwrap();
+        assert!(record_text.contains(expected_note), "{record_text}");
 
         let _ = fs::remove_dir_all(root);
     }

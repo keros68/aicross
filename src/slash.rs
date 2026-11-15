@@ -345,7 +345,7 @@ fn comparable_text(text: &str) -> String {
 /// `config show` 同一处理）：文件缺失或损坏按空配置显示。预设被删后
 /// `modeName` 回落成预设 id；名称不合法的条目标「名称无效」，不读磁盘。
 fn list_locked(root: &Path, home: &Path, host: &str) -> Result<Value, (i32, String)> {
-    let modes = orchestration::modes_from(root);
+    let modes = orchestration::modes_from_strict(root).map_err(|message| (1, message))?;
     let presets = orchestration::raw_presets_from(root);
     let commands = orchestration::host_section(&modes, host)
         .map(|section| section.slash_commands.clone())
