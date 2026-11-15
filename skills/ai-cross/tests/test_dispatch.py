@@ -872,6 +872,32 @@ class TestStartAndVerdict(DBase):
             with mock.patch.object(dispatch.subprocess, "run", return_value=empty_done):
                 self.assertEqual(dispatch.engine_config("codex"), (None, "宿主 codex 还没有配人选"))
 
+    def test_mode_has_seat_ignores_unfilled_reason_without_effective(self):
+        unfilled_only_mode = {
+            "id": "builtin-arena",
+            "name": "擂台模式",
+            "stages": [[{"role": "执行", "effective": None, "unfilledReason": "角色默认 不合规，未采用"}]],
+        }
+        self.assertFalse(dispatch._mode_has_seat(unfilled_only_mode))
+
+        cfg = {"defaultMode": "builtin-blind", "modes": [
+            {"id": "builtin-blind", "name": "盲审模式", "default": True, "stages": [[
+                {"role": "验证", "effective": {"agent": "pi", "provider": "opencode-go", "model": "glm-5.3", "state": "可用"}},
+                {"role": "验证", "unfilledReason": "未选人"},
+            ]]},
+            unfilled_only_mode,
+        ]}
+        code, out, _ = self.start(engine=(cfg, None))
+        self.assertEqual(code, 0)
+        self.assertNotIn("擂台模式", out)
+        self.assertIn("验证 没有人选（未选人）", out)
+
+        with mock.patch.object(dispatch.shutil, "which", return_value="/x/aicross"):
+            only_unfilled = json.dumps({"defaultMode": "builtin-arena", "modes": [unfilled_only_mode]})
+            done = mock.Mock(returncode=0, stdout=only_unfilled, stderr="")
+            with mock.patch.object(dispatch.subprocess, "run", return_value=done):
+                self.assertEqual(dispatch.engine_config("codex"), (None, "宿主 codex 还没有配人选"))
+
     def test_verdict_goes_into_the_latest_run_dir(self):
         self.review({"--provider": (0, pi_out(), "")}, go=True)
         table = self.home / "verdict.md"

@@ -1362,7 +1362,7 @@ def engine_host(host):
 
 def _mode_has_seat(mode):
     return any(
-        seat.get("effective") or seat.get("unfilledReason")
+        bool(seat.get("effective"))
         for stage in (mode.get("stages") or [])
         for seat in stage
     )
