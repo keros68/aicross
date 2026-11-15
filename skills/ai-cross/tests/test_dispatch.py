@@ -168,6 +168,29 @@ class TestReview(DBase):
         self.review({"--provider": (0, pi_out(), "")}, go=True, entry=[before])
         self.assertEqual(first(), before)                          # 成功一次即恢复原来的顺序
 
+    def test_quota_failure_moves_the_whole_subscription_back(self):
+        data = self.manifest()
+        ids = [e["id"] for e in data["entries"]]
+        first, other = ids[0], ids[1]
+        for e in data["entries"]:
+            e["billing_source"] = "同一份订阅" if e["id"] in (first, other) else ""
+        inventory.mark_failure(data, first, "429: usage limit reached")
+        res = inventory.choose_reviewers(data, "kimi", n=len(ids))
+        order = [p["id"] for p in res["picked"]]
+        for late in (first, other):
+            if late in order:                                      # 同厂商的本来就不选
+                self.assertGreaterEqual(order.index(late), len(order) - 2)
+        self.assertTrue(data["entries"][0]["last_failure"]["quota"])
+        inventory.mark_failure(data, first, "超过 480 秒没有返回")      # 不是额度问题就只排它自己
+        self.assertFalse(inventory.find_entry(data, first)["last_failure"]["quota"])
+
+    def test_review_accepts_engine_task_kinds(self):
+        code, out, _ = self.review({"--provider": (0, pi_out(), "")}, go=True, kind="backend")
+        self.assertEqual(code, 0)
+        self.assertIn(dispatch.TEMPLATES["code"], self.calls[0][2])
+        prompt, _, _ = dispatch.build_prompt("docs", [str(self.material)], None)
+        self.assertTrue(prompt.startswith(dispatch.TEMPLATES["general"]))
+
     def test_legacy_migration_runs_once_per_project(self):
         dispatch._MIGRATED.clear()
         with mock.patch.object(dispatch, "migrate_legacy") as migrate:
@@ -667,8 +690,6 @@ class TestSmoke(DBase):
         self.assertIn("重新 save", out)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestProjectFolder(DBase):
@@ -704,3 +725,80 @@ class TestProjectFolder(DBase):
                          "非独立：隔离不完整、同一家厂商")
         self.assertEqual(dispatch.independence(full, None), "非独立：被审方厂商未知")
         self.assertEqual(dispatch.independence(full, None, no_author=True), "独立")
+
+
+class TestStartAndVerdict(DBase):
+    def start(self, host="claude-code", engine=(None, None)):
+        with mock.patch.object(dispatch, "engine_config", return_value=engine):
+            return self.call(dispatch.cmd_start, host=host)
+
+    def test_start_with_manifest_lists_entries_and_next_commands(self):
+        code, out, _ = self.start()
+        self.assertEqual(code, 0)
+        self.assertIn("默认审查顺序", out)
+        self.assertIn("dispatch.py review --host claude-code", out)
+        self.assertIn("--text-file <任务文本>", out)
+
+    def test_start_without_manifest_exits_3_and_points_to_setup(self):
+        inventory.manifest_path().unlink()
+        code, out, _ = self.start()
+        self.assertEqual(code, 3)
+        self.assertIn("setup.md", out)
+
+    def test_start_as_dispatched_peer_says_answer_directly(self):
+        with mock.patch.dict(os.environ, {"AI_CROSS_PEER": "1"}):
+            code, out, _ = self.start()
+        self.assertEqual(code, 0)
+        self.assertIn("不派发", out)
+        self.assertNotIn("默认审查顺序", out)
+
+    def test_start_prefers_engine_config_and_reports_engine_problems(self):
+        config = {"defaultMode": "builtin-blind", "modes": [
+            {"id": "builtin-blind", "name": "盲审模式", "default": True, "stages": [[
+                {"role": "验证", "effective": {"agent": "pi", "provider": "opencode-go", "model": "glm-5.3", "state": "可用"}},
+                {"role": "验证", "unfilledReason": "未选人"}]]},
+            {"id": "builtin-swarm", "name": "蜂群模式", "stages": []}]}
+        code, out, _ = self.start(engine=(config, None))
+        self.assertEqual(code, 0)
+        self.assertIn("盲审模式（默认）：验证 pi/opencode-go/glm-5.3，可用；验证 没有人选（未选人）", out)
+        self.assertNotIn("蜂群模式", out)                           # 没有位置的非默认模式不列
+        self.assertNotIn("默认审查顺序", out)                        # 走引擎就不看 manifest
+        code, out, _ = self.start(engine=(None, "主 agent claude 没有配置"))
+        self.assertIn("主 agent claude 没有配置", out)
+        self.assertIn("默认审查顺序", out)                          # 引擎用不了，改按 manifest
+
+    def test_engine_config_is_none_without_aicross_or_for_unknown_hosts(self):
+        with mock.patch.object(dispatch.shutil, "which", return_value=None):
+            self.assertEqual(dispatch.engine_config("claude-code"), (None, None))
+        with mock.patch.object(dispatch.shutil, "which", return_value="/x/aicross"):
+            self.assertEqual(dispatch.engine_config("qoder"), (None, None))
+            done = mock.Mock(returncode=1, stdout="", stderr="主 agent 未配置\n更多")
+            with mock.patch.object(dispatch.subprocess, "run", return_value=done) as run:
+                self.assertEqual(dispatch.engine_config("claude-code"), (None, "主 agent 未配置"))
+                self.assertEqual(run.call_args[0][0][1:], ["config", "show", "--host", "claude"])
+
+    def test_verdict_goes_into_the_latest_run_dir(self):
+        self.review({"--provider": (0, pi_out(), "")}, go=True)
+        table = self.home / "verdict.md"
+        table.write_text("| 结论 | 选择 | 理由 | 写入已定事项 |\n|---|---|---|---|\n| 空列表除零 | 改 | 会崩 | 否 |\n"
+                         "| 命名 | 以后不再报 | 风格 | 是 |\n", encoding="utf-8")
+        code, out, _ = self.call(dispatch.cmd_verdict, verdict_file=str(table), project=str(self.project), run=None)
+        self.assertEqual(code, 0)
+        self.assertIn("改 1 件，不改 0 件，以后不再报 1 件", out)
+        saved = self.traces()[0].parent / "裁决.md"
+        self.assertIn("空列表除零", saved.read_text(encoding="utf-8"))
+
+    def test_verdict_rejects_tables_without_choices_and_missing_runs(self):
+        table = self.home / "verdict.md"
+        table.write_text("| 结论 | 选择 |\n|---|---|\n| 空列表除零 | 待定 |\n", encoding="utf-8")
+        code, _, err = self.call(dispatch.cmd_verdict, verdict_file=str(table), project=str(self.project), run=None)
+        self.assertEqual(code, 2)
+        self.assertIn("没有认出", err)
+        table.write_text("| 空列表除零 | 改 |\n", encoding="utf-8")
+        code, _, err = self.call(dispatch.cmd_verdict, verdict_file=str(table), project=str(self.project), run=None)
+        self.assertEqual(code, 1)
+        self.assertIn("找不到派发目录", err)
+
+
+if __name__ == "__main__":
+    unittest.main()

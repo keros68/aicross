@@ -10,7 +10,7 @@ ai-cross 的派发脚本：按 manifest 的默认人选做盲审、把活派给�
       带 --go：每个审查者各在一个空目录里跑，材料走 stdin；各路只显示「会出错」一节，整篇在记录里（--full 整篇显示）；
                结果连同任务全文写进 <项目>/.aicross/runs/<派发>/，成功的条目顺带刷新冒烟日期。
 
-  run --host NAME --task-file PATH [--file PATH ...] [--read-dir DIR] [--entry ID] [--tier low|mid|high]
+  run --host NAME --text-file PATH [--file PATH ...] [--read-dir DIR] [--entry ID] [--tier low|mid|high]
       [--thinking off|low|mid|high] [--project DIR] [--timeout 秒] [--json] [--go]
       让别家干活：把任务文本原样发给执行者（默认取 manifest 的默认执行者），--file 附参考材料。
       执行者没有工具、碰不到项目文件，只交回文字；落盘与跑测试由宿主做。同样不带 --go 只出方案。
@@ -18,6 +18,12 @@ ai-cross 的派发脚本：按 manifest 的默认人选做盲审、把活派给�
 
   smoke (--entry ID ... | --all) [--timeout 秒]
       给条目里每个档位的模型各发一句「只回复两个字：收到」，把通过或失败记进 manifest。
+
+  start --host NAME
+      入口：看这次该走哪条路（已是被派出的子任务／aicross 引擎／还没盘点／按 manifest 派发），并给出下一步的命令。
+
+  verdict --verdict-file PATH [--project DIR] [--run 派发目录名]
+      记下用户的裁决：把裁决表存成该次派发目录里的 裁决.md（不指定 --run 时取最近一次派发）。
 
 人选与模型取自 inventory.py 存的 manifest；每条通道的调用写法见 channels.md。
 脚本自己不读任何密钥：cc-switch 条目交给同目录的 cc_switch.py exec 注入。
@@ -43,6 +49,8 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import inventory  # noqa: E402
 
+ENGINE_KINDS = {"frontend": "code", "backend": "code", "writing": "general", "data": "general",
+                "docs": "general", "other": "general"}  # aicross dispatch 的任务类型 → 这里用哪个模板
 TEMPLATES = {  # 冻结模板：只许接原始材料，不接我方结论与背景
     "general": "以下是一批原始材料。请独立分析并给出你的结论、依据与不确定处。不要猜测提供者想听什么。",
     "code": "请独立审查这段代码，列出你发现的问题、依据与不确定处。不要猜测提供者想听什么。",
@@ -144,7 +152,7 @@ def build_prompt(kind, files, text_file, base=None):
     if not material.strip():
         inventory.fail("没有材料：用 --file 或 --text-file 给出要审的原始材料。")
     material, hits = redact(material)
-    return f"{TEMPLATES[kind]}{TWO_CLASS}{NUMERICAL_REVIEW}{HONEST}{NO_TOOLS}\n\n{material}\n{decided_section(base)}", names, hits
+    return f"{TEMPLATES[ENGINE_KINDS.get(kind, kind)]}{TWO_CLASS}{NUMERICAL_REVIEW}{HONEST}{NO_TOOLS}\n\n{material}\n{decided_section(base)}", names, hits
 
 
 # ---------- 各通道的调用与解析 ----------
@@ -1141,7 +1149,8 @@ def print_review(picked, results, alerts, full=False):
     good = [r for r in results if r["status"] == "ok"]
     folder = os.path.dirname(results[0]["trace"]) + "/"
     if not good:
-        print(f"各路都没有结果，已记下，下次选人时排到后面。记录 {folder}。把上面的原因告诉用户；要换人就用 --entry 点名。")
+        print(f"各路都没有结果，已记下，下次选人时排到后面。记录 {folder}。把上面的原因告诉用户；"
+              "原命令再跑一次会改选排在前面的其他条目，也可以用 --entry 点名。")
         return
     print("本次派发小结（照这个格式给用户；尖括号处由你核实后填，没有内容的行删掉）：\n")
     print("- 要你拍板（各路「会出错」里你核实过的，至多 5 件；没有就写「无」）：")
@@ -1262,6 +1271,109 @@ def cmd_run(args):
     sys.exit(0 if out["status"] == "ok" else 1)
 
 
+# ---------- start：入口 ----------
+
+ENGINE_HOSTS = {"claude-code": "claude", "claude": "claude", "codex": "codex", "kimi": "kimi", "kimi-code": "kimi", "pi": "pi"}
+
+
+def engine_config(host):
+    """装了 aicross 且这个宿主有配置时返回 (配置, None)；没装返回 (None, None)；装了但读不了返回 (None, 原因)。"""
+    name = ENGINE_HOSTS.get(host.strip().lower())
+    path = shutil.which("aicross")
+    if not name or not path:
+        return None, None
+    try:
+        done = subprocess.run([path, "config", "show", "--host", name], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, f"aicross 没有响应（{type(error).__name__}）"
+    if done.returncode != 0:
+        return None, (done.stderr.strip().splitlines() or [f"aicross config show 退出码 {done.returncode}"])[0]
+    try:
+        config = json.loads(done.stdout)
+    except ValueError:
+        return None, "aicross config show 的输出不是 JSON"
+    return (config, None) if isinstance(config, dict) else (None, "aicross config show 的输出不是 JSON")
+
+
+def seat_text(seat):
+    who_ = seat.get("effective") or {}
+    if seat.get("unfilledReason") or not who_:
+        return f"{seat.get('role', '位置')} 没有人选（{seat.get('unfilledReason') or '未设'}）"
+    target = "/".join(str(who_[k]) for k in ("agent", "provider", "model") if who_.get(k))
+    state = f"，{who_['state']}" if who_.get("state") else ""
+    return f"{seat.get('role', '位置')} {target}{state}"
+
+
+def cmd_start(args):
+    ref = HERE.replace(os.sep, "/")
+    if os.environ.get("AI_CROSS_PEER") == "1":
+        print("当前会话是被派出的子任务（AI_CROSS_PEER=1）：只完成交给你的任务并直接作答，不派发、不交叉验证。")
+        return
+    config, problem = engine_config(args.host)
+    if config is not None:
+        default = config.get("defaultMode")
+        print(f"走 aicross 引擎：已安装，宿主 {ENGINE_HOSTS[args.host.strip().lower()]} 有配置。不用盘点，也不看 manifest。")
+        for mode in config.get("modes") or []:
+            seats = [seat_text(seat) for stage in mode.get("stages") or [] for seat in stage]
+            if not seats and mode.get("id") != default:
+                continue
+            mark = "（默认）" if mode.get("id") == default or mode.get("default") else ""
+            print(f"- {mode.get('name', mode.get('id'))}{mark}：{'；'.join(seats) or '没有位置'}")
+        print(f"\n下一步：读 {ref}/channels.md「按窗口配置派发」照做。用户点名模型时先跑 aicross resources find <名字>。")
+        return
+    if problem:
+        print(f"装了 aicross 但这次用不了：{problem}。把这句告诉用户，改按 manifest 派发。\n")
+    if not inventory.manifest_path().exists():
+        print("这台机器还没盘点。\n"
+              f"下一步：读 {ref}/setup.md 做盘点。用户带着具体任务来时，先说一句「这台机器还没盘点过，先花一分钟登记本机的模型」，"
+              "做到保存为止（第 1–2 步）再回到任务；用户说先别盘点时，用宿主内部通道或用户当场指定的通道，"
+              "并在路由决策行后注明「未盘点，跨厂商验证不可用」。")
+        sys.exit(3)
+    inventory.print_manifest(inventory.load_manifest())
+    host = args.host
+    print(f"\n下一步（都先不带 --go 看方案，再加 --go 发出；点名派给谁用 --entry <条目>）：\n"
+          f"  审（盲审、第二意见、让别家看看）：python {ref}/dispatch.py review --host {host} --file <原始材料> [--kind code]\n"
+          f"  干活（把任务派出去做）：python {ref}/dispatch.py run --host {host} --text-file <任务文本> [--read-dir <项目目录>]\n"
+          f"  用户裁决后：python {ref}/dispatch.py verdict --verdict-file <裁决表>")
+
+
+# ---------- verdict：记下用户的裁决 ----------
+
+VERDICT_WORDS = {"改": "改", "不改": "不改", "以后不再报": "以后不再报"}
+
+
+def count_verdict(text):
+    """与 aicross 引擎同一口径：表格行里某一格正好是「改」「不改」「以后不再报」就计一件。"""
+    counts = dict.fromkeys(VERDICT_WORDS, 0)
+    for line in text.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        for cell in (c.strip() for c in line.split("|")):
+            if cell in counts:
+                counts[cell] += 1
+                break
+    return counts
+
+
+def cmd_verdict(args):
+    text = read_text(args.verdict_file).strip()
+    counts = count_verdict(text)
+    if not sum(counts.values()):
+        inventory.fail("裁决表里没有认出「改」「不改」「以后不再报」：表格行的选择一格要正好是这三个词之一。")
+    runs = Path(args.project or os.getcwd()) / ".aicross" / "runs"
+    if args.run:
+        folder = runs / args.run
+    else:
+        found = sorted(p for p in runs.glob("*") if p.is_dir() and re.match(r"\d{8}-\d{6}", p.name)) if runs.is_dir() else []
+        folder = found[-1] if found else None
+    if folder is None or not folder.is_dir():
+        inventory.fail(f"找不到派发目录（{runs}{'/' + args.run if args.run else ''}）。用 --project 指定项目，--run 指定派发目录名。", 1)
+    path = folder / "裁决.md"
+    path.write_text(text + "\n", encoding="utf-8", newline="\n")
+    print("已记录裁决：" + "，".join(f"{word} {n} 件" for word, n in counts.items()) + f" → {path}")
+
+
 # ---------- smoke ----------
 
 def cmd_smoke(args):
@@ -1327,7 +1439,8 @@ def main():
     r.add_argument("--host", required=True, help="当前宿主：claude-code（或 claude）/ codex / kimi / antigravity（或 agy）/ 其他名字")
     r.add_argument("--file", action="append", help="要审的原始材料（UTF-8 文本文件，可重复）")
     r.add_argument("--text-file", dest="text_file", help="不成文件的原始材料（一段文字）先存成文件再给")
-    r.add_argument("--kind", choices=sorted(TEMPLATES), default="general", help="general 通用材料；code 代码审查")
+    r.add_argument("--kind", choices=sorted(TEMPLATES) + sorted(ENGINE_KINDS), default="general",
+                   help="general 通用材料；code 代码审查；也认 aicross 的任务类型（frontend、backend 按 code，其余按 general）")
     r.add_argument("--author", help="被审产出出自哪家厂商（默认是宿主厂商）；none = 不回避任何一家")
     r.add_argument("--n", type=int, help="派几家（默认 1；宿主厂商不确定时 2）")
     r.add_argument("--entry", action="append", help="点名审查者（manifest 条目名，可重复）")
@@ -1341,7 +1454,8 @@ def main():
     r.add_argument("--go", action="store_true", help="真的发送；不带它只出方案")
     x = sub.add_parser("run", help="把活派给执行者")
     x.add_argument("--host", required=True, help="当前宿主：claude-code（或 claude）/ codex / kimi / antigravity（或 agy）/ 其他名字")
-    x.add_argument("--task-file", dest="task_file", required=True, help="任务文本（UTF-8 文件，要自包含）")
+    x.add_argument("--text-file", "--task-file", dest="task_file", required=True,
+                   help="任务文本（UTF-8 文件，要自包含）；两个写法等价，--text-file 与 aicross dispatch 一致")
     x.add_argument("--file", action="append", help="随任务附上的参考材料（UTF-8 文本文件，可重复）")
     x.add_argument("--read-dir", dest="read_dir",
                    help="让执行者进这个目录自己读文件（只读：能读能搜，不能改）；支持 claude / codex / pi / cc-switch 与 agy 1.5.0+")
@@ -1357,11 +1471,22 @@ def main():
     s.add_argument("--entry", action="append")
     s.add_argument("--all", action="store_true")
     s.add_argument("--timeout", type=int, default=180)
+    b = sub.add_parser("start", help="入口：这次该走哪条路")
+    b.add_argument("--host", required=True, help="当前宿主")
+    v = sub.add_parser("verdict", help="记下用户的裁决")
+    v.add_argument("--verdict-file", dest="verdict_file", required=True,
+                   help="裁决表（UTF-8 文件），表头：| 结论 | 选择 | 理由 | 写入已定事项 |")
+    v.add_argument("--project", help="项目目录（默认当前目录）")
+    v.add_argument("--run", help="派发目录名（.aicross/runs/ 下的目录）；默认最近一次")
     a = p.parse_args()
 
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    if a.cmd == "start":
+        return cmd_start(a)
+    if a.cmd == "verdict":
+        return cmd_verdict(a)
     if os.environ.get("AI_CROSS_PEER") == "1":
         inventory.fail("当前会话本身是被派出的子任务（AI_CROSS_PEER=1），不再往下派发。")
     if a.cmd == "review":

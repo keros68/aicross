@@ -589,6 +589,9 @@ def print_manifest(data):
     cross = "可用" if len(vendors) >= 2 else "不可用（只有一家厂商，同厂商复查只算复核）"
     print(f"\n厂商 {len(vendors)} 家：{'、'.join(vendors) or '—'} ｜ 交叉验证{cross}")
     print("默认审查顺序：" + (" → ".join(reviewer_order(data)) or "—"))
+    late = [e["id"] for e in data["entries"] if recently_failed(e)]
+    if late:
+        print("近一天派发没有结果、选审查者时排到后面：" + "、".join(late))
     executor = data["roles"].get("executor")
     print("默认执行者：" + (f"{executor['entry']}（{executor['tier']} 档）" if executor else "未设，按路由表"))
     for note in data["notes"]:
@@ -737,7 +740,10 @@ def choose_reviewers(data, host, author=None, n=None, tier=None):
 
     picked, seen, skipped = [], set(), []
     order = reviewer_order(data)
-    late = [i for i in order if recently_failed(entries[i])]  # 上次派发没结果的排到后面，成功一次即恢复
+    # 上次派发没结果的排到后面，成功一次即恢复；原因是额度用尽时，算在同一份订阅上的条目一起排后
+    dry = {entries[i].get("billing_source") for i in order
+           if recently_failed(entries[i]) and entries[i]["last_failure"].get("quota")} - {None, ""}
+    late = [i for i in order if recently_failed(entries[i]) or entries[i].get("billing_source") in dry]
     for entry_id in [i for i in order if i not in late] + late:
         entry = entries[entry_id]
         if entry["vendor"] == author or entry["vendor"] in seen:
@@ -754,7 +760,7 @@ def choose_reviewers(data, host, author=None, n=None, tier=None):
         notes.append("冒烟失败的条目已跳过：" + "、".join(skipped))
     behind = [i for i in late if i not in skipped and entries[i]["vendor"] != author]
     if behind:
-        notes.append("上次派发没有结果、已排到后面：" + "、".join(behind))
+        notes.append("上次派发没有结果（或同一份订阅的额度用尽）、已排到后面：" + "、".join(behind))
     if explicit_author and host_vendor and host_vendor != explicit_author:
         notes.append(f"宿主自己（{host_vendor}）与被审产出不同厂商，也可以充当一方。")
     if any(p["billing"] == "per-call" for p in picked):
@@ -778,11 +784,13 @@ def mark_smoke(data, entry_id, status, reason=None):
 
 
 FAILURE_DAYS = 1  # 派发没结果后，这么多天内选人时排到后面
+QUOTA_SIGNS = re.compile(r"(?i)\b429\b|usage limit|limit reached|quota|rate.?limit|额度|限额")
 
 
 def mark_failure(data, entry_id, reason):
     """一次派发超时或出错：不算冒烟失败（可能只是额度或网络），只在选人时暂时排后。"""
-    find_entry(data, entry_id)["last_failure"] = {"date": today(), "reason": (reason or "")[:100]}
+    find_entry(data, entry_id)["last_failure"] = {"date": today(), "reason": (reason or "")[:100],
+                                                   "quota": bool(QUOTA_SIGNS.search(reason or ""))}
 
 
 def recently_failed(entry):

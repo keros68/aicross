@@ -15,7 +15,15 @@ python <本skill目录>/references/dispatch.py run --host <宿主名> --task-fil
 python <本skill目录>/references/dispatch.py run --host <宿主名> --task-file <任务文本> --go                  # 用户同意后发送
 # 冒烟并记进 manifest
 python <本skill目录>/references/dispatch.py smoke --all | --entry <条目>
+# 入口：这次走引擎、先盘点，还是按 manifest 派发
+python <本skill目录>/references/dispatch.py start --host <宿主名>
+# 记下用户的裁决（没装 aicross 时用它；装了用 aicross adopt --verdict-file）
+python <本skill目录>/references/dispatch.py verdict --verdict-file <裁决表> [--project <项目目录>] [--run <派发目录名>]
 ```
+
+- **参数与 `aicross dispatch` 对齐的部分**：`run` 的任务文本用 `--text-file`（旧写法 `--task-file` 照认）；`review --kind` 除 `code` / `general` 外也认引擎的任务类型，`frontend`、`backend` 按 `code`，`writing`、`data`、`docs`、`other` 按 `general`；`--host` 认 `claude` 与 `claude-code`。`review` 的 `--text-file` 是不成文件的原始材料，与 `run` 的含义不同。
+- `start` 的判断顺序：当前会话带 `AI_CROSS_PEER=1` → 只作答；`aicross config show --host <主 agent>` 退出码 0 → 走引擎并列出各模式的人选；命令不存在 → 看 manifest；其他退出码 → 打印原因后看 manifest；没有 manifest 退出码 3。
+- `verdict` 把裁决表原样存成该次派发目录的 `裁决.md`，认表的规则与引擎相同（表格行里某一格正好是「改」「不改」「以后不再报」）。它不写 `track/outcomes.jsonl`，那份记录只有引擎写。
 
 `review` 派的是审查者，`run` 派的是执行者（默认执行者或 `--entry` 点名的），两者不能互换。`run` 与 `review` 的区别只有三处：prompt 是任务文本原样而不是冻结模板；不加 claude 的 `--restricted` 与 pi 的 `--no-context-files`；留痕里 `role` 记「执行」、`visibility` 记「共享」。执行者同样没有工具，交回的是文字，落盘与跑测试由宿主做。
 
@@ -36,7 +44,7 @@ python <本skill目录>/references/dispatch.py smoke --all | --entry <条目>
 - prompt 只有冻结模板加原始材料原文，外发前做六类脱敏（私钥块、Bearer、口令与密钥字面量、环境变量式赋值、`AKIA…`、带口令的数据库 URL）；脱敏只处理字面量，是兜底不是保证。
 - 记录写进 `<项目>/.aicross/runs/<派发>/`（`--project` 指定，默认当前目录），格式见文末契约；通道的原始事件流另存为同名 `.raw.txt`。
 - `review --go` 打印给宿主的每路内容只有开头段（至多 600 字）和「会出错」一节，「建议」与整篇在记录里；回答没按两节写时整篇打印，`--full` 强制整篇。档位、用量不打印，在记录的文件头。
-- 一路超时、出错或真身不符时，脚本在 manifest 里给该条目记 `last_failure`；一天内选审查者时把它排到后面，成功一次即清除。点名（`--entry`）不受影响，冒烟状态也不变。
+- 一路超时、出错或真身不符时，脚本在 manifest 里给该条目记 `last_failure`；一天内选审查者时把它排到后面，成功一次即清除。原因里有额度用尽的字样（429、usage limit、quota、额度等）时，`billing_source` 相同的其他条目一起排后。点名（`--entry`）不受影响，冒烟状态也不变。
 - `--thinking off|low|mid|high` 只对 codex 与 pi 生效，其余通道的思考档由模型名或其自身配置决定。
 - 退出码：0 至少一路成功；1 没有可用的审查者或全部失败；2 参数有误；3 还没有 manifest。当前会话带 `AI_CROSS_PEER=1` 时拒绝执行。
 - 双保险的多路独立执行：同一份任务文本对两个不同厂商的条目各跑一次 `run --entry <条目>`。
