@@ -718,6 +718,26 @@ class TestProjectFolder(DBase):
         with self.assertRaises(SystemExit):
             inventory.choose_reviewers(self.manifest(), "claude-code", n=-1)
 
+    def test_two_commands_in_one_second_get_separate_folders(self):
+        first, second = dispatch.claim_run(self.project), dispatch.claim_run(self.project)
+        if first[:15] == second[:15]:                              # 跨秒时两个名字本来就不同
+            self.assertEqual(second, first + "-2")
+        self.assertNotEqual(first, second)
+        self.assertTrue((self.project / ".aicross" / "runs" / second).is_dir())
+
+    def test_empty_entry_name_is_refused(self):
+        channels = {"pi:xai": {"kind": "pi", "source": "x", "models": [{"id": "grok-4.6", "vendor": "xAI"}]}}
+        with self.assertRaises(SystemExit):
+            inventory.build_entry({"channel": "pi:xai", "id": "审查", "tiers": {"low": "grok-4.6"}}, channels)
+
+    def test_redirected_claude_needs_an_explicit_vendor(self):
+        channels = {"claude": {"kind": "cli", "source": "x", "redirected": True,
+                               "models": [{"id": "sonnet", "vendor": "Anthropic"}]}}
+        item = {"channel": "claude", "tiers": {"mid": "sonnet"}}
+        with self.assertRaises(SystemExit):
+            inventory.build_entry(item, channels)
+        self.assertEqual(inventory.build_entry(dict(item, vendor="Zhipu"), channels)["vendor"], "Zhipu")
+
     def test_legacy_dispatch_folder_is_migrated(self):
         legacy = self.project / ".dispatch"
         (legacy / "run-a" / "n.before").mkdir(parents=True)

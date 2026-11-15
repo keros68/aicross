@@ -25,7 +25,7 @@ python <本skill目录>/references/dispatch.py verdict --verdict-file <裁决表
 - `start` 的判断顺序：当前会话带 `AI_CROSS_PEER=1` → 只作答；`aicross config show --host <主 agent>` 退出码 0 → 走引擎并列出各模式的人选；命令不存在 → 看 manifest；其他退出码 → 打印原因后看 manifest；没有 manifest 退出码 3。
 - `verdict` 把裁决表原样存成该次派发目录的 `裁决.md`，认表的规则与引擎相同（表格行里某一格正好是「改」「不改」「以后不再报」）。它不写 `track/outcomes.jsonl`，那份记录只有引擎写。
 
-`review` 派的是审查者，`run` 派的是执行者（默认执行者或 `--entry` 点名的），两者不能互换。`run` 与 `review` 的区别只有三处：prompt 是任务文本原样而不是冻结模板；不加 claude 的 `--restricted` 与 pi 的 `--no-context-files`；留痕里 `role` 记「执行」、`visibility` 记「共享」。执行者同样没有工具，交回的是文字，落盘与跑测试由宿主做。
+`review` 派的是审查者，`run` 派的是执行者（默认执行者或 `--entry` 点名的），两者不能互换。`run` 与 `review` 的区别只有三处：prompt 是任务文本原样而不是冻结模板；不加 claude 的 `--restricted` 与 pi 的 `--no-context-files`；留痕里 `role` 记「执行」、`visibility` 记「共享」。执行者交回的是文字，落盘与跑测试由宿主做。不带 `--read-dir` 时 pi、claude 与 cc-switch 桥没有工具；codex 在空目录里以只读沙箱运行，改不了文件但按路径读得到本机文件；kimi 在固定目录里运行，没有只读档（2026-11-15 真机：让三条通道读目录外的一个文件，codex 与 kimi 读到了，pi 没有读到）。
 
 `run --read-dir <项目目录>` 让执行者进那个目录自己读文件，工具收窄到只读（2026-10-05 真机：三条通道都被要求顺手建一个文件，全部被拦住，目录内文件哈希不变）：claude 用 `--tools Read,Grep,Glob`，codex 仍是 `-s read-only`（沙箱内可读可搜），pi 用 `--tools read,grep,find,ls`，cc-switch 桥用 `--tools Read,Grep,Glob`；kimi 没有只读档、agy 无头模式读不了文件，这两类条目脚本直接拒绝。带工具时 pi 一次任务有多条 assistant 消息，回答取全部 `text` 块。
 

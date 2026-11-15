@@ -204,6 +204,7 @@ def probe_claude(path):
             ch["preferred_model"] = cfg["model"]
         env = cfg.get("env")
         if isinstance(env, dict) and "ANTHROPIC_BASE_URL" in env:
+            ch["redirected"] = True
             ch["warning"] = ("~/.claude/settings.json 的 env 里写了 ANTHROPIC_BASE_URL："
                              "本机所有 claude 调用都被重定向到第三方端点，这个通道不能按 Anthropic 官方算")
     return ch
@@ -422,7 +423,7 @@ def write_manifest(data):
     path.parent.mkdir(parents=True, exist_ok=True)
     data["schema"] = SCHEMA
     data["updated"] = today()
-    tmp = path.with_suffix(".json.tmp")
+    tmp = path.with_suffix(f".json.{os.getpid()}.tmp")  # 带进程号：两条命令同时写时不互相移走临时文件
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
@@ -481,6 +482,11 @@ def build_entry(item, channels):
         entry["seen_models"] = sorted(known)  # diff 的比对基线
 
     vendor = canon_vendor(item.get("vendor"))
+    if not declared and ch.get("redirected"):
+        if not vendor:
+            fail(f"{channel}：本机的 claude 调用被重定向到第三方端点，不能按模型名认定厂商。"
+                 f"在方案里写明这个端点实际是哪家的 vendor。")
+        vendors = set()  # 模型名只是别名，不拿它和写明的厂商比对
     if not vendor:
         if unknown or len(vendors) != 1:
             fail(f"{channel}：认不出厂商的模型 {unknown or '无'}，已认出的厂商 {sorted(vendors) or '无'}。"
@@ -492,6 +498,8 @@ def build_entry(item, channels):
     entry["vendor"] = vendor
     entry["tiers"] = {t: tiers[t] for t in TIERS if t in tiers}
     entry["id"] = slug(item.get("id") or f"{channel}.{vendor}")
+    if not entry["id"]:
+        fail(f"{channel}：条目名「{item.get('id')}」里没有可用的字符，只能用小写字母、数字、点和连字符。")
     entry["smoke"] = {"status": "untested", "date": None}
     for key in ("billing_source", "note"):  # billing_source：额度算在哪份订阅上，同源的一起熔断
         if item.get(key):
