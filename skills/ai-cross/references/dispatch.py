@@ -643,6 +643,7 @@ AGY_INLINE_LIMIT = 200 * 1024
 AGY_READONLY_NOTE = "只用只读文件工具（read_file、view_file、list_dir、find_by_name、grep_search），不能执行命令或修改文件。"
 # 规则必须带目标：agy 1.5.8 实测只写类别名（如 "write_file"）时不生效。
 AGY_READONLY_DENY = ("write_file(*)", "command(*)", "mcp(*)")
+_AGY_LIVE_VERSIONS = {}
 
 
 def agy_at_least_1_5(version):
@@ -665,6 +666,18 @@ def agy_at_least_1_5(version):
     return (major, minor) >= (1, 5)
 
 
+def agy_supports_1_5(pick):
+    """先看 manifest 记的 version；过期且本机程序文件在时补查一次真实版本，避免升级后仍走 <1.5 路径。"""
+    if agy_at_least_1_5(pick.get("version")):
+        return True
+    path = pick.get("path")
+    if not path or not Path(path).is_file():
+        return False
+    if path not in _AGY_LIVE_VERSIONS:
+        _AGY_LIVE_VERSIONS[path] = inventory.cli_version(path)
+    return agy_at_least_1_5(_AGY_LIVE_VERSIONS[path])
+
+
 def _extract_jetski_no_output(stderr):
     for line in (stderr or "").splitlines():
         if "jetski: no output produced" in line:
@@ -678,7 +691,7 @@ def _contains_output_token_limit(*texts):
 
 def call_agy(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     out = base_result()
-    agy_1_5 = agy_at_least_1_5(pick.get("version"))
+    agy_1_5 = agy_supports_1_5(pick)
     if tools and not agy_1_5:
         out["status"] = "skipped"
         out["error"] = "agy 在无头模式下连读文件都会被拒，不能让它自己进项目读；换一个条目，或把材料用 --file 附上"
@@ -1256,11 +1269,11 @@ def cmd_run(args):
     if read_dir:
         if not read_dir.is_dir():
             inventory.fail(f"--read-dir 指的目录不存在：{args.read_dir}")
-        agy_can_read = base == "agy" and agy_at_least_1_5(pick.get("version"))
+        agy_can_read = base == "agy" and agy_supports_1_5(pick)
         if base in ("kimi", "manual") or (base == "agy" and not agy_can_read):
             usable = "、".join(e["id"] for e in data["entries"]
                              if e["channel"].split(":", 1)[0] in ("claude", "codex", "pi", "cc-switch")
-                             or (e["channel"].split(":", 1)[0] == "agy" and agy_at_least_1_5(e.get("version"))))
+                             or (e["channel"].split(":", 1)[0] == "agy" and agy_supports_1_5(e)))
             inventory.fail(f"{pick['id']} 不能进目录只读（kimi 没有只读档，1.5.0 以下的 agy 无头模式读不了文件）。"
                            f"换一个条目：{usable or '（清单里没有支持只读的通道）'}", 1)
     project = Path(args.project or read_dir or os.getcwd())
@@ -1339,8 +1352,16 @@ def cmd_run(args):
 ENGINE_HOSTS = {"claude-code": "claude", "claude": "claude", "codex": "codex", "kimi": "kimi", "kimi-code": "kimi", "pi": "pi"}
 
 
+def _mode_has_seat(mode):
+    return any(
+        seat.get("effective") or seat.get("unfilledReason")
+        for stage in (mode.get("stages") or [])
+        for seat in stage
+    )
+
+
 def engine_config(host):
-    """装了 aicross 且这个宿主有配置时返回 (配置, None)；没装返回 (None, None)；装了但读不了返回 (None, 原因)。"""
+    """装了 aicross 且这个宿主有配置时返回 (配置, None)；没装返回 (None, None)；装了但读不了或未配置返回 (None, 原因)。"""
     name = ENGINE_HOSTS.get(host.strip().lower())
     path = shutil.which("aicross")
     if not name or not path:
@@ -1356,7 +1377,11 @@ def engine_config(host):
         config = json.loads(done.stdout)
     except ValueError:
         return None, "aicross config show 的输出不是 JSON"
-    return (config, None) if isinstance(config, dict) else (None, "aicross config show 的输出不是 JSON")
+    if not isinstance(config, dict):
+        return None, "aicross config show 的输出不是 JSON"
+    if not any(_mode_has_seat(mode) for mode in config.get("modes") or []):
+        return None, f"宿主 {name} 还没有配人选"
+    return config, None
 
 
 def seat_text(seat):
@@ -1378,9 +1403,9 @@ def cmd_start(args):
         default = config.get("defaultMode")
         print(f"走 aicross 引擎：已安装，宿主 {ENGINE_HOSTS[args.host.strip().lower()]} 有配置。不用盘点，也不看 manifest。")
         for mode in config.get("modes") or []:
-            seats = [seat_text(seat) for stage in mode.get("stages") or [] for seat in stage]
-            if not seats and mode.get("id") != default:
+            if not _mode_has_seat(mode) and mode.get("id") != default:
                 continue
+            seats = [seat_text(seat) for stage in mode.get("stages") or [] for seat in stage]
             mark = "（默认）" if mode.get("id") == default or mode.get("default") else ""
             print(f"- {mode.get('name', mode.get('id'))}{mark}：{'；'.join(seats) or '没有位置'}")
         print(f"\n下一步：读 {ref}/channels.md「按窗口配置派发」照做。用户点名模型时先跑 aicross resources find <名字>。")
@@ -1419,6 +1444,15 @@ def count_verdict(text):
     return counts
 
 
+def _run_dir_sort_key(path):
+    """按时间戳与数字后缀排序，使 <时间>-10 排在 <时间>-2 之后。"""
+    m = re.fullmatch(r"(\d{8}-\d{6})(?:-(\d+))?", path.name)
+    if m:
+        return (m.group(1), 1 if m.group(2) else 0, int(m.group(2) or 0), path.name)
+    m2 = re.match(r"(\d{8}-\d{6})", path.name)
+    return (m2.group(1) if m2 else "", 2, 0, path.name)
+
+
 def cmd_verdict(args):
     text = read_text(args.verdict_file).strip()
     counts = count_verdict(text)
@@ -1428,7 +1462,10 @@ def cmd_verdict(args):
     if args.run:
         folder = runs / args.run
     else:
-        found = sorted(p for p in runs.glob("*") if p.is_dir() and re.match(r"\d{8}-\d{6}", p.name)) if runs.is_dir() else []
+        found = sorted(
+            (p for p in runs.glob("*") if p.is_dir() and re.match(r"\d{8}-\d{6}", p.name)),
+            key=_run_dir_sort_key,
+        ) if runs.is_dir() else []
         folder = found[-1] if found else None
     if folder is None or not folder.is_dir():
         inventory.fail(f"找不到派发目录（{runs}{'/' + args.run if args.run else ''}）。用 --project 指定项目，--run 指定派发目录名。", 1)
@@ -1484,7 +1521,11 @@ def cmd_smoke(args):
                                             for entry_id, reason in verdict.items()])
     for pick in picks:
         if pick["kind"] == "cc-switch" and verdict.get(pick["id"], "") is None:
-            print(f"提示  {pick['id']} 是第三方端点，另跑一次真身核对：verify_model.py --provider \"{pick['channel'].split(':', 1)[1]}\"")
+            models = ",".join(dict.fromkeys(p["model"] for p in picks if p["id"] == pick["id"]))
+            provider = pick["channel"].split(":", 1)[1]
+            ref = HERE.replace(os.sep, "/")
+            print(f"提示  {pick['id']} 是第三方端点，另跑一次真身核对："
+                  f"python {ref}/verify_model.py --provider \"{provider}\" --models \"{models}\"")
             verdict[pick["id"]] = ""  # 每个条目只提示一次
     failed = [i for i, reason in verdict.items() if reason]
     if not verdict:

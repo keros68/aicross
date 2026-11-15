@@ -416,6 +416,28 @@ class TestChannels(DBase):
             r4 = dispatch.call(agy, "材料", str(self.home), 120, "high", "p")
         self.assertEqual((r4["status"], r4["error"]), ("error", "回答超过输出上限"))
 
+    def test_agy_stale_manifest_version_falls_back_to_live_cli_version(self):
+        fake_exe = self.home / "agy.exe"
+        fake_exe.write_text("", encoding="utf-8")
+        agy = {"id": "agy.google", "channel": "agy", "kind": "cli", "vendor": "Google",
+               "billing": "subscription", "tier": "low", "model": "gemini-3.8-flash-low",
+               "path": str(fake_exe), "version": "1.3.1"}
+        ok = jl({"event": "result", "result": {"status": "SUCCESS", "response": "PASS\n",
+                                               "usage": {"input_tokens": 10, "output_tokens": 2}}})
+        seen_cmds = []
+
+        def run_process(cmd, cwd, timeout, stdin_text=None, **kwargs):
+            seen_cmds.append(list(cmd))
+            return 0, ok, "", None
+
+        dispatch._AGY_LIVE_VERSIONS.pop(str(fake_exe), None)
+        with mock.patch.object(dispatch.inventory, "cli_version", return_value="1.5.9") as cli_ver, \
+             mock.patch.object(dispatch, "run_process", run_process):
+            r = dispatch.call(agy, "B" * (205 * 1024), str(self.home), 120, "low", "p", blind=True, tools=False)
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(cli_ver.call_count, 1)
+        self.assertIn("--settings", seen_cmds[0])
+
     def test_agy_uses_blind_slots_and_project_flag(self):
         agy = {"id": "agy.google", "channel": "agy", "kind": "cli", "vendor": "Google",
                "billing": "subscription", "tier": "low", "model": "gemini-4-carbon-low", "version": "1.5.8"}
@@ -692,7 +714,11 @@ class TestSmoke(DBase):
         self.assertIn("glm-5.3：", smoke["reason"])                # 原因里点名是哪一档哪个模型
         self.assertIn("重新 save", out)
 
-
+    def test_smoke_cc_switch_hint_includes_entry_models_and_path(self):
+        with self.fake({"exec": (0, "收到", "")}):
+            code, out, _ = self.call(dispatch.cmd_smoke, entry=["cc-switch-deepseek.deepseek"], all=False, timeout=5)
+        self.assertEqual(code, 0)
+        self.assertIn('verify_model.py --provider "DeepSeek" --models "deepseek-v4-flash"', out)
 
 
 class TestProjectFolder(DBase):
@@ -812,10 +838,13 @@ class TestStartAndVerdict(DBase):
             {"id": "builtin-blind", "name": "盲审模式", "default": True, "stages": [[
                 {"role": "验证", "effective": {"agent": "pi", "provider": "opencode-go", "model": "glm-5.3", "state": "可用"}},
                 {"role": "验证", "unfilledReason": "未选人"}]]},
+            {"id": "builtin-arena", "name": "擂台模式", "stages": [[
+                {"role": "执行", "effective": None, "unfilledReason": None}]]},
             {"id": "builtin-swarm", "name": "蜂群模式", "stages": []}]}
         code, out, _ = self.start(engine=(config, None))
         self.assertEqual(code, 0)
         self.assertIn("盲审模式（默认）：验证 pi/opencode-go/glm-5.3，可用；验证 没有人选（未选人）", out)
+        self.assertNotIn("擂台模式", out)                           # 全是未设空位的非默认模式不列
         self.assertNotIn("蜂群模式", out)                           # 没有位置的非默认模式不列
         self.assertNotIn("默认审查顺序", out)                        # 走引擎就不看 manifest
         code, out, _ = self.start(engine=(None, "主 agent claude 没有配置"))
@@ -831,6 +860,11 @@ class TestStartAndVerdict(DBase):
             with mock.patch.object(dispatch.subprocess, "run", return_value=done) as run:
                 self.assertEqual(dispatch.engine_config("claude-code"), (None, "主 agent 未配置"))
                 self.assertEqual(run.call_args[0][0][1:], ["config", "show", "--host", "claude"])
+            empty_cfg = json.dumps({"defaultMode": "builtin-economy", "modes": [
+                {"id": "builtin-economy", "name": "经济模式", "stages": [[{"role": "执行", "effective": None}]]}]})
+            empty_done = mock.Mock(returncode=0, stdout=empty_cfg, stderr="")
+            with mock.patch.object(dispatch.subprocess, "run", return_value=empty_done):
+                self.assertEqual(dispatch.engine_config("codex"), (None, "宿主 codex 还没有配人选"))
 
     def test_verdict_goes_into_the_latest_run_dir(self):
         self.review({"--provider": (0, pi_out(), "")}, go=True)
@@ -842,6 +876,19 @@ class TestStartAndVerdict(DBase):
         self.assertIn("改 1 件，不改 0 件，以后不再报 1 件", out)
         saved = self.traces()[0].parent / "裁决.md"
         self.assertIn("空列表除零", saved.read_text(encoding="utf-8"))
+
+    def test_verdict_picks_numeric_suffix_latest_run_dir(self):
+        runs = self.project / ".aicross" / "runs"
+        for name in ("20261115-201451", "20261115-201451-2", "20261115-201451-10"):
+            (runs / name).mkdir(parents=True, exist_ok=True)
+        table = self.home / "verdict.md"
+        table.write_text("| 结论 | 选择 | 理由 | 写入已定事项 |\n|---|---|---|---|\n| 测试 | 改 | 验证 | 否 |\n",
+                         encoding="utf-8")
+        code, out, _ = self.call(dispatch.cmd_verdict, verdict_file=str(table), project=str(self.project), run=None)
+        self.assertEqual(code, 0)
+        self.assertIn("20261115-201451-10", out)
+        self.assertTrue((runs / "20261115-201451-10" / "裁决.md").is_file())
+        self.assertFalse((runs / "20261115-201451-2" / "裁决.md").exists())
 
     def test_verdict_rejects_tables_without_choices_and_missing_runs(self):
         table = self.home / "verdict.md"
