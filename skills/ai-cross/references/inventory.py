@@ -31,6 +31,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
@@ -428,6 +430,47 @@ def write_manifest(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
     os.replace(tmp, path)
+
+
+@contextmanager
+def manifest_lock(wait=30):
+    """读、改、写 manifest 期间独占，两条命令同时收尾时不盖掉对方的更新。
+    上限：等 wait 秒仍拿不到锁就不加锁照常写，那一次仍可能丢更新。"""
+    path = manifest_path().with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, held, deadline = open(path, "a+"), False, time.monotonic() + wait
+    while not held:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = True
+        except OSError:
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+    try:
+        yield
+    finally:
+        if held:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def update_manifest(change):
+    """在锁内重新读 manifest、改、写回。change 收到最新的 data。"""
+    with manifest_lock():
+        data = load_manifest()
+        change(data)
+        write_manifest(data)
 
 
 def find_entry(data, entry_id):
@@ -977,16 +1020,13 @@ def main():
             print_detect(result)
         else:
             print(json.dumps(result, ensure_ascii=False, indent=2))
-    elif a.cmd == "save":
-        cmd_save(a)
     elif a.cmd == "show":
         cmd_show(a)
-    elif a.cmd == "diff":
-        cmd_diff(a)
     elif a.cmd == "pick":
         cmd_pick(a)
-    else:
-        cmd_set(a)
+    else:  # 会写 manifest 的三个命令
+        with manifest_lock():
+            {"save": cmd_save, "diff": cmd_diff}.get(a.cmd, cmd_set)(a)
 
 
 if __name__ == "__main__":

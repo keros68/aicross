@@ -923,6 +923,38 @@ def migrate_legacy(project):
         print(f"注意：旧记录目录 .dispatch 没有迁完（{error}），下次派发再迁。", file=sys.stderr)
 
 
+KIMI_MOVED = "派发期间项目里这些文件有变化：{}。kimi 没有只读档，核对是不是它改的。"
+
+
+def project_state(project):
+    """项目在 git 里时，取未提交改动的清单与各文件的修改时间和大小；不在 git 里返回 None。
+    上限：只看得到项目目录内、git 状态会变的文件；目录外的改动和被忽略的文件看不到。"""
+    try:
+        r = subprocess.run(["git", "-C", str(project), "status", "--porcelain", "-z"], capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    state = {}
+    for item in r.stdout.decode("utf-8", "replace").split("\0"):
+        path = item[3:]
+        if len(item) < 4 or path.startswith(".aicross/"):
+            continue
+        try:
+            st = os.stat(Path(project) / path)
+            state[path] = (item[:2], st.st_mtime_ns, st.st_size)
+        except OSError:
+            state[path] = (item[:2],)
+    return state
+
+
+def changed_files(before, project):
+    after = project_state(project)
+    if before is None or after is None:
+        return None
+    return sorted(p for p in set(before) | set(after) if before.get(p) != after.get(p))
+
+
 def claim_run(project):
     """占一个派发目录并返回目录名。同一秒里的另一条命令拿到带序号的名字，两次派发的记录不混在一起。"""
     root = runs_root(project)
@@ -1088,6 +1120,7 @@ def cmd_review(args):
         return
 
     stamp = claim_run(project)
+    before = project_state(project)
     run_dir = inventory.data_root() / "scratch" / f"{stamp}-{os.getpid()}-blind"
     run_dir.mkdir(parents=True, exist_ok=True)
     names = [(p["channel"].split(":", 1)[0], p["model"]) for p in picked]
@@ -1112,19 +1145,19 @@ def cmd_review(args):
     shutil.rmtree(run_dir, ignore_errors=True)  # 盲审目录用完即删，材料只留在留痕里
 
     ok = [p["id"] for p, r in zip(picked, results) if r["status"] == "ok"]
-    if ok:
-        data = inventory.load_manifest()
-        for entry_id in ok:
-            inventory.mark_smoke(data, entry_id, "ok")
-        inventory.write_manifest(data)
-
     failed = {p["id"]: r["error"] for p, r in zip(picked, results)
               if r["status"] in ("timeout", "error", "identity_mismatch", "skipped")}
-    if failed:  # 记下这次没结果的条目，下次选人时排到后面
-        data = inventory.load_manifest()
+
+    def record(data):  # 没结果的条目记下来，下次选人时排到后面
+        for entry_id in ok:
+            inventory.mark_smoke(data, entry_id, "ok")
         for entry_id, reason in failed.items():
             inventory.mark_failure(data, entry_id, reason)
-        inventory.write_manifest(data)
+    if ok or failed:
+        inventory.update_manifest(record)
+    moved = changed_files(before, project) if any(p["channel"].split(":", 1)[0] == "kimi" for p in picked) else None
+    if moved:
+        alerts.append(KIMI_MOVED.format("、".join(moved[:8]) + ("等" if len(moved) > 8 else "")))
 
     if args.json:
         print(json.dumps({"routes": routes, "notes": notes, "redacted": redacted, "project": str(project), "results": [
@@ -1255,6 +1288,7 @@ def cmd_run(args):
         return
 
     stamp = claim_run(project)
+    before = project_state(project)
     run_dir = inventory.data_root() / "scratch" / f"{stamp}-{os.getpid()}-run"
     workdir = run_dir / pick["id"]
     workdir.mkdir(parents=True)
@@ -1268,9 +1302,10 @@ def cmd_run(args):
     out["trace"] = trace.relative_to(project).as_posix()
     shutil.rmtree(run_dir, ignore_errors=True)
     if out["status"] == "ok":
-        data = inventory.load_manifest()
-        inventory.mark_smoke(data, pick["id"], "ok")
-        inventory.write_manifest(data)
+        inventory.update_manifest(lambda data: inventory.mark_smoke(data, pick["id"], "ok"))
+    moved = changed_files(before, project) if base == "kimi" else None
+    if moved:
+        notes.append(KIMI_MOVED.format("、".join(moved[:8]) + ("等" if len(moved) > 8 else "")))
 
     if args.json:
         print(json.dumps({"routes": [route], "notes": notes, "redacted": redacted, "project": str(project), "results": [
@@ -1433,7 +1468,6 @@ def cmd_smoke(args):
         results = list(pool.map(one, enumerate(picks)))
     shutil.rmtree(run_dir, ignore_errors=True)
 
-    data = inventory.load_manifest()
     verdict = {}  # 条目 → 第一个失败原因；全部通过为 None
     for pick, r in zip(picks, results):
         label = f"{pick['id']} {TIER_TEXT[pick['tier']]}（{pick['model']}）"
@@ -1446,9 +1480,8 @@ def cmd_smoke(args):
         else:
             verdict[pick["id"]] = verdict.get(pick["id"]) or f"{TIER_TEXT[pick['tier']]} {pick['model']}：{r['error'][:100]}"
             print(f"失败  {label}：{r['error']}")
-    for entry_id, reason in verdict.items():
-        inventory.mark_smoke(data, entry_id, "fail" if reason else "ok", reason)
-    inventory.write_manifest(data)
+    inventory.update_manifest(lambda data: [inventory.mark_smoke(data, entry_id, "fail" if reason else "ok", reason)
+                                            for entry_id, reason in verdict.items()])
     for pick in picks:
         if pick["kind"] == "cc-switch" and verdict.get(pick["id"], "") is None:
             print(f"提示  {pick['id']} 是第三方端点，另跑一次真身核对：verify_model.py --provider \"{pick['channel'].split(':', 1)[1]}\"")

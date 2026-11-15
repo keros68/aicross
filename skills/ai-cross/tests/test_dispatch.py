@@ -738,6 +738,25 @@ class TestProjectFolder(DBase):
             inventory.build_entry(item, channels)
         self.assertEqual(inventory.build_entry(dict(item, vendor="Zhipu"), channels)["vendor"], "Zhipu")
 
+    def test_update_manifest_rereads_before_writing(self):
+        stale = inventory.load_manifest()
+        inventory.update_manifest(lambda d: d["notes"].append("甲"))
+        inventory.update_manifest(lambda d: d["notes"].append("乙"))
+        self.assertEqual(self.manifest()["notes"][-2:], ["甲", "乙"])
+        self.assertNotIn("甲", stale["notes"])
+
+    def test_files_changed_during_a_dispatch_are_listed(self):
+        import subprocess
+        if subprocess.run(["git", "init", "-q", str(self.project)], capture_output=True).returncode != 0:
+            self.skipTest("没有 git")
+        (self.project / "a.txt").write_text("a", encoding="utf-8")
+        before = dispatch.project_state(self.project)
+        self.assertEqual(dispatch.changed_files(before, self.project), [])
+        (self.project / "b.txt").write_text("b", encoding="utf-8")
+        (self.project / ".aicross").mkdir(exist_ok=True)
+        (self.project / ".aicross" / "x.md").write_text("x", encoding="utf-8")
+        self.assertEqual(dispatch.changed_files(before, self.project), ["b.txt"])
+
     def test_legacy_dispatch_folder_is_migrated(self):
         legacy = self.project / ".dispatch"
         (legacy / "run-a" / "n.before").mkdir(parents=True)
