@@ -150,6 +150,9 @@ class TestReview(DBase):
         self.assertIn("变量名 nums", self.traces()[0].read_text(encoding="utf-8"))   # 整篇在记录里
         code, out, _ = self.review({"--provider": (0, pi_out(answer), "")}, go=True, full=True)
         self.assertIn("变量名 nums", out)
+        long = answer + "\n" + "长" * dispatch.ANSWER_CAP + "末尾标记"
+        code, out, _ = self.review({"--provider": (0, pi_out(long), "")}, go=True, full=True)
+        self.assertIn("末尾标记", out)                              # --full 不截断
 
     def test_answer_without_the_two_sections_is_shown_whole(self):
         self.assertIsNone(dispatch.split_answer("结论：没有问题。\n依据：逐行读过。"))
@@ -701,6 +704,19 @@ class TestProjectFolder(DBase):
         trace = self.traces()[0].read_text(encoding="utf-8")
         self.assertIn("## 用户已定事项", trace)
         self.assertIn("不处理 IE", trace)
+
+    def test_decided_items_are_redacted_before_sending(self):
+        (self.project / ".aicross").mkdir()
+        (self.project / ".aicross" / "decided.md").write_text(
+            '# 已定事项\n\n## 不做\n\n- 不轮换 password = "hunter2hunter2"\n', encoding="utf-8")
+        self.review({"--provider": (0, pi_out(), "")}, go=True)
+        trace = self.traces()[0].read_text(encoding="utf-8")
+        self.assertIn("## 用户已定事项", trace)
+        self.assertNotIn("hunter2hunter2", trace)
+
+    def test_reviewer_count_below_one_is_refused(self):
+        with self.assertRaises(SystemExit):
+            inventory.choose_reviewers(self.manifest(), "claude-code", n=-1)
 
     def test_legacy_dispatch_folder_is_migrated(self):
         legacy = self.project / ".dispatch"

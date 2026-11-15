@@ -683,7 +683,7 @@ def print_diff(report):
     if report["baselined"]:
         print("首次记下模型清单，下次起比对：" + "、".join(report["baselined"]))
     if not (report["changed"] or report["new_channels"]):
-        print("没有新模型，档位里的模型都还在。")
+        print("读到的通道里没有新模型，档位里的模型都还在。" if report["unread"] else "没有新模型，档位里的模型都还在。")
         return
     print("\n换档：inventory.py set --tier <条目>:<low|mid|high>=<模型ID>（换后冒烟记录清空，派发前先冒烟）")
     print("不换：inventory.py set --ack <条目或通道>（或 all），以后不再提示")
@@ -736,6 +736,8 @@ def choose_reviewers(data, host, author=None, n=None, tier=None):
         notes.append("没有要回避的厂商，按顺序选不同厂商。")
     else:
         notes.append(f"宿主「{host}」的底层模型不确定，不把它算作交叉验证的一方，改选两家外部厂商互审。")
+    if n is not None and n < 1:
+        fail("--n 至少是 1。")
     count = n or (1 if author else 2)
 
     picked, seen, skipped = [], set(), []
@@ -945,7 +947,7 @@ def main():
     k.add_argument("--role", required=True, choices=["reviewer", "executor"])
     k.add_argument("--host", required=True, help="当前宿主：claude-code（或 claude）/ codex / kimi / antigravity（或 agy）/ 其他名字")
     k.add_argument("--author", help="被审产出出自哪家厂商（默认是宿主厂商）；none = 不回避任何一家")
-    k.add_argument("--n", type=int, help="选几家（默认 1；宿主厂商不确定时 2）")
+    k.add_argument("--n", type=int, help="选几家（默认 1；宿主厂商不确定或没有要回避的厂商时 2）")
     k.add_argument("--tier", choices=TIERS)
     e = sub.add_parser("set", help="改 manifest 里的单项")
     e.add_argument("--smoke", action="append", metavar="ENTRY=ok|fail[:原因]")

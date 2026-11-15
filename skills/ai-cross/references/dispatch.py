@@ -151,8 +151,8 @@ def build_prompt(kind, files, text_file, base=None):
     material, names = read_materials(files, text_file, base)
     if not material.strip():
         inventory.fail("没有材料：用 --file 或 --text-file 给出要审的原始材料。")
-    material, hits = redact(material)
-    return f"{TEMPLATES[ENGINE_KINDS.get(kind, kind)]}{TWO_CLASS}{NUMERICAL_REVIEW}{HONEST}{NO_TOOLS}\n\n{material}\n{decided_section(base)}", names, hits
+    body, hits = redact(f"{material}\n{decided_section(base)}")  # 已定事项也是外发内容，一并脱敏
+    return f"{TEMPLATES[ENGINE_KINDS.get(kind, kind)]}{TWO_CLASS}{NUMERICAL_REVIEW}{HONEST}{NO_TOOLS}\n\n{body}", names, hits
 
 
 # ---------- 各通道的调用与解析 ----------
@@ -1098,7 +1098,7 @@ def cmd_review(args):
         inventory.write_manifest(data)
 
     failed = {p["id"]: r["error"] for p, r in zip(picked, results)
-              if r["status"] in ("timeout", "error", "identity_mismatch")}
+              if r["status"] in ("timeout", "error", "identity_mismatch", "skipped")}
     if failed:  # 记下这次没结果的条目，下次选人时排到后面
         data = inventory.load_manifest()
         for entry_id, reason in failed.items():
@@ -1132,8 +1132,8 @@ def print_review(picked, results, alerts, full=False):
             answer = r["answer"].strip()
             parts = None if full else split_answer(answer)
             if parts is None:  # 没按两节作答，或要求看全文
-                print(answer[:ANSWER_CAP])
-                if len(answer) > ANSWER_CAP:
+                print(answer if full else answer[:ANSWER_CAP])
+                if not full and len(answer) > ANSWER_CAP:
                     print("……（已截断，其余在全文里）")
             else:
                 lead, wrong, advice = parts
@@ -1442,7 +1442,7 @@ def main():
     r.add_argument("--kind", choices=sorted(TEMPLATES) + sorted(ENGINE_KINDS), default="general",
                    help="general 通用材料；code 代码审查；也认 aicross 的任务类型（frontend、backend 按 code，其余按 general）")
     r.add_argument("--author", help="被审产出出自哪家厂商（默认是宿主厂商）；none = 不回避任何一家")
-    r.add_argument("--n", type=int, help="派几家（默认 1；宿主厂商不确定时 2）")
+    r.add_argument("--n", type=int, help="派几家（默认 1；宿主厂商不确定或没有要回避的厂商时 2）")
     r.add_argument("--entry", action="append", help="点名审查者（manifest 条目名，可重复）")
     r.add_argument("--tier", choices=inventory.TIERS, help="档位，默认 high")
     r.add_argument("--thinking", choices=["off", "low", "mid", "high"], default="high",
