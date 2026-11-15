@@ -21,7 +21,7 @@ python <本skill目录>/references/dispatch.py start --host <宿主名>
 python <本skill目录>/references/dispatch.py verdict --verdict-file <裁决表> [--project <项目目录>] [--run <派发目录名>]
 ```
 
-- **参数与 `aicross dispatch` 对齐的部分**：`run` 的任务文本用 `--text-file`（旧写法 `--task-file` 照认）；`review --kind` 除 `code` / `general` 外也认引擎的任务类型，`frontend`、`backend` 按 `code`，`writing`、`data`、`docs`、`other` 按 `general`；`--host` 认 `claude` 与 `claude-code`。`review` 的 `--text-file` 是不成文件的原始材料，与 `run` 的含义不同。
+- **参数与 `aicross dispatch` 对齐的部分**：`run` 的任务文本用 `--text-file`（旧写法 `--task-file` 照认）；`review --kind` 除 `code` / `general` 外也认引擎的任务类型，`frontend`、`backend` 按 `code`，`writing`、`data`、`docs`、`other` 按 `general`；`--host` 认 `claude` 与 `claude-code`。`review` 里不成文件的原始材料用 `--material-file`（旧写法 `--text-file` 照认，含义与 `run` 的任务文本不同）。`start` 只把 `claude-code`、`kimi-code` 换算成引擎的名字，其余宿主名原样交给 `aicross config show --host`，引擎不认就按其他退出码处理。
 - `start` 的判断顺序：当前会话带 `AI_CROSS_PEER=1` → 只作答；`aicross config show --host <主 agent>` 退出码 0 且至少有一个模式配了人选 → 走引擎并列出各模式的人选；命令不存在 → 看 manifest；其他退出码或该宿主尚未配人选 → 打印原因后看 manifest；没有 manifest 退出码 3。
 - `verdict` 把裁决表原样存成该次派发目录的 `裁决.md`，认表的规则与引擎相同（表格行里某一格正好是「改」「不改」「以后不再报」）。它不写 `track/outcomes.jsonl`，那份记录只有引擎写。
 

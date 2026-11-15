@@ -62,6 +62,7 @@ TWO_CLASS = ("审查意见分两节写：\n## 会出错\n每条写问题，再�
              "与「用户已定事项」相反的意见，只在写得出出错场景时报，并注明「与已定事项冲突」。\n"
              "## 建议\n命名、格式、注释、写法偏好、可读性等，以及写不出出错场景的疑虑。\n哪一节没有内容就写「无」。\n")
 NO_TOOLS = "材料已全部附在下面，不要使用任何工具。"
+NO_TOOLS_FILE = "材料已全部附在下面，除读取本文件外不要使用其他工具。"
 # 如实汇报：英文这一句出自 Language Models Are "Insecure" Reporters（2026-09），实验里让负面结果的
 # 披露从 2/200 升到 190/200；中文那句是补的具体要求，效果未单独实测。执行与审查都带。
 HONEST = "Be honest in your response. 没做完、没运行、失败或与预期不符的结果要写明，放在回答开头。"
@@ -723,7 +724,8 @@ def call_agy(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
                     return out
                 sent_prompt = prompt
                 if agy_1_5 and blind and len(prompt.encode("utf-8")) > AGY_INLINE_LIMIT:
-                    (slot_dir / "REQUEST.md").write_text(prompt, encoding="utf-8", newline="\n")
+                    # 材料改走文件时，模板里那句「不要使用任何工具」与「先读 REQUEST.md」相抵，换成只许读这一个文件
+                    (slot_dir / "REQUEST.md").write_text(prompt.replace(NO_TOOLS, NO_TOOLS_FILE), encoding="utf-8", newline="\n")
                     sent_prompt = f"完整任务与待审材料在当前目录的 REQUEST.md，请先完整读取后再按其要求作答。\n\n{AGY_READONLY_NOTE}"
                 line = json.dumps({"event": "user", "message": {"role": "user", "content": sent_prompt}}, ensure_ascii=False) + "\n"
                 out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, str(slot_dir), timeout + 30, line)
@@ -1349,7 +1351,13 @@ def cmd_run(args):
 
 # ---------- start：入口 ----------
 
-ENGINE_HOSTS = {"claude-code": "claude", "claude": "claude", "codex": "codex", "kimi": "kimi", "kimi-code": "kimi", "pi": "pi"}
+# 只做别名换算；其余宿主名原样交给引擎，认不认由 aicross config show 的退出码说了算
+ENGINE_HOSTS = {"claude-code": "claude", "kimi-code": "kimi"}
+
+
+def engine_host(host):
+    name = host.strip().lower()
+    return ENGINE_HOSTS.get(name, name)
 
 
 def _mode_has_seat(mode):
@@ -1362,7 +1370,7 @@ def _mode_has_seat(mode):
 
 def engine_config(host):
     """装了 aicross 且这个宿主有配置时返回 (配置, None)；没装返回 (None, None)；装了但读不了或未配置返回 (None, 原因)。"""
-    name = ENGINE_HOSTS.get(host.strip().lower())
+    name = engine_host(host)
     path = shutil.which("aicross")
     if not name or not path:
         return None, None
@@ -1401,7 +1409,7 @@ def cmd_start(args):
     config, problem = engine_config(args.host)
     if config is not None:
         default = config.get("defaultMode")
-        print(f"走 aicross 引擎：已安装，宿主 {ENGINE_HOSTS[args.host.strip().lower()]} 有配置。不用盘点，也不看 manifest。")
+        print(f"走 aicross 引擎：已安装，宿主 {engine_host(args.host)} 有配置。不用盘点，也不看 manifest。")
         for mode in config.get("modes") or []:
             if not _mode_has_seat(mode) and mode.get("id") != default:
                 continue
@@ -1543,7 +1551,8 @@ def main():
     r = sub.add_parser("review", help="按默认人选做一次盲审")
     r.add_argument("--host", required=True, help="当前宿主：claude-code（或 claude）/ codex / kimi / antigravity（或 agy）/ 其他名字")
     r.add_argument("--file", action="append", help="要审的原始材料（UTF-8 文本文件，可重复）")
-    r.add_argument("--text-file", dest="text_file", help="不成文件的原始材料（一段文字）先存成文件再给")
+    r.add_argument("--material-file", "--text-file", dest="text_file",
+                   help="不成文件的原始材料（一段文字）先存成文件再给；--text-file 是旧写法，照认")
     r.add_argument("--kind", choices=sorted(TEMPLATES) + sorted(ENGINE_KINDS), default="general",
                    help="general 通用材料；code 代码审查；也认 aicross 的任务类型（frontend、backend 按 code，其余按 general）")
     r.add_argument("--author", help="被审产出出自哪家厂商（默认是宿主厂商）；none = 不回避任何一家")

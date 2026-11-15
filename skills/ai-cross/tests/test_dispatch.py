@@ -382,13 +382,18 @@ class TestChannels(DBase):
             self.calls.append((cmd, cwd, stdin_text))
             spath = Path(cmd[cmd.index("--settings") + 1])
             seen_settings.append((spath, json.loads(spath.read_text(encoding="utf-8")), (Path(cwd) / "REQUEST.md").exists()))
+            if (Path(cwd) / "REQUEST.md").exists():
+                seen_request.append((Path(cwd) / "REQUEST.md").read_text(encoding="utf-8"))
             return 0, ok, "", None
 
+        seen_request = []
         workdir = self.home / "blind-big"
         workdir.mkdir()
         with mock.patch.object(dispatch, "run_process", run_process):
-            r = dispatch.call(agy, "A" * (205 * 1024), str(workdir), 120, "high", "p", blind=True, tools=False)
+            r = dispatch.call(agy, dispatch.NO_TOOLS + "A" * (205 * 1024), str(workdir), 120, "high", "p", blind=True, tools=False)
         self.assertEqual(r["status"], "ok")
+        self.assertNotIn("不要使用任何工具", seen_request[0])        # 走文件时不带与「先读文件」相抵的那句
+        self.assertIn("除读取本文件外", seen_request[0])
         spath, sjson, has_req = seen_settings[0]
         self.assertFalse(spath.exists(), "临时 settings 文件跑完应清理")
         self.assertNotIn(str(workdir), str(spath))
@@ -855,11 +860,12 @@ class TestStartAndVerdict(DBase):
         with mock.patch.object(dispatch.shutil, "which", return_value=None):
             self.assertEqual(dispatch.engine_config("claude-code"), (None, None))
         with mock.patch.object(dispatch.shutil, "which", return_value="/x/aicross"):
-            self.assertEqual(dispatch.engine_config("qoder"), (None, None))
             done = mock.Mock(returncode=1, stdout="", stderr="主 agent 未配置\n更多")
             with mock.patch.object(dispatch.subprocess, "run", return_value=done) as run:
                 self.assertEqual(dispatch.engine_config("claude-code"), (None, "主 agent 未配置"))
                 self.assertEqual(run.call_args[0][0][1:], ["config", "show", "--host", "claude"])
+                dispatch.engine_config("Qoder")                    # 不在别名表里的宿主名原样交给引擎
+                self.assertEqual(run.call_args[0][0][1:], ["config", "show", "--host", "qoder"])
             empty_cfg = json.dumps({"defaultMode": "builtin-economy", "modes": [
                 {"id": "builtin-economy", "name": "经济模式", "stages": [[{"role": "执行", "effective": None}]]}]})
             empty_done = mock.Mock(returncode=0, stdout=empty_cfg, stderr="")
