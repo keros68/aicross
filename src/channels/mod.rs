@@ -737,8 +737,15 @@ fn cc_tier(tier: &str) -> &'static str {
     }
 }
 
+#[cfg(windows)]
 fn kimi_fallback() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".kimi-code/bin/kimi.exe"))
+}
+
+/// 与 `agent_catalog` 里 kimi 的兜底路径一致（macOS 本机实测）。
+#[cfg(not(windows))]
+fn kimi_fallback() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".kimi-code/bin/kimi"))
 }
 
 pub(crate) fn resolve_binary(binary: &str, fallback: Option<PathBuf>) -> Result<PathBuf, String> {

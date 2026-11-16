@@ -384,10 +384,13 @@ fn write_run(root: &Path, run: &EngineRun) -> Result<(), String> {
 #[cfg(unix)]
 fn process_alive(pid: u32, _pid_started_at: &str) -> bool {
     // 非 Windows 平台保持存在性检查（kill(pid, 0)），pid 复用核对不生效，见文档。
-    if pid == 0 {
+    // pid 超出 i32 正数范围时直接转成 pid_t 会变成负数（u32::MAX 即 -1），
+    // kill(-1, 0) 探测的是本用户能发信号的全部进程而恒为成功；这类 pid 不可能
+    // 是真实进程，按已退出处理。
+    let Some(pid) = crate::process::unix_pid(pid) else {
         return false;
-    }
-    let result = unsafe { libc::kill(pid as i32, 0) };
+    };
+    let result = unsafe { libc::kill(pid, 0) };
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
@@ -3937,8 +3940,12 @@ fn spawn_detached(exe: &Path, args: &[String]) -> Result<u32, String> {
 
 #[cfg(not(windows))]
 fn spawn_detached(exe: &Path, args: &[String]) -> Result<u32, String> {
+    use std::os::unix::process::CommandExt;
+    // 与 Windows 的 CREATE_NEW_PROCESS_GROUP 对应：后台引擎进独立进程组，
+    // 终端里对前台进程组发的 Ctrl-C 不会连带结束它。
     Command::new(exe)
         .args(args)
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

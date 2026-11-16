@@ -276,7 +276,7 @@ fn detached_grandchild_does_not_hold_the_pipe() {
 #[cfg(not(windows))]
 #[test]
 fn spawn_detached_detaches_stdio() {
-    let pid = spawn_detached(Path::new("/bin/true"), &[]).expect("拉起 /bin/true");
+    let pid = spawn_detached(Path::new("/usr/bin/true"), &[]).expect("拉起 /usr/bin/true");
     assert!(pid > 0);
 }
 
