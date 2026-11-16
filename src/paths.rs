@@ -160,6 +160,10 @@ pub(crate) fn test_temp_dir() -> PathBuf {
             }
         }
         let _ = std::fs::create_dir_all(&own);
+        // macOS 的临时目录 /var 是指向 /private/var 的链接，子进程 getcwd 返回真实路径；
+        // 这里先解析成真实路径，测试拿它和子进程报告的 cwd 比较。Windows 解析会加 \\?\ 前缀，不做。
+        #[cfg(not(windows))]
+        let own = std::fs::canonicalize(&own).unwrap_or(own);
         own
     })
     .clone()

@@ -275,6 +275,9 @@ impl Drop for InteractiveProcess {
     }
 }
 
+// fetch_update 在新版 Rust 里改名 try_update 并标记弃用；try_update 刚稳定，
+// 旧版编译器没有，继续用 fetch_update。
+#[allow(deprecated)]
 pub fn spawn_interactive(
     program: &Path,
     args: &[String],
@@ -382,7 +385,7 @@ fn process_command(program: &Path, args: &[String]) -> Command {
         command
     };
     #[cfg(not(windows))]
-    let mut command = {
+    let command = {
         let mut command = Command::new(program);
         command.args(args);
         command
@@ -728,15 +731,55 @@ pub fn terminate_process_id(process_id: u32) -> bool {
     }
     #[cfg(unix)]
     {
-        // SAFETY: kill receives a process id captured from a child process and a
-        // constant signal; it does not dereference pointers.
-        return unsafe { libc::kill(process_id as i32, libc::SIGKILL) == 0 };
+        // 与 taskkill /T 对应：先按 pgrep -P 逐层收集子孙进程，再从根往下逐个结束。
+        // 收集与结束之间新拉起的孙进程、或已 setsid 脱离的进程收不到。
+        let Some(root) = unix_pid(process_id) else {
+            return false;
+        };
+        let mut tree = vec![root];
+        let mut index = 0;
+        while index < tree.len() {
+            tree.extend(unix_child_pids(tree[index]));
+            index += 1;
+        }
+        // SAFETY: kill receives positive process ids and a constant signal; it
+        // does not dereference pointers.
+        let root_killed = unsafe { libc::kill(root, libc::SIGKILL) == 0 };
+        for pid in &tree[1..] {
+            unsafe { libc::kill(*pid, libc::SIGKILL) };
+        }
+        return root_killed;
     }
     #[cfg(all(not(windows), not(unix)))]
     {
         let _ = process_id;
         false
     }
+}
+
+/// u32 pid 转成可交给 kill 的正数 pid_t；0 与超出 i32 正数范围的值返回 None，
+/// 避免转成 0 或负数后 kill 作用到进程组或全部进程。
+#[cfg(unix)]
+pub(crate) fn unix_pid(process_id: u32) -> Option<i32> {
+    i32::try_from(process_id).ok().filter(|pid| *pid > 0)
+}
+
+#[cfg(unix)]
+fn unix_child_pids(parent: i32) -> Vec<i32> {
+    // pgrep 没有匹配时退出码为 1，只看输出。
+    Command::new("pgrep")
+        .args(["-P", &parent.to_string()])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| line.trim().parse::<i32>().ok())
+                .filter(|pid| *pid > 0)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1049,5 +1092,46 @@ mod tests {
         assert!(elapsed < 100);
         assert!(idle >= 20, "重置尝试不应伪造新的子进程输出");
         assert_eq!((calls, repeated, last_tool), (0, 0, String::new()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_pid_rejects_zero_and_out_of_range_values() {
+        assert_eq!(unix_pid(0), None);
+        assert_eq!(unix_pid(u32::MAX), None);
+        assert_eq!(unix_pid(i32::MAX as u32 + 1), None);
+        assert_eq!(unix_pid(42), Some(42));
+    }
+
+    /// 结束进程树：shell 拉起的后台 sleep（孙进程）随根进程一起结束。
+    #[cfg(unix)]
+    #[test]
+    fn terminate_process_tree_kills_grandchildren_on_unix() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let root = unix_pid(child.id()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let grandchildren = loop {
+            let found = unix_child_pids(root);
+            if !found.is_empty() {
+                break found;
+            }
+            assert!(Instant::now() < deadline, "sh 没有拉起 sleep");
+            thread::sleep(Duration::from_millis(20));
+        };
+        terminate_process_tree(&mut child);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for pid in grandchildren {
+            // 孙进程被结束后由 init 回收；kill(pid, 0) 失败即已不存在。
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                assert!(Instant::now() < deadline, "孙进程 {pid} 仍在运行");
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
     }
 }

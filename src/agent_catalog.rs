@@ -43,6 +43,7 @@ pub(crate) enum ModelSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FallbackBase {
     Home,
+    #[cfg_attr(not(windows), allow(dead_code))]
     LocalAppData,
 }
 
@@ -103,7 +104,11 @@ pub(crate) const SUPPORTED_AGENTS: &[SupportedAgent] = &[
         id: "kimi",
         name: "Kimi Code",
         command: "kimi",
+        #[cfg(windows)]
         fallback: Some((FallbackBase::Home, ".kimi-code/bin/kimi.exe")),
+        // macOS 上同样装在 ~/.kimi-code/bin（本机实测）。
+        #[cfg(not(windows))]
+        fallback: Some((FallbackBase::Home, ".kimi-code/bin/kimi")),
         version_arg: "--version",
         models: ModelSource::KimiConfig,
         homepage: "https://github.com/MoonshotAI/kimi-cli",
@@ -129,7 +134,11 @@ pub(crate) const SUPPORTED_AGENTS: &[SupportedAgent] = &[
         id: "agy",
         name: "Antigravity",
         command: "agy",
+        #[cfg(windows)]
         fallback: Some((FallbackBase::LocalAppData, "agy/bin/agy.exe")),
+        // 其它系统的安装位置未实测，不设兜底，只查 PATH。
+        #[cfg(not(windows))]
+        fallback: None,
         version_arg: "--version",
         models: ModelSource::AgyModels,
         homepage: "https://antigravity.google",
@@ -323,7 +332,7 @@ pub(crate) fn desktop_bundled(id: &str) -> Option<PathBuf> {
 
 /// Codex 桌面端（Windows 商店包 OpenAI.Codex）把 codex.exe 放在
 /// `<包目录>\app\resources\` 下。包目录先查注册表里登记的位置，再试直接
-/// 列 WindowsApps（普通用户常常没有列目录权限）。
+/// 列 WindowsApps（普通用户常常没有列目录权限）。macOS 见下方分支。
 fn codex_desktop_candidates() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
@@ -333,7 +342,16 @@ fn codex_desktop_candidates() -> Vec<PathBuf> {
         }
         roots.into_iter().map(|root| root.join("app").join("resources").join("codex.exe")).collect()
     }
-    #[cfg(not(windows))]
+    // macOS 的 ChatGPT 桌面端自带 Codex 命令行：`ChatGPT.app/Contents/Resources/codex-cli/bin/codex`
+    // （本机 ChatGPT.app 实测，`--version` 输出 codex-cli 版本）。
+    #[cfg(target_os = "macos")]
+    {
+        let relative = "ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
+        let mut roots = vec![PathBuf::from("/Applications")];
+        roots.extend(dirs::home_dir().map(|home| home.join("Applications")));
+        roots.into_iter().map(|root| root.join(relative)).collect()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         Vec::new()
     }
@@ -510,7 +528,12 @@ mod tests {
         assert!(find("agy").unwrap().native);
         assert!(blind_only_reason("agy").unwrap().contains("纯文本盲审"));
         assert!(blind_only_reason("claude").is_none());
+        #[cfg(windows)]
         assert!(fallback_path("agy").is_some_and(|path| path.ends_with("agy/bin/agy.exe")));
+        #[cfg(not(windows))]
+        assert_eq!(fallback_path("agy"), None);
+        #[cfg(not(windows))]
+        assert!(fallback_path("kimi").is_some_and(|path| path.ends_with(".kimi-code/bin/kimi")));
     }
 
     #[test]

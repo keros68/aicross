@@ -6598,8 +6598,9 @@ mod tests {
         let old = test_snapshot(&root, "run", "node", "before");
         fs::create_dir_all(&old).unwrap();
         fs::write(old.join("stale.txt"), "stale").unwrap();
-        let before = HashMap::from([("changed.txt".into(), SnapshotFile { bytes: Some(b"old".to_vec()), ..SnapshotFile::default() })]);
-        let after = HashMap::from([("changed.txt".into(), SnapshotFile { bytes: Some(b"new".to_vec()), ..SnapshotFile::default() })]);
+        // mode 按真实快照取普通文件权限；Unix 上快照按它恢复权限，Windows 忽略。
+        let before = HashMap::from([("changed.txt".into(), SnapshotFile { bytes: Some(b"old".to_vec()), mode: 0o644, ..SnapshotFile::default() })]);
+        let after = HashMap::from([("changed.txt".into(), SnapshotFile { bytes: Some(b"new".to_vec()), mode: 0o644, ..SnapshotFile::default() })]);
         persist_before_snapshot(&root, &test_log_dir(&root, "run"), "run", "node", &before, &after).unwrap();
         assert_eq!(fs::read_to_string(old.join("changed.txt")).unwrap(), "old");
         assert!(!old.join("stale.txt").exists());
@@ -10575,7 +10576,8 @@ mod tests {
 
     #[cfg(not(windows))]
     fn task13_strict_command() -> String {
-        "test \"$(cat function.txt)\" = 2 && test -f regression.test".into()
+        // 与 Windows 分支的 Trim() 一致：去掉 CRLF 里的 \r 再比较。
+        "test \"$(tr -d '\\r' < function.txt)\" = 2 && test -f regression.test".into()
     }
 
     #[cfg(windows)]
@@ -11005,7 +11007,7 @@ mod tests {
         let (root, project, before, _task13_guard) = task13_repo("restore-link");
         fs::write(project.join("function.txt"), b"2\n").unwrap();
         let after = snapshot_directory(&project).unwrap();
-        let before_dir = task13_persist_before(&project, &before, &after, "restore-link");
+        let _ = task13_persist_before(&project, &before, &after, "restore-link");
         fs::remove_file(project.join("function.txt")).unwrap();
         symlink("baseline.test", project.join("function.txt")).unwrap();
         let failures = restore_snapshot_paths(&project, &after, &["function.txt".into()]);
