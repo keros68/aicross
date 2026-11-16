@@ -10,7 +10,7 @@ aicross：多厂商 agent 的派发引擎与结果查看器。用户在自己常
 
 - Tauri 2（Rust 后端）+ React 19 + TypeScript + Vite 前端。窗口是自绘标题栏加五页：开始、资源、skill、模式、派发记录（含查看页）；终端、PTY、xterm 已随 TASK-40 下线。
 - 目录：`src/`（Rust，`Cargo.toml` 在根目录）、`src-ui/`（前端）、`skills/ai-cross/`（ai-cross skill 源码）、`skill-bundle/`（由 `scripts/sync-skill.py` 从 `skills/ai-cross` 生成、编进可执行文件的内置包）、`windows/`（安装器的 PATH 处理）、`tasks/`（任务书与完成报告）、`docs/`。
-- Windows 优先（开发机是 Windows 11），macOS/Linux 不能破坏但不强求验证。
+- Windows 优先（开发机是 Windows 11）。macOS（Apple Silicon）能打包运行，`cargo test` 在两个系统上都要通过；Linux 不能破坏但不强求验证。
 - 现有 Python 脚本（`skills/ai-cross/references/cc_switch.py` / `verify_model.py` / `usage_probe.py`）当子进程调用，不重写。
 
 ## 许可与来源
@@ -45,7 +45,7 @@ MIT（`LICENSE`）。仓库代码均为本项目自写。参考其他项目时�
 ```bash
 cd src-ui && npm install && npm run build     # 前端
 cargo check && cargo test                     # 后端（根目录）
-npm exec @tauri-apps/cli@2 -- tauri dev      # 开发窗口（根目录；tauri CLI 未装为本地依赖）
+npx --yes -p @tauri-apps/cli@2 tauri dev    # 开发窗口（根目录；tauri CLI 未装为本地依赖）
 ```
 
 ## 交付流程

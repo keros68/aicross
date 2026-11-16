@@ -81,7 +81,7 @@ npx skills add keros68/aicross --skill ai-cross -g
 
 ## 从源码构建
 
-依赖 Node.js、Rust（stable）与 Tauri 2 的系统依赖。macOS 与 Linux 目前只保证能编译，没有安装包。
+依赖 Node.js、Rust（stable）与 Tauri 2 的系统依赖。macOS（Apple Silicon）用 `scripts/build-macos.sh` 在本机打出未签名的 `.dmg`，见[使用手册](docs/MANUAL.md)；Intel Mac 与 Linux 目前只保证能编译，没有安装包。
 
 ```bash
 cd src-ui && npm install && npm run build   # 前端
