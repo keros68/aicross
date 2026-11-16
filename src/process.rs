@@ -736,18 +736,11 @@ pub fn terminate_process_id(process_id: u32) -> bool {
         let Some(root) = unix_pid(process_id) else {
             return false;
         };
-        let mut tree = vec![root];
-        let mut index = 0;
-        while index < tree.len() {
-            tree.extend(unix_child_pids(tree[index]));
-            index += 1;
-        }
+        let descendants = unix_descendants(root);
         // SAFETY: kill receives positive process ids and a constant signal; it
         // does not dereference pointers.
         let root_killed = unsafe { libc::kill(root, libc::SIGKILL) == 0 };
-        for pid in &tree[1..] {
-            unsafe { libc::kill(*pid, libc::SIGKILL) };
-        }
+        kill_pids(&descendants);
         return root_killed;
     }
     #[cfg(all(not(windows), not(unix)))]
@@ -762,6 +755,61 @@ pub fn terminate_process_id(process_id: u32) -> bool {
 #[cfg(unix)]
 pub(crate) fn unix_pid(process_id: u32) -> Option<i32> {
     i32::try_from(process_id).ok().filter(|pid| *pid > 0)
+}
+
+/// `root` 的全部子孙进程（不含 `root`），按离根由近到远排列。
+#[cfg(unix)]
+fn unix_descendants(root: i32) -> Vec<i32> {
+    let mut tree = vec![root];
+    let mut index = 0;
+    while index < tree.len() {
+        tree.extend(unix_child_pids(tree[index]));
+        index += 1;
+    }
+    tree.split_off(1)
+}
+
+#[cfg(unix)]
+fn kill_pids(pids: &[i32]) {
+    for pid in pids {
+        // SAFETY: 进程号来自 pgrep 且已过滤为正数，信号是常量。
+        unsafe { libc::kill(*pid, libc::SIGKILL) };
+    }
+}
+
+// ── Unix：引擎收到结束信号时带走子孙进程 ────────────────────────────────
+// 与 Windows 的 kill-on-close Job Object 对应，但只覆盖 SIGTERM、SIGHUP、
+// SIGINT：引擎被 SIGKILL 或崩溃时，子孙进程仍会留下。处理函数只置标志位，
+// 由一个线程每 100 ms 查一次；信号处理方式不随 exec 传给子进程。
+#[cfg(unix)]
+static TERMINATION_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+#[cfg(unix)]
+extern "C" fn record_termination_signal(signal: libc::c_int) {
+    TERMINATION_SIGNAL.store(signal, Ordering::SeqCst);
+}
+
+/// 命令行子命令启动时调用一次（窗口进程不调用）。仅 Unix 生效。
+pub(crate) fn kill_children_on_termination() {
+    #[cfg(unix)]
+    {
+        let handler = record_termination_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
+            // SAFETY: 处理函数只写一个原子量，是异步信号安全的。
+            unsafe { libc::signal(signal, handler) };
+        }
+        thread::spawn(|| loop {
+            let signal = TERMINATION_SIGNAL.load(Ordering::SeqCst);
+            if signal != 0 {
+                if let Some(own) = unix_pid(std::process::id()) {
+                    kill_pids(&unix_descendants(own));
+                }
+                // SAFETY: _exit 不运行析构与退出钩子，直接结束进程。
+                unsafe { libc::_exit(128 + signal) };
+            }
+            thread::sleep(Duration::from_millis(100));
+        });
+    }
 }
 
 #[cfg(unix)]
@@ -1133,5 +1181,39 @@ mod tests {
                 thread::sleep(Duration::from_millis(20));
             }
         }
+    }
+
+    /// 只结束子孙进程：根进程留着，它拉起的后台 sleep 被结束。
+    #[cfg(unix)]
+    #[test]
+    fn kill_pids_of_descendants_leaves_the_root_running() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & sleep 30 & wait; sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let root = unix_pid(child.id()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let descendants = loop {
+            let found = unix_descendants(root);
+            if found.len() == 2 {
+                break found;
+            }
+            assert!(Instant::now() < deadline, "sh 没有拉起两个 sleep");
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert!(!descendants.contains(&root));
+        kill_pids(&descendants);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for pid in descendants {
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                assert!(Instant::now() < deadline, "子进程 {pid} 仍在运行");
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
+        assert!(child.try_wait().unwrap().is_none(), "根进程不应被结束");
+        terminate_process_tree(&mut child);
     }
 }

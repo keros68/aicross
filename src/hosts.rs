@@ -201,6 +201,16 @@ fn host_display_name(id: &str) -> &'static str {
     }
 }
 
+/// --host 不是检测到的主 agent 时的报错。还没探测过时没有可选项可列，改说下一步。
+pub(crate) fn unknown_host_message(host: &str, detected: &[String]) -> String {
+    if detected.is_empty() {
+        return format!(
+            "未知 host：{host}；本机还没有检测到主 agent，先在资源页点「探测」或运行 aicross resources detect"
+        );
+    }
+    format!("未知 host：{host}；检测到：{}", detected.join("、"))
+}
+
 /// 资源库里检测到的主 agent id：四家看 agent 的 detected，扩展主 agent 看最近
 /// 一次探测记下的 `extraHosts`；顺序同 [`all_host_ids`]。
 pub(crate) fn detected_host_ids(store: &ResourceStore) -> Vec<String> {
@@ -538,14 +548,7 @@ pub(crate) fn set_vendor_override_at_home(
     if !detected.iter().any(|id| id.eq_ignore_ascii_case(&host)) {
         return Err((
             2,
-            format!(
-                "未知 host：{host}；检测到：{}",
-                if detected.is_empty() {
-                    "（无）".to_string()
-                } else {
-                    detected.join("、")
-                }
-            ),
+            unknown_host_message(&host, &detected),
         ));
     }
     let override_value = if vendor.eq_ignore_ascii_case("auto") {
@@ -708,6 +711,16 @@ mod tests {
             resolve_host(None, &modes_with_hosts(&["kimi"]), &[]),
             HostResolve::Detected(ref id) if id == "kimi"
         ));
+    }
+
+    #[test]
+    fn unknown_host_message_points_to_detection_when_nothing_is_detected() {
+        let none = unknown_host_message("claude", &[]);
+        assert!(none.starts_with("未知 host：claude；"), "{none}");
+        assert!(none.contains("aicross resources detect"), "{none}");
+        assert!(!none.contains("（无）"), "{none}");
+        let some = unknown_host_message("kimi", &["claude".to_string(), "pi".to_string()]);
+        assert_eq!(some, "未知 host：kimi；检测到：claude、pi");
     }
 
     #[test]

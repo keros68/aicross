@@ -40,6 +40,7 @@ pub fn run_if_subcommand(args: &[String]) -> Option<i32> {
     if attaches_parent_console(command) {
         attach_parent_console();
     }
+    crate::process::kill_children_on_termination();
     let root = crate::paths::aicross_root();
     Some(dispatch_root(args, root, &mut std::io::stdout(), &mut std::io::stderr()))
 }
@@ -2085,10 +2086,7 @@ pub(crate) fn resolve_host_or_err(
             )),
             crate::hosts::HostResolve::Unknown(host, detected) => Err((
                 2,
-                format!(
-                    "未知 host：{host}；检测到：{}",
-                    join_or_none(&detected.iter().map(String::as_str).collect::<Vec<_>>())
-                ),
+                crate::hosts::unknown_host_message(&host, &detected),
             )),
         };
     }
@@ -2105,10 +2103,7 @@ pub(crate) fn resolve_host_or_err(
         crate::hosts::HostResolve::ConfiguredNotDetected(host, detected)
         | crate::hosts::HostResolve::Unknown(host, detected) => Err((
             2,
-            format!(
-                "未知 host：{host}；检测到：{}",
-                join_or_none(&detected.iter().map(String::as_str).collect::<Vec<_>>())
-            ),
+            crate::hosts::unknown_host_message(&host, &detected),
         )),
     }
 }

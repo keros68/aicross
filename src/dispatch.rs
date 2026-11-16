@@ -4958,11 +4958,19 @@ fn write_record(
         safe_name(&record.model),
         safe_name(&record.role)
     );
+    // 并发节点的 agent、模型、角色相同且同一秒结束时文件名相同：用 create_new
+    // 占名，先查后写会让后写的一份盖掉先写的。
     let mut path = log_dir.join(format!("{base}.md"));
     let mut suffix = 2;
-    while path.exists() {
-        path = log_dir.join(format!("{base}-{suffix}.md"));
-        suffix += 1;
+    loop {
+        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                path = log_dir.join(format!("{base}-{suffix}.md"));
+                suffix += 1;
+            }
+            Err(error) => return Err(format!("创建派发记录失败：{}：{error}", path.display())),
+        }
     }
     let artifacts_json = serde_json::to_string(&artifacts)
         .map_err(|error| format!("序列化派发产物失败：{error}"))?;

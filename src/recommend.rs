@@ -972,13 +972,7 @@ pub(crate) fn recommend_at_home(
                 return Err((2, configured_not_detected_message(&host, &detected)))
             }
             crate::hosts::HostResolve::Unknown(host, detected) => {
-                return Err((
-                    2,
-                    format!(
-                        "未知 host：{host}；检测到：{}",
-                        join_or_empty(&detected)
-                    ),
-                ))
+                return Err((2, crate::hosts::unknown_host_message(&host, &detected)))
             }
         };
         let override_vendor = modes
