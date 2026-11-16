@@ -14,7 +14,19 @@ Windows 用 `aicross_0.2.0_x64-setup.exe` 或 `aicross_0.2.0_x64_zh-CN.msi`，
 `~/.aicross/`（资源库、预设、图、run 摘要、配置），卸载不删。设了环境变量
 `AICROSS_HOME` 时数据目录改为它指向的位置，下文的 `~/.aicross/` 都按它读。
 `runs/` 下超过 30 天未改动的运行记录在下次派发时删除。
-macOS 与 Linux 目前只保证能编译，安装包未做验证。
+
+macOS（Apple Silicon）目前没有公开发布的安装包，需在本机运行 `scripts/build-macos.sh`
+自行打包，得到 `.dmg`。安装包没有 Apple 开发者签名，也没有公证：把 aicross 拖进
+「应用程序」后，第一次打开会被系统拦下，到「系统设置 › 隐私与安全性」，在页面下方
+点「仍要打开」，之后可正常打开。macOS 的安装不改 PATH；要在终端用 `aicross` 命令，
+执行一次（目标目录须已在 PATH 上，没有 `/usr/local/bin` 时先创建）：
+
+```bash
+ln -s /Applications/aicross.app/Contents/MacOS/aicross /usr/local/bin/aicross
+```
+
+移到别处或改名后，链接要重建。Release 的更新清单没有 macOS 一项时，窗口不显示更新提示；换新版时重新打包，
+覆盖「应用程序」里的 aicross。Intel Mac 与 Linux 目前只保证能编译，没有安装包。
 
 ## 命令行
 

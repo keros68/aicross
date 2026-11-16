@@ -18,10 +18,16 @@ createRoot(document.getElementById('root')!).render(
 );
 
 // 窗口创建时隐藏，等第一帧画完再显示，避免先看到空白窗口。
+// 隐藏窗口里 macOS 的 WKWebView 不触发动画帧，所以另设 150 ms 的计时器兜底；
 // 前端加载失败时 Rust 侧 3 秒后照样显示。
-requestAnimationFrame(() => requestAnimationFrame(() => {
+let shown = false;
+const showWindow = () => {
+  if (shown) return;
+  shown = true;
   invoke('show_main_window').catch(() => {});
-}));
+};
+requestAnimationFrame(() => requestAnimationFrame(showWindow));
+setTimeout(showWindow, 150);
 
 // 安装版不弹浏览器右键菜单，也不让 F12 等快捷键打开开发者工具；开发时照常。
 if (!import.meta.env.DEV) {
