@@ -2382,6 +2382,52 @@ fn task46_blind_dispatch_with_seats_is_accepted_and_without_is_rejected() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// 盲审三个位置里两个有人选：照常派出两路，空着的位置留一句说明；
+/// 只有一个有人选时仍被拒绝。
+#[test]
+fn blind_dispatch_skips_an_empty_seat_when_two_are_filled() {
+    fn spawn_ok(_: &Path, _: &[String]) -> Result<u32, String> {
+        Ok(123)
+    }
+    let case = |seats: Vec<Option<crate::orchestration::SeatChoice>>| -> Value {
+        let root = temp("blind-empty-seat");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("resources.json"),
+            r#"{"version":1,"agents":[{"id":"pi","models":[{"id":"glm-4.7","agent":"pi","provider":"zai","verification":"verified"}]}]}"#,
+        )
+        .unwrap();
+        let modes = modes_for_host(
+            "claude",
+            crate::orchestration::HostModes {
+                seats: indexmap::IndexMap::from([("builtin-blind".into(), vec![seats])]),
+                ..crate::orchestration::HostModes::default()
+            },
+        );
+        crate::orchestration::save_modes_in(&root, &modes).unwrap();
+        let input = DispatchInput {
+            project: root.to_string_lossy().into(),
+            text: "盲审这个改动".into(),
+            preset: Some("builtin-blind".into()),
+            ..DispatchInput::default()
+        };
+        let result = start_dispatch_with(&root, input, spawn_ok).unwrap();
+        let _ = fs::remove_dir_all(root);
+        result
+    };
+    let seat = || Some(task46_seat("pi", Some("zai"), "glm-4.7"));
+
+    let result = case(vec![seat(), None, seat()]);
+    assert_eq!(result["accepted"].as_bool(), Some(true), "{result}");
+    assert_eq!(result["node_ids"].as_array().unwrap().len(), 2, "{result}");
+    let notes: Vec<&str> = result["notes"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(notes, vec!["第 1 阶段第 2 个位置（验证）没有人选，这次没有派"], "{result}");
+
+    let result = case(vec![seat(), None, None]);
+    assert_eq!(result["accepted"].as_bool(), Some(false), "{result}");
+    assert!(result["reason"].as_str().unwrap().contains("没有可派发目标"), "{result}");
+}
+
 /// 默认模式：未设 → 经济；设了盲审 → 盲审；指向不存在的预设 → 经济；
 /// 显式 --preset 优先于默认模式。run 文件的 preset_id 记实际用的那个。
 #[test]

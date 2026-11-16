@@ -3026,6 +3026,40 @@ pub(crate) enum Plan {
     },
 }
 
+/// 同一阶段里至少两个位置有人选时，没有人选的位置这次不派，各留一句说明；
+/// 有人选的不足两个时原样返回，由派发前检查拒绝。`focus` 是评审视角按扁平
+/// 位置序的名单，随位置一起去掉。
+pub(crate) fn skip_empty_seats(mut preset: Preset, mut focus: Vec<String>) -> (Preset, Vec<String>, Vec<String>) {
+    let empty = |target: &Target| target.agent.trim().is_empty() || target.model.trim().is_empty();
+    let mut notes = Vec::new();
+    let mut flat = 0;
+    for (stage_index, stage) in preset.stages.iter_mut().enumerate() {
+        let filled = stage.nodes.iter().filter(|target| !empty(target)).count();
+        if filled < 2 || filled == stage.nodes.len() {
+            flat += stage.nodes.len();
+            continue;
+        }
+        let mut seat = 0;
+        stage.nodes.retain(|target| {
+            seat += 1;
+            if !empty(target) {
+                flat += 1;
+                return true;
+            }
+            if flat < focus.len() {
+                focus.remove(flat);
+            }
+            notes.push(format!(
+                "第 {} 阶段第 {seat} 个位置（{}）没有人选，这次没有派",
+                stage_index + 1,
+                target.role
+            ));
+            false
+        });
+    }
+    (preset, focus, notes)
+}
+
 /// `runConsoleDispatch` 的建图 + 盖章 + 派发前检查，拒绝顺序与 TS 一致：
 /// 在飞上限 → 读取资源失败 → 找不到预设 →（建图盖章）→ 角色没有可派发目标 →
 /// 未接入/只能只读 → 目标验证失败 → 目标额度用尽 → 总请求上限 → git 脏 + worktree。
@@ -3084,6 +3118,7 @@ pub(crate) fn plan_dispatch(
     // TASK-59：评审视角与 counts 同一条路径，从该主 agent 的 host 段取
     //（名单按调整后的形状算），盖章时写进各验证节点的正文。
     let focus = jury_focus_names(input.host_modes, &selected);
+    let (preset, focus, mut notes) = skip_empty_seats(preset, focus);
     let existing = input.existing.take();
     // R1-16：只有新建图标「来自控制台」，续写已有图保留原 source（含空）。
     let graph_source = existing
@@ -3253,7 +3288,6 @@ pub(crate) fn plan_dispatch(
     // 说明。备选在资源库里压根没有时维持原行为，不算未发现。查找用
     // find_target_model（fix-48-r1 R1），遍历本次新建的全部带 target 节点
     // （fix-48-r1 R2）。
-    let mut notes = Vec::new();
     for id in &created {
         let Some(target) = graph.nodes.get(id).and_then(|n| n.target.as_ref()) else {
             continue;
