@@ -31,6 +31,8 @@ pub struct Invocation {
     pub args: Vec<String>,
     pub input: Option<String>,
     pub stdout_skip: Option<fn(&[u8]) -> bool>,
+    /// 只给这个子进程加的环境变量。
+    pub env: Vec<(String, String)>,
 }
 
 /// 连续无输出上限仅对 pi 启用；真机核实该通道作答期间持续有输出后再加入。
@@ -240,11 +242,136 @@ impl ChannelParseError {
     }
 }
 
-pub fn isolation_for(agent: &str, blind: bool) -> &'static str {
-    if blind && matches!(normalize_agent(agent), "claude" | "pi") {
+/// `hardened`：这次调用带上了 [`BlindHardening`]（只对 kimi、codex 有意义）。
+pub fn isolation_for(agent: &str, blind: bool, hardened: bool) -> &'static str {
+    let full = match normalize_agent(agent) {
+        "claude" | "pi" => true,
+        "kimi" | "codex" => hardened,
+        _ => false,
+    };
+    if blind && full {
         "完整"
     } else {
         "部分"
+    }
+}
+
+/// 盲位置上让 kimi、codex 读不到用户级指令、技能与 MCP 的做法。
+/// kimi：`--agent-file` 指向一份工具列表为空的 agent 文件（2.5.2 实测）。
+/// codex：`CODEX_HOME` 指向只含登录文件链接的目录（0.169.0 实测；codex
+/// 刷新登录时顺着链接改写原文件）。版本不够或建不了链接时没有加固，隔离记为部分。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum BlindHardening {
+    KimiAgentFile,
+    CodexHome(PathBuf),
+}
+
+const CODEX_BLIND_OFF: [&str; 5] = ["apps", "plugins", "browser_use", "computer_use", "in_app_browser"];
+
+pub(crate) fn blind_hardening(agent: &str) -> Option<BlindHardening> {
+    let at_least = |id: &str, min: (u32, u32)| {
+        crate::agent_catalog::version_at_least(crate::resources::detected_agent_version(id).as_deref(), min)
+    };
+    match normalize_agent(agent) {
+        "kimi" if at_least("kimi", (2, 5)) => Some(BlindHardening::KimiAgentFile),
+        "codex" if at_least("codex", (0, 169)) => {
+            let home = crate::paths::aicross_root().ok()?.join("codex-blind-home");
+            let real = std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .filter(|path| !path.as_os_str().is_empty())
+                .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))?;
+            codex_blind_home_at(&home, &real).map(BlindHardening::CodexHome)
+        }
+        _ => None,
+    }
+}
+
+/// 建好 codex 的隔离配置目录：只放一个指向 `<real>/auth.json` 的符号链接，
+/// 不读也不复制登录文件的内容。原位置已有别的文件时不动它，返回 None。
+pub(crate) fn codex_blind_home_at(home: &Path, real: &Path) -> Option<PathBuf> {
+    let auth = real.join("auth.json");
+    if !auth.is_file() {
+        return None;
+    }
+    std::fs::create_dir_all(home).ok()?;
+    let link = home.join("auth.json");
+    match std::fs::symlink_metadata(&link) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            if std::fs::read_link(&link).ok().as_deref() != Some(auth.as_path()) {
+                std::fs::remove_file(&link).ok()?;
+                symlink_file(&auth, &link).ok()?;
+            }
+        }
+        Ok(_) => return None,
+        Err(_) => symlink_file(&auth, &link).ok()?,
+    }
+    Some(home.to_path_buf())
+}
+
+#[cfg(unix)]
+fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+    // 没开开发者模式且不是管理员时会失败，调用方按没有加固处理。
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn symlink_file(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::other("unsupported"))
+}
+
+/// kimi 盲位置用的 agent 文件。正文不引用默认提示词，指令文件、技能、插件都不注入；
+/// `files` 为真时（材料没有全部写进任务正文）只留读文件的三个工具，否则不留工具。
+pub(crate) fn kimi_blind_agent_file(files: bool) -> String {
+    let (tools, body) = if files {
+        (
+            "tools:\n  - Read\n  - Grep\n  - Glob",
+            "只依据用户消息里的任务与当前工作目录 ${cwd} 里的材料作答，只读这个目录里的文件。",
+        )
+    } else {
+        ("tools: []", "只依据用户消息里的任务与材料作答。")
+    };
+    format!("---\nname: aicross-blind\ndescription: 只按给定材料作答\n{tools}\n---\n\n{body}\n")
+}
+
+/// 把加固加到已生成的调用上。`agent_file` 是已写好的 kimi agent 文件；
+/// codex 在没有文件要读时另外关掉命令工具。
+pub(crate) fn apply_blind_hardening(
+    invocation: &mut Invocation,
+    hardening: &BlindHardening,
+    files: bool,
+    agent_file: Option<&Path>,
+) -> bool {
+    match hardening {
+        BlindHardening::KimiAgentFile => {
+            let Some(file) = agent_file else {
+                return false;
+            };
+            invocation
+                .args
+                .extend(["--agent-file".into(), file.to_string_lossy().into_owned()]);
+            true
+        }
+        BlindHardening::CodexHome(home) => {
+            invocation
+                .env
+                .push(("CODEX_HOME".into(), home.to_string_lossy().into_owned()));
+            // 账号带来的应用连接器、插件、浏览器与桌面控制一律关掉；不用读文件时
+            // 再关命令与看图两个能读本机文件的工具（0.169.0 实测这些名字都认）。
+            let mut features = if files { Vec::new() } else { vec!["shell_tool", "view_image"] };
+            features.extend(CODEX_BLIND_OFF);
+            if let Some(index) = invocation.args.iter().position(|arg| arg == "exec") {
+                let flags = features
+                    .into_iter()
+                    .flat_map(|feature| ["--disable".to_string(), feature.to_string()]);
+                invocation.args.splice(index + 1..index + 1, flags);
+            }
+            true
+        }
     }
 }
 
@@ -365,6 +492,7 @@ pub(crate) fn build_invocation_full(
                 args,
                 input: spec.input,
                 stdout_skip: None,
+                env: Vec::new(),
             });
         }
         // 与探测同一个解析函数、同一优先级（兜底路径优先，fix-61-r1 4）。
@@ -375,6 +503,7 @@ pub(crate) fn build_invocation_full(
             args: spec.args,
             input: spec.input,
             stdout_skip: None,
+            env: Vec::new(),
         });
     }
     #[cfg(test)]
@@ -392,6 +521,7 @@ pub(crate) fn build_invocation_full(
                 args,
                 input: spec.input,
                 stdout_skip: (normalized == "pi").then_some(crate::process::pi_message_update_line),
+                env: Vec::new(),
             });
         }
     }
@@ -419,6 +549,7 @@ pub(crate) fn build_invocation_full(
         args: spec.args,
         input: spec.input,
         stdout_skip: (normalized == "pi").then_some(crate::process::pi_message_update_line),
+        env: Vec::new(),
     })
 }
 
@@ -1430,7 +1561,92 @@ mod tests {
             .args
             .iter()
             .any(|arg| arg == "--no-context-files"));
-        assert_eq!(isolation_for("pi", true), "完整");
+        assert_eq!(isolation_for("pi", true, false), "完整");
+    }
+
+    #[test]
+    fn kimi_and_codex_are_fully_isolated_only_when_hardened() {
+        for agent in ["kimi", "kimi-code", "codex"] {
+            assert_eq!(isolation_for(agent, true, false), "部分", "{agent}");
+            assert_eq!(isolation_for(agent, true, true), "完整", "{agent}");
+            assert_eq!(isolation_for(agent, false, true), "部分", "{agent}");
+        }
+        assert_eq!(isolation_for("agy", true, true), "部分");
+        assert_eq!(isolation_for("claude", true, false), "完整");
+    }
+
+    #[test]
+    fn version_at_least_reads_versions_with_a_name_in_front() {
+        use crate::agent_catalog::version_at_least;
+        assert!(version_at_least(Some("codex-cli 0.169.0"), (0, 169)));
+        assert!(version_at_least(Some("2.5.2"), (2, 5)));
+        assert!(version_at_least(Some("v1.5.6"), (1, 5)));
+        assert!(!version_at_least(Some("codex-cli 0.168.9"), (0, 169)));
+        assert!(!version_at_least(Some("未检测"), (0, 1)));
+        assert!(!version_at_least(None, (0, 1)));
+    }
+
+    #[test]
+    fn kimi_blind_agent_file_has_no_tools_unless_files_must_be_read() {
+        let none = kimi_blind_agent_file(false);
+        assert!(none.starts_with("---\nname: aicross-blind\n"), "{none}");
+        assert!(none.contains("\ntools: []\n---\n"), "{none}");
+        let files = kimi_blind_agent_file(true);
+        assert!(files.contains("tools:\n  - Read\n  - Grep\n  - Glob\n---\n"), "{files}");
+        for body in [&none, &files] {
+            assert!(!body.contains("${base_prompt}") && !body.contains("${agents_md}") && !body.contains("${skills}"), "{body}");
+        }
+    }
+
+    #[test]
+    fn apply_blind_hardening_adds_agent_file_or_codex_home() {
+        let invocation = |args: &[&str]| Invocation {
+            program: PathBuf::from("x"),
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+            input: None,
+            stdout_skip: None,
+            env: Vec::new(),
+        };
+        let mut kimi = invocation(&["-p", "任务"]);
+        assert!(!apply_blind_hardening(&mut kimi, &BlindHardening::KimiAgentFile, false, None));
+        assert_eq!(kimi.args, ["-p", "任务"]);
+        assert!(apply_blind_hardening(&mut kimi, &BlindHardening::KimiAgentFile, false, Some(Path::new("a.md"))));
+        assert_eq!(kimi.args, ["-p", "任务", "--agent-file", "a.md"]);
+
+        let home = BlindHardening::CodexHome(PathBuf::from("h"));
+        let mut codex = invocation(&["exec", "-m", "m", "-"]);
+        assert!(apply_blind_hardening(&mut codex, &home, false, None));
+        let off = |features: &[&str]| -> Vec<String> {
+            let mut args = vec!["exec".to_string()];
+            args.extend(features.iter().flat_map(|feature| ["--disable".to_string(), feature.to_string()]));
+            args.extend(["-m", "m", "-"].map(String::from));
+            args
+        };
+        let always = ["apps", "plugins", "browser_use", "computer_use", "in_app_browser"];
+        assert_eq!(codex.args, off(&[&["shell_tool", "view_image"][..], &always[..]].concat()));
+        assert_eq!(codex.env, [("CODEX_HOME".to_string(), "h".to_string())]);
+        let mut with_files = invocation(&["exec", "-m", "m", "-"]);
+        assert!(apply_blind_hardening(&mut with_files, &home, true, None));
+        assert_eq!(with_files.args, off(&always), "要读文件时留着命令与看图");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_blind_home_links_the_login_file_and_leaves_other_files_alone() {
+        let root = crate::paths::test_temp_dir().join(format!("codex-blind-home-{}", uuid::Uuid::new_v4()));
+        let real = root.join("real");
+        let home = root.join("home");
+        std::fs::create_dir_all(&real).unwrap();
+        assert_eq!(codex_blind_home_at(&home, &real), None, "没有登录文件时不加固");
+        std::fs::write(real.join("auth.json"), "{}").unwrap();
+        assert_eq!(codex_blind_home_at(&home, &real), Some(home.clone()));
+        assert_eq!(std::fs::read_link(home.join("auth.json")).unwrap(), real.join("auth.json"));
+        assert_eq!(codex_blind_home_at(&home, &real), Some(home.clone()), "已有正确链接时照常");
+        std::fs::remove_file(home.join("auth.json")).unwrap();
+        std::fs::write(home.join("auth.json"), "x").unwrap();
+        assert_eq!(codex_blind_home_at(&home, &real), None, "已有普通文件时不动它");
+        assert_eq!(std::fs::read_to_string(home.join("auth.json")).unwrap(), "x");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

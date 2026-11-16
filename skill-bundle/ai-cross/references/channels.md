@@ -74,6 +74,8 @@ cd - && rm -rf "$d"
 
 `cc_switch.py exec` 的 cwd 就是调用时的目录，同样先 `cd` 进空目录再调。执行者（本来就要改项目文件的活）不受此限。
 
+**codex 的盲审隔离（2026-11-16 真机实测，codex 0.169.0）**：`codex exec` 在空目录里仍加载 `~/.codex/AGENTS.md`（模型能原样复述其中的专有名词），`--ignore-user-config` 与 `-c project_doc_max_bytes=0` 都挡不住。挡得住的做法是把 `CODEX_HOME` 指到一个只含 `auth.json` 符号链接的目录（实测回答 NONE）；codex 刷新登录时顺着链接改写原文件，原登录不受影响，硬链接则被它拒绝。另用 `--disable` 关掉 `apps`、`plugins`、`browser_use`、`computer_use`、`in_app_browser`（应用连接器跟着账号走，不在本机配置里）；不需要读文件的盲审再关 `shell_tool` 与 `view_image`（实测命令工具调用报错）。网页搜索与派子任务两类工具关不掉。`dispatch.py` 与引擎在盲审位置自动这样做，目录是 `<AICROSS_HOME>/codex-blind-home`，隔离记为完整；0.169 之前的版本、或建不了符号链接的机器（Windows 没开开发者模式且不是管理员）不做，隔离仍记为部分。
+
 **空目录挡不住宿主级指令（2026-09-01 真机实测，claude 2.1.251）**：`claude -p` 即使 `--tools ""` 且 cwd 为空目录，仍会把用户级 `~/.claude/CLAUDE.md` 注入上下文（模型能原样复述其中的专有名词）。盲验的 claude 通道一律加 `--restricted`，实测它挡住用户级指令且鉴权不受影响；**不要**用 `CLAUDE_CONFIG_DIR=<空目录>`，它连凭据一起隔离掉（`Not logged in`，exit 0 但 `is_error=true`）。
 
 ```bash
@@ -146,6 +148,7 @@ kimi --version && kimi -p "只回复OK" -m kimi-code/kimi-for-coding-highspeed
 ```
 
 - **模型别名不要手抄，读本地事实源**：`~/.kimi-code/config.toml` 的 `[models."…"]` 段完整列出当前可用别名、真实模型 ID、上下文长度、effort 支持——派发前读它，别依赖本文件记的值。本机 2026-07-17 实测三个：`kimi-code/k3`（1M，efforts low/high/max）、`kimi-code/kimi-for-coding`（K2.7，256k）、`kimi-code/kimi-for-coding-highspeed`（K2.7 高速）。
+- **盲审的完整隔离（2.5.2 实测，2026-11-16）**：`--agent-file <文件>` 指定这次调用的 agent。文件开头写 `tools: []` 时全部工具不可用（实测模型试图调用 Bash，只输出了一段文字，没有执行），正文不引用 `${base_prompt}` 时用户级指令、技能、插件、MCP 都不注入（实测模型列不出任何技能名与工具名）。`dispatch.py` 与引擎在盲审位置自动带上这份文件，隔离记为完整；任务超过 24,000 码元、要它自己读 `KIMI_TASK.md` 时只留 `Read`、`Grep`、`Glob`。`--help` 里没有 `--agent-file` 的旧版本做不到，隔离仍记为部分。`--agent-file` 不能与 `-S`、`-c` 同用。
 - **⚠️ 无只读档（0.26.0 实测）**：`-p` 模式**不加 `-y` 也默认可写盘**（实测让它建文件，直接 Write 成功落盘）；`--plan` 与 `-p` 互斥（`error: Cannot combine --prompt with --plan`）；`--help` 无 tools 白名单参数。护栏只剩**工作目录隔离**：每次派发在专用空目录里跑（审查材料拷进去），**绝不在宿主项目目录里跑 kimi 并发派发**。**目录隔离只防相对路径误写，不是沙箱**——kimi 仍可按绝对路径写任何位置，不要对用户暗示这是"只读"。敏感工作区的咨询/审查任务，优先走有硬白名单的 `claude -p --tools Read,Grep,Glob` + Kimi 端点覆写（下方 coding plan 通道，需 API key）。
 - **大输入处理（0.38.0 起无 stdin 入口）**：`-p` 只收 argv，管道 stdin 被忽略（实测 `echo "口令 PANDA-4417" | kimi -p "看到口令就回答它"` → 答 NONE），`--help` 也无 `--prompt-file`。因此当提示词超过 **24,000 个 UTF-16 码元**时，派发器把完整提示词写入任务文件（引擎盲位置与 `dispatch.py` 写工作目录 `KIMI_TASK.md`；引擎共享与单写者写项目 `.aicross/runs/<派发>/`），`-p` 只传一句单行短指路句让它先读该文件再完成任务；`dispatch.py` 下工作区目录保持隔离清理，引擎共享位置也不在项目根目录留临时文件。kimi 2.6.0 `--output-format stream-json` 实测不返回 `usage` 字段，派发记录的用量字段记为「未报告」（不再记 0）。
 - **思考关不掉**：`config.toml` 里 k3/K2.7 的 capabilities 均含 `always_thinking`，`[thinking] enabled = true`。即每次派发都付思考 token，**kimi 不能作为"关思考的便宜执行者"用**。实测 k3 可见输出吞吐 ~33 tok/s（1261 字 / 34s），长产出任务的耗时大头在解码，不在预填。

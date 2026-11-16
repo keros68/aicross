@@ -2877,7 +2877,9 @@ fn run_one_attempt(
     if blind {
         node.write = "只读".into();
     }
-    let isolation = channels::isolation_for(&node.agent, blind).to_string();
+    // kimi、codex 的盲位置：加固用上了才记完整，走 ACP 或加固不可用时仍记部分。
+    let hardening = if blind { channels::blind_hardening(&node.agent) } else { None };
+    let mut isolation = channels::isolation_for(&node.agent, blind, false).to_string();
     let timeout = Duration::from_secs(settings.timeout_secs.clamp(1, 3600));
     let writable = node.write != "只读";
     let executable_writable = !blind && writable;
@@ -3382,6 +3384,26 @@ fn run_one_attempt(
                     agy_settings.as_deref(),
                 )
             })
+        })
+        .and_then(|mut invocation| {
+            let Some(hardening) = hardening.as_ref() else {
+                return Ok(invocation);
+            };
+            // 任务超长时 kimi 要自己读 KIMI_TASK.md，同样留读文件的工具。
+            let files = blind_files || invocation.args.iter().any(|arg| arg == &channels::kimi_pointer_prompt("KIMI_TASK.md"));
+            let agent_file = if *hardening == channels::BlindHardening::KimiAgentFile {
+                let file = run_root
+                    .join("kimi-agents")
+                    .join(format!("{}-{}.md", safe_name(&node.node_id), safe_name(attempt)));
+                write_atomic(&file, channels::kimi_blind_agent_file(files).as_bytes())?;
+                Some(file)
+            } else {
+                None
+            };
+            if channels::apply_blind_hardening(&mut invocation, hardening, files, agent_file.as_deref()) {
+                isolation = channels::isolation_for(&node.agent, blind, true).to_string();
+            }
+            Ok(invocation)
         }) {
             Ok(invocation) => {
                 entered_channel = true;
@@ -3393,7 +3415,7 @@ fn run_one_attempt(
                 Some(&workdir),
                 Some(&cancel_key),
                 Some(activity.clone()),
-                ProcessOptions { stdout_skip: invocation.stdout_skip, idle_timeout: channels::streams_output_for_seat(&node.agent, &node.visibility, &node.write).then(|| Duration::from_secs(settings.idle_timeout_secs.clamp(1, 3600))) },
+                ProcessOptions { stdout_skip: invocation.stdout_skip, idle_timeout: channels::streams_output_for_seat(&node.agent, &node.visibility, &node.write).then(|| Duration::from_secs(settings.idle_timeout_secs.clamp(1, 3600))), env: invocation.env.clone() },
             ) {
                 Ok(process) => {
                     raw_stdout = process.stdout.clone();

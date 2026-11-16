@@ -330,10 +330,13 @@ mod tests {
 
         let guard = BlindSlotGuard::acquire(&blind_root, "kimi", Duration::from_secs(1), "none").unwrap();
         assert_eq!(guard.dir(), blind_root.join("kimi-2"));
-        assert!(
-            FileLock::try_acquire(&blind_root.join("kimi-1.lock")).unwrap().is_some(),
-            "跳过的槽位要放锁"
-        );
+        // 别的测试恰在这把锁打开期间拉起子进程时，子进程在 exec 前短暂带着它的副本，
+        // 所以放锁后可能要等一小会儿才抢得到。
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while FileLock::try_acquire(&blind_root.join("kimi-1.lock")).unwrap().is_none() {
+            assert!(Instant::now() < deadline, "跳过的槽位要放锁");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         drop(guard);
 
         for index in 2..=SLOT_COUNT {

@@ -213,7 +213,7 @@ clients:
 
 ## 第 4 步 — 默认人选与备注
 
-**默认审查顺序由脚本排**：订阅内的先于按次计费的，盲审隔离完整的通道（claude `--restricted`、pi `--no-context-files`）先于只做到空目录的，其余按方案里的先后。看结果：
+**默认审查顺序由脚本排**：订阅内的先于按次计费的，盲审隔离完整的通道（claude `--restricted`、pi `--no-context-files`、版本够新的 kimi 与 codex）先于只做到空目录的，其余按方案里的先后。看结果：
 
 ```
 python <本skill目录>/references/inventory.py show --human

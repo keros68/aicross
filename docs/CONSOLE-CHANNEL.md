@@ -155,6 +155,15 @@ cursor、codebuddy、copilot、qoder 是未实测通道，派发直接失败并�
 是盲的、通道隔离完整、与被审方不同厂商；原因依次是「看得到执行过程」「隔离不
 完整」「同一家厂商」，厂商读不出时是「审查方厂商未知」「被审方厂商未知」。被审
 方是上游执行节点实际跑的那一家；没有上游执行节点时是主 agent（按 `--host` 推定）。
+
+通道隔离完整指审查者读不到用户级指令、技能与 MCP。claude 与 pi 靠各自的开关
+做到。kimi（2.5 起）在盲位置带 `--agent-file`，指向 `<run>/kimi-agents/` 下一份
+工具列表为空的 agent 文件；材料没有全部写进任务正文时只留 `Read`、`Grep`、
+`Glob`。codex（0.169 起）在盲位置把 `CODEX_HOME` 指到
+`<root>/codex-blind-home`，里面只有一个指向登录文件的符号链接，并用
+`--disable` 关掉应用连接器、插件、浏览器与桌面控制，不需要读文件时再关
+`shell_tool` 与 `view_image`。版本不够、建不了符号链接、或这次走了 ACP 时不
+做这些，隔离记为部分。
 图上每个完成节点的 reply 记 `vendor`（切了备选时是备选的厂商）与
 `independence`。
 

@@ -551,6 +551,62 @@ class TestChannels(DBase):
         self.assertEqual(seen, [(str(fixed), [])] * 2)   # 两次同一目录，每次进去都是空的
         self.assertEqual(os.listdir(fixed), [])
 
+    def test_kimi_blind_with_full_isolation_uses_a_no_tools_agent_file(self):
+        entry = {"id": "kimi.moonshot", "channel": "kimi", "kind": "cli", "vendor": "Moonshot",
+                 "billing": "subscription", "tiers": {"high": "kimi-code/k3"}}
+        seen = []
+
+        def fake_run(cmd, cwd, timeout, stdin_text=None):
+            agent = Path(cmd[cmd.index("--agent-file") + 1]).read_text(encoding="utf-8") if "--agent-file" in cmd else None
+            seen.append(agent)
+            return 0, jl({"role": "assistant", "content": "收到"}), "", None
+
+        with mock.patch.object(dispatch, "run_process", fake_run):
+            dispatch.call(inventory.describe(dict(entry, isolation="partial"), "high"), "短材料", str(self.home), 5, "high", "p")
+            full = inventory.describe(dict(entry, isolation="full"), "high")
+            dispatch.call(full, "短材料", str(self.home), 5, "high", "p")
+            dispatch.call(full, "长" * (dispatch.KIMI_UTF16_PROMPT_LIMIT + 1), str(self.home), 5, "high", "p")
+        self.assertIsNone(seen[0])                       # 盘点记为部分的不加
+        self.assertIn("\ntools: []\n---\n", seen[1])
+        self.assertIn("  - Read\n  - Grep\n  - Glob\n---\n", seen[2])   # 要自己读任务文件时只留读文件的工具
+        for agent in seen[1:]:
+            self.assertNotIn("${base_prompt}", agent)
+        self.assertEqual(list(inventory.data_root().glob("kimi-blind-agent-*.md")), [])   # 用完删掉
+
+    def test_codex_blind_with_full_isolation_switches_config_home(self):
+        entry = {"id": "codex.openai", "channel": "codex", "kind": "cli", "vendor": "OpenAI",
+                 "billing": "subscription", "tiers": {"high": "gpt-6.1-sol"}}
+        seen = []
+
+        def fake_run(cmd, cwd, timeout, stdin_text=None, env_extra=None, **kwargs):
+            seen.append((cmd, env_extra))
+            return 0, CODEX_OUT, "", None
+
+        real = self.home / "codex-real"
+        real.mkdir()
+        (real / "auth.json").write_text("{}", encoding="utf-8")
+        try:
+            os.symlink(real / "auth.json", self.home / "probe-link")
+        except OSError:
+            self.skipTest("这台机器建不了符号链接")
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(real)}), mock.patch.object(dispatch, "run_process", fake_run):
+            dispatch.call(inventory.describe(dict(entry, isolation="partial"), "high"), "材料", str(self.home), 5, "high", "p")
+            dispatch.call(inventory.describe(dict(entry, isolation="full"), "high"), "材料", str(self.home), 5, "high", "p")
+            home = inventory.data_root() / "codex-blind-home"
+            self.assertEqual(Path(os.readlink(home / "auth.json")), real / "auth.json")
+            self.assertEqual(sorted(os.listdir(home)), ["auth.json"])
+        self.assertIsNone(seen[0][1])
+        self.assertNotIn("--disable", seen[0][0])
+        self.assertEqual(seen[1][1], {"CODEX_HOME": str(home)})
+        off = ["shell_tool", "view_image"] + dispatch.CODEX_BLIND_OFF
+        self.assertEqual(seen[1][0][1:2 + 2 * len(off)], ["exec"] + [a for f in off for a in ("--disable", f)])
+
+        with mock.patch.dict(os.environ, {"CODEX_HOME": str(self.home / "没有登录")}), mock.patch.object(dispatch, "run_process", fake_run):
+            r = dispatch.call(inventory.describe(dict(entry, isolation="full"), "high"), "材料", str(self.home), 5, "high", "p")
+        self.assertEqual(r["status"], "error")
+        self.assertIn("隔离配置目录建不起来", r["error"])
+        self.assertEqual(len(seen), 2)                   # 建不起来就不派，不退回不隔离的调用
+
     def test_kimi_waits_for_lock_then_gives_up(self):
         kimi = inventory.describe({"id": "kimi.moonshot", "channel": "kimi", "kind": "cli", "vendor": "Moonshot",
                                    "billing": "subscription", "tiers": {"high": "kimi-code/k3"}}, "high")

@@ -220,11 +220,19 @@ pub(crate) fn is_untested(id: &str) -> bool {
 }
 
 /// 解析 agy 版本号是否达到 `1.5.0`（支持读文件与 `--settings` 权限控制）。
-pub(crate) fn agy_at_least_1_5(version: Option<&str>) -> bool {
+/// 版本号的主、次两段不低于 `min`；读不出版本时为否。
+pub(crate) fn version_at_least(version: Option<&str>, min: (u32, u32)) -> bool {
     let Some(raw) = version else {
         return false;
     };
-    let trimmed = raw.trim().trim_start_matches(['v', 'V']);
+    // 探测记下的版本可能带名字（如「codex-cli 0.169.0」）：取第一个以数字开头的词。
+    let Some(trimmed) = raw
+        .split_whitespace()
+        .map(|word| word.trim_start_matches(['v', 'V']))
+        .find(|word| word.starts_with(|c: char| c.is_ascii_digit()))
+    else {
+        return false;
+    };
     let mut parts = trimmed.split('.');
     let Some(major) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
         return false;
@@ -239,7 +247,11 @@ pub(crate) fn agy_at_least_1_5(version: Option<&str>) -> bool {
     let Some(minor) = minor else {
         return false;
     };
-    (major, minor) >= (1, 5)
+    (major, minor) >= min
+}
+
+pub(crate) fn agy_at_least_1_5(version: Option<&str>) -> bool {
+    version_at_least(version, (1, 5))
 }
 
 /// 只能看到 stdin 文字、读不了任何文件的 agent（`< 1.5.0` 的 agy：无头下工具全被拒）。

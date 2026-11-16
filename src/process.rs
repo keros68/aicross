@@ -406,10 +406,12 @@ pub struct ProcessResult {
     pub idle_timeout: Option<Duration>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ProcessOptions {
     pub idle_timeout: Option<Duration>,
     pub stdout_skip: Option<fn(&[u8]) -> bool>,
+    /// 只给这个子进程加的环境变量。
+    pub env: Vec<(String, String)>,
 }
 
 pub fn timeout_message(result: &ProcessResult) -> String {
@@ -490,6 +492,7 @@ pub fn run_process_registered_with_options(
     command
         .env("AI_CROSS_PEER", "1")
         .env("PYTHONUTF8", "1")
+        .envs(options.env.iter().map(|(key, value)| (key, value)))
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {

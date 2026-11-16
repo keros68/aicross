@@ -82,6 +82,7 @@ HOST_VENDOR = {
 # 各通道做盲审时的隔离程度（依据见 channels.md 开头）：
 # full = 空目录之外，用户级指令也已实测可隔离；partial = 只做到空目录。
 ISOLATION = {"claude": "full", "pi": "full"}
+CODEX_BLIND_MIN = (0, 169)  # 这一版起 codex 刷新登录时顺着符号链接改写原文件（0.169.0 实测）
 
 # 只做存在检测的 CLI：独立 CLI 已下线或没有可读的模型清单
 EXTRA_CLIS = ("aichat", "qoder", "codebuddy", "hermes")
@@ -119,6 +120,43 @@ def canon_vendor(name):
 def data_root():
     env = os.environ.get("AICROSS_HOME", "").strip()
     return Path(env) if env else HOME / ".aicross"
+
+
+def codex_blind_home():
+    """盲审用的 codex 配置目录：只放一个指向登录文件的符号链接，用户级指令、技能、MCP 都不在里面。
+
+    不读也不复制登录文件的内容。建不了链接（Windows 没开开发者模式）或原位置已有别的文件时返回 None。
+    """
+    real = Path(os.environ.get("CODEX_HOME", "").strip() or HOME / ".codex") / "auth.json"
+    if not real.is_file():
+        return None
+    home = data_root() / "codex-blind-home"
+    link = home / "auth.json"
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink():
+            if Path(os.readlink(link)) != real:
+                link.unlink()
+                link.symlink_to(real)
+        elif link.exists():
+            return None
+        else:
+            link.symlink_to(real)
+    except OSError:
+        return None
+    return home
+
+
+def blind_isolation(name, path, version):
+    """kimi、codex 在盲审里能否做到完整隔离，看本机装的版本。"""
+    if name == "kimi":
+        _, out = run_cli(path, ["--help"], timeout=20)
+        return "full" if "--agent-file" in out else "partial"
+    if name == "codex":
+        m = re.search(r"(\d+)\.(\d+)", version or "")
+        new_enough = bool(m) and (int(m.group(1)), int(m.group(2))) >= CODEX_BLIND_MIN
+        return "full" if new_enough and codex_blind_home() else "partial"
+    return ISOLATION.get(name, "partial")
 
 
 def manifest_path():
@@ -334,7 +372,7 @@ def detect():
             continue
         ch = {"id": name, "kind": "cli", "installed": True, "path": paths[name], "version": versions[name]}
         ch.update(probed[name])
-        ch["isolation"] = ISOLATION.get(name, "partial")
+        ch["isolation"] = blind_isolation(name, paths[name], versions[name])
         channels.append(ch)
 
     if paths["pi"]:
@@ -744,10 +782,20 @@ def print_diff(report):
 
 def cmd_diff(args):
     data = load_manifest()
-    report = compare(data, {ch["id"]: ch for ch in detect()["channels"]})
+    current = {ch["id"]: ch for ch in detect()["channels"]}
+    report = compare(data, current)
+    # 盲审隔离能做到哪一步跟着本机装的版本走（kimi、codex 升级后从部分变完整），这里顺带刷新
+    report["isolation"] = []
+    for entry in data["entries"]:
+        now = (current.get(entry.get("channel")) or {}).get("isolation")
+        if entry.get("kind") != "manual" and now and now != entry.get("isolation"):
+            report["isolation"].append({"id": entry["id"], "from": entry.get("isolation"), "to": now})
+            entry["isolation"] = now
     data["checked"] = today()
     write_manifest(data)
     if args.human:
+        for row in report["isolation"]:
+            print(f"[{row['id']}]  盲审隔离：{'完整' if row['to'] == 'full' else '部分'}（原为{'完整' if row['from'] == 'full' else '部分'}）")
         print_diff(report)
     else:
         print(json.dumps(report, ensure_ascii=False, indent=2))

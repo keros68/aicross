@@ -279,8 +279,8 @@ def _run_pi_process(cmd, cwd, timeout, stdin_text, env):
     return None if timed_out else proc.returncode, "".join(stdout), "".join(stderr) + metrics, error
 
 
-def run_process(cmd, cwd, timeout, stdin_text=None, *, pi_json=False):
-    env = dict(os.environ, AI_CROSS_PEER="1")  # 防套娃：被派方据此不再外派
+def run_process(cmd, cwd, timeout, stdin_text=None, *, pi_json=False, env_extra=None):
+    env = dict(os.environ, AI_CROSS_PEER="1", **(env_extra or {}))  # 防套娃：被派方据此不再外派
     if pi_json:
         return _run_pi_process(cmd, cwd, timeout, stdin_text, env)
     try:
@@ -369,13 +369,27 @@ def call_cc_switch(pick, prompt, cwd, timeout, thinking, blind, tools, prompt_fi
     return out
 
 
+CODEX_BLIND_OFF = ["apps", "plugins", "browser_use", "computer_use", "in_app_browser"]
+
+
 def call_codex(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     out = base_result()
     effort = {"off": "low", "low": "low", "mid": "medium", "high": "high"}[thinking]
     out["thinking"] = "low" if thinking == "off" else thinking  # codex 没有关思考，最低是 low
-    cmd = [exe(pick), "exec", "-m", pick["model"], "-c", f'model_reasoning_effort="{effort}"',
+    harden, env_extra = [], None
+    if blind and pick.get("isolation") == "full":
+        # 盘点时判定能完整隔离：换一个只含登录文件链接的配置目录
+        home = inventory.codex_blind_home()
+        if home is None:
+            out["error"] = "codex 的隔离配置目录建不起来，这一路不派；重新盘点后再试"
+            return out
+        env_extra = {"CODEX_HOME": str(home)}
+        # 账号带来的应用连接器、插件、浏览器与桌面控制一律关掉；不读文件时再关命令与看图
+        off = ([] if tools else ["shell_tool", "view_image"]) + CODEX_BLIND_OFF
+        harden = [arg for feature in off for arg in ("--disable", feature)]
+    cmd = [exe(pick), "exec", *harden, "-m", pick["model"], "-c", f'model_reasoning_effort="{effort}"',
            "-s", "read-only", "--skip-git-repo-check", "--json", "--ephemeral", "-"]
-    out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout, prompt)
+    out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, cwd, timeout, prompt, env_extra=env_extra)
     if err:
         out["error"] = err
         return out
@@ -530,6 +544,16 @@ def _find_usage(obj):
     return None
 
 
+def kimi_blind_agent(read_files):
+    """kimi 盲审用的 agent 文件。任务超长、要它自己读 KIMI_TASK.md 时只留读文件的工具，否则不留工具。"""
+    if read_files:
+        tools = "tools:\n  - Read\n  - Grep\n  - Glob"
+        body = "只依据用户消息里的任务与当前工作目录 ${cwd} 里的材料作答，只读这个目录里的文件。"
+    else:
+        tools, body = "tools: []", "只依据用户消息里的任务与材料作答。"
+    return f"---\nname: aicross-blind\ndescription: 只按给定材料作答\n{tools}\n---\n\n{body}\n"
+
+
 def call_kimi(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
     out = base_result()
     if tools:
@@ -542,13 +566,24 @@ def call_kimi(pick, prompt, cwd, timeout, thinking, blind=True, tools=False):
         if lock_error:
             out["error"] = lock_error
             return out
-        if len(prompt.encode("utf-16-le")) // 2 > KIMI_UTF16_PROMPT_LIMIT:
+        long_task = len(prompt.encode("utf-16-le")) // 2 > KIMI_UTF16_PROMPT_LIMIT
+        if long_task:
             (workdir / "KIMI_TASK.md").write_text(prompt, encoding="utf-8", newline="\n")
             cli_prompt = "完整任务在 KIMI_TASK.md，先读完再按其要求完成。"
         else:
             cli_prompt = prompt
         cmd = [exe(pick), "-p", cli_prompt, "-m", pick["model"], "--output-format", "stream-json"]
-        out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, str(workdir), timeout)
+        agent_file = None
+        if blind and pick.get("isolation") == "full":
+            # 盘点时判定能完整隔离：agent 文件不引用默认提示词，指令文件、技能、插件都不注入
+            agent_file = workdir.parent / f"kimi-blind-agent-{os.getpid()}.md"
+            agent_file.write_text(kimi_blind_agent(long_task), encoding="utf-8", newline="\n")
+            cmd += ["--agent-file", str(agent_file)]
+        try:
+            out["exit_code"], out["raw"], out["stderr"], err = run_process(cmd, str(workdir), timeout)
+        finally:
+            if agent_file:
+                agent_file.unlink(missing_ok=True)
     if err:
         out["error"] = err
         return out

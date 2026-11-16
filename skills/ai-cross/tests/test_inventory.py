@@ -347,6 +347,18 @@ class TestDiff(Base):
         _, report = self.diff(FAKE)
         self.assertEqual((report["changed"], report["unread"]), ([], []))
 
+    def test_diff_refreshes_blind_isolation_from_detection(self):
+        before = next(e for e in self.manifest()["entries"] if e["id"] == "codex.openai")["isolation"]
+        flipped = "full" if before != "full" else "partial"
+        detected = json.loads(json.dumps(FAKE))
+        next(ch for ch in detected["channels"] if ch["id"] == "codex")["isolation"] = flipped
+        _, report = self.diff(detected)
+        self.assertEqual(report["isolation"], [{"id": "codex.openai", "from": before, "to": flipped}])
+        entry = next(e for e in self.manifest()["entries"] if e["id"] == "codex.openai")
+        self.assertEqual(entry["isolation"], flipped)
+        _, again = self.diff(detected)
+        self.assertEqual(again["isolation"], [])
+
     def test_reports_new_gone_new_channel_and_unread(self):
         _, report = self.diff()
         rows = {r["id"]: r for r in report["changed"]}
