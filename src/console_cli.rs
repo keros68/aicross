@@ -87,19 +87,19 @@ fn subcommand_usage(sub: &str) -> &'static str {
         "dispatch" => concat!(
             "用法：\n",
             "  aicross dispatch --project <目录> --text-file <文件> [选项]\n\n",
-            "常用选项：\n",
-            "  --preset <模式>        指定预设 id 或别名（shared / economy / blind）\n",
-            "  --host <主 agent>      指定宿主配置（多于一份配置时必填）\n",
-            "  --seat <规格>          仅本次覆盖某位置，写法 <阶段>.<位置>=<agent>:<provider>:<model>\n",
+            "选项：\n",
+            "  --preset <模式>        指定模式 id 或别名（shared / economy / blind），缺省默认模式\n",
+            "  --host <主 agent>      指定主 agent（多于一份配置时必填）\n",
+            "  --seat <规格>          只对这一次换人，写法 <阶段>.<位置>=<agent>:<provider>:<model>\n",
             "  --accept-file <文件>   附带验收条件全文\n",
-            "  --kind <类型>          记录任务类型\n",
+            "  --kind <任务类型>      记录任务类型\n",
             "  --read-only-task       标明本次为只读任务\n",
             "  --help, -h             显示此用法\n",
         ),
         "status" => concat!(
             "用法：\n",
             "  aicross status <run_id> [--wait] [--timeout <秒>]\n\n",
-            "常用选项：\n",
+            "选项：\n",
             "  --wait                 等待本次派发结束再退出\n",
             "  --timeout <秒>         最长等待秒数（正整数，默认 600）\n",
             "  --help, -h             显示此用法\n",
@@ -154,9 +154,9 @@ fn subcommand_usage(sub: &str) -> &'static str {
         ),
         "stats" => concat!(
             "用法：\n",
-            "  aicross stats [--kind <类型>]\n\n",
+            "  aicross stats [--kind <任务类型>]\n\n",
             "选项：\n",
-            "  --kind <类型>          只看指定任务类型的使用记录\n",
+            "  --kind <任务类型>      只看指定任务类型的使用记录\n",
             "  --help, -h             显示此用法\n",
         ),
         "leftovers" => concat!(
@@ -168,16 +168,16 @@ fn subcommand_usage(sub: &str) -> &'static str {
         ),
         "config" => concat!(
             "用法：\n",
-            "  aicross config show [--host <h>]\n",
+            "  aicross config show [--host <主 agent>]\n",
             "  aicross config set <键> <值>\n",
             "  aicross config set-role <planning|execution|acceptance> --agent <a> --model <m> [--provider <p>] [--tier <档>] [--thinking 关|低|中|高]\n",
-            "  aicross config set-default-mode <模式> [--host <h>]\n",
-            "  aicross config set-count <模式> <数量> [--host <h>]\n",
-            "  aicross config set-focus --mode <模式> --index <序号> --focus <视角> [--host <h>]\n",
+            "  aicross config set-default-mode <模式> [--host <主 agent>]\n",
+            "  aicross config set-count <模式> <数量> [--host <主 agent>]\n",
+            "  aicross config set-focus --mode <模式> --index <序号> --focus <视角> [--host <主 agent>]\n",
             "  aicross config set-seat <模式> <阶段> <位置> --agent <a> --model <m> [选项]\n",
-            "  aicross config clear-seat <模式> [<阶段> <位置>] [--host <h>]\n",
-            "  aicross config set-host-vendor <host> <厂商|auto>\n",
-            "  aicross config recommend [--host <h>] [--mode <模式>] [--all]\n\n",
+            "  aicross config clear-seat <模式> [<阶段> <位置>] [--host <主 agent>]\n",
+            "  aicross config set-host-vendor <主 agent> <厂商|auto>\n",
+            "  aicross config recommend [--host <主 agent>] [--mode <模式>] [--all]\n\n",
             "选项：\n",
             "  --help, -h             显示此用法\n",
         ),
@@ -185,31 +185,31 @@ fn subcommand_usage(sub: &str) -> &'static str {
             "用法：\n",
             "  aicross hosts\n\n",
             "说明：\n",
-            "  列出已检测到的宿主 agent 及其推定厂商和依据。\n",
+            "  列出已检测到的主 agent 及其推定厂商和依据。\n",
             "  --help, -h             显示此用法\n",
         ),
         "skill" => concat!(
             "用法：\n",
             "  aicross skill status [--project <目录>]\n",
-            "  aicross skill install --host <h> --scope global|project [--project <目录>]\n",
-            "  aicross skill upgrade --host <h> --path <旧安装路径>\n",
-            "  aicross skill uninstall --host <h> --scope global|project [--project <目录>]\n\n",
+            "  aicross skill install --host <主 agent> --scope global|project [--project <目录>]\n",
+            "  aicross skill upgrade --host <主 agent> --path <旧安装路径>\n",
+            "  aicross skill uninstall --host <主 agent> --scope global|project [--project <目录>]\n\n",
             "选项：\n",
             "  --help, -h             显示此用法\n",
         ),
         "slash" => concat!(
             "用法：\n",
-            "  aicross slash list [--host <h>]\n",
-            "  aicross slash add --name <命令名> --mode <模式> [--note <说明>] [--host <h>]\n",
-            "  aicross slash remove --name <命令名> [--host <h>]\n",
-            "  aicross slash add-all [--prefix <前缀>] [--host <h>]\n\n",
+            "  aicross slash list [--host <主 agent>]\n",
+            "  aicross slash add --name <命令名> --mode <模式> [--note <说明>] [--host <主 agent>]\n",
+            "  aicross slash remove --name <命令名> [--host <主 agent>]\n",
+            "  aicross slash add-all [--prefix <前缀>] [--host <主 agent>]\n\n",
             "选项：\n",
             "  --help, -h             显示此用法\n",
         ),
         "preset" => concat!(
             "用法：\n",
-            "  aicross preset save --file <json 文件> [--host <h>]\n",
-            "  aicross preset remove <预设 id>\n\n",
+            "  aicross preset save --file <json 文件> [--host <主 agent>]\n",
+            "  aicross preset remove <模式 id>\n\n",
             "选项：\n",
             "  --help, -h             显示此用法\n",
         ),
@@ -237,7 +237,7 @@ fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
     }
     let _ = write!(
         out,
-        "aicross {} —— 多厂商 agent 的派发引擎与结果查看器\n\
+        "aicross {}：多厂商 agent 的派发引擎与结果查看器\n\
          \n\
          用法：\n\
          \x20 aicross                打开窗口\n\
@@ -251,13 +251,13 @@ fn top_level_info(flag: &str, out: &mut dyn Write) -> i32 {
          \x20 cancel      叫停一次派发\n\
          \x20 recover     崩溃后核对；--rollback 恢复单写者改动的项目文件\n\
          \x20 open        打开该 run 的查看页\n\
-         \x20 resources   看资源库 / 重新探测 / 冒烟验证 / 按名字找模型 / 指定路径 / 标注用途\n\
+         \x20 resources   看资源库 / 重新探测 / 验证模型真身 / 按名字找模型 / 指定路径 / 标注用途\n\
          \x20 stats       各模型按任务类型的使用记录\n\
          \x20 leftovers   列出各家 CLI 历史里指向 aicross 数据目录的遗留条目\n\
          \x20 config     看与改角色、派发设置、模式人选\n\
          \x20 hosts       看与改主 agent\n\
          \x20 skill       skill status / install / upgrade / uninstall\n\
-         \x20 slash       斜杠命令写入各家宿主，可自定义短命令\n\
+         \x20 slash       斜杠命令写入各主 agent，可自定义短命令\n\
          \x20 preset      自定义模式的保存与删除\n\
          \n\
          使用说明见 docs/MANUAL.md，契约全文见 docs/CONSOLE-CHANNEL.md。\n",
