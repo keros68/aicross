@@ -27,7 +27,7 @@ const showWindow = () => {
   invoke('show_main_window').catch(() => {});
 };
 requestAnimationFrame(() => requestAnimationFrame(showWindow));
-setTimeout(showWindow, 150);
+if (IS_MACOS) setTimeout(showWindow, 150);
 
 // 安装版不弹浏览器右键菜单，也不让 F12 等快捷键打开开发者工具；开发时照常。
 if (!import.meta.env.DEV) {
