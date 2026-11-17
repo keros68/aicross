@@ -515,31 +515,46 @@ async fn skill_change(
     })?
 }
 
-/// 有新版本时的说明；没有新版本时 `app_update_check` 返回 null。
-#[derive(serde::Serialize)]
+/// 软件更新状态：始终带当前版本号，有新版本时在 `available` 给出目标版本与更新说明。
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AppUpdate {
-    version: String,
+struct AppUpdateStatus {
     current: String,
+    available: Option<AppUpdateAvailable>,
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateAvailable {
+    version: String,
     notes: String,
 }
 
-/// 查 GitHub Release 上的最新版本（latest.json）。网络不通等错误原样返回，
-/// 前端不打扰用户。
+/// 当前客户端版本号（直接取可执行文件包信息，不走网络）。
 #[tauri::command]
-async fn app_update_check(app: tauri::AppHandle) -> Result<Option<AppUpdate>, String> {
+fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+/// 查 GitHub Release 上的最新版本（latest.json）。网络不通等错误原样返回；
+/// 启动自动检查时不在顶栏报错打扰，点开版本浮层或手动点「检查更新」时展示原因。
+#[tauri::command]
+async fn app_update_check(app: tauri::AppHandle) -> Result<AppUpdateStatus, String> {
     use tauri_plugin_updater::UpdaterExt;
+    let current = app.package_info().version.to_string();
     let update = app
         .updater()
         .map_err(|error| error.to_string())?
         .check()
         .await
         .map_err(|error| format!("检查更新失败：{error}"))?;
-    Ok(update.map(|update| AppUpdate {
-        version: update.version.clone(),
-        current: update.current_version.clone(),
-        notes: update.body.clone().unwrap_or_default(),
-    }))
+    Ok(AppUpdateStatus {
+        current,
+        available: update.map(|update| AppUpdateAvailable {
+            version: update.version.clone(),
+            notes: update.body.clone().unwrap_or_default(),
+        }),
+    })
 }
 
 /// 下载新版本、校验签名后安装。下载进度经 `app-update-progress` 事件发出
@@ -647,6 +662,7 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
             skill_upgrade,
             skill_uninstall,
             pick_folder,
+            app_version,
             app_update_check,
             app_update_install,
             crate::run_view::load_run_view,
@@ -716,6 +732,40 @@ fn square_corners(window: &tauri::WebviewWindow) {
             DWMWA_WINDOW_CORNER_PREFERENCE,
             std::ptr::addr_of!(preference).cast(),
             std::mem::size_of_val(&preference) as u32,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppUpdateAvailable, AppUpdateStatus};
+
+    #[test]
+    fn app_update_status_serializes_current_and_optional_target() {
+        let up_to_date = serde_json::to_value(AppUpdateStatus {
+            current: "0.3.11".into(),
+            available: None,
+        })
+        .expect("serialize up-to-date status");
+        assert_eq!(
+            up_to_date,
+            serde_json::json!({ "current": "0.3.11", "available": null })
+        );
+
+        let has_update = serde_json::to_value(AppUpdateStatus {
+            current: "0.3.11".into(),
+            available: Some(AppUpdateAvailable {
+                version: "0.3.12".into(),
+                notes: "- 修复若干问题".into(),
+            }),
+        })
+        .expect("serialize update status");
+        assert_eq!(
+            has_update,
+            serde_json::json!({
+                "current": "0.3.11",
+                "available": { "version": "0.3.12", "notes": "- 修复若干问题" }
+            })
         );
     }
 }

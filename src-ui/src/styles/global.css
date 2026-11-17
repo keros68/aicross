@@ -934,17 +934,95 @@ html.is-macos .topbar {
     pointer-events: auto;
 }
 
-/* 顶栏「更新到 X」：比主按钮矮一档，与刷新按钮同高。 */
+/* 顶栏版本与更新（TASK-65、TASK-88）：平时显示紧凑版本号，有新版时切换为主按钮「更新到 X」，
+   点击展开浮层查看状态与手动检查更新。 */
+.app-update {
+    position: relative;
+    flex-shrink: 0;
+}
+
+.topbar-version {
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 8px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.topbar-version:hover,
+.topbar-version.open {
+    background: var(--bg-control);
+    color: var(--text-1);
+}
+
 .topbar-update {
     height: 32px;
     padding: 0 12px;
     font-size: 13px;
 }
 
+.app-update-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 30;
+    width: 320px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-panel);
+    color: var(--text-1);
+    box-shadow: 0 12px 32px var(--shadow);
+}
+
+.app-update-title {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.app-update-mono {
+    font-family: var(--font-mono);
+}
+
+.app-update-body {
+    margin-top: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-2);
+}
+
+.app-update-status {
+    margin-top: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-3);
+    overflow-wrap: anywhere;
+}
+
+.app-update-status.alert {
+    color: var(--red);
+}
+
+.app-update-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
+
 .update-notes {
     margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
     max-height: 180px;
     overflow: auto;
     white-space: pre-wrap;
+    font-size: 12px;
     color: var(--text-2);
 }

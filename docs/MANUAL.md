@@ -186,10 +186,12 @@ Hermes Agent、ZCode、CodeBuddy、WorkBuddy、Qoder、Qoder CN 也可当主 age
 
 ## 软件更新
 
-启动时查 GitHub 最新一版的 `latest.json`，有新版时顶栏出现「更新到 X」；确认后下载安装包、
-校验签名并安装，装完自动重新打开，数据目录不动。查不到（离线等）时不提示。0.3.0 起有此
-功能，更早的版本需手动安装一次新版。发布时用 `scripts/build-release.ps1` 打包并生成
-`latest.json`，与安装包一起上传。
+顶栏右侧常驻显示当前版本号（如 `v0.3.11`）。窗口启动时自动查一次 GitHub 最新一版的
+`latest.json`：有新版时顶栏按钮变为「更新到 X」，点开确认后下载安装包、校验签名并安装，装完
+自动重新打开，数据目录不动；启动时若离线或查不到，顶栏保持显示版本号、不弹报错打扰。随时点击顶栏
+版本号或更新按钮可展开浮层，查看当前版本、检查结果或失败原因，并手动点「检查更新」。0.3.0 起有
+自动更新，更早的版本需手动安装一次新版。发布时 Windows 用 `scripts/build-release.ps1`、
+macOS 用 `scripts/build-macos.sh` 打包签名并生成 `latest.json`，与安装包一起上传。
 
 ## 派发记录
 

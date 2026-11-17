@@ -28,3 +28,15 @@ describe('自定义模式命令的参数（fix-fullcheck C4）', () => {
     expect(invoke).toHaveBeenCalledWith('preset_remove', { id: 'custom-1' });
   });
 });
+
+describe('软件版本与更新命令（TASK-88）', () => {
+  it('查当前版本与检查更新对应各自的 Rust 命令名', async () => {
+    invoke.mockClear();
+    await commands.appVersion();
+    expect(invoke).toHaveBeenCalledWith('app_version', undefined);
+
+    invoke.mockClear();
+    await commands.appUpdateCheck();
+    expect(invoke).toHaveBeenCalledWith('app_update_check', undefined);
+  });
+});
