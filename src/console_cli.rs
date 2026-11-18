@@ -1219,13 +1219,13 @@ fn setting_kind(key: &str) -> Option<SettingKind> {
 }
 
 /// ACP 适配器的检查与安装；生产走 acp_setup，测试注入假实现，不在单测里真跑 npm。
-struct AcpOps {
+pub(crate) struct AcpOps {
     install: Box<dyn Fn() -> Vec<AdapterReport>>,
     status: Box<dyn Fn() -> Vec<AdapterReport>>,
 }
 
 impl AcpOps {
-    fn production() -> Self {
+    pub(crate) fn production() -> Self {
         AcpOps {
             install: Box::new(acp_setup::install_missing_blocking),
             status: Box::new(acp_setup::adapter_status),
@@ -3108,7 +3108,8 @@ fn run_config_set(
         let _ = writeln!(stderr, "未知键：{key}");
         return 2;
     };
-    let mut clamped = None;
+    // 值先按类型解析成 JSON 值（报错带上原值），键的区间夹取与合并写入在
+    // config_set_at 里做，与窗口 dispatch_save 共用同一实现体。
     let json_value = match kind {
         SettingKind::Number => {
             let Ok(number) = value.parse::<f64>() else {
@@ -3119,17 +3120,7 @@ fn run_config_set(
                 let _ = writeln!(stderr, "{key} 必须是有限数字：{value}");
                 return 2;
             }
-            let clamped_value = clamp_setting_value(&key, number);
-            // 区间端点从引擎夹取结果反推（极小/极大各探一次），不另抄一份
-            // 常量；越界与取整分开提示（R1-6），越界优先。
-            let low = clamp_setting_value(&key, f64::MIN).as_f64().unwrap_or(f64::MIN);
-            let high = clamp_setting_value(&key, f64::MAX).as_f64().unwrap_or(f64::MAX);
-            if number < low || number > high {
-                clamped = Some(format!("{key} 越界，已夹到 {}", clamped_value));
-            } else if clamped_value.as_f64() != Some(number) {
-                clamped = Some(format!("{key} 已取整为 {}", clamped_value));
-            }
-            clamped_value
+            Value::Number(serde_json::Number::from_f64(number).unwrap_or_else(|| serde_json::Number::from(0)))
         }
         SettingKind::Bool => match value.as_str() {
             "true" => Value::Bool(true),
@@ -3141,47 +3132,21 @@ fn run_config_set(
         },
         SettingKind::Text => Value::String(value),
     };
-    let path = root.join("dispatch-settings.json");
-    let mut map = match fs::read(&path) {
-        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-            Ok(Value::Object(map)) => map,
-            _ => {
-                let _ = writeln!(stderr, "dispatch-settings.json 解析失败");
-                return 1;
-            }
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Map::new(),
-        Err(error) => {
-            let _ = writeln!(stderr, "读取 dispatch-settings.json 失败：{error}");
-            return 1;
+    let mut patch = Map::new();
+    patch.insert(key, json_value);
+    let outcome = match config_set_at(root, patch, acp) {
+        Ok(outcome) => outcome,
+        Err((code, message)) => {
+            let _ = writeln!(stderr, "{message}");
+            return code;
         }
     };
-    map.insert(key.clone(), json_value);
-    if let Err(message) = crate::engine::write_json_atomic(&path, &Value::Object(map)) {
-        let _ = writeln!(stderr, "{message}");
-        return 1;
-    }
-    let dispatch = crate::engine::load_settings(root);
-    // 10-01 定案：打开 ACP 时当场装适配器；装不上不回滚设置，退出码 1，派发对这几家回退一次性 CLI。
-    if key == "acpEnabled" && dispatch.acp_enabled {
-        let reports = (acp.install)();
-        let value = json!({ "dispatch": dispatch, "acp": reports });
-        let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap_or_else(|_| "{}".into()));
-        let described = |report: &AdapterReport| {
-            let state = serde_json::to_value(report.state).ok();
-            format!("{} {}", report.agent, state.as_ref().and_then(Value::as_str).unwrap_or(""))
-        };
-        let failed = reports.iter().filter(|report| report.not_installed()).map(described).collect::<Vec<_>>();
-        if failed.is_empty() {
-            let states = reports.iter().map(described).collect::<Vec<_>>();
-            let _ = writeln!(stderr, "已写入派发设置；ACP 适配器：{}", states.join("，"));
-            return 0;
-        }
-        let _ = writeln!(stderr, "已写入派发设置；ACP 适配器未装上：{}；派发对这几家回退一次性 CLI", failed.join("，"));
-        return 1;
-    }
-    let _ = writeln!(stdout, "{}", serde_json::to_string(&dispatch).unwrap_or_else(|_| "{}".into()));
-    match clamped {
+    let stdout_value = match &outcome.acp {
+        Some(reports) => json!({ "dispatch": &outcome.dispatch, "acp": reports }),
+        None => serde_json::to_value(&outcome.dispatch).unwrap_or_else(|_| json!({})),
+    };
+    let _ = writeln!(stdout, "{}", serde_json::to_string(&stdout_value).unwrap_or_else(|_| "{}".into()));
+    match &outcome.note {
         Some(note) => {
             let _ = writeln!(stderr, "已写入派发设置；{note}");
         }
@@ -3189,7 +3154,118 @@ fn run_config_set(
             let _ = writeln!(stderr, "已写入派发设置");
         }
     }
-    0
+    outcome.exit
+}
+
+/// `config set` 与窗口 `dispatch_save` 的写入结果：写入后生效的设置、夹取或
+/// 取整的说明、开启 ACP 时的适配器安装报告。适配器有装不上时 exit 为 1，
+/// 设置本身已写入，不回滚。
+pub(crate) struct ConfigSetOutcome {
+    pub dispatch: crate::engine::EngineSettings,
+    pub acp: Option<Vec<AdapterReport>>,
+    pub note: Option<String>,
+    pub exit: i32,
+}
+
+impl std::fmt::Debug for ConfigSetOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfigSetOutcome")
+            .field("exit", &self.exit)
+            .field("note", &self.note)
+            .field("acp", &self.acp.as_ref().map(|reports| reports.len()))
+            .finish_non_exhaustive()
+    }
+}
+
+/// 单个键值的规范化（TASK-89 抽出，窗口命令也走这里）：数字键按引擎同一套
+/// 区间夹取并说明越界或取整，布尔与文本键只校验类型。键不存在报错。
+fn normalize_setting_value(key: &str, value: Value) -> Result<(Value, Option<String>), (i32, String)> {
+    let Some(kind) = setting_kind(key) else {
+        return Err((2, format!("未知键：{key}")));
+    };
+    match kind {
+        SettingKind::Number => {
+            let Some(number) = value.as_f64().filter(|number| number.is_finite()) else {
+                return Err((2, format!("{key} 必须是数字")));
+            };
+            let clamped_value = clamp_setting_value(key, number);
+            // 区间端点从引擎夹取结果反推（极小/极大各探一次），不另抄一份
+            // 常量；越界与取整分开提示（R1-6），越界优先。
+            let low = clamp_setting_value(key, f64::MIN).as_f64().unwrap_or(f64::MIN);
+            let high = clamp_setting_value(key, f64::MAX).as_f64().unwrap_or(f64::MAX);
+            let note = if number < low || number > high {
+                Some(format!("{key} 越界，已夹到 {clamped_value}"))
+            } else if clamped_value.as_f64() != Some(number) {
+                Some(format!("{key} 已取整为 {clamped_value}"))
+            } else {
+                None
+            };
+            Ok((clamped_value, note))
+        }
+        SettingKind::Bool => match value {
+            Value::Bool(value) => Ok((Value::Bool(value), None)),
+            _ => Err((2, format!("{key} 只认布尔值"))),
+        },
+        SettingKind::Text => match value {
+            Value::String(value) => Ok((Value::String(value), None)),
+            _ => Err((2, format!("{key} 必须是文本"))),
+        },
+    }
+}
+
+/// 写入派发设置（`aicross config set` 与窗口 `dispatch_save` 同一实现体，
+/// TASK-89 抽出）：patch 的键与 dispatch-settings.json 字段同名、值为 JSON
+/// 值；逐键规范化后与现有文件合并、整份原子写入。写入 acpEnabled 且结果为
+/// 开时当场安装 ACP 适配器（10-01 定案：装不上不回滚设置，说明带出）。
+pub(crate) fn config_set_at(
+    root: &Path,
+    patch: Map<String, Value>,
+    acp: &AcpOps,
+) -> Result<ConfigSetOutcome, (i32, String)> {
+    let installs_acp = patch.contains_key("acpEnabled");
+    let mut notes: Vec<String> = Vec::new();
+    let mut normalized = Map::new();
+    for (key, value) in patch {
+        let (value, note) = normalize_setting_value(&key, value)?;
+        if let Some(note) = note {
+            notes.push(note);
+        }
+        normalized.insert(key, value);
+    }
+    let path = root.join("dispatch-settings.json");
+    let mut map = match fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(Value::Object(map)) => map,
+            _ => return Err((1, "dispatch-settings.json 解析失败".into())),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Map::new(),
+        Err(error) => return Err((1, format!("读取 dispatch-settings.json 失败：{error}"))),
+    };
+    for (key, value) in normalized {
+        map.insert(key, value);
+    }
+    if let Err(message) = crate::engine::write_json_atomic(&path, &Value::Object(map)) {
+        return Err((1, message));
+    }
+    let dispatch = crate::engine::load_settings(root);
+    if installs_acp && dispatch.acp_enabled {
+        let reports = (acp.install)();
+        let described = |report: &AdapterReport| {
+            let state = serde_json::to_value(report.state).ok();
+            format!("{} {}", report.agent, state.as_ref().and_then(Value::as_str).unwrap_or(""))
+        };
+        let failed = reports.iter().filter(|report| report.not_installed()).map(described).collect::<Vec<_>>();
+        let note = if failed.is_empty() {
+            let states = reports.iter().map(described).collect::<Vec<_>>();
+            format!("ACP 适配器：{}", states.join("，"))
+        } else {
+            format!("ACP 适配器未装上：{}；派发对这几家回退一次性 CLI", failed.join("，"))
+        };
+        let exit = if failed.is_empty() { 0 } else { 1 };
+        return Ok(ConfigSetOutcome { dispatch, acp: Some(reports), note: Some(note), exit });
+    }
+    let note = (!notes.is_empty()).then(|| notes.join("；"));
+    Ok(ConfigSetOutcome { dispatch, acp: None, note, exit: 0 })
 }
 
 // ── TASK-44：recover 子命令 ────────────────────────────────────────
@@ -4968,6 +5044,91 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
         assert_eq!(parsed["acpEnabled"], false);
         assert!(parsed.get("acp").is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-89：窗口 dispatch_save 走的 config_set_at：多键一次合并写入，逐键夹取
+    /// 与取整说明用「；」连接，未动的键保留。
+    #[test]
+    fn task89_config_set_at_merges_patch_and_reports_clamping() {
+        let root = fixture_root("set-at-merge");
+        fs::write(root.join("dispatch-settings.json"), r#"{"timeoutSecs":90,"redact":false}"#).unwrap();
+        let mut patch = Map::new();
+        patch.insert("concurrency".into(), json!(99));
+        patch.insert("fixRoundLimit".into(), json!(2.8));
+        patch.insert("redact".into(), json!(true));
+        let (ops, calls) = fake_acp(vec![]);
+        let outcome = config_set_at(&root, patch, &ops).unwrap();
+        assert_eq!(calls.get(), 0);
+        assert_eq!(outcome.exit, 0);
+        assert_eq!(outcome.dispatch.concurrency, 3);
+        assert_eq!(outcome.dispatch.fix_round_limit, 2);
+        assert!(outcome.dispatch.redact);
+        assert_eq!(outcome.dispatch.timeout_secs, 90, "未动的键保留原值");
+        assert_eq!(
+            outcome.note.as_deref(),
+            Some("concurrency 越界，已夹到 3；fixRoundLimit 已取整为 2")
+        );
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join("dispatch-settings.json")).unwrap()).unwrap();
+        assert_eq!(saved["concurrency"], 3);
+        assert_eq!(saved["fixRoundLimit"], 2);
+        assert_eq!(saved["timeoutSecs"], 90);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-89：未知键与类型不对的值在写入前被拒，整批不写入。
+    #[test]
+    fn task89_config_set_at_rejects_unknown_key_and_wrong_type() {
+        let root = fixture_root("set-at-bad");
+        fs::write(root.join("dispatch-settings.json"), r#"{"timeoutSecs":90}"#).unwrap();
+        let (ops, _) = fake_acp(vec![]);
+
+        let mut patch = Map::new();
+        patch.insert("nope".into(), json!(1));
+        let (code, message) = config_set_at(&root, patch, &ops).unwrap_err();
+        assert_eq!((code, message.as_str()), (2, "未知键：nope"));
+
+        let mut patch = Map::new();
+        patch.insert("concurrency".into(), json!("2"));
+        assert_eq!(config_set_at(&root, patch, &ops).unwrap_err().0, 2);
+
+        let mut patch = Map::new();
+        patch.insert("redact".into(), json!("true"));
+        assert_eq!(config_set_at(&root, patch, &ops).unwrap_err().0, 2);
+
+        // 前一个键合法、后一个键非法：整批不写入。
+        let mut patch = Map::new();
+        patch.insert("concurrency".into(), json!(2));
+        patch.insert("bad".into(), json!(1));
+        assert!(config_set_at(&root, patch, &ops).is_err());
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join("dispatch-settings.json")).unwrap()).unwrap();
+        assert_eq!(saved["timeoutSecs"], 90);
+        assert!(saved.get("concurrency").is_none(), "非法键连同前面的合法键都不写入");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// TASK-89：开启 ACP 的分支：设置写入并带出适配器报告；装不上时 exit 1
+    /// 但设置保留。
+    #[test]
+    fn task89_config_set_at_acp_branch_reports_and_keeps_setting() {
+        let root = fixture_root("set-at-acp");
+        let (ops, calls) = fake_acp(vec![
+            report("claude", acp_setup::AdapterState::NoNpm, Some("未检测到 npm（Node.js）")),
+        ]);
+        let mut patch = Map::new();
+        patch.insert("acpEnabled".into(), json!(true));
+        patch.insert("concurrency".into(), json!(2));
+        let outcome = config_set_at(&root, patch, &ops).unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(outcome.exit, 1);
+        assert!(outcome.dispatch.acp_enabled);
+        assert_eq!(outcome.dispatch.concurrency, 2);
+        let reports = outcome.acp.as_deref().unwrap();
+        assert_eq!(reports[0].state, acp_setup::AdapterState::NoNpm);
+        let note = outcome.note.as_deref().unwrap();
+        assert!(note.contains("claude 没有 npm") && note.contains("回退一次性 CLI"), "{note}");
         let _ = fs::remove_dir_all(root);
     }
 

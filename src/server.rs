@@ -339,6 +339,55 @@ async fn config_recommend(
     .map_err(|error| format!("推荐任务失败：{error}"))?
 }
 
+/// 派发设置（TASK-89，`aicross config show` 的 dispatch 段同结构）：设置本身、
+/// 设置文件路径与 ACP 适配器状态。派发设置不分主 agent，不经 config_snapshot
+/// 的 host 解析；适配器状态要拉起 where.exe，放阻塞线程跑。
+#[tauri::command]
+async fn dispatch_settings() -> Result<serde_json::Value, String> {
+    let root = crate::paths::aicross_root()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let acp = crate::channels::acp_setup::adapter_status_cached();
+        let dispatch = crate::engine::load_settings(&root);
+        serde_json::to_value(&dispatch)
+            .map(|dispatch| {
+                serde_json::json!({
+                    "dispatch": dispatch,
+                    "path": root.join("dispatch-settings.json").to_string_lossy(),
+                    "acp": acp,
+                })
+            })
+            .map_err(|error| format!("生成派发设置失败：{error}"))
+    })
+    .await
+    .map_err(|error| format!("读取派发设置任务失败：{error}"))?
+}
+
+/// 保存派发设置（TASK-89，`aicross config set` 同一实现体）：patch 是键值对
+/// 象，键与 dispatch-settings.json 字段同名。开启 ACP 时适配器安装放阻塞
+/// 线程跑（要拉 npm）；设置已写入、仅适配器装不上时仍算成功，说明带回前端
+/// 显示，不回滚设置。
+#[tauri::command]
+async fn dispatch_save(patch: serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+    let root = crate::paths::aicross_root()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::console_cli::config_set_at(&root, patch, &crate::console_cli::AcpOps::production())
+            .map_err(|(_, message)| message)
+            .and_then(|outcome| {
+                let mut value = serde_json::json!({
+                    "dispatch": &outcome.dispatch,
+                    "note": outcome.note,
+                });
+                if let Some(reports) = &outcome.acp {
+                    value["acp"] = serde_json::to_value(reports)
+                        .map_err(|error| format!("生成适配器状态失败：{error}"))?;
+                }
+                Ok(value)
+            })
+    })
+    .await
+    .map_err(|error| format!("保存派发设置任务失败：{error}"))?
+}
+
 /// 短命令清单（`aicross slash list` 同结构）。三个短命令都需要具体
 /// host（文件写在家目录下，按 host 分路径），按写命令同一套规则解析。
 #[tauri::command]
@@ -651,6 +700,8 @@ pub fn start_ui(pending_open: Option<String>) -> anyhow::Result<()> {
             hosts_list,
             host_set_vendor,
             config_recommend,
+            dispatch_settings,
+            dispatch_save,
             slash_list,
             slash_add,
             slash_add_all,

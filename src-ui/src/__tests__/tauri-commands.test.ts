@@ -13,6 +13,22 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
+describe('派发设置命令的参数（TASK-89）', () => {
+  it('保存只传改动的键，不带 host（派发设置不分主 agent）', async () => {
+    invoke.mockClear();
+    await commands.dispatchSave({ concurrency: 2, timeoutSecs: 900 });
+    expect(invoke).toHaveBeenCalledWith('dispatch_save', {
+      patch: { concurrency: 2, timeoutSecs: 900 },
+    });
+  });
+
+  it('读取不带参数', async () => {
+    invoke.mockClear();
+    await commands.dispatchSettings();
+    expect(invoke).toHaveBeenCalledWith('dispatch_settings', undefined);
+  });
+});
+
 describe('自定义模式命令的参数（fix-fullcheck C4）', () => {
   const preset = { name: '我的模式', stages: [{ nodes: [{ role: '执行', visibility: '共享', write: '单写者' }] }] };
 

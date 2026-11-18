@@ -61,17 +61,19 @@ ln -s /Applications/aicross.app/Contents/MacOS/aicross /usr/local/bin/aicross
 
 派发设置存放在 `~/.aicross/dispatch-settings.json`（超时、并发、修正轮上限、
 验证命令、脱敏、派发记录位置等），用 `aicross config show` 看全量，`config set`
-逐项改。角色（出方案 / 执行 / 验收）在 `~/.aicross/roles.json`，用
+逐项改；窗口顶栏「设置」的对话框改的是同一份：并发与各类上限、三个超时（按分钟
+填写）、脱敏、派发记录位置、验证命令与 ACP，保存走同一条夹取规则，对话框底部
+写着文件路径。角色（出方案 / 执行 / 验收）在 `~/.aicross/roles.json`，用
 `config set-role` 改；三个角色一次定好，之后每次派发复用。
 `timeoutSecs` 默认 600 秒，用于只读与盲位置；`execTimeoutSecs` 默认 1800 秒，用于可写位置；
 `idleTimeoutSecs` 默认 300 秒，限制连续无输出时间，目前只用于 pi 的只读与盲位置。总时长超限提示「执行超过 N 秒」，
 连续无输出超限提示「连续 N 秒无输出」。
 
 ACP 默认关闭，派发走各家 CLI 自带的续聊。要用 ACP 时执行
-`aicross config set acpEnabled true`：写入设置后当场安装 claude、codex 的 ACP
-适配器并输出每家结果。安装需要 npm 与对应的 CLI；装不上的，命令退出 1 并说明
-原因，派发对它们回退一次性 CLI。`aicross config show` 的 `acp` 一项显示各家
-适配器是否就绪。
+`aicross config set acpEnabled true`，或在窗口设置对话框打开 ACP：写入设置后当场
+安装 claude、codex 的 ACP 适配器并输出每家结果；对话框里可以看到各适配器状态。安装需要 npm 与
+对应的 CLI；装不上的，命令退出 1 并说明原因，派发对它们回退一次性 CLI。
+`aicross config show` 的 `acp` 一项显示各家适配器是否就绪。
 
 ## 崩溃后核对
 
@@ -274,6 +276,7 @@ aicross 在项目里只建一个目录 `.aicross/`：
 | 内置预设 | 共享模式 / 经济模式 / 盲审模式 / 擂台模式 / 评审模式 / 蜂群模式 | `src/orchestration.rs` 内置预设名、`--preset` 别名、本手册 |
 | 用户自建预设 | 自定义模式（多个时「自定义模式 · 名称」） | 查看页模式名 |
 | 角色 | 出方案 / 执行 / 验收 / 验证 / 拆分 / 顾问 / 仲裁 | 角色配置、`src/orchestration.rs` |
+| 引擎派发行为的设置 | 派发设置（顶栏「设置」） | 设置对话框、`aicross config` |
 | 内置 agent 显示名 | Claude Code / Codex / Kimi Code / pi agent | 资源输出、查看页副标题 |
 | 用户对话、装 ai-cross skill 的软件 | 主 agent | 开始页、顶栏、`--host` |
 | 被派去干活、审查的 agent | 副 agent | 开始页 |

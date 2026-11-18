@@ -19,6 +19,7 @@ import { ResourcesPage } from './config/ResourcesPage';
 import { SkillPage } from './config/SkillPage';
 import { StartPage } from './config/StartPage';
 import { autoUpdateHosts } from './config/skill-view';
+import { SettingsDialog } from './config/SettingsDialog';
 import { PAGE_TABS, keepsMounted, pageTabStorage, readPageTab, writePageTab, type PageTab } from './config/page-tabs';
 import { onWindowDragDoubleClick, onWindowDragMouseDown } from './lib/window-drag';
 import { readHost, writeHost } from './lib/host-select';
@@ -38,6 +39,8 @@ export function App() {
 
   // 模式页「去测试」：跳到资源页并展开该 agent 卡片（seq 每次递增，同一 agent 再点也生效）。
   const [focusAgent, setFocusAgent] = useState<{ agent: string; seq: number } | null>(null);
+  // 顶栏「设置」打开的派发设置对话框（TASK-89）。
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const selectTab = (next: PageTab) => {
     setTab(next);
@@ -189,6 +192,18 @@ export function App() {
           >
             <Icon name="refresh" />
           </button>
+          {isTauri && (
+            <button
+              type="button"
+              className="icon-btn"
+              title="设置"
+              aria-label="设置"
+              aria-haspopup="dialog"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <Icon name="sliders" />
+            </button>
+          )}
           <WindowButtons />
         </div>
       </header>
@@ -277,6 +292,7 @@ export function App() {
           />
         )}
       </main>
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       <ResizeHandles />
     </>
   );

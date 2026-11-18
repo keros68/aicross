@@ -113,6 +113,11 @@ export const commands = {
     invoke<SlashAddAllResult>('slash_add_all', { host, prefix }),
   /** 系统选目录对话框；取消时为 null。 */
   pickFolder: () => invoke<string | null>('pick_folder'),
+  // TASK-89 派发设置：读与保存都不分主 agent。
+  dispatchSettings: () => invoke<DispatchSettingsView>('dispatch_settings'),
+  /** patch 的键与 dispatch-settings.json 字段同名，只带改动的键。 */
+  dispatchSave: (patch: Record<string, number | boolean | string>) =>
+    invoke<DispatchSaveResult>('dispatch_save', { patch }),
 };
 
 // ── TASK-55 自定义模式（镜像 `aicross preset save` 的输入与输出）──
@@ -402,9 +407,61 @@ export interface ModeEntry {
   stages: ModeSeatNode[][];
 }
 
+/** 派发记录写进项目目录的开关与各派发数值设置（TASK-89，镜像 `aicross config show`
+ *  的 dispatch 段，即 `~/.aicross/dispatch-settings.json`）。 */
+export interface DispatchSettings {
+  /** 只读与盲审位置的总时长（秒）。 */
+  timeoutSecs: number;
+  /** 可写位置的总时长（秒）。 */
+  execTimeoutSecs: number;
+  /** 连续无输出的上限（秒）。 */
+  idleTimeoutSecs: number;
+  /** 同阶段并发上限（1–3）。 */
+  concurrency: number;
+  /** 单次派发包含的位置数上限（1–100）。 */
+  maxRequests: number;
+  /** 蜂群模式一次拆出的件数上限（1–4）。 */
+  swarmLimit: number;
+  /** 同时进行的派发次数上限（1–3）。 */
+  consoleRunLimit: number;
+  /** 验收或验证未通过时最多重派的次数（0–3）。 */
+  fixRoundLimit: number;
+  /** 派发内容发送前脱敏。 */
+  redact: boolean;
+  /** 派发记录写进项目目录。 */
+  writeProjectDispatch: boolean;
+  ccSwitchPath: string;
+  validationCommand: string;
+  /** 续聊走 ACP。 */
+  acpEnabled: boolean;
+  classificationModel: string;
+  classifyProposals: boolean;
+}
+
+/** ACP 适配器状态（镜像 src/channels/acp_setup.rs 的 AdapterReport）。 */
+export interface AcpAdapterReport {
+  agent: string;
+  state: string;
+  reason?: string;
+}
+
+export interface DispatchSettingsView {
+  dispatch: DispatchSettings;
+  /** 设置文件路径（含 AICROSS_HOME 覆盖时的位置）。 */
+  path: string;
+  acp: AcpAdapterReport[] | null;
+}
+
+/** dispatch_save 的返回：写入后的设置，夹取或 ACP 安装的说明（正常为 null）。 */
+export interface DispatchSaveResult {
+  dispatch: DispatchSettings;
+  note: string | null;
+  acp?: AcpAdapterReport[];
+}
+
 export interface ConfigShow {
   roles: unknown;
-  dispatch: unknown;
+  dispatch: DispatchSettings;
   acp: unknown;
   /** 实际生效的默认模式 id。 */
   defaultMode: string;
