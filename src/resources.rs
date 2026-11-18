@@ -6363,7 +6363,17 @@ gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n\
         let first_path = first.path().to_path_buf();
         drop(first);
         assert!(fs::read_dir(&first_path).unwrap().next().is_none(), "离开作用域应清空槽位");
-        // 放锁后下一路可立即复用 1 号槽位
+        // 放锁后下一路复用 1 号槽位。并行测试里别的线程 fork 子进程时会短暂继承
+        // 锁文件句柄，先等 1 号锁确实可抢，再断言复用。
+        let lock_path = root.join("blind").join("agy-1.lock");
+        let freed = (0..100).any(|_| {
+            let free = crate::file_lock::FileLock::try_acquire(&lock_path).unwrap().is_some();
+            if !free {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            free
+        });
+        assert!(freed, "离开作用域应放锁");
         let reused = SmokeScratch::create_in(&root, "agy").unwrap().unwrap();
         assert_eq!(reused.path(), first_path);
         drop(reused);
