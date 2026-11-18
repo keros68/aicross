@@ -1140,6 +1140,7 @@ fn parse_kimi_config(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
         .get("models")
         .and_then(toml::Value::as_table)
         .ok_or_else(|| "未找到 [models.\"…\"] 段".to_string())?;
+    let providers = root.get("providers").and_then(toml::Value::as_table);
     let mut output = Vec::new();
     for (alias, value) in sections {
         let Some(section) = value.as_table() else {
@@ -1149,6 +1150,12 @@ fn parse_kimi_config(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
             .get("model")
             .and_then(toml::Value::as_str)
             .unwrap_or_default();
+        let provider = section
+            .get("provider")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        let (vendor, billing) = kimi_model_vendor(provider, providers, real_model, alias);
         let context_size = section
             .get("max_context_size")
             .and_then(toml::Value::as_integer)
@@ -1196,8 +1203,8 @@ fn parse_kimi_config(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
             alias,
             "kimi",
             "",
-            "Moonshot",
-            AGENT_NAME_KIMI,
+            &vendor,
+            &billing,
             if capabilities.contains(&"thinking") {
                 "支持"
             } else {
@@ -1211,6 +1218,29 @@ fn parse_kimi_config(contents: &str, source: &str) -> Result<Vec<ResourceModel>,
         return Err("未找到 [models.\"…\"] 段".to_string());
     }
     Ok(output)
+}
+
+/// kimi 模型的厂商与计费来源。Kimi Code 自家 provider（`type = "kimi"`，或没写
+/// provider）是 Moonshot / Kimi Code；config.toml 里接的第三方 provider（如
+/// opencode-go 转发的 claude、gpt、glm）按真实模型名推厂商，计费记 provider 名。
+/// 一律记 Moonshot 会让跨厂商验收把 kimi 下的 claude 当成另一家。
+fn kimi_model_vendor(
+    provider: &str,
+    providers: Option<&toml::map::Map<String, toml::Value>>,
+    real_model: &str,
+    alias: &str,
+) -> (String, String) {
+    let own = provider.is_empty()
+        || providers
+            .and_then(|table| table.get(provider))
+            .and_then(|entry| entry.get("type"))
+            .and_then(toml::Value::as_str)
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("kimi"));
+    if own {
+        return ("Moonshot".to_string(), AGENT_NAME_KIMI.to_string());
+    }
+    let name = if real_model.is_empty() { alias } else { real_model };
+    (vendor_for_listed_model(name).to_string(), provider.to_string())
 }
 
 // ── 支持清单里的新 agent（TASK-61）────────────────────────────────────────
@@ -1894,7 +1924,11 @@ fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: 
                 model.resolved_id.clone_from(&existing.resolved_id);
                 model.resolved_source.clone_from(&existing.resolved_source);
             }
-            if !existing.vendor.trim().is_empty() {
+            // 厂商以事实源为准，旧版本推错的值随重新探测纠正；只有用户申报的
+            // 条目保留库里已有的厂商。
+            let declared = existing.source.starts_with("申报(")
+                || existing.source.starts_with("来源：用户申报 · ");
+            if declared && !existing.vendor.trim().is_empty() {
                 model.vendor.clone_from(&existing.vendor);
             }
             model.note.clone_from(&existing.note);
@@ -3578,6 +3612,41 @@ exit 2
         assert!(kimi_k3.meta.contains("k3"));
         assert!(kimi_k3.meta.contains("1048576"));
         assert!(kimi_k3.meta.contains("low/high/max"));
+        assert_eq!((kimi_k3.vendor.as_str(), kimi_k3.billing_source.as_str()), ("Moonshot", AGENT_NAME_KIMI));
+
+        let routed = parse_kimi_config(
+            r#"
+[providers."managed:kimi-code"]
+type = "kimi"
+[providers.opencode-go]
+type = "openai"
+[models."kimi-code/k3"]
+provider = "managed:kimi-code"
+model = "k3"
+[models."opencode-go/claude-haiku-5-5"]
+provider = "opencode-go"
+model = "claude-haiku-5-5"
+[models."opencode-go/kimi-k3"]
+provider = "opencode-go"
+model = "kimi-k3"
+[models."opencode-go/mystery"]
+provider = "opencode-go"
+model = "mystery"
+[models.legacy]
+model = "kimi-for-coding"
+"#,
+            "读:fixture",
+        )
+        .expect("kimi routed");
+        let vendor_of = |id: &str| {
+            let model = routed.iter().find(|model| model.id == id).expect(id);
+            (model.vendor.clone(), model.billing_source.clone())
+        };
+        assert_eq!(vendor_of("kimi-code/k3"), ("Moonshot".to_string(), AGENT_NAME_KIMI.to_string()));
+        assert_eq!(vendor_of("legacy"), ("Moonshot".to_string(), AGENT_NAME_KIMI.to_string()));
+        assert_eq!(vendor_of("opencode-go/claude-haiku-5-5"), ("Anthropic".to_string(), "opencode-go".to_string()));
+        assert_eq!(vendor_of("opencode-go/kimi-k3"), ("Moonshot".to_string(), "opencode-go".to_string()));
+        assert_eq!(vendor_of("opencode-go/mystery"), (VENDOR_UNKNOWN.to_string(), "opencode-go".to_string()));
 
         let pi = parse_pi_sources(
             include_str!("../fixtures/resources/pi_models_store.json"),
@@ -3850,7 +3919,7 @@ exit 2
         assert_eq!(old.meta, "新元数据");
         assert_eq!(old.smoke_failure, "旧失败；摘要保留完整");
         assert_eq!(old.status, STATUS_CONNECTED);
-        assert_eq!(old.vendor, "用户厂商");
+        assert_eq!(old.vendor, "OpenAI", "事实源推得出厂商时纠正库里的旧值");
         assert_eq!(old.billing_source, "新源");
         assert_eq!(old.fallback_order, ["pi/zai/glm-4.7"]);
         assert!(old.quota_exhausted_until.is_some());
