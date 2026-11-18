@@ -104,32 +104,33 @@ codex / kimi / pi 的等价开关尚未逐个测出（pi 模板里的 `--no-cont
 
 ## Codex 三档
 
+型号每隔几个月换一代，这里只写家族，具体 slug 运行时从 `~/.codex/models_cache.json` 取：每个家族选 `visibility` 为 `list`、`priority` 数字最小的那个（缓存按 priority 排，越小越新）。家族按官方描述定档（2026-11-18 缓存）：`astra`「most capable」= 高，`sol`「go-to for everyday work」与 `terra`「efficient / balanced」= 中，`luna`「fast and affordable」= 低；描述里带 `Previous generation` / `Legacy` 的是旧代，不选。
+
 ```bash
-# 低档：快速琐事（gpt-5.6-luna = fast and affordable）
-codex exec -m gpt-5.6-luna -c model_reasoning_effort="low" -s read-only \
+# 取每个家族最新的 slug
+python -c "import json,os;ms=json.load(open(os.path.expanduser('~/.codex/models_cache.json')))['models'];[print(m['priority'],m['slug'],'|',m['description']) for m in ms if m.get('visibility')=='list']"
+# 低档：快速琐事
+codex exec -m <最新 luna> -c model_reasoning_effort="low" -s read-only \
   --skip-git-repo-check "[任务]"
-# 中档：常规第二意见（gpt-5.6-terra = balanced everyday）
-codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" -s read-only \
+# 中档：常规第二意见
+codex exec -m <最新 sol> -c model_reasoning_effort="medium" -s read-only \
   --skip-git-repo-check "[任务]"
-# 高档：深度分析/关键审查（gpt-5.6-sol = latest frontier，effort 支持到 max/ultra）
-codex exec -m gpt-5.6-sol -c model_reasoning_effort="xhigh" -s read-only \
-  --skip-git-repo-check "[任务]"
-# 代码特化档（可选，ultra-fast）
-codex exec -m gpt-5.3-codex-spark -c model_reasoning_effort="high" -s read-only \
+# 高档：深度分析/关键审查（effort 支持到 max/ultra）
+codex exec -m <最新 astra> -c model_reasoning_effort="xhigh" -s read-only \
   --skip-git-repo-check "[任务]"
 # 长文本走 stdin（会作为 <stdin> 块附加到 prompt 后）
-cat file.txt | codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" -s read-only \
-  --skip-git-repo-check "总结要点"```
+cat file.txt | codex exec -m <最新 sol> -c model_reasoning_effort="medium" -s read-only \
+  --skip-git-repo-check "总结要点"
+```
 
 - **stderr 别丢弃**：模板已不再接 `2>/dev/null`——codex 的 `tokens used` 与错误信息都走 stderr，丢弃它与"检查错误体/报告用量"的规则冲突。留痕时 stdout/stderr 都落盘；程序化消费用 `--json` 解析，别靠丢弃 stderr 换干净输出。
-- **档位映射（2026-07-17 冒烟 5/5 全 OK）**：gpt-5.6 代三档 luna(低)/terra(中)/sol(高)按官方描述定档；上一代 `gpt-5.4-mini`/`gpt-5.4`/`gpt-5.5`/`gpt-5.3-codex-spark` 仍在售仍可用（用量日志漂移预警 → 冒烟确认的完整闭环首例）。
 - **本地事实源：`~/.codex/models_cache.json`**——CLI 自己缓存的官方模型清单（slug/描述/默认与可用 effort/priority/`fetched_at`）。此前"codex 不支持枚举、用静态表"的说法**作废**：接入与刷新读这个文件，别手抄本文件里的 ID。
 - **Codex 支持 stdin 管道**（实测 2026-07-08：`echo "1,2,3" | codex exec ... "求和"` → 正确返回）。`--help` 明载：stdin 被 pipe 时作为 `<stdin>` 块附加；prompt 用 `-` 亦可全部从 stdin 读。
 - **⚠️ 后台/无 TTY 运行必须给 stdin EOF**（2026-07-17 实测）：正因为上一条，`codex exec` 见到非 TTY 的 stdin 会**一直等它关闭**；后台任务的 stdin 是永不关闭的管道 → 永久挂起（实测 4 连发挂 25 分钟零输出零报错）。前台交互（stdin=TTY）无此问题。脚本/后台里写法：PowerShell `'' | codex exec …`，POSIX `codex exec … < /dev/null`。
 - **续聊：`codex exec … resume <thread_id> -`，选项必须放在 `resume` 之前**（codex-cli 0.149.1，2026-08-30 两轮口令实测 PASS）。首轮用 `--json`，从 `thread.started` 事件取 `thread_id`；续轮写成 `codex exec -s read-only --json --skip-git-repo-check resume <thread_id> -`，prompt 从 stdin 进。`-s`/`--json`/`--skip-git-repo-check` 是 `exec` 的选项，`resume` 子命令只认 `-c`；写在 `resume` 后面报 `unexpected argument '-s'`、exit 2。`--last` 取最近一次会话，`exec fork <id>` 分叉。每轮仍付一次冷启动足迹。
 - 推理强度旋钮：`-c model_reasoning_effort="low|medium|high|xhigh"`。
 - 不要用 `--full-auto`：当前 `codex exec --help` 已不列出该参数（虽仍被接受，属未文档化遗留别名，随时可能移除）。`-s read-only` 已够。
-- **`gpt-5.3-codex` 不存在**（实测 2026-07-08：ChatGPT 账号报 `The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account`）。ChatGPT 订阅可用型号实测为：`gpt-5.4-mini` / `gpt-5.4` / `gpt-5.5` / `gpt-5.3-codex-spark`。**这是"未冒烟就别假设可用"的活教材**——该型号曾被本文件当作高档默认，直到实测才发现全线不可用。
+- **`gpt-5.3-codex` 不存在**（实测 2026-07-08：ChatGPT 账号报 `The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account`）。**这是"未冒烟就别假设可用"的活教材**——该型号曾被本文件当作高档默认，直到实测才发现全线不可用。
 
 ## Kimi Code CLI（kimi，外部 agent CLI）
 
