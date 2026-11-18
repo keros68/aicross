@@ -168,15 +168,13 @@ pub struct ResourceModel {
     pub login_checked_at: String,
     /// 别名对应的真实模型 ID（TASK-09b）。`id` 是派发时写进命令行的那个词，
     /// claude 的 `fable` / `opus` / `sonnet` / `haiku` 都是别名，界面上只有别名
-    /// 看不出跑的是哪个模型。非别名模型这里等于 `id`；冒烟/派发核对到真身后
-    /// 由 `apply_smoke_outcome` 覆盖成实测值。旧库缺这个字段，`ensure_resolved_id`
-    /// 按 `CLAUDE_ALIAS_IDS` 补上。
+    /// 看不出跑的是哪个模型。非别名模型这里等于 `id`；别名的取值来源见
+    /// `ClaudeAliasMap`，冒烟核对到真身后由 `apply_smoke_outcome` 覆盖成实测值。
     #[serde(default)]
     pub resolved_id: String,
-    /// `resolved_id` 是哪来的（修正轮 R1）：`alias-table` = 本地静态别名表算出来的，
-    /// `identity` = 冒烟 / 首次派发核对到的真身。旧库缺这个字段，空值按
-    /// `alias-table` 处理。作用是让别名表的修正能传播到旧库：静态值可以被新表
-    /// 覆盖，实测真身不行——没有这个字段就分不清库里那一串是算的还是量的。
+    /// `resolved_id` 是哪来的（修正轮 R1）：`alias-table` = 本地算出来的，
+    /// `identity` = 冒烟核对到的真身。旧库缺这个字段，空值按 `alias-table` 处理。
+    /// 算出来的值每次读库重算；实测真身只让位给别名的权威来源。
     #[serde(default)]
     pub resolved_source: String,
     #[serde(default)]
@@ -431,31 +429,164 @@ fn inferred_verification(agent: &str, status: &str) -> &'static str {
 ///
 /// 除这条不变式外不改已有值：用户手动重验过的 verified / failed 不被覆盖。
 /// `model.agent` 可能还没回填（`ensure_agents` 才做），用 agent.id 兜底。
-/// claude 别名 → 真实模型 ID（TASK-09b）。claude 的事实源是 `--help` 里的别名
-/// 举例，拿不到完整 ID，这张表是唯一的本地事实源；写表日期见
-/// `CLAUDE_STATIC_TABLE_DATE`，过期由冒烟/派发核对真身后覆盖。
 /// `ResourceModel::resolved_source` 的两个取值。空串等同前者。
+/// `alias-table` = 本地算出来的（环境变量、Claude Code 模型目录或兜底表），每次读库都重算；
+/// `identity` = 冒烟核对到的真身。
 pub const RESOLVED_SOURCE_ALIAS_TABLE: &str = "alias-table";
 pub const RESOLVED_SOURCE_IDENTITY: &str = "identity";
 
+/// claude 别名 → 真实模型 ID 的兜底表（TASK-09b）。只在环境变量与 Claude Code
+/// 模型目录都拿不到时用；写表日期见 `CLAUDE_STATIC_TABLE_DATE`。
 const CLAUDE_ALIAS_IDS: [(&str, &str); 4] = [
-    ("fable", "claude-fable-5-1"),
-    ("opus", "claude-opus-5"),
-    ("sonnet", "claude-sonnet-5"),
-    ("haiku", "claude-haiku-4-5-20251001"),
+    ("fable", "claude-fable-5-2"),
+    ("opus", "claude-opus-5-5"),
+    ("sonnet", "claude-sonnet-5-5"),
+    ("haiku", "claude-haiku-5-5"),
 ];
 
-/// 别名的真身。只有 claude 有别名；其余 agent 的 `id` 本身就是真实 ID。
-fn resolved_id_for(agent: &str, id: &str) -> String {
-    if agent.trim().eq_ignore_ascii_case("claude") {
-        if let Some((_, real)) = CLAUDE_ALIAS_IDS
+/// claude 别名的真身，按优先级取：
+/// 1. `ANTHROPIC_DEFAULT_<别名>_MODEL`（`~/.claude/settings.json` 的 env 优先，其次进程环境）：
+///    用户显式改了别名指向，Claude Code 照它解析；
+/// 2. Claude Code 缓存的模型目录 `~/.claude/cache/model-catalog/*.json` 里
+///    `provider_alias_targets.<别名>.default`：CLI 运行时从官方拉取，别名升级后跟着变；
+/// 3. `CLAUDE_ALIAS_IDS`。
+///
+/// 前两项算「权威」：权威值覆盖库里冒烟记下的旧真身——别名会升级，按旧真身锁死
+/// 就永远停在旧型号。第三方端点下目录里的官方默认值不一定对，此时目录值不算权威。
+#[derive(Clone, Debug, Default)]
+struct ClaudeAliasMap {
+    env: HashMap<String, String>,
+    catalog: HashMap<String, String>,
+}
+
+impl ClaudeAliasMap {
+    #[cfg(not(test))]
+    fn load() -> Self {
+        let settings = home_file(&[".claude", "settings.json"])
+            .ok()
+            .and_then(|path| fs::read_to_string(path).ok());
+        let mut env = HashMap::new();
+        for (alias, _) in CLAUDE_ALIAS_IDS {
+            let key = claude_alias_env_key(alias);
+            let value = settings
+                .as_deref()
+                .and_then(|contents| claude_settings_env(contents, &key))
+                .or_else(|| std::env::var(&key).ok())
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty());
+            if let Some(value) = value {
+                env.insert(alias.to_string(), value);
+            }
+        }
+        let catalog = home_file(&[".claude", "cache", "model-catalog"])
+            .ok()
+            .map(|dir| claude_alias_targets_in(&dir))
+            .unwrap_or_default();
+        Self { env, catalog }
+    }
+
+    #[cfg(test)]
+    fn load() -> Self {
+        CLAUDE_ALIAS_STUB.with(|cell| cell.borrow().clone())
+    }
+
+    /// `(真身, 是否权威)`；不是已知别名返回 None。
+    fn lookup(&self, alias: &str) -> Option<(String, bool)> {
+        let alias = alias.trim().to_ascii_lowercase();
+        if let Some(value) = self.env.get(&alias) {
+            return Some((value.clone(), true));
+        }
+        if let Some(value) = self.catalog.get(&alias) {
+            return Some((value.clone(), !claude_third_party_endpoint()));
+        }
+        CLAUDE_ALIAS_IDS
             .iter()
-            .find(|(alias, _)| alias.eq_ignore_ascii_case(id.trim()))
-        {
-            return (*real).to_string();
+            .find(|(known, _)| *known == alias)
+            .map(|(_, real)| ((*real).to_string(), false))
+    }
+
+    /// 模型目录里出现、但 `--help` 没举例的别名（如 haiku），探测时补进预设。
+    fn catalog_aliases(&self) -> Vec<String> {
+        let mut aliases: Vec<String> = self.catalog.keys().cloned().collect();
+        aliases.sort();
+        aliases
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// 测试里的别名来源：默认空，即只用兜底表，不读开发机的 ~/.claude。
+    static CLAUDE_ALIAS_STUB: std::cell::RefCell<ClaudeAliasMap> =
+        std::cell::RefCell::new(ClaudeAliasMap::default());
+}
+
+#[cfg(test)]
+fn set_claude_alias_stub(map: ClaudeAliasMap) {
+    CLAUDE_ALIAS_STUB.with(|cell| *cell.borrow_mut() = map);
+}
+
+fn claude_alias_env_key(alias: &str) -> String {
+    format!("ANTHROPIC_DEFAULT_{}_MODEL", alias.to_ascii_uppercase())
+}
+
+fn claude_settings_env(contents: &str, key: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(contents).ok()?;
+    value.get("env")?.get(key)?.as_str().map(str::to_string)
+}
+
+/// 目录下可能有多份（按账号分文件），取 `fetchedAt` 最新的一份。
+#[cfg_attr(test, allow(dead_code))]
+fn claude_alias_targets_in(dir: &Path) -> HashMap<String, String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return HashMap::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+        .filter_map(|contents| parse_claude_model_catalog(&contents))
+        .max_by_key(|(fetched_at, _)| *fetched_at)
+        .map(|(_, targets)| targets)
+        .unwrap_or_default()
+}
+
+/// 解析 Claude Code 模型目录缓存，返回 `(fetchedAt, 别名 → 默认真身)`。
+/// 格式不认识就返回 None，调用方退回兜底表。
+fn parse_claude_model_catalog(contents: &str) -> Option<(u64, HashMap<String, String>)> {
+    let value: Value = serde_json::from_str(contents).ok()?;
+    let fetched_at = value.get("fetchedAt").and_then(Value::as_u64).unwrap_or(0);
+    let targets = value
+        .get("catalog")?
+        .get("config")?
+        .get("provider_alias_targets")?
+        .as_object()?;
+    let map: HashMap<String, String> = targets
+        .iter()
+        .filter_map(|(alias, target)| {
+            let id = target.get("default")?.as_str()?.trim();
+            let alias = alias.trim().to_ascii_lowercase();
+            let is_alias = !alias.is_empty() && alias.chars().all(|c| c.is_ascii_lowercase());
+            (is_alias && !id.is_empty()).then(|| (alias, id.to_string()))
+        })
+        .collect();
+    (!map.is_empty()).then_some((fetched_at, map))
+}
+
+/// 别名的真身与是否权威。只有 claude 有别名；其余 agent 的 `id` 本身就是真实 ID。
+fn resolve_alias_with(map: &ClaudeAliasMap, agent: &str, id: &str) -> (String, bool) {
+    if agent.trim().eq_ignore_ascii_case("claude") {
+        if let Some(found) = map.lookup(id) {
+            return found;
         }
     }
-    id.to_string()
+    (id.to_string(), false)
+}
+
+fn resolved_id_for(agent: &str, id: &str) -> String {
+    if !agent.trim().eq_ignore_ascii_case("claude") {
+        return id.to_string();
+    }
+    resolve_alias_with(&ClaudeAliasMap::load(), agent, id).0
 }
 
 /// 冒烟/派发核对到的真身 → `resolved_id`。pi 的真身带 provider 前缀
@@ -546,23 +677,24 @@ fn rejudge_stored_smoke_failures(store: &mut ResourceStore) {
 }
 
 /// 补齐 / 校正 `resolved_id`（修正轮 R1）：
-/// - `resolved_source == identity`（冒烟核对到的真身）一律不动；
-/// - 其余（空字段的旧库、静态表算出来的值）按当前别名表重算，
-///   于是下一版修正别名表时旧库跟着更新——原来「非空就不覆盖」把静态值
-///   也一并保护起来，修了表也传播不下去（DS 7）。
+/// - 冒烟核对到的真身（`identity`）保留，除非别名有权威来源（见 `ClaudeAliasMap`）；
+/// - 其余（空字段的旧库、本地算出来的值）每次按当前来源重算，别名升级或兜底表
+///   修正后旧库跟着更新。
 fn ensure_resolved_id(store: &mut ResourceStore) {
+    let aliases = ClaudeAliasMap::load();
     for agent in &mut store.agents {
         let owner = agent.id.clone();
         for model in &mut agent.models {
-            if model.resolved_source.trim() == RESOLVED_SOURCE_IDENTITY {
-                continue;
-            }
             let agent_id = if model.agent.trim().is_empty() {
                 owner.clone()
             } else {
                 model.agent.clone()
             };
-            model.resolved_id = resolved_id_for(&agent_id, &model.id);
+            let (resolved, authoritative) = resolve_alias_with(&aliases, &agent_id, &model.id);
+            if model.resolved_source.trim() == RESOLVED_SOURCE_IDENTITY && !authoritative {
+                continue;
+            }
+            model.resolved_id = resolved;
             model.resolved_source = RESOLVED_SOURCE_ALIAS_TABLE.to_string();
         }
     }
@@ -1645,11 +1777,11 @@ fn parse_pi_list_models(listed: &str) -> Vec<(String, String)> {
 /// 别名举例。抓不到时的兜底表（写表日期见 CLAUDE_STATIC_TABLE_DATE）。
 /// `haiku` 一直不在 `--help` 的举例里但确实可用，所以无论走哪条路都补上。
 const CLAUDE_FALLBACK_ALIASES: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
-const CLAUDE_STATIC_TABLE_DATE: &str = "2026-09-14";
+const CLAUDE_STATIC_TABLE_DATE: &str = "2026-11-18";
 
 fn claude_presets(binary: Option<&PathBuf>) -> Vec<ResourceModel> {
     let (aliases, source) = claude_aliases(binary);
-    aliases
+    with_catalog_aliases(aliases, &ClaudeAliasMap::load())
         .into_iter()
         .map(|id| {
             detected_model(
@@ -1691,6 +1823,16 @@ fn claude_aliases(binary: Option<&PathBuf>) -> (Vec<String>, String) {
         CLAUDE_FALLBACK_ALIASES.iter().map(|a| a.to_string()).collect(),
         source_value("静态别名表", CLAUDE_STATIC_TABLE_DATE),
     )
+}
+
+/// `--help` 只举例部分别名；Claude Code 模型目录里有的别名一并补上。
+fn with_catalog_aliases(mut aliases: Vec<String>, map: &ClaudeAliasMap) -> Vec<String> {
+    for alias in map.catalog_aliases() {
+        if !aliases.contains(&alias) {
+            aliases.push(alias);
+        }
+    }
+    aliases
 }
 
 /// 返回 (别名表, 是否真从 --help 抓到)。抓不到就是静态表原样。
@@ -1917,9 +2059,8 @@ fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: 
             model.smoked_at.clone_from(&existing.smoked_at);
             model.smoke_model.clone_from(&existing.smoke_model);
             model.smoke_failure.clone_from(&existing.smoke_failure);
-            // 冒烟核对到的真身比别名静态表可信：重新探测不许把它退回静态值。
-            // 判据是来源而不是「非空」——静态值也非空，按非空保护会让别名表的
-            // 修正传播不到旧库（修正轮 R1，DS 7）。
+            // 冒烟核对到的真身先原样带过来；要不要让位给别名的权威来源，
+            // 统一由 `ensure_resolved_id` 判（修正轮 R1，DS 7）。
             if existing.resolved_source.trim() == RESOLVED_SOURCE_IDENTITY {
                 model.resolved_id.clone_from(&existing.resolved_id);
                 model.resolved_source.clone_from(&existing.resolved_source);
@@ -1962,6 +2103,7 @@ fn merge_detected_models(store: &mut ResourceStore, agent_id: &str, discovered: 
     agent.models.sort_by(|left, right| {
         (&left.provider, order(left), &left.id).cmp(&(&right.provider, order(right), &right.id))
     });
+    ensure_resolved_id(store);
 }
 
 fn append_note_marker(note: &str, marker: &str) -> String {
@@ -4373,15 +4515,96 @@ model = "kimi-for-coding"
     /// 四个 claude 别名按已知表落 `resolved_id`；非别名模型 `resolved_id == id`；
     /// 同名词出现在别的 agent 下（pi 的 provider 里也可能有叫 `opus` 的）不映射。
     #[test]
+    fn claude_model_catalog_parses_alias_targets_and_prefers_latest_file() {
+        let catalog = |fetched: u64, opus: &str| {
+            format!(
+                r#"{{"version":2,"fetchedAt":{fetched},"catalog":{{"config":{{"models":[],
+                "provider_alias_targets":{{"opus":{{"default":"{opus}","per_provider":{{"gateway":"claude-opus-4-7"}}}},
+                "haiku":{{"default":"claude-haiku-5-5"}},"Bad-Key":{{"default":"x"}},"sonnet":{{}}}}}}}}}}"#
+            )
+        };
+        let (fetched, map) = parse_claude_model_catalog(&catalog(5, "claude-opus-5-5")).unwrap();
+        assert_eq!(fetched, 5);
+        assert_eq!(map.get("opus").map(String::as_str), Some("claude-opus-5-5"));
+        assert_eq!(map.get("haiku").map(String::as_str), Some("claude-haiku-5-5"));
+        assert_eq!(map.len(), 2, "带大写/连字符的键和缺 default 的条目都不收：{map:?}");
+        assert!(parse_claude_model_catalog("{}").is_none());
+        assert!(parse_claude_model_catalog("not json").is_none());
+
+        let dir = crate::paths::test_temp_dir().join(format!("claude-catalog-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("old.json"), catalog(1, "claude-opus-5")).unwrap();
+        fs::write(dir.join("new.json"), catalog(9, "claude-opus-6")).unwrap();
+        fs::write(dir.join("broken.json"), "{").unwrap();
+        fs::write(dir.join("note.txt"), catalog(99, "ignored")).unwrap();
+        let targets = claude_alias_targets_in(&dir);
+        assert_eq!(targets.get("opus").map(String::as_str), Some("claude-opus-6"));
+        assert!(claude_alias_targets_in(&dir.join("missing")).is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn claude_alias_sources_follow_priority_and_override_stale_identity() {
+        let map = ClaudeAliasMap {
+            env: HashMap::from([("sonnet".to_string(), "my-sonnet".to_string())]),
+            catalog: HashMap::from([
+                ("opus".to_string(), "claude-opus-9".to_string()),
+                ("sonnet".to_string(), "claude-sonnet-9".to_string()),
+                ("nova".to_string(), "claude-nova-1".to_string()),
+            ]),
+        };
+        set_claude_third_party(false);
+        assert_eq!(resolve_alias_with(&map, "claude", "sonnet"), ("my-sonnet".to_string(), true));
+        assert_eq!(resolve_alias_with(&map, "claude", " OPUS "), ("claude-opus-9".to_string(), true));
+        assert_eq!(resolve_alias_with(&map, "claude", "haiku"), ("claude-haiku-5-5".to_string(), false));
+        assert_eq!(resolve_alias_with(&map, "claude", "claude-opus-5"), ("claude-opus-5".to_string(), false));
+        assert_eq!(resolve_alias_with(&map, "pi", "opus"), ("opus".to_string(), false));
+        assert_eq!(
+            with_catalog_aliases(vec!["fable".into(), "opus".into()], &map),
+            ["fable", "opus", "nova", "sonnet"]
+        );
+
+        let model = |id: &str, resolved: &str| {
+            let mut model = detected_model(id, "claude", "", "Anthropic", "官方订阅", "未知", "", "");
+            model.resolved_id = resolved.to_string();
+            model.resolved_source = RESOLVED_SOURCE_IDENTITY.to_string();
+            model
+        };
+        let mut store = ResourceStore {
+            version: 1,
+            agents: vec![ResourceAgent {
+                id: "claude".into(),
+                models: vec![model("opus", "claude-opus-5"), model("haiku", "claude-haiku-4-5")],
+                ..ResourceAgent::default()
+            }],
+            ..ResourceStore::default()
+        };
+        set_claude_alias_stub(map.clone());
+        ensure_resolved_id(&mut store);
+        let models = &store.agents[0].models;
+        assert_eq!(models[0].resolved_id, "claude-opus-9", "官方端点下模型目录覆盖旧真身");
+        assert_eq!(models[0].resolved_source, RESOLVED_SOURCE_ALIAS_TABLE);
+        assert_eq!(models[1].resolved_id, "claude-haiku-4-5", "只有兜底表时保留实测真身");
+
+        // 第三方端点：模型目录里是官方默认值，不压过实测真身
+        set_claude_third_party(true);
+        store.agents[0].models = vec![model("opus", "glm-5")];
+        ensure_resolved_id(&mut store);
+        assert_eq!(store.agents[0].models[0].resolved_id, "glm-5");
+        set_claude_third_party(false);
+        set_claude_alias_stub(ClaudeAliasMap::default());
+    }
+
+    #[test]
     fn task09b_claude_aliases_resolve_to_known_model_ids() {
-        assert_eq!(resolved_id_for("claude", "fable"), "claude-fable-5-1");
-        assert_eq!(resolved_id_for("claude", "opus"), "claude-opus-5");
-        assert_eq!(resolved_id_for("claude", "sonnet"), "claude-sonnet-5");
-        assert_eq!(resolved_id_for("claude", "haiku"), "claude-haiku-4-5-20251001");
+        assert_eq!(resolved_id_for("claude", "fable"), "claude-fable-5-2");
+        assert_eq!(resolved_id_for("claude", "opus"), "claude-opus-5-5");
+        assert_eq!(resolved_id_for("claude", "sonnet"), "claude-sonnet-5-5");
+        assert_eq!(resolved_id_for("claude", "haiku"), "claude-haiku-5-5");
         // 大小写与空白不敏感（手工添加的 agent 会写成 `Claude`）
-        assert_eq!(resolved_id_for("Claude", " Sonnet "), "claude-sonnet-5");
+        assert_eq!(resolved_id_for("Claude", " Sonnet "), "claude-sonnet-5-5");
         // 非别名：claude 下的完整 ID 与别家的模型都原样返回
-        assert_eq!(resolved_id_for("claude", "claude-opus-5"), "claude-opus-5");
+        assert_eq!(resolved_id_for("claude", "claude-opus-5-5"), "claude-opus-5-5");
         assert_eq!(resolved_id_for("pi", "opus"), "opus");
         assert_eq!(resolved_id_for("codex", "gpt-5.1-codex"), "gpt-5.1-codex");
     }
@@ -4411,11 +4634,11 @@ model = "kimi-for-coding"
             find_model(&store, agent, provider, id).expect(id).clone()
         };
         let fable = model("claude", "", "fable");
-        assert_eq!(fable.resolved_id, "claude-fable-5-1");
+        assert_eq!(fable.resolved_id, "claude-fable-5-2");
         assert_eq!(fable.resolved_source, RESOLVED_SOURCE_ALIAS_TABLE);
         // 没有来源标记的旧值算静态值：按当前别名表重算，修表能传播到旧库
         let opus = model("claude", "", "opus");
-        assert_eq!(opus.resolved_id, "claude-opus-5");
+        assert_eq!(opus.resolved_id, "claude-opus-5-5");
         assert_eq!(opus.resolved_source, RESOLVED_SOURCE_ALIAS_TABLE);
         // 标了 identity 的实测真身一个字节不动
         let sonnet = model("claude", "", "sonnet");
@@ -4431,7 +4654,7 @@ model = "kimi-for-coding"
     #[test]
     fn task09b_smoke_success_overwrites_resolved_id_with_identity() {
         let mut claude = detected_model("fable", "claude", "", "Anthropic", "官方订阅", "未知", "读:fixture", "");
-        assert_eq!(claude.resolved_id, "claude-fable-5-1");
+        assert_eq!(claude.resolved_id, "claude-fable-5-2");
         claude.verification = VERIFICATION_UNVERIFIED.to_string();
         let mut store = ResourceStore {
             extra_hosts: Vec::new(),
@@ -4535,7 +4758,7 @@ model = "kimi-for-coding"
         ensure_resolved_id(&mut store);
 
         let opus = find_model(&store, "claude", "", "opus").unwrap();
-        assert_eq!(opus.resolved_id, "claude-opus-5", "静态值该被当前别名表覆盖");
+        assert_eq!(opus.resolved_id, "claude-opus-5-5", "静态值该被当前别名表覆盖");
         let sonnet = find_model(&store, "claude", "", "sonnet").unwrap();
         assert_eq!(
             sonnet.resolved_id, "claude-sonnet-5-20260901",

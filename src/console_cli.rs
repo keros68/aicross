@@ -4134,7 +4134,7 @@ mod tests {
         assert_eq!(quota["state"], "额度用尽");
         assert_eq!(quota["note"], "额度恢复时间：2099-01-01T00:00:00+08:00");
         assert_eq!(model_state_in(&stdout, "claude", "", "sonnet")["state"], "可用");
-        assert_eq!(model_state_in(&stdout, "claude", "", "sonnet")["resolved_id"], "claude-sonnet-5");
+        assert_eq!(model_state_in(&stdout, "claude", "", "sonnet")["resolved_id"], "claude-sonnet-5-5");
         // 只读：不探测、不写盘
         assert!(!stderr.contains("探测"), "{stderr}");
         let _ = fs::remove_dir_all(root);
