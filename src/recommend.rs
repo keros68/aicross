@@ -333,7 +333,9 @@ fn seat_rule_violation_for(
     {
         return Some("Antigravity -high/-xhigh 模型不用于验收/验证推荐".to_string());
     }
-    if normalized_vendor(vendor) == resources::VENDOR_UNKNOWN && role != "执行" {
+    // 「其他」（pi 等事实源认不出时的旧写法）与空厂商同样算未知：放进审查位
+    // 既核对不了是不是另一家，又不参与同阶段厂商去重，会让同一家占满整个阶段。
+    if !participates_in_vendor_rules(&normalized_vendor(vendor)) && role != "执行" {
         return Some("厂商未知，只当执行位".to_string());
     }
     None
@@ -1643,6 +1645,13 @@ mod tests {
         assert_eq!(table.tier_of("claude", "", "claude-sonnet-4-5"), "中");
         assert_eq!(table.tier_of("claude", "", "claude-haiku-4-5"), "低");
         assert_eq!(table.tier_of("claude", "", "fable"), "高");
+        assert_eq!(table.tier_of("codex", "", "gpt-6.2-astra"), "高");
+        assert_eq!(table.tier_of("codex", "", "gpt-6.2-sol"), "中");
+        assert_eq!(table.tier_of("codex", "", "gpt-6-luna"), "低");
+        assert_eq!(table.tier_of("pi", "zai-coding-cn", "glm-5.3"), "中");
+        assert_eq!(table.tier_of("pi", "opencode-go", "deepseek-v4.1-flash"), "低");
+        assert_eq!(table.tier_of("pi", "opencode-go", "claude-haiku-5-5"), "低");
+        assert_eq!(table.tier_of("pi", "xai", "grok-4.7"), "中");
         assert_eq!(table.billing_of("claude", "", "claude-opus-4-5"), "订阅");
         // 表里没有 → 未知。
         assert_eq!(table.tier_of("pi", "unknown-provider", "x-model"), "未知");
@@ -1700,8 +1709,9 @@ mod tests {
     }
 
     /// 「其他」与空厂商不参与同阶段去重与主 agent 避让（fix-50-r2）：手选
-    /// 审查者厂商是「其他」时，其余位置照常能从池里选人（包括另一个认不
-    /// 出厂商的模型），同阶段也不重复选同一个模型。
+    /// 审查者厂商是「其他」时，其余位置照常能从池里选人。认不出厂商的模型
+    /// 与「未知」同样不进审查位（TASK-61），所以另一个「其他」的 model-b
+    /// 不入选，第 3 路留空。
     #[test]
     fn task50_recommend_unrecognized_vendors_do_not_block_reviewers() {
         let store = ResourceStore {
@@ -1755,16 +1765,11 @@ mod tests {
             false,
         );
         let seats = &pick_of(&picks, "builtin-blind").seats;
-        // 第 1 路手选不动；第 2 路取智谱（订阅优先），第 3 路取另一个
-        // 「其他」厂商的 model-b（认不出的厂商不挡人也不被挡；同阶段的
-        // model-a 已被手选占位，不重复选）。
+        // 第 1 路手选不动，也不挡第 2 路取智谱；第 3 路没有可选的已知厂商。
         assert_eq!(seat_desc(seats[0][0].as_ref().unwrap()), "pi/router/model-a");
         assert_eq!(seat_desc(seats[0][1].as_ref().unwrap()), "pi/zai/glm-4.7");
-        assert_eq!(seat_desc(seats[0][2].as_ref().unwrap()), "pi/relay/model-b");
-        assert!(
-            !notes.iter().any(|note| note.contains("第 1 阶段")),
-            "三个位置都该有入选或保留的人选：{notes:?}"
-        );
+        assert!(seats[0][2].is_none(), "{:?}", seats[0]);
+        assert!(notes.iter().any(|note| note.contains("第 3 个位置")), "{notes:?}");
     }
 
     /// 维持角色默认后的同阶段冲突在写盘前补一次检查（fix-50-r2）：角色
@@ -2234,6 +2239,11 @@ mod tests {
         assert_eq!(table.tier_of("agy", "", "gemini-4-carbon-medium"), "中");
         assert_eq!(table.tier_of("agy", "", "gemini-4-carbon-low"), "低");
         assert_eq!(table.tier_of("agy", "", "gemini-4-carbon"), "中");
+        assert_eq!(table.tier_of("agy", "", "gemini-4-hydrogen-xhigh"), "高");
+        assert_eq!(table.tier_of("agy", "", "gemini-4-argon-low"), "低");
+        assert_eq!(table.tier_of("agy", "", "gemini-3.8-flash-high"), "低");
+        assert_eq!(table.tier_of("agy", "", "claude-opus-5-5-medium"), "中");
+        assert_eq!(table.tier_of("agy", "", "gemini-pro-orchestrator"), "中");
 
         let store = ResourceStore {
             extra_hosts: Vec::new(),
