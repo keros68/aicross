@@ -1,6 +1,7 @@
 // server.rs — 窗口：启动、窗口按钮，以及各页调用的命令。命令的实现体在
 // console_cli 与 run_view，与命令行共用。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -354,6 +355,7 @@ async fn dispatch_settings() -> Result<serde_json::Value, String> {
                     "dispatch": dispatch,
                     "path": root.join("dispatch-settings.json").to_string_lossy(),
                     "acp": acp,
+                    "acpInstalling": ACP_INSTALLING.load(Ordering::SeqCst),
                 })
             })
             .map_err(|error| format!("生成派发设置失败：{error}"))
@@ -363,19 +365,33 @@ async fn dispatch_settings() -> Result<serde_json::Value, String> {
 }
 
 /// 保存派发设置（TASK-89，`aicross config set` 同一实现体）：patch 是键值对
-/// 象，键与 dispatch-settings.json 字段同名。开启 ACP 时适配器安装放阻塞
-/// 线程跑（要拉 npm）；设置已写入、仅适配器装不上时仍算成功，说明带回前端
-/// 显示，不回滚设置。
+/// 象，键与 dispatch-settings.json 字段同名。保存只写设置、查适配器状态，
+/// 立即返回；开启 ACP 且有适配器未安装时另起后台线程安装（首次要从 npm
+/// 下载约 600 MB），装完发 `acp-install-finished` 事件（acp / note）。装好
+/// 之前派发对这几家回退一次性 CLI。
 #[tauri::command]
-async fn dispatch_save(patch: serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value, String> {
+async fn dispatch_save(
+    app: tauri::AppHandle,
+    patch: serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
     let root = crate::paths::aicross_root()?;
     tauri::async_runtime::spawn_blocking(move || {
-        crate::console_cli::config_set_at(&root, patch, &crate::console_cli::AcpOps::production())
+        crate::console_cli::config_set_at(&root, patch, &crate::console_cli::AcpOps::status_only())
             .map_err(|(_, message)| message)
             .and_then(|outcome| {
+                let missing = outcome.acp.as_ref().is_some_and(|reports| {
+                    reports.iter().any(|report| report.state == crate::channels::acp_setup::AdapterState::Missing)
+                });
+                let installing = missing && start_acp_install(app);
+                let note = if installing {
+                    Some("ACP 适配器在后台安装，首次约下载 600 MB；装好前派发使用一次性 CLI。".to_string())
+                } else {
+                    outcome.note
+                };
                 let mut value = serde_json::json!({
                     "dispatch": &outcome.dispatch,
-                    "note": outcome.note,
+                    "note": note,
+                    "acpInstalling": installing || ACP_INSTALLING.load(Ordering::SeqCst),
                 });
                 if let Some(reports) = &outcome.acp {
                     value["acp"] = serde_json::to_value(reports)
@@ -386,6 +402,25 @@ async fn dispatch_save(patch: serde_json::Map<String, serde_json::Value>) -> Res
     })
     .await
     .map_err(|error| format!("保存派发设置任务失败：{error}"))?
+}
+
+/// 窗口进程内同一时间只跑一个适配器安装；命令行 `aicross config set` 另起的
+/// 安装不在此列（两边同时装时由 npm 自身的锁兜底）。
+static ACP_INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// 起后台线程安装缺的适配器；已在安装时不重复起，仍返回 true。
+fn start_acp_install(app: tauri::AppHandle) -> bool {
+    if ACP_INSTALLING.swap(true, Ordering::SeqCst) {
+        return true;
+    }
+    std::thread::spawn(move || {
+        use tauri::Emitter;
+        let reports = crate::channels::acp_setup::install_missing_blocking();
+        ACP_INSTALLING.store(false, Ordering::SeqCst);
+        let (note, _) = crate::console_cli::acp_install_note(&reports);
+        let _ = app.emit("acp-install-finished", serde_json::json!({ "acp": reports, "note": note }));
+    });
+    true
 }
 
 /// 短命令清单（`aicross slash list` 同结构）。三个短命令都需要具体

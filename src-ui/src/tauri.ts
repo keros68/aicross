@@ -450,6 +450,8 @@ export interface DispatchSettingsView {
   /** 设置文件路径（含 AICROSS_HOME 覆盖时的位置）。 */
   path: string;
   acp: AcpAdapterReport[] | null;
+  /** 窗口正在后台安装 ACP 适配器。 */
+  acpInstalling?: boolean;
 }
 
 /** dispatch_save 的返回：写入后的设置，夹取或 ACP 安装的说明（正常为 null）。 */
@@ -457,6 +459,14 @@ export interface DispatchSaveResult {
   dispatch: DispatchSettings;
   note: string | null;
   acp?: AcpAdapterReport[];
+  /** 保存后适配器转到后台安装，装完发 `acp-install-finished` 事件。 */
+  acpInstalling?: boolean;
+}
+
+/** `acp-install-finished` 事件：后台安装结束后的适配器状态与说明。 */
+export interface AcpInstallFinished {
+  acp: AcpAdapterReport[];
+  note: string;
 }
 
 export interface ConfigShow {

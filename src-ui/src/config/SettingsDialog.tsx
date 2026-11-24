@@ -1,10 +1,11 @@
 // SettingsDialog.tsx — 顶栏「设置」打开的派发设置对话框（TASK-89）：读 dispatch_settings，
 // 一页改完并发上限、超时（按分钟）、修正轮、脱敏、验证命令与 ACP。改动收进草稿，
-// 点「保存」一次写入（dispatch_save，与 aicross config set 同一实现体；开启 ACP 时
-// 安装结果带回显示，设置已写入不回滚）。底部注明设置文件路径。
+// 点「保存」一次写入（dispatch_save，与 aicross config set 同一实现体）。开启 ACP 时
+// 缺的适配器在后台安装，保存不等它；装完经 acp-install-finished 事件刷新状态与说明。
+// 底部注明设置文件路径。
 
 import { useEffect, useRef, useState } from 'react';
-import { commands, isTauri, type DispatchSettingsView } from '../tauri';
+import { commands, isTauri, type AcpInstallFinished, type DispatchSettingsView } from '../tauri';
 import {
   SETTINGS_SECTIONS,
   acpStatusText,
@@ -29,6 +30,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [saveError, setSaveError] = useState('');
   // 保存返回的说明（夹取、ACP 安装结果）；有关闭按钮，不拦着继续改。
   const [note, setNote] = useState('');
+  const [acpInstalling, setAcpInstalling] = useState(false);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -49,12 +51,33 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     let cancelled = false;
     commands.dispatchSettings()
       .then((view) => {
-        if (!cancelled) setLoad({ state: 'ready', view, draft: initialDraft(view.dispatch) });
+        if (cancelled) return;
+        setLoad({ state: 'ready', view, draft: initialDraft(view.dispatch) });
+        setAcpInstalling(view.acpInstalling === true);
       })
       .catch((err) => {
         if (!cancelled) setLoad({ state: 'error', message: String(err) });
       });
     return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      const fn = await listen<AcpInstallFinished>('acp-install-finished', (event) => {
+        setAcpInstalling(false);
+        setNote(event.payload.note);
+        setLoad((current) => (current.state === 'ready'
+          ? { ...current, view: { ...current.view, acp: event.payload.acp, acpInstalling: false } }
+          : current));
+      });
+      if (disposed) fn();
+      else unlisten = fn;
+    })();
+    return () => { disposed = true; unlisten?.(); };
   }, []);
 
   const setDraftValue = (key: string, value: string | number | boolean) => {
@@ -80,6 +103,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       // 写入后的设置重读一遍（可能被夹取），带说明时留着让用户看到结果。
       const view = await commands.dispatchSettings();
       setLoad({ state: 'ready', view, draft: initialDraft(view.dispatch) });
+      setAcpInstalling(result.acpInstalling === true || view.acpInstalling === true);
       if (result.note) setNote(result.note);
       else onClose();
     } catch (err) {
@@ -109,8 +133,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                       onChange={setDraftValue}
                     />
                   ))}
-                  {section.fields.some((field) => field.key === 'acpEnabled') && acpStatusText(load.view.acp) !== '' && (
-                    <p className="cfg-dim settings-acp">{acpStatusText(load.view.acp)}</p>
+                  {section.fields.some((field) => field.key === 'acpEnabled') && (acpInstalling || acpStatusText(load.view.acp) !== '') && (
+                    <p className="cfg-dim settings-acp">
+                      {acpInstalling ? '适配器：后台安装中，可关闭本窗口' : acpStatusText(load.view.acp)}
+                    </p>
                   )}
                 </div>
               ))}

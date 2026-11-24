@@ -1235,6 +1235,14 @@ impl AcpOps {
             status: Box::new(acp_setup::adapter_status),
         }
     }
+
+    /// 只查状态不安装：窗口保存设置时用，安装另起后台线程（server.rs）。
+    pub(crate) fn status_only() -> Self {
+        AcpOps {
+            install: Box::new(acp_setup::adapter_status),
+            status: Box::new(acp_setup::adapter_status),
+        }
+    }
 }
 
 fn run_config(root: &Path, args: &[String], acp: &AcpOps, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
@@ -3254,22 +3262,26 @@ pub(crate) fn config_set_at(
     let dispatch = crate::engine::load_settings(root);
     if installs_acp && dispatch.acp_enabled {
         let reports = (acp.install)();
-        let described = |report: &AdapterReport| {
-            let state = serde_json::to_value(report.state).ok();
-            format!("{} {}", report.agent, state.as_ref().and_then(Value::as_str).unwrap_or(""))
-        };
-        let failed = reports.iter().filter(|report| report.not_installed()).map(described).collect::<Vec<_>>();
-        let note = if failed.is_empty() {
-            let states = reports.iter().map(described).collect::<Vec<_>>();
-            format!("ACP 适配器：{}", states.join("，"))
-        } else {
-            format!("ACP 适配器未装上：{}；派发对这几家回退一次性 CLI", failed.join("，"))
-        };
-        let exit = if failed.is_empty() { 0 } else { 1 };
+        let (note, exit) = acp_install_note(&reports);
         return Ok(ConfigSetOutcome { dispatch, acp: Some(reports), note: Some(note), exit });
     }
     let note = (!notes.is_empty()).then(|| notes.join("；"));
     Ok(ConfigSetOutcome { dispatch, acp: None, note, exit: 0 })
+}
+
+/// 适配器安装结果的一句话说明与退出码（有家没装上时为 1）。
+pub(crate) fn acp_install_note(reports: &[AdapterReport]) -> (String, i32) {
+    let described = |report: &AdapterReport| {
+        let state = serde_json::to_value(report.state).ok();
+        format!("{} {}", report.agent, state.as_ref().and_then(Value::as_str).unwrap_or(""))
+    };
+    let failed = reports.iter().filter(|report| report.not_installed()).map(described).collect::<Vec<_>>();
+    if failed.is_empty() {
+        let states = reports.iter().map(described).collect::<Vec<_>>();
+        (format!("ACP 适配器：{}", states.join("，")), 0)
+    } else {
+        (format!("ACP 适配器未装上：{}；派发对这几家回退一次性 CLI", failed.join("，")), 1)
+    }
 }
 
 // ── TASK-44：recover 子命令 ────────────────────────────────────────

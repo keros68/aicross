@@ -23,6 +23,7 @@ import { SettingsDialog } from './config/SettingsDialog';
 import { PAGE_TABS, keepsMounted, pageTabStorage, readPageTab, writePageTab, type PageTab } from './config/page-tabs';
 import { onWindowDragDoubleClick, onWindowDragMouseDown } from './lib/window-drag';
 import { readHost, writeHost } from './lib/host-select';
+import { IS_MACOS } from './lib/os';
 import './config/ConfigPages.css';
 
 export function App() {
@@ -149,6 +150,32 @@ export function App() {
     noteTimer.current = window.setTimeout(() => setRefreshNote(''), 1500);
   };
 
+  // 快捷键（macOS 用 ⌘，其他系统用 Ctrl）：1–5 切页、R 刷新、逗号打开设置。
+  // 设置对话框开着时不响应，避免切走正在改的设置。
+  const modKey = IS_MACOS ? '⌘' : 'Ctrl+';
+  const shortcutRef = useRef({ refresh, settingsOpen });
+  shortcutRef.current = { refresh, settingsOpen };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const mod = IS_MACOS ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+      if (!mod || event.altKey || event.shiftKey || event.isComposing || shortcutRef.current.settingsOpen) return;
+      const index = Number(event.key) - 1;
+      if (Number.isInteger(index) && index >= 0 && index < PAGE_TABS.length) {
+        event.preventDefault();
+        setViewerRequest(null);
+        selectTab(PAGE_TABS[index].id);
+      } else if (event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        void shortcutRef.current.refresh();
+      } else if (event.key === ',' && isTauri) {
+        event.preventDefault();
+        setSettingsOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   return (
     <>
       <header className="topbar" onMouseDown={onWindowDragMouseDown} onDoubleClick={onWindowDragDoubleClick}>
@@ -166,6 +193,7 @@ export function App() {
               type="button"
               className={`segmented-item${item.id === navSelected ? ' selected' : ''}`}
               aria-current={item.id === navSelected ? 'page' : undefined}
+              title={`${modKey}${PAGE_TABS.indexOf(item) + 1}`}
               onClick={() => {
                 setViewerRequest(null);
                 selectTab(item.id);
@@ -185,7 +213,7 @@ export function App() {
           <button
             type="button"
             className={`icon-btn topbar-refresh${refreshing ? ' spinning' : ''}`}
-            title="刷新"
+            title={`刷新（${modKey}R）`}
             aria-label="刷新"
             aria-busy={refreshing}
             onClick={() => void refresh()}
@@ -196,7 +224,7 @@ export function App() {
             <button
               type="button"
               className="icon-btn"
-              title="设置"
+              title={`设置（${modKey},）`}
               aria-label="设置"
               aria-haspopup="dialog"
               onClick={() => setSettingsOpen(true)}
