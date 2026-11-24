@@ -96,7 +96,7 @@ pub struct EngineSettings {
 impl Default for EngineSettings {
     fn default() -> Self {
         Self {
-            timeout_secs: 600,
+            timeout_secs: 1800,
             exec_timeout_secs: 1800,
             idle_timeout_secs: 300,
             concurrency: 3,
@@ -153,7 +153,7 @@ pub(crate) fn settings_from_value(map: &serde_json::Map<String, Value>) -> Engin
             .to_string()
     };
     EngineSettings {
-        timeout_secs: finite_number(map.get("timeoutSecs"), 600.0).clamp(1.0, 3600.0) as u64,
+        timeout_secs: finite_number(map.get("timeoutSecs"), 1800.0).clamp(1.0, 3600.0) as u64,
         exec_timeout_secs: finite_number(map.get("execTimeoutSecs"), 1800.0).clamp(1.0, 3600.0) as u64,
         idle_timeout_secs: finite_number(map.get("idleTimeoutSecs"), 300.0).clamp(1.0, 3600.0) as u64,
         concurrency: finite_number(map.get("concurrency"), 3.0).clamp(1.0, 3.0) as usize,

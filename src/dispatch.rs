@@ -68,7 +68,7 @@ fn default_fix_round_limit() -> usize {
     1
 }
 fn default_timeout() -> u64 {
-    600
+    1800
 }
 fn default_exec_timeout() -> u64 { 1800 }
 fn default_idle_timeout() -> u64 { 300 }
@@ -9732,7 +9732,7 @@ mod tests {
 
     fn live_settings(concurrency: usize) -> DispatchSettings {
         DispatchSettings {
-            timeout_secs: 600,
+            timeout_secs: 1800,
             exec_timeout_secs: 1800,
             idle_timeout_secs: 300,
             concurrency,

@@ -415,7 +415,11 @@ fn run_status(root: &Path, args: &[String], timeout: Duration, stdout: &mut dyn 
     loop {
         let run = match crate::engine::read_run(root, &run_id) { Ok(run) => run, Err(message) => { let _=writeln!(stderr,"{message}"); return 1 } };
         if !wait || run.status != "running" { return output_run(run, stdout, stderr); }
-        if started.elapsed() >= timeout { let _=writeln!(stderr,"等待状态超时"); return 1; }
+        if started.elapsed() >= timeout {
+            let _ = writeln!(stdout, "{}", serde_json::to_string(&run).unwrap_or_else(|_| "{}".into()));
+            let _ = writeln!(stderr, "等待超时，任务仍在后台运行，不是失败；稍后再运行 aicross status {run_id}");
+            return 4;
+        }
         std::thread::sleep(Duration::from_millis(500));
     }
 }
@@ -4585,7 +4589,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
         assert_eq!(parsed["roles"]["version"], 1);
         assert_eq!(parsed["roles"]["execution"]["agent"], "");
-        assert_eq!(parsed["dispatch"]["timeoutSecs"], 600);
+        assert_eq!(parsed["dispatch"]["timeoutSecs"], 1800);
         assert_eq!(parsed["dispatch"]["execTimeoutSecs"], 1800);
         assert_eq!(parsed["dispatch"]["idleTimeoutSecs"], 300);
         assert_eq!(parsed["dispatch"]["concurrency"], 3);
