@@ -374,7 +374,7 @@ pub fn build_run_view(root: &Path, run_id: &str) -> Result<RunView, String> {
 
 // ── Tauri 命令 ───────────────────────────────────────────────────────────
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-ui", tauri::command)]
 pub fn load_run_view(run_id: String) -> Result<RunView, String> {
     build_run_view(&crate::paths::aicross_root()?, &run_id)
 }
@@ -386,7 +386,7 @@ pub fn adopt_view(root: &Path, run_id: &str, node_id: &str) -> Result<RunView, S
     build_run_view(root, run_id)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-ui", tauri::command)]
 pub fn adopt_run_node(run_id: String, node_id: String) -> Result<RunView, String> {
     adopt_view(&crate::paths::aicross_root()?, &run_id, &node_id)
 }

@@ -1235,6 +1235,13 @@ impl AcpOps {
             status: Box::new(acp_setup::adapter_status),
         }
     }
+
+    pub(crate) fn status_only() -> Self {
+        AcpOps {
+            install: Box::new(acp_setup::adapter_status),
+            status: Box::new(acp_setup::adapter_status),
+        }
+    }
 }
 
 fn run_config(root: &Path, args: &[String], acp: &AcpOps, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {

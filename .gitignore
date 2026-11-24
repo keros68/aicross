@@ -6,6 +6,9 @@ node_modules/
 dist/
 .vite/
 .npm-cache/
+macos/build/
+macos/AICross/Resources/aicross-engine
+*.xcuserdata/
 
 # 本机运行与调试
 .aicross-webview/

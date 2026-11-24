@@ -13,15 +13,26 @@ build = "build.rs"
 name = "aicross"
 path = "src/main.rs"
 
+[features]
+default = ["tauri-ui"]
+# 默认启用 Tauri WebView 窗口；macOS 原生 SwiftUI 面板以 `--no-default-features` 编译轻量无头引擎。
+tauri-ui = [
+    "dep:tauri",
+    "dep:tauri-build",
+    "dep:tauri-plugin-single-instance",
+    "dep:tauri-plugin-updater",
+    "dep:tauri-plugin-dialog",
+]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
 # Regex（dispatch / channels / resources 的文本判定与脱敏）
 regex = "1"
 
 # 不开 devtools 特性：安装版不提供开发者工具，开发构建自带。
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = [], optional = true }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -54,12 +65,12 @@ codegen-units = 1
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # 同一时间只开一个窗口：再次启动时把已开的窗口带到前台，并转发 `aicross open <run_id>`。
-tauri-plugin-single-instance = "2"
+tauri-plugin-single-instance = { version = "2", optional = true }
 # 软件自动更新：查 GitHub Release 的 latest.json，下载安装包、校验签名后安装并重启。
-tauri-plugin-updater = "2"
+tauri-plugin-updater = { version = "2", optional = true }
 # TASK-50：窗口「选目录」对话框，只在 Rust 侧调用（pick_folder 命令），
 # 前端不装 npm 包。
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = { version = "2", optional = true }
 
 # Windows 接口：Dwm 设窗口直角；Console 让命令行子命令输出到父终端；
 # Threading 与 JobObjects 查进程存活、把派发拉起的子进程绑到随引擎退出的作业；

@@ -10,9 +10,9 @@
 
 </div>
 
-aicross 是基于 Tauri 2 的桌面应用，配合 ai-cross skill 使用，目前提供 Windows 安装包。平时用哪个 Agent 都可以：在面板里分好谁出方案、谁执行、谁审查，回到原来的软件里说一句话就开始协作。各家命令行工具在本机运行，无云端服务。
+aicross 配合 ai-cross skill 使用，提供 Windows（Tauri 2）与 macOS 原生 SwiftUI（Liquid Glass）桌面安装包。平时用哪个 Agent 都可以：在面板里分好谁出方案、谁执行、谁审查，回到原来的软件里说一句话就开始协作。各家命令行工具在本机运行，无云端服务。
 
-本仓库同时包含面板（`src/`、`src-ui/`）与 ai-cross skill 源码（[`skills/ai-cross`](skills/ai-cross/)）。skill 不装面板也能用；装了面板后，派给谁在面板里设，不用在对话里另做盘点。
+本仓库同时包含面板（Windows / 跨平台前端在 `src-ui/`，macOS 原生面板在 `macos/`，共享后端在 `src/`）与 ai-cross skill 源码（[`skills/ai-cross`](skills/ai-cross/)）。skill 不装面板也能用；装了面板后，派给谁在面板里设，不用在对话里另做盘点。
 
 ## 功能
 
@@ -28,7 +28,7 @@ aicross 是基于 Tauri 2 的桌面应用，配合 ai-cross skill 使用，目�
 ## 快速开始
 
 1. 本机装好并登录至少两家 Agent 的命令行工具（Claude Code、Codex、Kimi Code、pi agent 等）。只有一家时，无法交给其他厂商审查。
-2. 打开 [Releases](https://github.com/keros68/aicross/releases/latest)，下载 `aicross_*_x64-setup.exe` 或 `.msi`，装一个即可。安装后命令行里可用 `aicross`。
+2. 打开 [Releases](https://github.com/keros68/aicross/releases/latest)（或仓库 [`releases/`](releases/) 目录）：Windows 下载 `aicross_*_x64-setup.exe` 或 `.msi`；macOS（Apple Silicon）下载 `aicross_*_aarch64.dmg` 并拖入 `Applications`。
 3. 进「开始」页：探测本机 Agent 与模型，选在哪个软件里用，点「一键配好」。手选的人选和其他软件管理的 skill 不改动。
 4. 回到该软件，输入页面给出的示例，例如 `/ai-cross 让别家审一下 main.py`。要换人选，到「模式」页改。
 
@@ -81,7 +81,7 @@ npx skills add keros68/aicross --skill ai-cross -g
 
 ## 从源码构建
 
-依赖 Node.js、Rust（stable）与 Tauri 2 的系统依赖。macOS（Apple Silicon）用 `scripts/build-macos.sh` 在本机打出未签名的 `.dmg`，见[使用说明](docs/MANUAL.md)；Intel Mac 与 Linux 目前只保证能编译，没有安装包。
+依赖 Node.js、Rust（stable）与 Tauri 2 的系统依赖。macOS（Apple Silicon）可使用 `scripts/build-macos-native.sh`（Xcode 原生 SwiftUI + Liquid Glass 面板）或 `scripts/build-macos.sh`（Tauri 版）在本机打出 `.dmg`，见[使用说明](docs/MANUAL.md)；Intel Mac 与 Linux 目前只保证能编译，没有安装包。
 
 ```bash
 cd src-ui && npm install && npm run build   # 前端
